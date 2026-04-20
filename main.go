@@ -2,10 +2,10 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"image"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,6 +64,15 @@ type streamStatusMsg struct {
 	status string
 }
 
+type claudeExitedMsg struct {
+	err error
+}
+
+type claudeProc struct {
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+}
+
 type sessionsLoadedMsg struct {
 	sessions []sessionEntry
 	err      error
@@ -112,6 +121,7 @@ type model struct {
 
 	status   string
 	streamCh chan tea.Msg
+	proc     *claudeProc
 }
 
 const (
@@ -197,10 +207,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case claudeDoneMsg:
+	case claudeExitedMsg:
 		m.busy = false
 		m.status = ""
 		m.streamCh = nil
+		m.proc = nil
+		if msg.err != nil {
+			m.appendHistory(outputStyle.Render(errStyle.Render("claude exited: " + msg.err.Error())))
+		}
+		return m, nil
+
+	case claudeDoneMsg:
+		m.busy = false
+		m.status = ""
 		var out string
 		if msg.err != nil {
 			out = errStyle.Render(fmt.Sprintf("error: %v", msg.err))
@@ -590,6 +609,7 @@ func (m model) doCd(target string) (tea.Model, tea.Cmd) {
 		m.appendHistory(outputStyle.Render(errStyle.Render("cd: " + err.Error())))
 		return m, nil
 	}
+	m.killProc()
 	m.sessionID = ""
 	m.history = nil
 	cwd, _ := os.Getwd()
@@ -685,6 +705,7 @@ func (m model) updatePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyEnter:
 		if len(m.sessions) > 0 {
+			m.killProc()
 			m.sessionID = m.sessions[m.pickerIdx].id
 			m.mode = modeInput
 			m.appendHistory(outputStyle.Render(promptStyle.Render(
@@ -707,17 +728,74 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 }
 
 func (m model) sendToClaude(line string) (tea.Model, tea.Cmd) {
-	m.busy = true
-	m.status = "thinking…"
 	echo := userBarStyle.Render(line)
 	m.appendHistory(echo)
-	ch := make(chan tea.Msg, 16)
-	m.streamCh = ch
-	startClaudeStream(line, m.sessionID, ch)
+	if err := m.ensureProc(); err != nil {
+		m.appendHistory(outputStyle.Render(errStyle.Render("could not start claude: " + err.Error())))
+		return m, nil
+	}
+	payload := map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"role":    "user",
+			"content": line,
+		},
+	}
+	b, _ := json.Marshal(payload)
+	if _, err := m.proc.stdin.Write(append(b, '\n')); err != nil {
+		m.appendHistory(outputStyle.Render(errStyle.Render("write to claude failed: " + err.Error())))
+		m.killProc()
+		return m, nil
+	}
+	m.busy = true
+	m.status = "thinking…"
 	return m, tea.Batch(
 		m.spinner.Tick,
-		nextStreamCmd(ch),
+		nextStreamCmd(m.streamCh),
 	)
+}
+
+func (m *model) ensureProc() error {
+	if m.proc != nil {
+		return nil
+	}
+	args := []string{"-p",
+		"--input-format", "stream-json",
+		"--output-format", "stream-json",
+		"--verbose",
+		"--dangerously-skip-permissions",
+	}
+	if m.sessionID != "" {
+		args = append(args, "--resume", m.sessionID)
+	}
+	cmd := exec.Command("claude", args...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	ch := make(chan tea.Msg, 32)
+	m.proc = &claudeProc{cmd: cmd, stdin: stdin}
+	m.streamCh = ch
+	go readClaudeStream(stdout, cmd, ch)
+	return nil
+}
+
+func (m *model) killProc() {
+	if m.proc == nil {
+		return
+	}
+	_ = m.proc.stdin.Close()
+	_ = m.proc.cmd.Process.Kill()
+	_ = m.proc.cmd.Wait()
+	m.proc = nil
+	m.streamCh = nil
 }
 
 func (m model) View() tea.View {
@@ -1015,60 +1093,35 @@ func expandTilde(p string) (string, bool) {
 	return p, false
 }
 
-func startClaudeStream(prompt, sessionID string, ch chan tea.Msg) {
-	go func() {
-		defer close(ch)
-		args := []string{"-p", prompt,
-			"--output-format", "stream-json",
-			"--verbose",
-			"--dangerously-skip-permissions"}
-		if sessionID != "" {
-			args = append(args, "--resume", sessionID)
+func readClaudeStream(stdout io.Reader, cmd *exec.Cmd, ch chan tea.Msg) {
+	defer close(ch)
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 1<<20), 1<<22)
+	var pending claudeResult
+	for sc.Scan() {
+		var ev map[string]any
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			continue
 		}
-		c := exec.Command("claude", args...)
-		stdout, err := c.StdoutPipe()
-		if err != nil {
-			ch <- claudeDoneMsg{err: err}
-			return
-		}
-		var stderr bytes.Buffer
-		c.Stderr = &stderr
-		if err := c.Start(); err != nil {
-			ch <- claudeDoneMsg{err: err, raw: stderr.String()}
-			return
-		}
-
-		var final claudeResult
-		sc := bufio.NewScanner(stdout)
-		sc.Buffer(make([]byte, 1<<20), 1<<22)
-		for sc.Scan() {
-			var ev map[string]any
-			if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
-				continue
+		switch t, _ := ev["type"].(string); t {
+		case "assistant":
+			if status := assistantStatus(ev); status != "" {
+				ch <- streamStatusMsg{status: status}
 			}
-			switch t, _ := ev["type"].(string); t {
-			case "assistant":
-				if status := assistantStatus(ev); status != "" {
-					ch <- streamStatusMsg{status: status}
-				}
-			case "result":
-				if r, _ := ev["result"].(string); r != "" {
-					final.Result = r
-				}
-				if id, _ := ev["session_id"].(string); id != "" {
-					final.SessionID = id
-				}
-				final.IsError, _ = ev["is_error"].(bool)
-				final.Type = "result"
+		case "result":
+			pending = claudeResult{Type: "result"}
+			if r, _ := ev["result"].(string); r != "" {
+				pending.Result = r
 			}
+			if id, _ := ev["session_id"].(string); id != "" {
+				pending.SessionID = id
+			}
+			pending.IsError, _ = ev["is_error"].(bool)
+			ch <- claudeDoneMsg{res: pending}
 		}
-		err = c.Wait()
-		if err != nil && final.Result == "" {
-			ch <- claudeDoneMsg{err: err, raw: stderr.String()}
-			return
-		}
-		ch <- claudeDoneMsg{res: final}
-	}()
+	}
+	err := cmd.Wait()
+	ch <- claudeExitedMsg{err: err}
 }
 
 func assistantStatus(ev map[string]any) string {
@@ -1237,7 +1290,11 @@ func humanDuration(d time.Duration) string {
 
 func main() {
 	p := tea.NewProgram(initialModel())
-	if _, err := p.Run(); err != nil {
+	final, err := p.Run()
+	if m, ok := final.(model); ok {
+		m.killProc()
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "ask:", err)
 		os.Exit(1)
 	}
