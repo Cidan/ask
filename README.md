@@ -53,7 +53,6 @@ ask
 |--------------------|--------------------------------------------|
 | `/resume`          | Pick a prior session in this directory     |
 | `/new` / `/clear`  | Discard history and start a fresh session  |
-| `/qq`              | Mock the ask-user-question modal (no LLM)  |
 
 ### Keybindings
 
@@ -62,15 +61,15 @@ ask
 | `Enter`                | Send message / confirm                             |
 | `Shift+Enter`, `Ctrl+J`| Insert newline in the input                        |
 | `Ctrl+V`               | Paste image from clipboard                         |
-| `Esc`                  | Cancel pending attachments or close the modal      |
+| `Ctrl+C` / `Esc`       | Cancel the live turn (kills the claude subprocess; a new one spawns on the next send). `Esc` also clears pending attachments when not mid-turn. |
+| `Ctrl+D`               | Quit                                               |
 | `PgUp` / `PgDn`        | Scroll the viewport half a page                    |
 | Mouse wheel            | Scroll the viewport                                |
 | Mouse click on `│`     | Jump to that position on the scrollbar             |
 | `↑` / `↓`              | Navigate lists (session picker, slash menu, modal) |
 | `Tab`                  | Auto-complete a path or slash command              |
-| `Ctrl+C`, `Ctrl+D`     | Quit                                               |
 
-### Question modal (inside `/qq` or via MCP)
+### Question modal (via MCP tool)
 
 | Key                | Action                                                   |
 |--------------------|----------------------------------------------------------|

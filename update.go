@@ -37,6 +37,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case streamStatusMsg:
+		if msg.proc != m.proc {
+			return m, nil
+		}
 		m.status = msg.status
 		m.layout()
 		if m.streamCh != nil {
@@ -45,6 +48,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case claudeExitedMsg:
+		if msg.proc != m.proc {
+			return m, nil
+		}
 		var stderrTail string
 		if m.proc != nil && m.proc.stderr != nil {
 			stderrTail = strings.TrimSpace(m.proc.stderr.String())
@@ -69,6 +75,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case claudeDoneMsg:
+		if msg.proc != m.proc {
+			return m, nil
+		}
 		debugLog("claudeDoneMsg err=%v isError=%v resultLen=%d queue=%d",
 			msg.err, msg.res.IsError, len(msg.res.Result), m.queue)
 		if m.queue > 0 {
@@ -230,15 +239,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if msg.Mod == tea.ModCtrl && (msg.Code == 'c' || msg.Code == 'd') {
+	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
 		return m, tea.Quit
+	}
+	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
+		if m.busy {
+			return m.cancelTurn(), nil
+		}
+		return m, nil
 	}
 	if msg.Mod == tea.ModCtrl && msg.Code == 'v' {
 		return m, pasteImageCmd()
 	}
-	if msg.Mod == 0 && msg.Code == tea.KeyEsc && len(m.pending) > 0 {
-		m.pending = nil
-		m.layout()
+	if msg.Mod == 0 && msg.Code == tea.KeyEsc {
+		if m.busy {
+			return m.cancelTurn(), nil
+		}
+		if len(m.pending) > 0 {
+			m.pending = nil
+			m.layout()
+			return m, nil
+		}
 		return m, nil
 	}
 
@@ -351,8 +372,12 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updatePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
+	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
 		return m, tea.Quit
+	}
+	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
+		m.mode = modeInput
+		return m, nil
 	}
 	switch msg.Code {
 	case tea.KeyEsc:
@@ -392,8 +417,6 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		m.history = nil
 		m.appendHistory(outputStyle.Render(promptStyle.Render("✓ new session")))
 		return m, nil
-	case "/qq":
-		return m.startAsk(mockQuestions()), nil
 	default:
 		m.appendHistory(outputStyle.Render(errStyle.Render("unknown command: " + cmd)))
 		return m, nil

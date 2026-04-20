@@ -31,7 +31,6 @@ var slashCmds = []slashCmd{
 	{"/resume", "resume a previous Claude session"},
 	{"/new", "start a new Claude session"},
 	{"/clear", "start a new Claude session"},
-	{"/qq", "mock the ask-user-question popup"},
 }
 
 type sessionEntry struct {
@@ -49,17 +48,20 @@ const (
 )
 
 type claudeDoneMsg struct {
-	res claudeResult
-	err error
-	raw string
+	res  claudeResult
+	err  error
+	raw  string
+	proc *claudeProc
 }
 
 type streamStatusMsg struct {
 	status string
+	proc   *claudeProc
 }
 
 type claudeExitedMsg struct {
-	err error
+	err  error
+	proc *claudeProc
 }
 
 type claudeProc struct {

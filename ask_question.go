@@ -57,36 +57,6 @@ var (
 
 const askBoxWidth = 100
 
-func mockQuestions() []question {
-	return []question{
-		{
-			kind:    qPickOne,
-			prompt:  "What's your favorite color?",
-			options: []string{"Red", "Blue", "Green", "Enter your own"},
-		},
-		{
-			kind:    qPickMany,
-			prompt:  "Which languages do you currently use?",
-			options: []string{"Go", "Python", "Rust", "TypeScript", "Enter your own"},
-		},
-		{
-			kind:    qPickDiagram,
-			prompt:  "Pick a layout",
-			options: []string{"Sidebar + main", "Top nav + grid", "Three column"},
-			diagrams: []string{
-				"╭──────┬─────────────╮\n│ ▓▓▓▓ │ ░░░░░░░░░░░ │\n│ ▓▓▓▓ │ ░░░░░░░░░░░ │\n│ ▓▓▓▓ │ ░░░░░░░░░░░ │\n│ ▓▓▓▓ │ ░░░░░░░░░░░ │\n│ ▓▓▓▓ │ ░░░░░░░░░░░ │\n╰──────┴─────────────╯",
-				"╭─────────────────────╮\n│ ▓▓ ▓▓ ▓▓ ▓▓ ▓▓ ▓▓ ▓▓ │\n├─────────────────────┤\n│ ░░░░  ░░░░  ░░░░░░░ │\n│ ░░░░  ░░░░  ░░░░░░░ │\n│ ░░░░  ░░░░  ░░░░░░░ │\n╰─────────────────────╯",
-				"╭──────┬──────┬───────╮\n│ ░░░░ │ ░░░░ │ ░░░░░ │\n│ ░░░░ │ ░░░░ │ ░░░░░ │\n│ ░░░░ │ ░░░░ │ ░░░░░ │\n│ ░░░░ │ ░░░░ │ ░░░░░ │\n│ ░░░░ │ ░░░░ │ ░░░░░ │\n╰──────┴──────┴───────╯",
-			},
-		},
-		{
-			kind:    qPickOne,
-			prompt:  "Ship it?",
-			options: []string{"Yes", "No, one more pass", "Enter your own"},
-		},
-	}
-}
-
 func (m model) startAsk(qs []question) model {
 	m.mode = modeAskQuestion
 	m.askQuestions = qs
@@ -129,8 +99,14 @@ func (m model) isOnConfirmTab() bool {
 }
 
 func (m model) updateAsk(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
+	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
 		return m, tea.Quit
+	}
+	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
+		if m.askReply != nil {
+			m.askReply <- askReply{cancelled: true}
+		}
+		return m.clearAsk(), nil
 	}
 
 	if m.askEditing == askEditNote {
@@ -297,35 +273,8 @@ func (m model) advanceAskTab() model {
 func (m model) submitAsk() model {
 	if m.askReply != nil {
 		m.askReply <- askReply{answers: m.askAnswers}
-		return m.clearAsk()
 	}
-	var b strings.Builder
-	b.WriteString(promptStyle.Render("✓ /qq mock submitted"))
-	b.WriteString("\n")
-	for i, q := range m.askQuestions {
-		ans := m.askAnswers[i]
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  Q%d ", i+1)))
-		b.WriteString(q.prompt)
-		b.WriteString("\n")
-		b.WriteString("      ")
-		b.WriteString(renderAnswerSummary(q, ans))
-		if ans.note != "" {
-			b.WriteString("\n      ")
-			noteLines := strings.Split(ans.note, "\n")
-			for j, ln := range noteLines {
-				if j == 0 {
-					b.WriteString(askNoteLabelStyle.Render("note: "))
-				} else {
-					b.WriteString("\n            ")
-				}
-				b.WriteString(ln)
-			}
-		}
-		b.WriteString("\n")
-	}
-	m = m.clearAsk()
-	m.appendHistory(outputStyle.Render(strings.TrimRight(b.String(), "\n")))
-	return m
+	return m.clearAsk()
 }
 
 func renderAnswerSummary(q question, ans qAnswer) string {

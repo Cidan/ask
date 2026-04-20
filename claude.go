@@ -142,10 +142,20 @@ func (m *model) ensureProc() error {
 		return err
 	}
 	ch := make(chan tea.Msg, 32)
-	m.proc = &claudeProc{cmd: cmd, stdin: stdin, stderr: stderr}
+	proc := &claudeProc{cmd: cmd, stdin: stdin, stderr: stderr}
+	m.proc = proc
 	m.streamCh = ch
-	go readClaudeStream(stdout, cmd, ch)
+	go readClaudeStream(stdout, proc, ch)
 	return nil
+}
+
+func (m model) cancelTurn() model {
+	if !m.busy && m.proc == nil {
+		return m
+	}
+	m.killProc()
+	m.appendHistory(outputStyle.Render(dimStyle.Render("✗ cancelled")))
+	return m
 }
 
 func (m *model) killProc() {
@@ -154,7 +164,6 @@ func (m *model) killProc() {
 	}
 	_ = m.proc.stdin.Close()
 	_ = m.proc.cmd.Process.Kill()
-	_ = m.proc.cmd.Wait()
 	m.proc = nil
 	m.streamCh = nil
 	m.queue = 0
@@ -163,7 +172,7 @@ func (m *model) killProc() {
 	m.status = ""
 }
 
-func readClaudeStream(stdout io.Reader, cmd *exec.Cmd, ch chan tea.Msg) {
+func readClaudeStream(stdout io.Reader, proc *claudeProc, ch chan tea.Msg) {
 	defer close(ch)
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 1<<20), 1<<22)
@@ -176,7 +185,7 @@ func readClaudeStream(stdout io.Reader, cmd *exec.Cmd, ch chan tea.Msg) {
 		switch t, _ := ev["type"].(string); t {
 		case "assistant":
 			if status := assistantStatus(ev); status != "" {
-				ch <- streamStatusMsg{status: status}
+				ch <- streamStatusMsg{status: status, proc: proc}
 			}
 		case "result":
 			pending = claudeResult{Type: "result"}
@@ -187,11 +196,11 @@ func readClaudeStream(stdout io.Reader, cmd *exec.Cmd, ch chan tea.Msg) {
 				pending.SessionID = id
 			}
 			pending.IsError, _ = ev["is_error"].(bool)
-			ch <- claudeDoneMsg{res: pending}
+			ch <- claudeDoneMsg{res: pending, proc: proc}
 		}
 	}
-	err := cmd.Wait()
-	ch <- claudeExitedMsg{err: err}
+	err := proc.cmd.Wait()
+	ch <- claudeExitedMsg{err: err, proc: proc}
 }
 
 func assistantStatus(ev map[string]any) string {
