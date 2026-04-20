@@ -80,7 +80,67 @@ func (m model) clearAsk() model {
 	m.askEditing = askEditNone
 	m.askNoteBackup = ""
 	m.askReply = nil
+	m.askMode = askForMCP
 	return m
+}
+
+func (m model) startModelPicker() model {
+	options := []string{"default", "haiku", "sonnet", "opus", "Enter your own"}
+	prompt := "Select Claude model"
+	if m.claudeModel != "" {
+		prompt += " (current: " + m.claudeModel + ")"
+	} else {
+		prompt += " (current: default)"
+	}
+	m = m.startAsk([]question{{
+		kind:     qPickOne,
+		prompt:   prompt,
+		options:  options,
+		diagrams: make([]string, len(options)),
+	}})
+	m.askMode = askForModel
+	return m
+}
+
+func (m model) applyModelPick() (model, tea.Cmd) {
+	var picked string
+	if len(m.askQuestions) > 0 && len(m.askAnswers) > 0 {
+		q := m.askQuestions[0]
+		ans := m.askAnswers[0]
+		for idx := range ans.picks {
+			if idx < 0 || idx >= len(q.options) {
+				continue
+			}
+			if strings.EqualFold(q.options[idx], "Enter your own") {
+				picked = strings.TrimSpace(ans.custom)
+			} else {
+				picked = q.options[idx]
+			}
+			break
+		}
+	}
+	if strings.EqualFold(picked, "default") {
+		picked = ""
+	}
+	m = m.clearAsk()
+	if picked == m.claudeModel {
+		return m, nil
+	}
+	m.killProc()
+	m.claudeModel = picked
+	cfg, _ := loadConfig()
+	cfg.Claude.Model = picked
+	if err := saveConfig(cfg); err != nil {
+		debugLog("saveConfig err: %v", err)
+	}
+	var msg string
+	if picked == "" {
+		msg = "✓ model cleared (using claude default)"
+	} else {
+		msg = "✓ model set to " + picked
+	}
+	m.appendHistory(outputStyle.Render(promptStyle.Render(msg)))
+	return m, nil
 }
 
 func (m model) isCustomOption(tab int) bool {
@@ -173,7 +233,7 @@ func (m model) updateAsk(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.isOnConfirmTab() {
 		switch msg.Code {
 		case tea.KeyEnter:
-			return m.submitAsk(), nil
+			return m.submitAsk()
 		}
 		return m, nil
 	}
@@ -209,9 +269,12 @@ func (m model) updateAsk(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			ans.picks = map[int]bool{m.askCursor: true}
-			return m.advanceAskTab(), nil
 		}
-		return m.advanceAskTab(), nil
+		m = m.advanceAskTab()
+		if m.askMode == askForModel && m.isOnConfirmTab() {
+			return m.submitAsk()
+		}
+		return m, nil
 	}
 	return m, nil
 }
@@ -270,11 +333,14 @@ func (m model) advanceAskTab() model {
 	return m
 }
 
-func (m model) submitAsk() model {
+func (m model) submitAsk() (model, tea.Cmd) {
+	if m.askMode == askForModel {
+		return m.applyModelPick()
+	}
 	if m.askReply != nil {
 		m.askReply <- askReply{answers: m.askAnswers}
 	}
-	return m.clearAsk()
+	return m.clearAsk(), nil
 }
 
 func renderAnswerSummary(q question, ans qAnswer) string {

@@ -31,6 +31,7 @@ var builtinSlashCmds = []slashCmd{
 	{"/resume", "resume a previous Claude session"},
 	{"/new", "start a new Claude session"},
 	{"/clear", "start a new Claude session"},
+	{"/model", "select the Claude model"},
 }
 
 type sessionEntry struct {
@@ -189,13 +190,22 @@ type model struct {
 	askEditing    askEditField
 	askNoteBackup string
 	askReply      chan askReply
+	askMode       askMode
 
 	mcpPort         int
+	claudeModel     string
 	claudeSlashCmds []claudeSlashEntry
 
 	inputHistory []string
 	historyIdx   int
 }
+
+type askMode int
+
+const (
+	askForMCP askMode = iota
+	askForModel
+)
 
 type pendingAttachment struct {
 	data      []byte

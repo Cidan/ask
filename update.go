@@ -450,6 +450,9 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		m.history = nil
 		m.appendHistory(outputStyle.Render(promptStyle.Render("✓ new session")))
 		return m, nil
+	case "/model":
+		m = m.startModelPicker()
+		return m, nil
 	}
 	bare := strings.TrimPrefix(cmd, "/")
 	for _, e := range m.claudeSlashCmds {

@@ -12,6 +12,7 @@ type askConfig struct {
 
 type claudeConfig struct {
 	SlashCommands []claudeSlashEntry `json:"slashCommands,omitempty"`
+	Model         string             `json:"model,omitempty"`
 }
 
 func configPath() (string, error) {
