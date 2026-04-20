@@ -96,8 +96,9 @@ const (
 )
 
 type historyEntry struct {
-	kind historyKind
-	text string
+	kind     historyKind
+	text     string
+	rendered string
 }
 
 type sessionsLoadedMsg struct {
@@ -126,7 +127,9 @@ var (
 				PaddingLeft(1)
 	outputStyle   = lipgloss.NewStyle().MarginLeft(5)
 	thinkingStyle = lipgloss.NewStyle().MarginLeft(3)
-	chipStyle     = lipgloss.NewStyle().MarginLeft(3).Foreground(lipgloss.Color("13")).Bold(true)
+	chipStyle        = lipgloss.NewStyle().MarginLeft(3).Foreground(lipgloss.Color("13")).Bold(true)
+	scrollThumbStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	scrollTrackStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("0"))
 	pathBoxStyle  = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("13")).
@@ -163,6 +166,8 @@ type model struct {
 	pendingMime      string
 	pendingThumbCols int
 	pendingThumbRows int
+
+	scrollbarDragging bool
 }
 
 const (

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	glamour "charm.land/glamour/v2"
 	"charm.land/glamour/v2/styles"
@@ -52,10 +53,13 @@ func (m *model) layout() {
 	}
 }
 
-func (m model) viewportContent() string {
+func (m *model) viewportContent() string {
 	parts := make([]string, 0, len(m.history)+1)
-	for _, e := range m.history {
-		parts = append(parts, m.renderEntry(e))
+	for i := range m.history {
+		if m.history[i].kind == histResponse && m.history[i].rendered == "" {
+			m.history[i].rendered = m.renderResponse(m.history[i].text)
+		}
+		parts = append(parts, m.renderEntry(m.history[i]))
 	}
 	if m.busy {
 		s := m.status
@@ -70,14 +74,18 @@ func (m model) viewportContent() string {
 	return strings.Join(parts, "\n\n")
 }
 
+func (m model) renderResponse(raw string) string {
+	rendered, err := m.renderer.Render(raw)
+	if err != nil {
+		return outputStyle.Render(raw)
+	}
+	return outputStyle.Render(strings.Trim(rendered, "\n"))
+}
+
 func (m model) renderEntry(e historyEntry) string {
 	switch e.kind {
 	case histResponse:
-		rendered, err := m.renderer.Render(e.text)
-		if err != nil {
-			return outputStyle.Render(e.text)
-		}
-		return outputStyle.Render(strings.Trim(rendered, "\n"))
+		return e.rendered
 	case histUser:
 		w := m.width - 8
 		if w < 20 {
@@ -144,33 +152,47 @@ func (m model) View() tea.View {
 			box = m.renderSlashBox()
 		}
 	}
-	if box != "" && m.width > 0 && m.height > 0 {
+
+	vpH := m.viewport.Height()
+	needScroll := m.mode == modeInput && vpH > 0 && m.viewport.TotalLineCount() > vpH
+	needBox := box != ""
+
+	if (needBox || needScroll) && m.width > 0 && m.height > 0 {
 		canvas := uv.NewScreenBuffer(m.width, m.height)
 		uv.NewStyledString(body).Draw(canvas, image.Rectangle{
 			Min: image.Pt(0, 0),
 			Max: image.Pt(m.width, m.height),
 		})
-		boxW := lipgloss.Width(box)
-		boxH := lipgloss.Height(box)
-		inputTopY := m.height - m.input.Height()
-		boxY := inputTopY - boxH
-		if boxY < 0 {
-			boxY = 0
+		if needScroll {
+			bar := renderScrollbar(m.viewport)
+			uv.NewStyledString(bar).Draw(canvas, image.Rectangle{
+				Min: image.Pt(m.width-1, 0),
+				Max: image.Pt(m.width, vpH),
+			})
 		}
-		boxX := 4
-		if c := m.input.Cursor(); c != nil {
-			boxX = c.X
+		if needBox {
+			boxW := lipgloss.Width(box)
+			boxH := lipgloss.Height(box)
+			inputTopY := m.height - m.input.Height()
+			boxY := inputTopY - boxH
+			if boxY < 0 {
+				boxY = 0
+			}
+			boxX := 4
+			if c := m.input.Cursor(); c != nil {
+				boxX = c.X
+			}
+			if boxX+boxW > m.width {
+				boxX = m.width - boxW
+			}
+			if boxX < 0 {
+				boxX = 0
+			}
+			uv.NewStyledString(box).Draw(canvas, image.Rectangle{
+				Min: image.Pt(boxX, boxY),
+				Max: image.Pt(boxX+boxW, boxY+boxH),
+			})
 		}
-		if boxX+boxW > m.width {
-			boxX = m.width - boxW
-		}
-		if boxX < 0 {
-			boxX = 0
-		}
-		uv.NewStyledString(box).Draw(canvas, image.Rectangle{
-			Min: image.Pt(boxX, boxY),
-			Max: image.Pt(boxX+boxW, boxY+boxH),
-		})
 		v.Content = canvas.Render()
 	} else {
 		v.Content = body
@@ -182,6 +204,61 @@ func (m model) View() tea.View {
 		}
 	}
 	return v
+}
+
+func (m *model) scrollViewportTo(y int) {
+	vpH := m.viewport.Height()
+	total := m.viewport.TotalLineCount()
+	if vpH <= 1 || total <= vpH {
+		return
+	}
+	if y < 0 {
+		y = 0
+	}
+	if y > vpH-1 {
+		y = vpH - 1
+	}
+	pct := float64(y) / float64(vpH-1)
+	m.viewport.SetYOffset(int(pct * float64(total-vpH)))
+}
+
+func renderScrollbar(vp viewport.Model) string {
+	height := vp.Height()
+	if height <= 0 {
+		return ""
+	}
+	total := vp.TotalLineCount()
+	visible := vp.VisibleLineCount()
+	thumbSize := 1
+	thumbStart := 0
+	if total > visible && visible > 0 {
+		thumbSize = height * visible / total
+		if thumbSize < 1 {
+			thumbSize = 1
+		}
+		if thumbSize > height {
+			thumbSize = height
+		}
+		thumbStart = int(float64(height-thumbSize) * vp.ScrollPercent())
+		if thumbStart < 0 {
+			thumbStart = 0
+		}
+		if thumbStart+thumbSize > height {
+			thumbStart = height - thumbSize
+		}
+	}
+	var b strings.Builder
+	for i := 0; i < height; i++ {
+		if i >= thumbStart && i < thumbStart+thumbSize {
+			b.WriteString(scrollThumbStyle.Render("█"))
+		} else {
+			b.WriteString(scrollTrackStyle.Render("│"))
+		}
+		if i < height-1 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
 }
 
 func (m model) viewBody() string {

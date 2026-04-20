@@ -19,6 +19,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.input.SetWidth(msg.Width - 5)
 		m.renderer = newRenderer(msg.Width)
+		for i := range m.history {
+			if m.history[i].kind == histResponse {
+				m.history[i].rendered = ""
+			}
+		}
 		m.layout()
 		return m, nil
 
@@ -161,6 +166,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
 			return m, cmd
+		}
+		return m, nil
+
+	case tea.MouseClickMsg:
+		if msg.Button == tea.MouseLeft && m.mode == modeInput {
+			vpH := m.viewport.Height()
+			if msg.X == m.width-1 && msg.Y >= 0 && msg.Y < vpH && m.viewport.TotalLineCount() > vpH {
+				m.scrollbarDragging = true
+				m.scrollViewportTo(msg.Y)
+				return m, nil
+			}
+		}
+		return m, nil
+
+	case tea.MouseMotionMsg:
+		if m.scrollbarDragging {
+			m.scrollViewportTo(msg.Y)
+			return m, nil
+		}
+		return m, nil
+
+	case tea.MouseReleaseMsg:
+		if m.scrollbarDragging {
+			m.scrollbarDragging = false
 		}
 		return m, nil
 
