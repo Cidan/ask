@@ -48,6 +48,7 @@ func initialModel(cfg askConfig) model {
 		width:           100,
 		height:          30,
 		claudeSlashCmds: cfg.Claude.SlashCommands,
+		historyIdx:      -1,
 	}
 	m.refreshPrompt()
 	return m

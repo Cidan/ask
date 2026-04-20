@@ -256,6 +256,11 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.busy {
 			return m.cancelTurn(), nil
 		}
+		m.input.Reset()
+		m.pending = nil
+		m.resetHistoryNav()
+		m.refreshPathMatches()
+		m.layout()
 		return m, nil
 	}
 	if msg.Mod == tea.ModCtrl && msg.Code == 'v' {
@@ -292,6 +297,12 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
+			if m.historyIdx >= 0 || m.input.Line() == 0 {
+				if m.historyPrev() {
+					m.layout()
+					return m, nil
+				}
+			}
 		case tea.KeyDown:
 			if pickOpen {
 				if m.pathIdx < len(m.pathMatches)-1 {
@@ -305,10 +316,16 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
+			if m.historyIdx >= 0 {
+				m.historyNext()
+				m.layout()
+				return m, nil
+			}
 		case tea.KeyTab:
 			if pickOpen {
 				pick := m.pathMatches[m.pathIdx]
 				m.input.SetValue(m.pathPickerCmd() + " " + pick + "/")
+				m.resetHistoryNav()
 				m.refreshPathMatches()
 				m.layout()
 				return m, nil
@@ -317,6 +334,7 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				pick := items[m.menuIdx].name
 				m.input.SetValue(pick)
 				m.menuIdx = 0
+				m.resetHistoryNav()
 				m.layout()
 				return m, nil
 			}
@@ -334,10 +352,11 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if line == "" && len(m.pending) == 0 {
 				return m, nil
 			}
+			if m.busy && (strings.HasPrefix(line, "/") || m.pathPickerCmd() != "" || bareCommand(line) != "") {
+				return m, nil
+			}
+			m.recordInputHistory(val)
 			if m.busy {
-				if strings.HasPrefix(line, "/") || m.pathPickerCmd() != "" || bareCommand(line) != "" {
-					return m, nil
-				}
 				m.input.Reset()
 				m.layout()
 				return m.queueToClaude(val)
@@ -369,6 +388,9 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	if m.historyIdx >= 0 && m.input.Value() != m.inputHistory[m.historyIdx] {
+		m.resetHistoryNav()
+	}
 	if items := m.filterSlashCmds(); m.menuIdx >= len(items) {
 		m.menuIdx = 0
 	}
@@ -447,6 +469,51 @@ func persistSlashCmdsCmd(cmds []claudeSlashEntry) tea.Cmd {
 			debugLog("saveConfig err: %v", err)
 		}
 		return nil
+	}
+}
+
+func (m *model) recordInputHistory(val string) {
+	m.resetHistoryNav()
+	if val == "" {
+		return
+	}
+	if n := len(m.inputHistory); n > 0 && m.inputHistory[n-1] == val {
+		return
+	}
+	m.inputHistory = append(m.inputHistory, val)
+}
+
+func (m *model) resetHistoryNav() {
+	m.historyIdx = -1
+}
+
+func (m *model) historyPrev() bool {
+	if len(m.inputHistory) == 0 {
+		return false
+	}
+	if m.historyIdx == -1 {
+		m.historyIdx = len(m.inputHistory) - 1
+	} else if m.historyIdx > 0 {
+		m.historyIdx--
+	} else {
+		return true
+	}
+	m.input.SetValue(m.inputHistory[m.historyIdx])
+	m.input.CursorEnd()
+	return true
+}
+
+func (m *model) historyNext() {
+	if m.historyIdx == -1 {
+		return
+	}
+	m.historyIdx++
+	if m.historyIdx >= len(m.inputHistory) {
+		m.resetHistoryNav()
+		m.input.Reset()
+	} else {
+		m.input.SetValue(m.inputHistory[m.historyIdx])
+		m.input.CursorEnd()
 	}
 }
 

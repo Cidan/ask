@@ -192,6 +192,9 @@ type model struct {
 
 	mcpPort         int
 	claudeSlashCmds []claudeSlashEntry
+
+	inputHistory []string
+	historyIdx   int
 }
 
 type pendingAttachment struct {
