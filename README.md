@@ -54,6 +54,20 @@ ask
 | `/resume`          | Pick a prior session in this directory     |
 | `/new` / `/clear`  | Discard history and start a fresh session  |
 
+### Built-in path commands
+
+`ask` intercepts `cd` and `ls` as local shell-style builtins before the
+input is ever sent to Claude, so you can navigate without dropping out
+of the TUI.
+
+| Command         | What it does                                                                 |
+|-----------------|------------------------------------------------------------------------------|
+| `cd [path]`     | Change the working directory. No arg → home. Tilde (`~`, `~/foo`) expands. Kills the live claude subprocess and clears history, since Claude sessions are bound to a cwd. |
+| `ls [path]`     | Colorized listing (dirs first, executables, symlinks) with mode, human size, and "X ago" timestamps. No arg → current dir. Globs (`*`, `?`, `[…]`) and tilde expansion both work; `ls path/to/file` prints a single-row entry. |
+
+`Tab` on `cd ` or `ls ` triggers path completion against the current
+prefix, same as anywhere else a path is expected.
+
 ### Keybindings
 
 | Key                    | Action                                             |
