@@ -70,6 +70,17 @@ type claudeInitLoadedMsg struct {
 	err       error
 }
 
+type todoItem struct {
+	Content    string
+	ActiveForm string
+	Status     string
+}
+
+type todoUpdatedMsg struct {
+	todos []todoItem
+	proc  *claudeProc
+}
+
 type claudeSlashEntry struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
@@ -150,6 +161,14 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("13")).
 			Padding(0, 1)
+	todoBoxStyle = lipgloss.NewStyle().
+			MarginLeft(3).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("6")).
+			Padding(0, 1)
+	todoPendingStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	todoProgressStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
+	todoCompletedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Strikethrough(true)
 )
 
 type model struct {
@@ -203,6 +222,8 @@ type model struct {
 	historyIdx   int
 
 	exitArmed bool
+
+	todos []todoItem
 }
 
 type askMode int

@@ -34,7 +34,7 @@ func newRenderer(width int) *glamour.TermRenderer {
 func (m *model) layout() {
 	atBottom := m.viewport.AtBottom()
 	inputH := m.input.Height()
-	extra := m.pendingBlockHeight()
+	extra := m.pendingBlockHeight() + m.todoBlockHeight()
 	vpH := m.height - 1 - inputH - extra
 	if vpH < 1 {
 		vpH = 1
@@ -321,8 +321,65 @@ func (m model) viewBody() string {
 		}
 		b.WriteString("\n")
 	}
+	if block := m.todoBlock(); block != "" {
+		for _, row := range strings.Split(block, "\n") {
+			b.WriteString(row)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
 	b.WriteString(m.input.View())
 	return b.String()
+}
+
+func (m model) todoBlock() string {
+	if !m.busy || len(m.todos) == 0 {
+		return ""
+	}
+	target := 0
+	for _, t := range m.todos {
+		w := lipgloss.Width("▸ " + t.Content)
+		if t.ActiveForm != "" {
+			if aw := lipgloss.Width("▸ " + t.ActiveForm); aw > w {
+				w = aw
+			}
+		}
+		if w > target {
+			target = w
+		}
+	}
+	lines := make([]string, 0, len(m.todos))
+	for _, t := range m.todos {
+		line := renderTodoLine(t)
+		if pad := target - lipgloss.Width(line); pad > 0 {
+			line += strings.Repeat(" ", pad)
+		}
+		lines = append(lines, line)
+	}
+	return todoBoxStyle.Render(strings.Join(lines, "\n"))
+}
+
+func (m model) todoBlockHeight() int {
+	block := m.todoBlock()
+	if block == "" {
+		return 0
+	}
+	return lipgloss.Height(block) + 1
+}
+
+func renderTodoLine(t todoItem) string {
+	switch t.Status {
+	case "in_progress":
+		text := t.ActiveForm
+		if text == "" {
+			text = t.Content
+		}
+		return todoProgressStyle.Render("▸ " + text)
+	case "completed":
+		return todoCompletedStyle.Render("✓ " + t.Content)
+	default:
+		return todoPendingStyle.Render("☐ " + t.Content)
+	}
 }
 
 func (m model) pendingBlockHeight() int {

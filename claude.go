@@ -165,6 +165,7 @@ func (m *model) killProc() {
 	m.streamCh = nil
 	m.busy = false
 	m.status = ""
+	m.todos = nil
 }
 
 func readClaudeStream(stdout io.Reader, proc *claudeProc, ch chan tea.Msg) {
@@ -182,6 +183,9 @@ func readClaudeStream(stdout io.Reader, proc *claudeProc, ch chan tea.Msg) {
 			if status := assistantStatus(ev); status != "" {
 				ch <- streamStatusMsg{status: status, proc: proc}
 			}
+			if todos, ok := assistantTodos(ev); ok {
+				ch <- todoUpdatedMsg{todos: todos, proc: proc}
+			}
 		case "result":
 			pending = claudeResult{Type: "result"}
 			if r, _ := ev["result"].(string); r != "" {
@@ -196,6 +200,32 @@ func readClaudeStream(stdout io.Reader, proc *claudeProc, ch chan tea.Msg) {
 	}
 	err := proc.cmd.Wait()
 	ch <- claudeExitedMsg{err: err, proc: proc}
+}
+
+func assistantTodos(ev map[string]any) ([]todoItem, bool) {
+	msg, _ := ev["message"].(map[string]any)
+	content, _ := msg["content"].([]any)
+	for _, item := range content {
+		b, _ := item.(map[string]any)
+		if b["type"] != "tool_use" {
+			continue
+		}
+		if name, _ := b["name"].(string); name != "TodoWrite" {
+			continue
+		}
+		input, _ := b["input"].(map[string]any)
+		raw, _ := input["todos"].([]any)
+		out := make([]todoItem, 0, len(raw))
+		for _, t := range raw {
+			tm, _ := t.(map[string]any)
+			cnt, _ := tm["content"].(string)
+			af, _ := tm["activeForm"].(string)
+			st, _ := tm["status"].(string)
+			out = append(out, todoItem{Content: cnt, ActiveForm: af, Status: st})
+		}
+		return out, true
+	}
+	return nil, false
 }
 
 func assistantStatus(ev map[string]any) string {

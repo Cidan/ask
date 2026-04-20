@@ -57,6 +57,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case todoUpdatedMsg:
+		if msg.proc != m.proc {
+			return m, nil
+		}
+		m.todos = msg.todos
+		m.layout()
+		if m.streamCh != nil {
+			return m, nextStreamCmd(m.streamCh)
+		}
+		return m, nil
+
 	case claudeInitLoadedMsg:
 		if msg.err != nil {
 			debugLog("claudeInitLoadedMsg err: %v", msg.err)
@@ -77,6 +88,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		debugLog("claudeExitedMsg err=%v stderrLen=%d", msg.err, len(stderrTail))
 		m.busy = false
 		m.status = ""
+		m.todos = nil
 		m.streamCh = nil
 		m.proc = nil
 		m.dismissCancelTurnConfirmIfIdle()
@@ -100,6 +112,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			msg.err, msg.res.IsError, len(msg.res.Result))
 		m.busy = false
 		m.status = ""
+		m.todos = nil
 		m.dismissCancelTurnConfirmIfIdle()
 		switch {
 		case msg.err != nil:
