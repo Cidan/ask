@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"image"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	glamour "charm.land/glamour/v2"
 	"charm.land/glamour/v2/styles"
 	lipgloss "charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 )
 
 type claudeResult struct {
@@ -77,6 +79,10 @@ var (
 			PaddingLeft(1)
 	outputStyle   = lipgloss.NewStyle().MarginLeft(5)
 	thinkingStyle = lipgloss.NewStyle().MarginLeft(3)
+	cdBoxStyle    = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("212")).
+			Padding(0, 1)
 )
 
 type model struct {
@@ -95,7 +101,15 @@ type model struct {
 	menuIdx   int
 	sessions  []sessionEntry
 	pickerIdx int
+
+	cdMatches []string
+	cdIdx     int
 }
+
+const (
+	cdBoxHeight   = 10
+	cdBoxMinWidth = 32
+)
 
 func initialModel() model {
 	ta := textarea.New()
@@ -134,6 +148,7 @@ func initialModel() model {
 
 	vp := viewport.New()
 	vp.Style = lipgloss.NewStyle().PaddingTop(1)
+	vp.FillHeight = true
 
 	return model{
 		mode:     modeInput,
@@ -210,6 +225,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeInput && !m.busy {
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
+			m.refreshCdMatches()
 			m.layout()
 			return m, cmd
 		}
@@ -228,8 +244,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *model) layout() {
 	inputH := m.input.Height()
-	gapH := 1
-	vpH := m.height - inputH - gapH
+	below := 1 + inputH
+	if items := m.filterSlashCmds(); len(items) > 0 {
+		below += 1 + 1
+	}
+	vpH := m.height - below
 	if vpH < 1 {
 		vpH = 1
 	}
@@ -262,10 +281,17 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	items := m.filterSlashCmds()
 	menuOpen := len(items) > 0
+	cdOpen := m.cdActive() && len(m.cdMatches) > 0
 
 	if msg.Mod == 0 {
 		switch msg.Code {
 		case tea.KeyUp:
+			if cdOpen {
+				if m.cdIdx > 0 {
+					m.cdIdx--
+				}
+				return m, nil
+			}
 			if menuOpen {
 				if m.menuIdx > 0 {
 					m.menuIdx--
@@ -273,6 +299,12 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case tea.KeyDown:
+			if cdOpen {
+				if m.cdIdx < len(m.cdMatches)-1 {
+					m.cdIdx++
+				}
+				return m, nil
+			}
 			if menuOpen {
 				if m.menuIdx < len(items)-1 {
 					m.menuIdx++
@@ -280,6 +312,13 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case tea.KeyTab:
+			if cdOpen {
+				pick := m.cdMatches[m.cdIdx]
+				m.input.SetValue("cd " + pick + "/")
+				m.refreshCdMatches()
+				m.layout()
+				return m, nil
+			}
 			if menuOpen {
 				pick := items[m.menuIdx].name
 				m.input.SetValue(pick)
@@ -298,6 +337,16 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if line == "" {
 				return m, nil
 			}
+			if m.cdActive() {
+				target := strings.TrimSpace(m.cdQuery())
+				if len(m.cdMatches) > 0 {
+					target = m.cdMatches[m.cdIdx]
+				}
+				m.input.Reset()
+				m.refreshCdMatches()
+				m.layout()
+				return m.doCd(target)
+			}
 			m.input.Reset()
 			m.menuIdx = 0
 			if strings.HasPrefix(line, "/") {
@@ -313,8 +362,46 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if items := m.filterSlashCmds(); m.menuIdx >= len(items) {
 		m.menuIdx = 0
 	}
+	m.refreshCdMatches()
 	m.layout()
 	return m, cmd
+}
+
+func (m model) doCd(target string) (tea.Model, tea.Cmd) {
+	abs, err := resolveDir(target)
+	if err != nil {
+		m.appendHistory(outputStyle.Render(errStyle.Render("cd: " + err.Error())))
+		return m, nil
+	}
+	if err := os.Chdir(abs); err != nil {
+		m.appendHistory(outputStyle.Render(errStyle.Render("cd: " + err.Error())))
+		return m, nil
+	}
+	m.sessionID = ""
+	m.history = nil
+	cwd, _ := os.Getwd()
+	m.appendHistory(outputStyle.Render(
+		promptStyle.Render("✓ cd "+cwd) + "  " + dimStyle.Render("(session cleared)"),
+	))
+	return m, nil
+}
+
+func resolveDir(p string) (string, error) {
+	if p == "" {
+		return os.UserHomeDir()
+	}
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		if p == "~" {
+			p = home
+		} else {
+			p = filepath.Join(home, p[2:])
+		}
+	}
+	return filepath.Abs(filepath.Clean(p))
 }
 
 func (m model) updatePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -367,8 +454,44 @@ func (m model) sendToClaude(line string) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() tea.View {
-	v := tea.NewView(m.viewBody())
+	var v tea.View
 	v.AltScreen = true
+
+	body := m.viewBody()
+
+	if m.mode == modeInput && m.cdActive() && m.width > 0 && m.height > 0 {
+		canvas := uv.NewScreenBuffer(m.width, m.height)
+		uv.NewStyledString(body).Draw(canvas, image.Rectangle{
+			Min: image.Pt(0, 0),
+			Max: image.Pt(m.width, m.height),
+		})
+		box := m.renderCdBox()
+		boxW := lipgloss.Width(box)
+		boxH := lipgloss.Height(box)
+		inputTopY := m.height - m.input.Height()
+		boxY := inputTopY - boxH
+		if boxY < 0 {
+			boxY = 0
+		}
+		boxX := 4
+		if c := m.input.Cursor(); c != nil {
+			boxX = c.X
+		}
+		if boxX+boxW > m.width {
+			boxX = m.width - boxW
+		}
+		if boxX < 0 {
+			boxX = 0
+		}
+		uv.NewStyledString(box).Draw(canvas, image.Rectangle{
+			Min: image.Pt(boxX, boxY),
+			Max: image.Pt(boxX+boxW, boxY+boxH),
+		})
+		v.Content = canvas.Render()
+	} else {
+		v.Content = body
+	}
+
 	if m.mode == modeInput {
 		if c := m.input.Cursor(); c != nil {
 			v.Cursor = c
@@ -398,6 +521,54 @@ func (m model) viewBody() string {
 		b.WriteString(strings.Join(parts, "  ·  "))
 	}
 	return b.String()
+}
+
+func (m model) renderCdBox() string {
+	matches := m.cdMatches
+	contentW := cdBoxMinWidth
+	for _, mt := range matches {
+		if w := lipgloss.Width(mt) + 2; w > contentW {
+			contentW = w
+		}
+	}
+
+	rows := make([]string, cdBoxHeight)
+
+	if len(matches) == 0 {
+		searched, _ := expandTilde(m.cdQuery())
+		dir, _ := filepath.Split(searched)
+		if dir == "" {
+			dir = "."
+		}
+		rows[0] = dimStyle.Render("(no matches in " + dir + ")")
+	} else {
+		start := 0
+		if m.cdIdx >= cdBoxHeight {
+			start = m.cdIdx - cdBoxHeight + 1
+		}
+		end := start + cdBoxHeight
+		if end > len(matches) {
+			end = len(matches)
+		}
+		for i := start; i < end; i++ {
+			marker := "  "
+			entry := matches[i]
+			if i == m.cdIdx {
+				marker = selectedStyle.Render("▸ ")
+				entry = selectedStyle.Render(entry)
+			}
+			rows[i-start] = marker + entry
+		}
+	}
+
+	for i, r := range rows {
+		pad := contentW - lipgloss.Width(r)
+		if pad > 0 {
+			rows[i] = r + strings.Repeat(" ", pad)
+		}
+	}
+
+	return cdBoxStyle.Render(strings.Join(rows, "\n"))
 }
 
 func (m model) viewPicker() string {
@@ -446,6 +617,85 @@ func (m model) filterSlashCmds() []slashCmd {
 		}
 	}
 	return out
+}
+
+func (m model) cdActive() bool {
+	val := m.input.Value()
+	return strings.HasPrefix(val, "cd ") && !strings.Contains(val, "\n")
+}
+
+func (m model) cdQuery() string {
+	return strings.TrimPrefix(m.input.Value(), "cd ")
+}
+
+func (m *model) refreshCdMatches() {
+	if !m.cdActive() {
+		m.cdMatches = nil
+		m.cdIdx = 0
+		return
+	}
+	matches := cdComplete(m.cdQuery())
+	m.cdMatches = matches
+	if m.cdIdx >= len(matches) {
+		m.cdIdx = 0
+	}
+}
+
+func cdComplete(query string) []string {
+	expanded, tildeStripped := expandTilde(query)
+	dir, prefix := filepath.Split(expanded)
+	if dir == "" {
+		dir = "."
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	showHidden := strings.HasPrefix(prefix, ".")
+	prefixLower := strings.ToLower(prefix)
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !showHidden && strings.HasPrefix(name, ".") {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToLower(name), prefixLower) {
+			continue
+		}
+		full := filepath.Join(dir, name)
+		if tildeStripped {
+			if home, err := os.UserHomeDir(); err == nil {
+				if rel, err := filepath.Rel(home, full); err == nil && !strings.HasPrefix(rel, "..") {
+					full = "~/" + rel
+				}
+			}
+		} else if dir == "." {
+			full = name
+		}
+		out = append(out, full)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func expandTilde(p string) (string, bool) {
+	if !strings.HasPrefix(p, "~") {
+		return p, false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p, false
+	}
+	if p == "~" {
+		return home, true
+	}
+	if strings.HasPrefix(p, "~/") {
+		return filepath.Join(home, p[2:]), true
+	}
+	return p, false
 }
 
 func runClaudeCmd(prompt, sessionID string) tea.Cmd {
