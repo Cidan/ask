@@ -420,6 +420,7 @@ func (m model) submitAsk() (model, tea.Cmd) {
 	}
 	if m.askReply != nil {
 		m.askReply <- askReply{answers: m.askAnswers}
+		m.status = "thinking…"
 	}
 	return m.clearAsk(), nil
 }
