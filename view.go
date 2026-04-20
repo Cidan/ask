@@ -177,11 +177,11 @@ func (m model) View() tea.View {
 			if c := m.input.Cursor(); c != nil {
 				boxX = c.X
 			}
-			if boxX+boxW > m.width {
-				boxX = m.width - boxW
+			if boxX+boxW > m.width-1 {
+				boxX = m.width - 1 - boxW
 			}
-			if boxX < 0 {
-				boxX = 0
+			if boxX < 1 {
+				boxX = 1
 			}
 			uv.NewStyledString(box).Draw(canvas, image.Rectangle{
 				Min: image.Pt(boxX, boxY),
@@ -394,31 +394,85 @@ func (m model) renderSlashBox() string {
 		return ""
 	}
 	nameW := 0
+	anyDesc := false
 	for _, it := range items {
 		if w := lipgloss.Width(it.name); w > nameW {
 			nameW = w
 		}
+		if it.desc != "" {
+			anyDesc = true
+		}
 	}
+
+	start := 0
+	if m.menuIdx >= pathBoxHeight {
+		start = m.menuIdx - pathBoxHeight + 1
+	}
+	end := start + pathBoxHeight
+	if end > len(items) {
+		end = len(items)
+	}
+	visible := items[start:end]
+
+	const markerW, sepW = 2, 2
+	maxContentW := m.width - boxChromeW - 2
+	if maxContentW < markerW+nameW+sepW+10 {
+		maxContentW = markerW + nameW + sepW + 10
+	}
+	descW := 0
+	contentW := markerW + nameW
+	if anyDesc {
+		descW = maxContentW - markerW - nameW - sepW
+		if descW < 10 {
+			descW = 10
+		}
+		contentW = markerW + nameW + sepW + descW
+	}
+
 	var lines []string
-	for i, it := range items {
+	for i, it := range visible {
+		idx := start + i
 		marker := "  "
 		name := it.name
-		if i == m.menuIdx {
+		if idx == m.menuIdx {
 			marker = selectedStyle.Render("▸ ")
 			name = selectedStyle.Render(it.name)
 		}
-		lines = append(lines, marker+padRight(name, nameW)+"  "+dimStyle.Render(it.desc))
+		namePad := padRight(name, nameW)
+		if it.desc == "" {
+			row := marker + namePad
+			lines = append(lines, padRight(row, contentW))
+			continue
+		}
+		parts := wordWrap(it.desc, descW)
+		contIndent := strings.Repeat(" ", markerW+nameW+sepW)
+		for j, part := range parts {
+			var row string
+			if j == 0 {
+				row = marker + namePad + strings.Repeat(" ", sepW) + dimStyle.Render(part)
+			} else {
+				row = contIndent + dimStyle.Render(part)
+			}
+			lines = append(lines, padRight(row, contentW))
+		}
 	}
 	return pathBoxStyle.Render(strings.Join(lines, "\n"))
 }
 
 func (m model) renderPathBox() string {
 	matches := m.pathMatches
+	maxContentW := m.width - boxChromeW - 2
+	if maxContentW < pathBoxMinWidth {
+		maxContentW = pathBoxMinWidth
+	}
 	contentW := pathBoxMinWidth
 	for _, mt := range matches {
 		if w := lipgloss.Width(mt) + 2; w > contentW {
 			contentW = w
 		}
+	}
+	if contentW > maxContentW {
+		contentW = maxContentW
 	}
 
 	rows := make([]string, pathBoxHeight)
@@ -442,6 +496,9 @@ func (m model) renderPathBox() string {
 		for i := start; i < end; i++ {
 			marker := "  "
 			entry := matches[i]
+			if w := lipgloss.Width(entry); w > contentW-2 {
+				entry = truncate(entry, contentW-2)
+			}
 			if i == m.pathIdx {
 				marker = selectedStyle.Render("▸ ")
 				entry = selectedStyle.Render(entry)
@@ -451,10 +508,7 @@ func (m model) renderPathBox() string {
 	}
 
 	for i, r := range rows {
-		pad := contentW - lipgloss.Width(r)
-		if pad > 0 {
-			rows[i] = r + strings.Repeat(" ", pad)
-		}
+		rows[i] = padRight(r, contentW)
 	}
 
 	return pathBoxStyle.Render(strings.Join(rows, "\n"))

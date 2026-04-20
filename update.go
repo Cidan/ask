@@ -9,7 +9,8 @@ import (
 )
 
 func (m model) Init() tea.Cmd {
-	return nil
+	debugLog("Init mcpPort=%d", m.mcpPort)
+	return probeClaudeInitCmd(m.mcpPort)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -46,6 +47,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nextStreamCmd(m.streamCh)
 		}
 		return m, nil
+
+	case claudeInitLoadedMsg:
+		if msg.err != nil {
+			debugLog("claudeInitLoadedMsg err: %v", msg.err)
+			return m, nil
+		}
+		debugLog("claudeInitLoadedMsg slashCmds=%d", len(msg.slashCmds))
+		m.claudeSlashCmds = msg.slashCmds
+		return m, persistSlashCmdsCmd(msg.slashCmds)
 
 	case claudeExitedMsg:
 		if msg.proc != m.proc {
@@ -417,9 +427,25 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		m.history = nil
 		m.appendHistory(outputStyle.Render(promptStyle.Render("✓ new session")))
 		return m, nil
-	default:
-		m.appendHistory(outputStyle.Render(errStyle.Render("unknown command: " + cmd)))
-		return m, nil
+	}
+	bare := strings.TrimPrefix(cmd, "/")
+	for _, e := range m.claudeSlashCmds {
+		if e.Name == bare {
+			return m.sendToClaude(line)
+		}
+	}
+	m.appendHistory(outputStyle.Render(errStyle.Render("unknown command: " + cmd)))
+	return m, nil
+}
+
+func persistSlashCmdsCmd(cmds []claudeSlashEntry) tea.Cmd {
+	return func() tea.Msg {
+		cfg, _ := loadConfig()
+		cfg.Claude.SlashCommands = cmds
+		if err := saveConfig(cfg); err != nil {
+			debugLog("saveConfig err: %v", err)
+		}
+		return nil
 	}
 }
 
@@ -428,10 +454,21 @@ func (m model) filterSlashCmds() []slashCmd {
 	if !strings.HasPrefix(val, "/") {
 		return nil
 	}
+	seen := make(map[string]bool, len(builtinSlashCmds))
 	var out []slashCmd
-	for _, c := range slashCmds {
+	for _, c := range builtinSlashCmds {
+		seen[c.name] = true
 		if strings.HasPrefix(c.name, val) {
 			out = append(out, c)
+		}
+	}
+	for _, e := range m.claudeSlashCmds {
+		full := "/" + e.Name
+		if seen[full] {
+			continue
+		}
+		if strings.HasPrefix(full, val) {
+			out = append(out, slashCmd{name: full, desc: e.Description})
 		}
 	}
 	return out

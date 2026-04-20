@@ -2,12 +2,14 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -250,6 +252,79 @@ func formatToolStatus(name string, input map[string]any) string {
 		}
 	}
 	return name
+}
+
+func probeClaudeInitCmd(mcpPort int) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		args := []string{"-p",
+			"--input-format", "stream-json",
+			"--output-format", "stream-json",
+			"--verbose",
+			"--dangerously-skip-permissions",
+		}
+		if mcpPort > 0 {
+			args = append(args,
+				"--mcp-config", fmt.Sprintf(`{"mcpServers":{"ask":{"type":"http","url":"http://127.0.0.1:%d/"}}}`, mcpPort),
+				"--settings", askUserQuestionHookSettings,
+			)
+		}
+
+		cmd := exec.CommandContext(ctx, "claude", args...)
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return claudeInitLoadedMsg{err: err}
+		}
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return claudeInitLoadedMsg{err: err}
+		}
+		cmd.Stderr = io.Discard
+		if err := cmd.Start(); err != nil {
+			return claudeInitLoadedMsg{err: err}
+		}
+		killed := false
+		kill := func() {
+			if killed {
+				return
+			}
+			killed = true
+			_ = cmd.Process.Kill()
+		}
+		defer func() {
+			kill()
+			_ = stdin.Close()
+			_ = cmd.Wait()
+		}()
+
+		// init isn't emitted until at least one user message arrives on stdin;
+		// send a minimal ping and kill the process the moment init lands so the
+		// LLM dispatch never happens.
+		go func() {
+			_, _ = stdin.Write([]byte(`{"type":"user","message":{"role":"user","content":"."}}` + "\n"))
+		}()
+
+		sc := bufio.NewScanner(stdout)
+		sc.Buffer(make([]byte, 1<<20), 1<<22)
+		for sc.Scan() {
+			var ev struct {
+				Type          string   `json:"type"`
+				Subtype       string   `json:"subtype"`
+				SlashCommands []string `json:"slash_commands"`
+			}
+			if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+				continue
+			}
+			if ev.Type == "system" && ev.Subtype == "init" {
+				kill()
+				debugLog("probeClaudeInit got %d slash commands", len(ev.SlashCommands))
+				return claudeInitLoadedMsg{slashCmds: enrichSlashCommands(ev.SlashCommands)}
+			}
+		}
+		return claudeInitLoadedMsg{err: fmt.Errorf("claude init event not seen")}
+	}
 }
 
 func nextStreamCmd(ch chan tea.Msg) tea.Cmd {

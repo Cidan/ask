@@ -12,7 +12,7 @@ import (
 	lipgloss "charm.land/lipgloss/v2"
 )
 
-func initialModel() model {
+func initialModel(cfg askConfig) model {
 	ta := textarea.New()
 	ta.Placeholder = "ask anything (try /resume)"
 	ta.Prompt = ""
@@ -40,13 +40,14 @@ func initialModel() model {
 	vp.MouseWheelEnabled = true
 
 	m := model{
-		mode:     modeInput,
-		input:    ta,
-		viewport: vp,
-		spinner:  sp,
-		renderer: renderer,
-		width:    100,
-		height:   30,
+		mode:            modeInput,
+		input:           ta,
+		viewport:        vp,
+		spinner:         sp,
+		renderer:        renderer,
+		width:           100,
+		height:          30,
+		claudeSlashCmds: cfg.Claude.SlashCommands,
 	}
 	m.refreshPrompt()
 	return m
@@ -58,7 +59,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, "ask: mcp:", err)
 		os.Exit(1)
 	}
-	m := initialModel()
+	cfg, _ := loadConfig()
+	_ = saveConfig(cfg)
+	m := initialModel(cfg)
 	m.mcpPort = bridge.port
 	p := tea.NewProgram(m)
 	bridge.start(p)

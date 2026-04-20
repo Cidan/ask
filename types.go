@@ -27,7 +27,7 @@ type slashCmd struct {
 	desc string
 }
 
-var slashCmds = []slashCmd{
+var builtinSlashCmds = []slashCmd{
 	{"/resume", "resume a previous Claude session"},
 	{"/new", "start a new Claude session"},
 	{"/clear", "start a new Claude session"},
@@ -62,6 +62,16 @@ type streamStatusMsg struct {
 type claudeExitedMsg struct {
 	err  error
 	proc *claudeProc
+}
+
+type claudeInitLoadedMsg struct {
+	slashCmds []claudeSlashEntry
+	err       error
+}
+
+type claudeSlashEntry struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
 }
 
 type claudeProc struct {
@@ -180,7 +190,8 @@ type model struct {
 	askNoteBackup string
 	askReply      chan askReply
 
-	mcpPort int
+	mcpPort         int
+	claudeSlashCmds []claudeSlashEntry
 }
 
 type pendingAttachment struct {
@@ -194,4 +205,5 @@ type pendingAttachment struct {
 const (
 	pathBoxHeight   = 10
 	pathBoxMinWidth = 32
+	boxChromeW      = 4 // rounded border (2) + horizontal padding (2)
 )

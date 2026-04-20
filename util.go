@@ -49,6 +49,31 @@ func truncate(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
+func wordWrap(s string, width int) []string {
+	if width <= 0 || s == "" {
+		return []string{s}
+	}
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return []string{""}
+	}
+	var lines []string
+	cur := words[0]
+	curW := lipgloss.Width(cur)
+	for _, w := range words[1:] {
+		ww := lipgloss.Width(w)
+		if curW+1+ww > width {
+			lines = append(lines, cur)
+			cur = w
+			curW = ww
+			continue
+		}
+		cur += " " + w
+		curW += 1 + ww
+	}
+	return append(lines, cur)
+}
+
 func padRight(s string, w int) string {
 	pad := w - lipgloss.Width(s)
 	if pad <= 0 {
