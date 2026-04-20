@@ -316,6 +316,7 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if menuOpen {
 				pick := items[m.menuIdx].name
 				m.input.SetValue(pick)
+				m.menuIdx = 0
 				m.layout()
 				return m, nil
 			}

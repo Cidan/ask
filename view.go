@@ -404,13 +404,20 @@ func (m model) renderSlashBox() string {
 		}
 	}
 
+	menuIdx := m.menuIdx
+	if menuIdx >= len(items) {
+		menuIdx = 0
+	}
 	start := 0
-	if m.menuIdx >= pathBoxHeight {
-		start = m.menuIdx - pathBoxHeight + 1
+	if menuIdx >= pathBoxHeight {
+		start = menuIdx - pathBoxHeight + 1
 	}
 	end := start + pathBoxHeight
 	if end > len(items) {
 		end = len(items)
+	}
+	if start > end {
+		start = 0
 	}
 	visible := items[start:end]
 
@@ -434,7 +441,7 @@ func (m model) renderSlashBox() string {
 		idx := start + i
 		marker := "  "
 		name := it.name
-		if idx == m.menuIdx {
+		if idx == menuIdx {
 			marker = selectedStyle.Render("▸ ")
 			name = selectedStyle.Render(it.name)
 		}
