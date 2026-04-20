@@ -408,18 +408,6 @@ func (m model) renderSlashBox() string {
 	if menuIdx >= len(items) {
 		menuIdx = 0
 	}
-	start := 0
-	if menuIdx >= pathBoxHeight {
-		start = menuIdx - pathBoxHeight + 1
-	}
-	end := start + pathBoxHeight
-	if end > len(items) {
-		end = len(items)
-	}
-	if start > end {
-		start = 0
-	}
-	visible := items[start:end]
 
 	const markerW, sepW = 2, 2
 	maxContentW := m.width - boxChromeW - 2
@@ -436,9 +424,12 @@ func (m model) renderSlashBox() string {
 		contentW = markerW + nameW + sepW + descW
 	}
 
-	var lines []string
-	for i, it := range visible {
-		idx := start + i
+	type flatRow struct {
+		text    string
+		itemIdx int
+	}
+	var all []flatRow
+	for idx, it := range items {
 		marker := "  "
 		name := it.name
 		if idx == menuIdx {
@@ -447,8 +438,7 @@ func (m model) renderSlashBox() string {
 		}
 		namePad := padRight(name, nameW)
 		if it.desc == "" {
-			row := marker + namePad
-			lines = append(lines, padRight(row, contentW))
+			all = append(all, flatRow{padRight(marker+namePad, contentW), idx})
 			continue
 		}
 		parts := wordWrap(it.desc, descW)
@@ -460,8 +450,43 @@ func (m model) renderSlashBox() string {
 			} else {
 				row = contIndent + dimStyle.Render(part)
 			}
-			lines = append(lines, padRight(row, contentW))
+			all = append(all, flatRow{padRight(row, contentW), idx})
 		}
+	}
+
+	menuFirstRow, menuLastRow := -1, -1
+	for i, fr := range all {
+		if fr.itemIdx == menuIdx {
+			if menuFirstRow == -1 {
+				menuFirstRow = i
+			}
+			menuLastRow = i
+		}
+	}
+
+	winH := pathBoxHeight
+	if len(all) < winH {
+		winH = len(all)
+	}
+	start := 0
+	if menuLastRow >= winH {
+		start = menuLastRow - winH + 1
+	}
+	if menuFirstRow >= 0 && start > menuFirstRow {
+		start = menuFirstRow
+	}
+	end := start + winH
+	if end > len(all) {
+		end = len(all)
+		start = end - winH
+		if start < 0 {
+			start = 0
+		}
+	}
+
+	lines := make([]string, 0, winH)
+	for i := start; i < end; i++ {
+		lines = append(lines, all[i].text)
 	}
 	return pathBoxStyle.Render(strings.Join(lines, "\n"))
 }
