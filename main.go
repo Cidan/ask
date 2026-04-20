@@ -242,11 +242,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *model) layout() {
 	inputH := m.input.Height()
-	below := 1 + inputH
-	if items := m.filterSlashCmds(); len(items) > 0 {
-		below += 1 + 1
-	}
-	vpH := m.height - below
+	vpH := m.height - 1 - inputH
 	if vpH < 1 {
 		vpH = 1
 	}
@@ -626,6 +622,9 @@ func (m *model) refreshPrompt() {
 		}
 		return promptDotStyle.Render(cont)
 	})
+	if m.width > 0 {
+		m.input.SetWidth(m.width)
+	}
 }
 
 func resolveDir(p string) (string, error) {
@@ -701,13 +700,21 @@ func (m model) View() tea.View {
 
 	body := m.viewBody()
 
-	if m.mode == modeInput && m.pathPickerActive() && m.width > 0 && m.height > 0 {
+	var box string
+	if m.mode == modeInput {
+		switch {
+		case m.pathPickerActive():
+			box = m.renderPathBox()
+		case len(m.filterSlashCmds()) > 0:
+			box = m.renderSlashBox()
+		}
+	}
+	if box != "" && m.width > 0 && m.height > 0 {
 		canvas := uv.NewScreenBuffer(m.width, m.height)
 		uv.NewStyledString(body).Draw(canvas, image.Rectangle{
 			Min: image.Pt(0, 0),
 			Max: image.Pt(m.width, m.height),
 		})
-		box := m.renderPathBox()
 		boxW := lipgloss.Width(box)
 		boxH := lipgloss.Height(box)
 		inputTopY := m.height - m.input.Height()
@@ -750,19 +757,31 @@ func (m model) viewBody() string {
 	b.WriteString(m.viewport.View())
 	b.WriteString("\n\n")
 	b.WriteString(m.input.View())
-	if items := m.filterSlashCmds(); len(items) > 0 {
-		b.WriteString("\n")
-		var parts []string
-		for i, it := range items {
-			label := it.name
-			if i == m.menuIdx {
-				label = selectedStyle.Render("▸ " + it.name)
-			}
-			parts = append(parts, label+" "+dimStyle.Render(it.desc))
-		}
-		b.WriteString(strings.Join(parts, "  ·  "))
-	}
 	return b.String()
+}
+
+func (m model) renderSlashBox() string {
+	items := m.filterSlashCmds()
+	if len(items) == 0 {
+		return ""
+	}
+	nameW := 0
+	for _, it := range items {
+		if w := lipgloss.Width(it.name); w > nameW {
+			nameW = w
+		}
+	}
+	var lines []string
+	for i, it := range items {
+		marker := "  "
+		name := it.name
+		if i == m.menuIdx {
+			marker = selectedStyle.Render("▸ ")
+			name = selectedStyle.Render(it.name)
+		}
+		lines = append(lines, marker+padRight(name, nameW)+"  "+dimStyle.Render(it.desc))
+	}
+	return pathBoxStyle.Render(strings.Join(lines, "\n"))
 }
 
 func (m model) renderPathBox() string {
