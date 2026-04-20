@@ -252,10 +252,22 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.cancelTurnConfirming {
 		return m.updateCancelTurnConfirm(msg)
 	}
-	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
+	isCtrlC := msg.Mod == tea.ModCtrl && msg.Code == 'c'
+	if !isCtrlC {
+		m.exitArmed = false
+	}
+	if isCtrlC {
 		if m.busy {
 			m.cancelTurnConfirming = true
 			m.cancelTurnChoice = 0
+			return m, nil
+		}
+		if m.input.Value() == "" && len(m.pending) == 0 {
+			if m.exitArmed {
+				return m, tea.Quit
+			}
+			m.exitArmed = true
+			m.appendHistory(outputStyle.Render(dimStyle.Render("Press ctrl+c again to exit")))
 			return m, nil
 		}
 		m.input.Reset()

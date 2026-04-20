@@ -201,6 +201,8 @@ type model struct {
 
 	inputHistory []string
 	historyIdx   int
+
+	exitArmed bool
 }
 
 type askMode int
