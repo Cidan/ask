@@ -78,6 +78,12 @@ type sessionsLoadedMsg struct {
 	err      error
 }
 
+type historyLoadedMsg struct {
+	sessionID string
+	entries   []string
+	err       error
+}
+
 var (
 	selectedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true)
 	dimStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
@@ -247,6 +253,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.appendHistory(outputStyle.Render(out))
+		return m, nil
+
+	case historyLoadedMsg:
+		if msg.sessionID != m.sessionID {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.appendHistory(outputStyle.Render(errStyle.Render(
+				"could not load session history: " + msg.err.Error())))
+			return m, nil
+		}
+		m.history = append(msg.entries,
+			outputStyle.Render(promptStyle.Render(
+				fmt.Sprintf("✓ resumed session %s", short(m.sessionID)))))
+		m.layout()
+		m.viewport.GotoBottom()
 		return m, nil
 
 	case sessionsLoadedMsg:
@@ -713,11 +735,13 @@ func (m model) updatePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEnter:
 		if len(m.sessions) > 0 {
 			m.killProc()
-			m.sessionID = m.sessions[m.pickerIdx].id
+			sid := m.sessions[m.pickerIdx].id
+			m.sessionID = sid
 			m.mode = modeInput
-			m.appendHistory(outputStyle.Render(promptStyle.Render(
-				fmt.Sprintf("✓ resumed session %s", short(m.sessionID)))))
-			return m, nil
+			m.history = nil
+			m.appendHistory(outputStyle.Render(dimStyle.Render(
+				fmt.Sprintf("loading session %s…", short(sid)))))
+			return m, loadHistoryCmd(sid, m.renderer)
 		}
 	}
 	return m, nil
@@ -1194,6 +1218,83 @@ func nextStreamCmd(ch chan tea.Msg) tea.Cmd {
 			return nil
 		}
 		return msg
+	}
+}
+
+func sessionPath(sessionID string) (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".claude", "projects", strings.ReplaceAll(cwd, "/", "-"))
+	return filepath.Join(dir, sessionID+".jsonl"), nil
+}
+
+func loadHistoryCmd(sessionID string, renderer *glamour.TermRenderer) tea.Cmd {
+	return func() tea.Msg {
+		path, err := sessionPath(sessionID)
+		if err != nil {
+			return historyLoadedMsg{sessionID: sessionID, err: err}
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return historyLoadedMsg{sessionID: sessionID, err: err}
+		}
+		defer f.Close()
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 1<<20), 1<<22)
+		var entries []string
+		for sc.Scan() {
+			var rec map[string]any
+			if json.Unmarshal(sc.Bytes(), &rec) != nil {
+				continue
+			}
+			t, _ := rec["type"].(string)
+			msg, _ := rec["message"].(map[string]any)
+			switch t {
+			case "user":
+				if msg == nil {
+					continue
+				}
+				if s, ok := msg["content"].(string); ok && strings.TrimSpace(s) != "" {
+					entries = append(entries, userBarStyle.Render(s))
+				}
+			case "assistant":
+				if msg == nil {
+					continue
+				}
+				arr, ok := msg["content"].([]any)
+				if !ok {
+					continue
+				}
+				var b strings.Builder
+				for _, item := range arr {
+					im, _ := item.(map[string]any)
+					if im["type"] != "text" {
+						continue
+					}
+					if txt, _ := im["text"].(string); txt != "" {
+						if b.Len() > 0 {
+							b.WriteString("\n\n")
+						}
+						b.WriteString(txt)
+					}
+				}
+				if b.Len() == 0 {
+					continue
+				}
+				rendered, err := renderer.Render(b.String())
+				if err != nil {
+					rendered = b.String()
+				}
+				entries = append(entries, outputStyle.Render(strings.TrimRight(rendered, "\n")))
+			}
+		}
+		return historyLoadedMsg{sessionID: sessionID, entries: entries}
 	}
 }
 
