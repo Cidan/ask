@@ -127,9 +127,11 @@ type model struct {
 	pathMatches []string
 	pathIdx     int
 
-	status   string
-	streamCh chan tea.Msg
-	proc     *claudeProc
+	status         string
+	streamCh       chan tea.Msg
+	proc           *claudeProc
+	queue          int
+	pendingPrompts []string
 }
 
 const (
@@ -225,6 +227,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case claudeExitedMsg:
 		m.busy = false
 		m.status = ""
+		m.queue = 0
+		m.pendingPrompts = nil
 		m.streamCh = nil
 		m.proc = nil
 		if msg.err != nil {
@@ -233,8 +237,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case claudeDoneMsg:
-		m.busy = false
-		m.status = ""
+		if m.queue > 0 {
+			m.queue--
+		}
+		stillBusy := m.queue > 0
+		m.busy = stillBusy
+		if stillBusy {
+			m.status = "thinking…"
+		} else {
+			m.status = ""
+		}
 		var out string
 		if msg.err != nil {
 			out = errStyle.Render(fmt.Sprintf("error: %v", msg.err))
@@ -255,6 +267,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.appendHistory(outputStyle.Render(out))
+		if len(m.pendingPrompts) > 0 {
+			next := m.pendingPrompts[0]
+			m.pendingPrompts = m.pendingPrompts[1:]
+			m.appendHistory(userBarStyle.Render(next))
+		}
+		if stillBusy && m.streamCh != nil {
+			return m, nextStreamCmd(m.streamCh)
+		}
+		m.refreshPathMatches()
+		m.layout()
 		return m, nil
 
 	case historyLoadedMsg:
@@ -327,6 +349,9 @@ func (m model) viewportContent() string {
 		if s == "" {
 			s = "thinking…"
 		}
+		if m.queue > 1 {
+			s = fmt.Sprintf("%s  (+%d queued)", s, m.queue-1)
+		}
 		parts = append(parts, thinkingStyle.Render(m.spinner.View()+dimStyle.Render(s)))
 	}
 	return strings.Join(parts, "\n\n")
@@ -341,13 +366,10 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.Mod == tea.ModCtrl && (msg.Code == 'c' || msg.Code == 'd') {
 		return m, tea.Quit
 	}
-	if m.busy {
-		return m, nil
-	}
 
 	items := m.filterSlashCmds()
-	menuOpen := len(items) > 0
-	pickOpen := m.pathPickerActive() && len(m.pathMatches) > 0
+	menuOpen := !m.busy && len(items) > 0
+	pickOpen := !m.busy && m.pathPickerActive() && len(m.pathMatches) > 0
 
 	if msg.Mod == 0 {
 		switch msg.Code {
@@ -403,6 +425,14 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if line == "" {
 				return m, nil
 			}
+			if m.busy {
+				if strings.HasPrefix(line, "/") || m.pathPickerCmd() != "" || bareCommand(line) != "" {
+					return m, nil
+				}
+				m.input.Reset()
+				m.layout()
+				return m.queueToClaude(val)
+			}
 			if cmd := m.pathPickerCmd(); cmd != "" {
 				target := strings.TrimSpace(m.pathQuery())
 				if len(m.pathMatches) > 0 {
@@ -433,7 +463,12 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if items := m.filterSlashCmds(); m.menuIdx >= len(items) {
 		m.menuIdx = 0
 	}
-	m.refreshPathMatches()
+	if !m.busy {
+		m.refreshPathMatches()
+	} else {
+		m.pathMatches = nil
+		m.pathIdx = 0
+	}
 	m.layout()
 	return m, cmd
 }
@@ -791,10 +826,33 @@ func (m model) sendToClaude(line string) (tea.Model, tea.Cmd) {
 	}
 	m.busy = true
 	m.status = "thinking…"
+	m.queue = 1
 	return m, tea.Batch(
 		m.spinner.Tick,
 		nextStreamCmd(m.streamCh),
 	)
+}
+
+func (m model) queueToClaude(line string) (tea.Model, tea.Cmd) {
+	if m.proc == nil {
+		return m, nil
+	}
+	payload := map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"role":    "user",
+			"content": line,
+		},
+	}
+	b, _ := json.Marshal(payload)
+	if _, err := m.proc.stdin.Write(append(b, '\n')); err != nil {
+		m.appendHistory(outputStyle.Render(errStyle.Render("queue write failed: " + err.Error())))
+		return m, nil
+	}
+	m.queue++
+	m.pendingPrompts = append(m.pendingPrompts, line)
+	m.layout()
+	return m, nil
 }
 
 func (m *model) ensureProc() error {
@@ -838,6 +896,10 @@ func (m *model) killProc() {
 	_ = m.proc.cmd.Wait()
 	m.proc = nil
 	m.streamCh = nil
+	m.queue = 0
+	m.pendingPrompts = nil
+	m.busy = false
+	m.status = ""
 }
 
 func (m model) View() tea.View {
@@ -847,7 +909,7 @@ func (m model) View() tea.View {
 	body := m.viewBody()
 
 	var box string
-	if m.mode == modeInput {
+	if m.mode == modeInput && !m.busy {
 		switch {
 		case m.pathPickerActive():
 			box = m.renderPathBox()
