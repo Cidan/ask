@@ -39,6 +39,8 @@ type slashCmd struct {
 
 var slashCmds = []slashCmd{
 	{"/resume", "resume a previous Claude session"},
+	{"/new", "start a new Claude session"},
+	{"/clear", "start a new Claude session"},
 }
 
 type sessionEntry struct {
@@ -634,6 +636,9 @@ func (m model) doCd(target string) (tea.Model, tea.Cmd) {
 		m.appendHistory(outputStyle.Render(errStyle.Render("cd: " + err.Error())))
 		return m, nil
 	}
+	if cwd, err := os.Getwd(); err == nil && cwd == abs {
+		return m, nil
+	}
 	if err := os.Chdir(abs); err != nil {
 		m.appendHistory(outputStyle.Render(errStyle.Render("cd: " + err.Error())))
 		return m, nil
@@ -752,6 +757,12 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 	switch cmd {
 	case "/resume":
 		return m, loadSessionsCmd()
+	case "/new", "/clear":
+		m.killProc()
+		m.sessionID = ""
+		m.history = nil
+		m.appendHistory(outputStyle.Render(promptStyle.Render("✓ new session")))
+		return m, nil
 	default:
 		m.appendHistory(outputStyle.Render(errStyle.Render("unknown command: " + cmd)))
 		return m, nil
@@ -1104,6 +1115,18 @@ func pathComplete(query string) []string {
 		out = append(out, full)
 	}
 	sort.Strings(out)
+	if prefix == "" {
+		parent := strings.TrimRight(query, "/")
+		if parent != "" {
+			out = append([]string{parent}, out...)
+		}
+	}
+	switch strings.TrimSpace(query) {
+	case ".":
+		out = append([]string{".", ".."}, out...)
+	case "..":
+		out = append([]string{".."}, out...)
+	}
 	return out
 }
 
