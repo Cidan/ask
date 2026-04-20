@@ -31,14 +31,18 @@ func newRenderer(width int) *glamour.TermRenderer {
 }
 
 func (m *model) layout() {
+	atBottom := m.viewport.AtBottom()
 	inputH := m.input.Height()
-	vpH := m.height - 1 - inputH
+	extra := 0
+	if m.pendingImage != nil {
+		extra = 1
+	}
+	vpH := m.height - 1 - inputH - extra
 	if vpH < 1 {
 		vpH = 1
 	}
 	m.viewport.SetWidth(m.width)
 	m.viewport.SetHeight(vpH)
-	atBottom := m.viewport.AtBottom()
 	m.viewport.SetContent(m.viewportContent())
 	if atBottom {
 		m.viewport.GotoBottom()
@@ -184,6 +188,10 @@ func (m model) viewBody() string {
 	var b strings.Builder
 	b.WriteString(m.viewport.View())
 	b.WriteString("\n\n")
+	if m.pendingImage != nil {
+		b.WriteString(chipStyle.Render(fmt.Sprintf("[%s  %s]", m.pendingMime, humanBytes(int64(len(m.pendingImage))))))
+		b.WriteString("\n")
+	}
 	b.WriteString(m.input.View())
 	return b.String()
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"os/exec"
@@ -10,9 +11,43 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+func userContent(line string, image []byte, mime string) any {
+	if image == nil {
+		return line
+	}
+	blocks := []map[string]any{}
+	if line != "" {
+		blocks = append(blocks, map[string]any{"type": "text", "text": line})
+	}
+	blocks = append(blocks, map[string]any{
+		"type": "image",
+		"source": map[string]any{
+			"type":       "base64",
+			"media_type": mime,
+			"data":       base64.StdEncoding.EncodeToString(image),
+		},
+	})
+	return blocks
+}
+
+func userBarText(line string, hasImage bool) string {
+	switch {
+	case hasImage && line == "":
+		return "[image attached]"
+	case hasImage:
+		return line + "  [image attached]"
+	default:
+		return line
+	}
+}
+
 func (m model) sendToClaude(line string) (tea.Model, tea.Cmd) {
-	m.appendUser(line)
+	hasImg := m.pendingImage != nil
+	debugLog("sendToClaude line=%q hasImage=%v imageBytes=%d mime=%q procNil=%v sessionID=%q",
+		line, hasImg, len(m.pendingImage), m.pendingMime, m.proc == nil, m.sessionID)
+	m.appendUser(userBarText(line, hasImg))
 	if err := m.ensureProc(); err != nil {
+		debugLog("ensureProc err: %v", err)
 		m.appendHistory(outputStyle.Render(errStyle.Render("could not start claude: " + err.Error())))
 		return m, nil
 	}
@@ -20,15 +55,20 @@ func (m model) sendToClaude(line string) (tea.Model, tea.Cmd) {
 		"type": "user",
 		"message": map[string]any{
 			"role":    "user",
-			"content": line,
+			"content": userContent(line, m.pendingImage, m.pendingMime),
 		},
 	}
+	m.pendingImage = nil
+	m.pendingMime = ""
 	b, _ := json.Marshal(payload)
+	debugLog("sendToClaude writing payload bytes=%d", len(b))
 	if _, err := m.proc.stdin.Write(append(b, '\n')); err != nil {
+		debugLog("stdin write err: %v", err)
 		m.appendHistory(outputStyle.Render(errStyle.Render("write to claude failed: " + err.Error())))
 		m.killProc()
 		return m, nil
 	}
+	debugLog("sendToClaude wrote ok, busy=true")
 	m.busy = true
 	m.status = "thinking…"
 	m.queue = 1
@@ -46,16 +86,19 @@ func (m model) queueToClaude(line string) (tea.Model, tea.Cmd) {
 		"type": "user",
 		"message": map[string]any{
 			"role":    "user",
-			"content": line,
+			"content": userContent(line, m.pendingImage, m.pendingMime),
 		},
 	}
+	barText := userBarText(line, m.pendingImage != nil)
+	m.pendingImage = nil
+	m.pendingMime = ""
 	b, _ := json.Marshal(payload)
 	if _, err := m.proc.stdin.Write(append(b, '\n')); err != nil {
 		m.appendHistory(outputStyle.Render(errStyle.Render("queue write failed: " + err.Error())))
 		return m, nil
 	}
 	m.queue++
-	m.pendingPrompts = append(m.pendingPrompts, line)
+	m.pendingPrompts = append(m.pendingPrompts, barText)
 	m.layout()
 	return m, nil
 }
@@ -82,11 +125,13 @@ func (m *model) ensureProc() error {
 	if err != nil {
 		return err
 	}
+	stderr := &stderrBuf{}
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	ch := make(chan tea.Msg, 32)
-	m.proc = &claudeProc{cmd: cmd, stdin: stdin}
+	m.proc = &claudeProc{cmd: cmd, stdin: stdin, stderr: stderr}
 	m.streamCh = ch
 	go readClaudeStream(stdout, cmd, ch)
 	return nil

@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"os/exec"
+	"sync"
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
@@ -60,8 +61,30 @@ type claudeExitedMsg struct {
 }
 
 type claudeProc struct {
-	cmd   *exec.Cmd
-	stdin io.WriteCloser
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stderr *stderrBuf
+}
+
+type stderrBuf struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func (s *stderrBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data = append(s.data, p...)
+	if len(s.data) > 8192 {
+		s.data = s.data[len(s.data)-8192:]
+	}
+	return len(p), nil
+}
+
+func (s *stderrBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return string(s.data)
 }
 
 type historyKind int
@@ -103,6 +126,7 @@ var (
 				PaddingLeft(1)
 	outputStyle   = lipgloss.NewStyle().MarginLeft(5)
 	thinkingStyle = lipgloss.NewStyle().MarginLeft(3)
+	chipStyle     = lipgloss.NewStyle().MarginLeft(3).Foreground(lipgloss.Color("13")).Bold(true)
 	pathBoxStyle  = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("13")).
@@ -134,6 +158,9 @@ type model struct {
 	proc           *claudeProc
 	queue          int
 	pendingPrompts []string
+
+	pendingImage []byte
+	pendingMime  string
 }
 
 const (

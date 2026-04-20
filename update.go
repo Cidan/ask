@@ -40,18 +40,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case claudeExitedMsg:
+		var stderrTail string
+		if m.proc != nil && m.proc.stderr != nil {
+			stderrTail = strings.TrimSpace(m.proc.stderr.String())
+		}
+		debugLog("claudeExitedMsg err=%v stderrLen=%d", msg.err, len(stderrTail))
 		m.busy = false
 		m.status = ""
 		m.queue = 0
 		m.pendingPrompts = nil
 		m.streamCh = nil
 		m.proc = nil
-		if msg.err != nil {
-			m.appendHistory(outputStyle.Render(errStyle.Render("claude exited: " + msg.err.Error())))
+		if msg.err != nil || stderrTail != "" {
+			out := "claude exited"
+			if msg.err != nil {
+				out += ": " + msg.err.Error()
+			}
+			if stderrTail != "" {
+				out += "\n" + stderrTail
+			}
+			m.appendHistory(outputStyle.Render(errStyle.Render(out)))
 		}
 		return m, nil
 
 	case claudeDoneMsg:
+		debugLog("claudeDoneMsg err=%v isError=%v resultLen=%d queue=%d",
+			msg.err, msg.res.IsError, len(msg.res.Result), m.queue)
 		if m.queue > 0 {
 			m.queue--
 		}
@@ -121,6 +135,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modeSessionPicker
 		return m, nil
 
+	case imagePastedMsg:
+		debugLog("imagePastedMsg bytes=%d mime=%q err=%v", len(msg.data), msg.mime, msg.err)
+		if msg.err != nil {
+			m.appendHistory(outputStyle.Render(errStyle.Render("paste: " + msg.err.Error())))
+			return m, nil
+		}
+		m.pendingImage = msg.data
+		m.pendingMime = msg.mime
+		m.layout()
+		return m, nil
+
 	case tea.MouseWheelMsg:
 		if m.mode == modeInput {
 			var cmd tea.Cmd
@@ -153,6 +178,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.Mod == tea.ModCtrl && (msg.Code == 'c' || msg.Code == 'd') {
 		return m, tea.Quit
+	}
+	if msg.Mod == tea.ModCtrl && msg.Code == 'v' {
+		return m, pasteImageCmd()
+	}
+	if msg.Mod == 0 && msg.Code == tea.KeyEsc && m.pendingImage != nil {
+		m.pendingImage = nil
+		m.pendingMime = ""
+		m.layout()
+		return m, nil
 	}
 
 	items := m.filterSlashCmds()
@@ -210,7 +244,9 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnter:
 			val := m.input.Value()
 			line := strings.TrimSpace(val)
-			if line == "" {
+			debugLog("Enter line=%q valLen=%d busy=%v pendingImg=%v pathCmd=%q bare=%q",
+				line, len(val), m.busy, m.pendingImage != nil, m.pathPickerCmd(), bareCommand(line))
+			if line == "" && m.pendingImage == nil {
 				return m, nil
 			}
 			if m.busy {
