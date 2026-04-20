@@ -12,11 +12,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	glamour "charm.land/glamour/v2"
+	"charm.land/glamour/v2/styles"
+	lipgloss "charm.land/lipgloss/v2"
 )
 
 type claudeResult struct {
@@ -61,60 +64,99 @@ type sessionsLoadedMsg struct {
 }
 
 var (
-	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
-	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	promptStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
-	errStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	selectedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
+	dimStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	promptStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	promptArrowStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("51")).MarginLeft(3)
+	promptDotStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("36")).MarginLeft(1)
+	errStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	userBarStyle = lipgloss.NewStyle().
+			MarginLeft(3).
+			Border(lipgloss.NormalBorder(), false, false, false, true).
+			BorderForeground(lipgloss.Color("212")).
+			PaddingLeft(1)
+	outputStyle   = lipgloss.NewStyle().MarginLeft(5)
+	thinkingStyle = lipgloss.NewStyle().MarginLeft(3)
 )
 
 type model struct {
-	mode      viewMode
-	input     textinput.Model
+	input     textarea.Model
+	viewport  viewport.Model
 	spinner   spinner.Model
 	renderer  *glamour.TermRenderer
 	sessionID string
 	busy      bool
 	width     int
+	height    int
 
-	menuIdx int
+	history []string
 
+	mode      viewMode
+	menuIdx   int
 	sessions  []sessionEntry
 	pickerIdx int
 }
 
 func initialModel() model {
-	ti := textinput.New()
-	ti.Placeholder = "ask anything (try /resume)"
-	ti.Prompt = "> "
-	ti.Focus()
-	ti.CharLimit = 0
+	ta := textarea.New()
+	ta.Placeholder = "ask anything (try /resume)"
+	ta.Prompt = ""
+	ta.SetPromptFunc(5, func(info textarea.PromptInfo) string {
+		if info.LineNumber == 0 {
+			return promptArrowStyle.Render("> ")
+		}
+		return promptDotStyle.Render("::: ")
+	})
+	ta.ShowLineNumbers = false
+	ta.EndOfBufferCharacter = ' '
+	ta.CharLimit = 0
+	ta.MaxHeight = 0
+	ta.DynamicHeight = true
+	ta.MinHeight = 3
+	ta.KeyMap.InsertNewline = key.NewBinding(
+		key.WithKeys("shift+enter", "ctrl+j"),
+	)
+	ta.SetHeight(3)
+	ta.Focus()
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 
+	style := styles.DarkStyleConfig
+	zero := uint(0)
+	style.Document.Margin = &zero
+	style.Document.BlockPrefix = ""
+	style.Document.BlockSuffix = ""
 	renderer, _ := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(100),
+		glamour.WithStyles(style),
+		glamour.WithWordWrap(0),
 	)
+
+	vp := viewport.New()
+	vp.Style = lipgloss.NewStyle().PaddingTop(1)
 
 	return model{
 		mode:     modeInput,
-		input:    ti,
+		input:    ta,
+		viewport: vp,
 		spinner:  sp,
 		renderer: renderer,
 		width:    100,
+		height:   30,
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return textinput.Blink
+	return nil
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
-		m.input.Width = msg.Width - 4
+		m.height = msg.Height
+		m.input.SetWidth(msg.Width)
+		m.layout()
 		return m, nil
 
 	case spinner.TickMsg:
@@ -123,6 +165,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
+		m.layout()
 		return m, cmd
 
 	case claudeDoneMsg:
@@ -146,21 +189,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				out = strings.TrimRight(rendered, "\n")
 			}
 		}
-		return m, tea.Println(out + "\n")
+		m.appendHistory(outputStyle.Render(out))
+		return m, nil
 
 	case sessionsLoadedMsg:
 		if msg.err != nil {
-			return m, tea.Println(errStyle.Render(fmt.Sprintf("could not load sessions: %v", msg.err)))
+			m.appendHistory(outputStyle.Render(errStyle.Render(fmt.Sprintf("could not load sessions: %v", msg.err))))
+			return m, nil
 		}
 		if len(msg.sessions) == 0 {
-			return m, tea.Println(dimStyle.Render("no prior sessions for this project"))
+			m.appendHistory(outputStyle.Render(dimStyle.Render("no prior sessions for this project")))
+			return m, nil
 		}
 		m.sessions = msg.sessions
 		m.pickerIdx = 0
 		m.mode = modeSessionPicker
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.PasteMsg:
+		if m.mode == modeInput && !m.busy {
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			m.layout()
+			return m, cmd
+		}
+		return m, nil
+
+	case tea.KeyPressMsg:
 		switch m.mode {
 		case modeSessionPicker:
 			return m.updatePicker(msg)
@@ -171,8 +226,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyCtrlD {
+func (m *model) layout() {
+	inputH := m.input.Height()
+	gapH := 1
+	vpH := m.height - inputH - gapH
+	if vpH < 1 {
+		vpH = 1
+	}
+	m.viewport.SetWidth(m.width)
+	m.viewport.SetHeight(vpH)
+	m.viewport.SetContent(m.viewportContent())
+	m.viewport.GotoBottom()
+}
+
+func (m model) viewportContent() string {
+	parts := append([]string(nil), m.history...)
+	if m.busy {
+		parts = append(parts, thinkingStyle.Render(m.spinner.View()+dimStyle.Render("thinking…")))
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func (m *model) appendHistory(entry string) {
+	m.history = append(m.history, entry)
+	m.layout()
+}
+
+func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if msg.Mod == tea.ModCtrl && (msg.Code == 'c' || msg.Code == 'd') {
 		return m, tea.Quit
 	}
 	if m.busy {
@@ -182,39 +263,49 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	items := m.filterSlashCmds()
 	menuOpen := len(items) > 0
 
-	switch msg.Type {
-	case tea.KeyUp:
-		if menuOpen {
-			if m.menuIdx > 0 {
-				m.menuIdx--
+	if msg.Mod == 0 {
+		switch msg.Code {
+		case tea.KeyUp:
+			if menuOpen {
+				if m.menuIdx > 0 {
+					m.menuIdx--
+				}
+				return m, nil
 			}
-			return m, nil
-		}
-	case tea.KeyDown:
-		if menuOpen {
-			if m.menuIdx < len(items)-1 {
-				m.menuIdx++
+		case tea.KeyDown:
+			if menuOpen {
+				if m.menuIdx < len(items)-1 {
+					m.menuIdx++
+				}
+				return m, nil
 			}
+		case tea.KeyTab:
+			if menuOpen {
+				pick := items[m.menuIdx].name
+				m.input.SetValue(pick)
+				m.layout()
+				return m, nil
+			}
+		case tea.KeyPgUp:
+			m.viewport.ScrollUp(m.viewport.Height() / 2)
 			return m, nil
-		}
-	case tea.KeyTab:
-		if menuOpen {
-			pick := items[m.menuIdx].name
-			m.input.SetValue(pick)
-			m.input.SetCursor(len(pick))
+		case tea.KeyPgDown:
+			m.viewport.ScrollDown(m.viewport.Height() / 2)
 			return m, nil
+		case tea.KeyEnter:
+			val := m.input.Value()
+			line := strings.TrimSpace(val)
+			if line == "" {
+				return m, nil
+			}
+			m.input.Reset()
+			m.menuIdx = 0
+			if strings.HasPrefix(line, "/") {
+				m.layout()
+				return m.handleCommand(line)
+			}
+			return m.sendToClaude(val)
 		}
-	case tea.KeyEnter:
-		line := strings.TrimSpace(m.input.Value())
-		if line == "" {
-			return m, nil
-		}
-		m.input.SetValue("")
-		m.menuIdx = 0
-		if strings.HasPrefix(line, "/") {
-			return m.handleCommand(line)
-		}
-		return m.sendToClaude(line)
 	}
 
 	var cmd tea.Cmd
@@ -222,13 +313,15 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if items := m.filterSlashCmds(); m.menuIdx >= len(items) {
 		m.menuIdx = 0
 	}
+	m.layout()
 	return m, cmd
 }
 
-func (m model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyCtrlC:
+func (m model) updatePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
 		return m, tea.Quit
+	}
+	switch msg.Code {
 	case tea.KeyEsc:
 		m.mode = modeInput
 		return m, nil
@@ -244,8 +337,9 @@ func (m model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.sessions) > 0 {
 			m.sessionID = m.sessions[m.pickerIdx].id
 			m.mode = modeInput
-			return m, tea.Println(promptStyle.Render(
-				fmt.Sprintf("✓ resumed session %s", short(m.sessionID))))
+			m.appendHistory(outputStyle.Render(promptStyle.Render(
+				fmt.Sprintf("✓ resumed session %s", short(m.sessionID)))))
+			return m, nil
 		}
 	}
 	return m, nil
@@ -257,48 +351,51 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 	case "/resume":
 		return m, loadSessionsCmd()
 	default:
-		return m, tea.Println(errStyle.Render("unknown command: " + cmd))
+		m.appendHistory(outputStyle.Render(errStyle.Render("unknown command: " + cmd)))
+		return m, nil
 	}
 }
 
 func (m model) sendToClaude(line string) (tea.Model, tea.Cmd) {
 	m.busy = true
-	echo := promptStyle.Render("> ") + line
+	echo := userBarStyle.Render(line)
+	m.appendHistory(echo)
 	return m, tea.Batch(
-		tea.Println(echo),
 		m.spinner.Tick,
 		runClaudeCmd(line, m.sessionID),
 	)
 }
 
-func (m model) View() string {
+func (m model) View() tea.View {
+	v := tea.NewView(m.viewBody())
+	v.AltScreen = true
+	if m.mode == modeInput {
+		if c := m.input.Cursor(); c != nil {
+			v.Cursor = c
+		}
+	}
+	return v
+}
+
+func (m model) viewBody() string {
 	if m.mode == modeSessionPicker {
 		return m.viewPicker()
 	}
-	return m.viewInput()
-}
-
-func (m model) viewInput() string {
 	var b strings.Builder
-	if m.busy {
-		b.WriteString(m.spinner.View())
-		b.WriteString(dimStyle.Render("thinking…"))
-		b.WriteString("\n")
-		return b.String()
-	}
+	b.WriteString(m.viewport.View())
+	b.WriteString("\n\n")
 	b.WriteString(m.input.View())
-	b.WriteString("\n")
-	items := m.filterSlashCmds()
-	if len(items) > 0 {
+	if items := m.filterSlashCmds(); len(items) > 0 {
 		b.WriteString("\n")
+		var parts []string
 		for i, it := range items {
-			line := fmt.Sprintf("  %s  %s", it.name, dimStyle.Render(it.desc))
+			label := it.name
 			if i == m.menuIdx {
-				line = selectedStyle.Render("▸ "+it.name) + "  " + dimStyle.Render(it.desc)
+				label = selectedStyle.Render("▸ " + it.name)
 			}
-			b.WriteString(line)
-			b.WriteString("\n")
+			parts = append(parts, label+" "+dimStyle.Render(it.desc))
 		}
+		b.WriteString(strings.Join(parts, "  ·  "))
 	}
 	return b.String()
 }
