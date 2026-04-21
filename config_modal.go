@@ -23,9 +23,14 @@ func (m model) configItemsAll() []configItem {
 	if m.cursorBlink {
 		blink = "on"
 	}
+	diffs := "off"
+	if m.renderDiffs {
+		diffs = "on"
+	}
 	return []configItem{
 		{"Toggle Quiet Mode", quiet, "quiet"},
 		{"Toggle Cursor Blink", blink, "cursorBlink"},
+		{"Toggle Render Diffs", diffs, "renderDiffs"},
 	}
 }
 
@@ -116,6 +121,15 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 				if m.cursorBlink {
 					return m, cursor.Blink
+				}
+				return m, nil
+			case "renderDiffs":
+				m.renderDiffs = !m.renderDiffs
+				v := m.renderDiffs
+				cfg, _ := loadConfig()
+				cfg.UI.RenderDiffs = &v
+				if err := saveConfig(cfg); err != nil {
+					debugLog("saveConfig err: %v", err)
 				}
 				return m, nil
 			}

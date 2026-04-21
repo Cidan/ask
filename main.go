@@ -64,6 +64,7 @@ func initialModel(cfg askConfig) model {
 		claudeModel:     cfg.Claude.Model,
 		quietMode:       cfg.UI.QuietMode == nil || *cfg.UI.QuietMode,
 		cursorBlink:     cursorBlink,
+		renderDiffs:     cfg.UI.RenderDiffs == nil || *cfg.UI.RenderDiffs,
 		historyIdx:      -1,
 		fc:              &frameCache{},
 	}

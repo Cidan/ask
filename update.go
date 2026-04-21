@@ -76,6 +76,18 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		return m, nil
 
+	case toolDiffMsg:
+		if msg.proc != m.proc {
+			return m, nil
+		}
+		if m.renderDiffs {
+			m.appendHistory(m.renderDiffBlock(msg.filePath, msg.hunks))
+		}
+		if m.streamCh != nil {
+			return m, nextStreamCmd(m.streamCh)
+		}
+		return m, nil
+
 	case claudeInitLoadedMsg:
 		if msg.err != nil {
 			debugLog("claudeInitLoadedMsg err: %v", msg.err)

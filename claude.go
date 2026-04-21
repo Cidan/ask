@@ -202,6 +202,10 @@ func readClaudeStream(stdout io.Reader, proc *claudeProc, ch chan tea.Msg) {
 			if text := assistantText(ev); text != "" {
 				ch <- assistantTextMsg{text: text, proc: proc}
 			}
+		case "user":
+			if path, hunks, ok := userToolDiff(ev); ok {
+				ch <- toolDiffMsg{filePath: path, hunks: hunks, proc: proc}
+			}
 		case "stream_event":
 			if streamEventEndTurn(ev) {
 				ch <- turnCompleteMsg{proc: proc}
@@ -247,6 +251,48 @@ func assistantTodos(ev map[string]any) ([]todoItem, bool) {
 		return out, true
 	}
 	return nil, false
+}
+
+func userToolDiff(ev map[string]any) (string, []diffHunk, bool) {
+	result, _ := ev["tool_use_result"].(map[string]any)
+	if result == nil {
+		return "", nil, false
+	}
+	rawPatch, _ := result["structuredPatch"].([]any)
+	if len(rawPatch) == 0 {
+		return "", nil, false
+	}
+	path, _ := result["filePath"].(string)
+	hunks := make([]diffHunk, 0, len(rawPatch))
+	for _, h := range rawPatch {
+		hm, _ := h.(map[string]any)
+		if hm == nil {
+			continue
+		}
+		rawLines, _ := hm["lines"].([]any)
+		lines := make([]string, 0, len(rawLines))
+		for _, l := range rawLines {
+			if s, ok := l.(string); ok {
+				lines = append(lines, s)
+			}
+		}
+		hunks = append(hunks, diffHunk{
+			oldStart: jsonInt(hm["oldStart"]),
+			oldLines: jsonInt(hm["oldLines"]),
+			newStart: jsonInt(hm["newStart"]),
+			newLines: jsonInt(hm["newLines"]),
+			lines:    lines,
+		})
+	}
+	if len(hunks) == 0 {
+		return "", nil, false
+	}
+	return path, hunks, true
+}
+
+func jsonInt(v any) int {
+	f, _ := v.(float64)
+	return int(f)
 }
 
 func streamEventEndTurn(ev map[string]any) bool {

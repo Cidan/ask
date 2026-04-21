@@ -92,6 +92,36 @@ func (m model) spinnerBlockHeight() int {
 	return 2
 }
 
+func (m model) renderDiffBlock(path string, hunks []diffHunk) string {
+	var b strings.Builder
+	if path != "" {
+		b.WriteString(diffPathStyle.Render(path))
+		b.WriteString("\n")
+	}
+	for i, h := range hunks {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		header := fmt.Sprintf("@@ -%d,%d +%d,%d @@", h.oldStart, h.oldLines, h.newStart, h.newLines)
+		b.WriteString(diffHunkHeaderStyle.Render(header))
+		b.WriteString("\n")
+		for j, line := range h.lines {
+			if j > 0 {
+				b.WriteString("\n")
+			}
+			switch {
+			case strings.HasPrefix(line, "+"):
+				b.WriteString(diffAddStyle.Render(line))
+			case strings.HasPrefix(line, "-"):
+				b.WriteString(diffDelStyle.Render(line))
+			default:
+				b.WriteString(diffContextStyle.Render(line))
+			}
+		}
+	}
+	return outputStyle.Render(b.String())
+}
+
 func (m model) renderResponse(raw string) string {
 	rendered, err := m.renderer.Render(raw)
 	if err != nil {

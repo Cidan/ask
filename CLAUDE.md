@@ -19,7 +19,15 @@ git to /tmp:
 
 * https://github.com/charmbracelet/crush
 
-as it is the cannonical interface in terms of implementation/bubbletea use.
+as it is the cannonical interface in terms of implementation/bubbletea use, though it does not use Claude in the way we do.
+
+when researching the claude code protocol, ALWAYS look at the python reference which you MUST clone to /tmp:
+
+* https://github.com/anthropics/claude-agent-sdk-python
+
+and the documentation here:
+
+* https://code.claude.com/docs/en/agent-sdk/overview
 
 ALL OF THE ABOVE IS NOT OPTIONAL. YOU MUST ALWAYS USE THE ABOVE REFERENCES.
 

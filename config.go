@@ -19,6 +19,7 @@ type claudeConfig struct {
 type uiConfig struct {
 	QuietMode   *bool `json:"quietMode,omitempty"`
 	CursorBlink *bool `json:"cursorBlink,omitempty"`
+	RenderDiffs *bool `json:"renderDiffs,omitempty"`
 }
 
 func configPath() (string, error) {

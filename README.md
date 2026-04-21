@@ -12,18 +12,26 @@ with a far richer tabbed modal.
 
 - **Chat with Claude Code** via streaming JSON input/output
 - **Resume sessions** — `/resume` opens a picker of prior conversations in the current directory
+- **Pick the Claude model** — `/model` opens a picker (default / haiku / sonnet / opus / custom) and persists the choice
+- **Configurable UI** — `/config` toggles quiet mode, cursor blink, and inline diff rendering; persisted to `~/.config/ask/ask.json`
 - **Inline markdown rendering** with [glamour](https://github.com/charmbracelet/glamour), cached per history entry so typing stays responsive in long chats
+- **Live turn status** — spinner line surfaces the tool Claude is running (`Read: file.go`, `Bash: <description>`, `Grep: <pattern>`, `Task: <subagent>`, …)
+- **Live todo panel** — `TodoWrite` entries render inline as a bordered box with ☐ / ▸ / ✓ markers while the turn is active
+- **Inline diffs** — `Edit` / `Write` / `NotebookEdit` structured patches render as colored unified diffs in history (toggle with `/config`)
+- **Input history** — `↑` / `↓` at the first line of the input walks prior sent messages
 - **Image attachments** via clipboard paste
   - `Ctrl+V` on Wayland reads the clipboard with `wl-paste`
   - In Kitty-compatible terminals (Kitty, Ghostty) images render as inline thumbnails using the Kitty graphics protocol with Unicode placeholders
   - In any other terminal they fall back to a text chip
   - Multiple attachments pasted in a row show side-by-side with a bordered preview
 - **Draggable scrollbar** in the right column (mouse or `PgUp`/`PgDn`); the viewport sticks to the bottom only while you are at the bottom, so scrolling up during a stream no longer yanks you back
-- **Built-in MCP server** exposing a single tool, `ask_user_question`, that presents a tabbed modal with three question kinds:
-  - `pick_one` — single select radio list
-  - `pick_many` — multi-select checkboxes
-  - `pick_diagram` — radio list with an ASCII-art preview box rendered beside it
-  - All kinds support `allow_custom` (appends an Enter-your-own free-text option) and per-question notes (`n`)
+- **Built-in MCP server** exposing two tools:
+  - `ask_user_question` — tabbed modal with three question kinds:
+    - `pick_one` — single select radio list
+    - `pick_many` — multi-select checkboxes
+    - `pick_diagram` — radio list with an ASCII-art preview box rendered beside it
+    - All kinds support `allow_custom` (appends an Enter-your-own free-text option) and per-question notes (`n`)
+  - `approval_prompt` — wired as Claude's `--permission-prompt-tool`, shows a per-tool allow/deny modal before the tool runs
 - **PreToolUse hook** injected at launch that blocks Claude's built-in `AskUserQuestion` and redirects the model to our MCP tool instead
 
 ## Install
@@ -49,10 +57,15 @@ ask
 
 ### Slash commands
 
-| Command            | What it does                               |
-|--------------------|--------------------------------------------|
-| `/resume`          | Pick a prior session in this directory     |
-| `/new` / `/clear`  | Discard history and start a fresh session  |
+| Command            | What it does                                                          |
+|--------------------|-----------------------------------------------------------------------|
+| `/resume`          | Pick a prior session in this directory                                |
+| `/new` / `/clear`  | Discard history and start a fresh session                             |
+| `/model`           | Choose the Claude model (default / haiku / sonnet / opus / custom)    |
+| `/config`          | Open the `ask` config modal (see [Config](#config))                   |
+
+Claude's own slash commands (the ones surfaced by `claude` at init) are
+merged into the popover alongside these. Typing `/` filters both lists.
 
 ### Built-in path commands
 
@@ -75,12 +88,13 @@ prefix, same as anywhere else a path is expected.
 | `Enter`                | Send message / confirm                             |
 | `Shift+Enter`, `Ctrl+J`| Insert newline in the input                        |
 | `Ctrl+V`               | Paste image from clipboard                         |
-| `Ctrl+C` / `Esc`       | Cancel the live turn (kills the claude subprocess; a new one spawns on the next send). `Esc` also clears pending attachments when not mid-turn. |
-| `Ctrl+D`               | Quit                                               |
+| `Ctrl+C` / `Esc`       | While a turn is running, open a `Stop this turn?` confirm box; on confirm it kills the claude subprocess and a new one spawns on the next send. `Esc` also clears pending attachments when idle. |
+| `Ctrl+C` (twice, idle) | Quit. First press shows a `Press ctrl+c again to exit` hint; a second Ctrl+C quits. Any other key disarms the hint. |
+| `Ctrl+D`               | Quit immediately                                   |
 | `PgUp` / `PgDn`        | Scroll the viewport half a page                    |
 | Mouse wheel            | Scroll the viewport                                |
 | Mouse click on `│`     | Jump to that position on the scrollbar             |
-| `↑` / `↓`              | Navigate lists (session picker, slash menu, modal) |
+| `↑` / `↓`              | Navigate lists (session picker, slash menu, modal); at the first line of an empty/unmodified input they walk prior sent messages |
 | `Tab`                  | Auto-complete a path or slash command              |
 
 ### Question modal (via MCP tool)
@@ -95,16 +109,38 @@ prefix, same as anywhere else a path is expected.
 | Typing on "Enter your own" | Fills the custom answer in place; `Shift+Enter` for a newline |
 | `Esc`              | Cancel the dialog                                        |
 
+## Config
+
+`/config` opens a modal with toggles that persist to
+`~/.config/ask/ask.json`. Typing filters the list; `↑` / `↓` move, `Enter`
+toggles the highlighted entry and writes the file immediately, `Esc`
+closes the modal.
+
+| Toggle              | Default | What it does                                                                                 |
+|---------------------|---------|----------------------------------------------------------------------------------------------|
+| Toggle Quiet Mode   | on      | When on, assistant text chunks stream silently and the combined turn is rendered once at the end; when off, each chunk is appended as it arrives. |
+| Toggle Cursor Blink | on      | Blinking input cursor at an 800ms cadence. Off keeps a steady cursor.                        |
+| Toggle Render Diffs | on      | Render `Edit` / `Write` / `NotebookEdit` structured patches as inline colored diffs. Off suppresses the diff block (the edit still happens). |
+
+Other fields the config file stores automatically:
+
+- `claude.model` — last `/model` pick; passed as `--model` to the claude subprocess on the next spawn.
+- `claude.slashCommands` — cache of slash commands reported by `claude`'s init event, so the popover has completions before the first real call.
+
+The file is created on first launch and rewritten whenever a value
+changes; hand-editing it while `ask` is closed is fine.
+
 ## MCP server
 
-When ask launches it listens on `127.0.0.1:<random-port>` and exposes a
-single Streamable-HTTP MCP tool, `ask_user_question`. The spawned
-`claude` subprocess is given a `--mcp-config` pointing at this
-endpoint, plus a `--settings` layer that installs a `PreToolUse` hook
-blocking the built-in `AskUserQuestion` tool and redirecting the model
-to `mcp__ask__ask_user_question`.
+When ask launches it listens on `127.0.0.1:<random-port>` and exposes
+two Streamable-HTTP MCP tools, `ask_user_question` and
+`approval_prompt`. The spawned `claude` subprocess is given:
 
-### Tool schema
+- `--mcp-config` pointing at this endpoint
+- `--settings` installing a `PreToolUse` hook that blocks the built-in `AskUserQuestion` tool and redirects the model to `mcp__ask__ask_user_question`
+- `--permission-prompt-tool mcp__ask__approval_prompt` so every permission-gated tool call routes through the ask TUI's approval modal
+
+### `ask_user_question` schema
 
 ```jsonc
 {

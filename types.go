@@ -93,6 +93,20 @@ type todoUpdatedMsg struct {
 	proc  *claudeProc
 }
 
+type diffHunk struct {
+	oldStart int
+	oldLines int
+	newStart int
+	newLines int
+	lines    []string
+}
+
+type toolDiffMsg struct {
+	filePath string
+	hunks    []diffHunk
+	proc     *claudeProc
+}
+
 type claudeSlashEntry struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
@@ -181,6 +195,11 @@ var (
 	todoPendingStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	todoProgressStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
 	todoCompletedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Strikethrough(true)
+	diffPathStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
+	diffHunkHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	diffAddStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	diffDelStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	diffContextStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 )
 
 type frameCache struct {
@@ -244,6 +263,7 @@ type model struct {
 
 	quietMode   bool
 	cursorBlink bool
+	renderDiffs bool
 	turnBuffer  []string
 
 	lastContentFP string
