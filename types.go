@@ -242,8 +242,9 @@ type model struct {
 	configFilter string
 	configCursor int
 
-	quietMode  bool
-	turnBuffer []string
+	quietMode   bool
+	cursorBlink bool
+	turnBuffer  []string
 
 	lastContentFP string
 

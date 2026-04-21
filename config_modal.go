@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 
+	"charm.land/bubbles/v2/cursor"
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 )
@@ -18,8 +19,13 @@ func (m model) configItemsAll() []configItem {
 	if m.quietMode {
 		quiet = "on"
 	}
+	blink := "off"
+	if m.cursorBlink {
+		blink = "on"
+	}
 	return []configItem{
 		{"Toggle Quiet Mode", quiet, "quiet"},
+		{"Toggle Cursor Blink", blink, "cursorBlink"},
 	}
 }
 
@@ -97,6 +103,19 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				cfg.UI.QuietMode = &v
 				if err := saveConfig(cfg); err != nil {
 					debugLog("saveConfig err: %v", err)
+				}
+				return m, nil
+			case "cursorBlink":
+				m.cursorBlink = !m.cursorBlink
+				applyCursorBlink(&m.input, m.cursorBlink)
+				v := m.cursorBlink
+				cfg, _ := loadConfig()
+				cfg.UI.CursorBlink = &v
+				if err := saveConfig(cfg); err != nil {
+					debugLog("saveConfig err: %v", err)
+				}
+				if m.cursorBlink {
+					return m, cursor.Blink
 				}
 				return m, nil
 			}

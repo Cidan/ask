@@ -5,13 +5,14 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/cursor"
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 )
 
 func (m model) Init() tea.Cmd {
 	debugLog("Init mcpPort=%d", m.mcpPort)
-	return probeClaudeInitCmd(m.mcpPort)
+	return tea.Batch(probeClaudeInitCmd(m.mcpPort), cursor.Blink)
 }
 
 func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
@@ -312,8 +313,12 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		default:
 			return m.updateInput(msg)
 		}
+
+	default:
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
 	}
-	return m, nil
 }
 
 func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {

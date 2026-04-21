@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
@@ -11,6 +12,15 @@ import (
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 )
+
+const cursorBlinkSpeed = 800 * time.Millisecond
+
+func applyCursorBlink(ta *textarea.Model, enabled bool) {
+	s := ta.Styles()
+	s.Cursor.Blink = enabled
+	s.Cursor.BlinkSpeed = cursorBlinkSpeed
+	ta.SetStyles(s)
+}
 
 func initialModel(cfg askConfig) model {
 	ta := textarea.New()
@@ -27,6 +37,9 @@ func initialModel(cfg askConfig) model {
 	)
 	ta.SetHeight(3)
 	ta.Focus()
+
+	cursorBlink := cfg.UI.CursorBlink == nil || *cfg.UI.CursorBlink
+	applyCursorBlink(&ta, cursorBlink)
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -50,6 +63,7 @@ func initialModel(cfg askConfig) model {
 		claudeSlashCmds: cfg.Claude.SlashCommands,
 		claudeModel:     cfg.Claude.Model,
 		quietMode:       cfg.UI.QuietMode == nil || *cfg.UI.QuietMode,
+		cursorBlink:     cursorBlink,
 		historyIdx:      -1,
 		fc:              &frameCache{},
 	}
