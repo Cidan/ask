@@ -89,7 +89,7 @@ func (m model) spinnerBlockHeight() int {
 	if !m.busy {
 		return 0
 	}
-	return 1
+	return 2
 }
 
 func (m model) renderResponse(raw string) string {
@@ -493,7 +493,7 @@ func (m model) viewBody() string {
 	ss := time.Now()
 	if line := m.spinnerLine(); line != "" {
 		b.WriteString(line)
-		b.WriteString("\n")
+		b.WriteString("\n\n")
 	}
 	if debugOn {
 		debugTrace("    vb.spinner", ss)
