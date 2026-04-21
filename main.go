@@ -87,6 +87,8 @@ func initialModel(cfg askConfig) model {
 		renderDiffs:        cfg.UI.RenderDiffs == nil || *cfg.UI.RenderDiffs,
 		skipAllPermissions: cfg.UI.SkipAllPermissions != nil && *cfg.UI.SkipAllPermissions,
 		historyIdx:         -1,
+		shellOutIdx:        -1,
+		shellHistoryIdx:    -1,
 		fc:                 &frameCache{},
 	}
 	m.refreshPrompt()

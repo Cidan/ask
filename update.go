@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -322,6 +323,54 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		return m, nil
 
+	case shellBatchMsg:
+		if len(msg.lines) > 0 {
+			parts := make([]string, 0, len(msg.lines))
+			for _, l := range msg.lines {
+				styled := l.text
+				if l.err {
+					styled = errStyle.Render(l.text)
+				}
+				parts = append(parts, outputStyle.Render(styled))
+			}
+			joined := strings.Join(parts, "\n")
+			if m.shellOutIdx >= 0 && m.shellOutIdx < len(m.history) {
+				e := &m.history[m.shellOutIdx]
+				if e.text != "" {
+					e.text += "\n"
+				}
+				e.text += joined
+			} else {
+				m.appendHistory(joined)
+				m.shellOutIdx = len(m.history) - 1
+			}
+			m.lastContentFP = ""
+		}
+		if msg.done != nil {
+			d := *msg.done
+			m.shellOutIdx = -1
+			m.shellCh = nil
+			m.shellProc = nil
+			if d.newCwd != "" {
+				if cur, err := os.Getwd(); err != nil || cur != d.newCwd {
+					if err := os.Chdir(d.newCwd); err == nil {
+						m.refreshPrompt()
+						m.pending = nil
+						m.refreshPathMatches()
+					}
+				}
+			}
+			if d.err != nil {
+				debugLog("shell cmd %q err: %v", d.input, d.err)
+				m.appendHistory(outputStyle.Render(errStyle.Render(d.err.Error())))
+			}
+			return m, nil
+		}
+		if m.shellCh != nil {
+			return m, nextShellStreamCmd(m.shellCh)
+		}
+		return m, nil
+
 	case tea.KeyPressMsg:
 		switch m.mode {
 		case modeSessionPicker:
@@ -346,6 +395,16 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
 		return m, tea.Quit
+	}
+	if m.shellMode {
+		return m.updateShellInput(msg)
+	}
+	if msg.Text == "!" && m.input.Value() == "" && len(m.pending) == 0 && !m.busy {
+		m.shellMode = true
+		m.shellBsArmed = false
+		m.resetHistoryNav()
+		m.refreshPathMatches()
+		return m, nil
 	}
 	if m.cancelTurnConfirming {
 		return m.updateCancelTurnConfirm(msg)
@@ -501,6 +560,142 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.pathIdx = 0
 	}
 	return m, cmd
+}
+
+func (m model) updateShellInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	running := m.shellCh != nil
+	isCtrlC := msg.Mod == tea.ModCtrl && msg.Code == 'c'
+	isEsc := msg.Mod == 0 && msg.Code == tea.KeyEsc
+
+	if isCtrlC {
+		if running {
+			m.killShellProc()
+			return m, nil
+		}
+		m = m.exitShellMode()
+		return m, nil
+	}
+	if isEsc {
+		if running {
+			return m, nil
+		}
+		m = m.exitShellMode()
+		return m, nil
+	}
+	if running {
+		if msg.Mod == 0 && msg.Code == tea.KeyEnter {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+	}
+	isBackspace := msg.Mod == 0 && msg.Code == tea.KeyBackspace
+	if isBackspace && m.input.Value() == "" {
+		if m.shellBsArmed {
+			m = m.exitShellMode()
+			return m, nil
+		}
+		m.shellBsArmed = true
+		return m, nil
+	}
+	m.shellBsArmed = false
+
+	if msg.Mod == 0 {
+		switch msg.Code {
+		case tea.KeyUp:
+			if m.shellHistoryIdx >= 0 || m.input.Line() == 0 {
+				if m.shellHistoryPrev() {
+					return m, nil
+				}
+			}
+		case tea.KeyDown:
+			if m.shellHistoryIdx >= 0 {
+				m.shellHistoryNext()
+				return m, nil
+			}
+		case tea.KeyEnter:
+			val := m.input.Value()
+			if strings.TrimSpace(val) == "" {
+				return m, nil
+			}
+			m.recordShellHistory(val)
+			m.input.Reset()
+			m.appendUser(val)
+			cmd := m.startShellCmd(val)
+			return m, cmd
+		}
+	}
+
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	if m.shellHistoryIdx >= 0 && m.input.Value() != m.shellHistory[m.shellHistoryIdx] {
+		m.resetShellHistoryNav()
+	}
+	return m, cmd
+}
+
+func (m model) exitShellMode() model {
+	m.shellMode = false
+	m.shellBsArmed = false
+	m.input.Reset()
+	m.resetShellHistoryNav()
+	m.refreshPathMatches()
+	return m
+}
+
+func (m *model) recordShellHistory(val string) {
+	m.resetShellHistoryNav()
+	if val == "" {
+		return
+	}
+	if n := len(m.shellHistory); n > 0 && m.shellHistory[n-1] == val {
+		return
+	}
+	m.shellHistory = append(m.shellHistory, val)
+}
+
+func (m *model) resetShellHistoryNav() {
+	m.shellHistoryIdx = -1
+	m.shellHistoryDraft = ""
+}
+
+func (m *model) shellHistoryPrev() bool {
+	if len(m.shellHistory) == 0 {
+		return false
+	}
+	if m.shellHistoryIdx == -1 {
+		m.shellHistoryDraft = m.input.Value()
+		m.shellHistoryIdx = len(m.shellHistory) - 1
+	} else if m.shellHistoryIdx > 0 {
+		m.shellHistoryIdx--
+	} else {
+		return true
+	}
+	m.input.SetValue(m.shellHistory[m.shellHistoryIdx])
+	m.input.CursorEnd()
+	return true
+}
+
+func (m *model) shellHistoryNext() {
+	if m.shellHistoryIdx == -1 {
+		return
+	}
+	m.shellHistoryIdx++
+	if m.shellHistoryIdx >= len(m.shellHistory) {
+		draft := m.shellHistoryDraft
+		m.shellHistoryIdx = -1
+		m.shellHistoryDraft = ""
+		if draft != "" {
+			m.input.SetValue(draft)
+			m.input.CursorEnd()
+		} else {
+			m.input.Reset()
+		}
+	} else {
+		m.input.SetValue(m.shellHistory[m.shellHistoryIdx])
+		m.input.CursorEnd()
+	}
 }
 
 func (m model) updateCancelTurnConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {

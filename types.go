@@ -227,6 +227,15 @@ type model struct {
 	cancelTurnConfirming bool
 	cancelTurnChoice     int
 
+	shellMode         bool
+	shellBsArmed      bool
+	shellCh           chan tea.Msg
+	shellProc         *exec.Cmd
+	shellOutIdx       int
+	shellHistory      []string
+	shellHistoryIdx   int
+	shellHistoryDraft string
+
 	configFilter string
 	configCursor int
 

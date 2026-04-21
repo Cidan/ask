@@ -141,7 +141,11 @@ func (m *model) layout() {
 }
 
 func (m *model) contentFingerprint() string {
-	return fmt.Sprintf("%d|%d", len(m.history), m.width)
+	shellLen := 0
+	if m.shellOutIdx >= 0 && m.shellOutIdx < len(m.history) {
+		shellLen = len(m.history[m.shellOutIdx].text)
+	}
+	return fmt.Sprintf("%d|%d|%d", len(m.history), m.width, shellLen)
 }
 
 func (m *model) viewportContent() string {
@@ -161,6 +165,9 @@ func (m *model) viewportContent() string {
 }
 
 func (m model) spinnerLine() string {
+	if m.shellMode {
+		return thinkingStyle.Render(promptStyle.Render("▸ Shell Mode"))
+	}
 	if !m.busy {
 		return ""
 	}
@@ -172,10 +179,10 @@ func (m model) spinnerLine() string {
 }
 
 func (m model) spinnerBlockHeight() int {
-	if !m.busy {
-		return 0
+	if m.shellMode || m.busy {
+		return 2
 	}
-	return 2
+	return 0
 }
 
 func renderDiffBlock(path string, hunks []diffHunk) string {
@@ -283,7 +290,7 @@ func (m model) View() tea.View {
 	}
 
 	var box string
-	if m.mode == modeInput && !m.busy {
+	if m.mode == modeInput && !m.busy && !m.shellMode {
 		switch {
 		case m.pathPickerActive():
 			box = m.renderPathBox()
