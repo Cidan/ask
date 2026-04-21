@@ -24,7 +24,7 @@ func sessionPath(sessionID string) (string, error) {
 	return filepath.Join(dir, sessionID+".jsonl"), nil
 }
 
-func loadHistoryCmd(sessionID string) tea.Cmd {
+func loadHistoryCmd(sessionID string, renderDiffs bool) tea.Cmd {
 	return func() tea.Msg {
 		path, err := sessionPath(sessionID)
 		if err != nil {
@@ -61,6 +61,16 @@ func loadHistoryCmd(sessionID string) tea.Cmd {
 						kind: histUser,
 						text: s,
 					})
+					continue
+				}
+				if renderDiffs {
+					result, _ := rec["toolUseResult"].(map[string]any)
+					if fp, hunks, ok := parseStructuredPatch(result); ok {
+						entries = append(entries, historyEntry{
+							kind: histPrerendered,
+							text: renderDiffBlock(fp, hunks),
+						})
+					}
 				}
 			case "assistant":
 				if msg == nil {

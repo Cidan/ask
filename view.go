@@ -92,34 +92,31 @@ func (m model) spinnerBlockHeight() int {
 	return 2
 }
 
-func (m model) renderDiffBlock(path string, hunks []diffHunk) string {
-	var b strings.Builder
+func renderDiffBlock(path string, hunks []diffHunk) string {
+	var lines []string
 	if path != "" {
-		b.WriteString(diffPathStyle.Render(path))
-		b.WriteString("\n")
+		lines = append(lines, outputStyle.Render(diffPathStyle.Render(path)))
 	}
 	for i, h := range hunks {
 		if i > 0 {
-			b.WriteString("\n")
+			lines = append(lines, "")
 		}
 		header := fmt.Sprintf("@@ -%d,%d +%d,%d @@", h.oldStart, h.oldLines, h.newStart, h.newLines)
-		b.WriteString(diffHunkHeaderStyle.Render(header))
-		b.WriteString("\n")
-		for j, line := range h.lines {
-			if j > 0 {
-				b.WriteString("\n")
-			}
+		lines = append(lines, outputStyle.Render(diffHunkHeaderStyle.Render(header)))
+		for _, line := range h.lines {
+			var styled string
 			switch {
 			case strings.HasPrefix(line, "+"):
-				b.WriteString(diffAddStyle.Render(line))
+				styled = diffAddStyle.Render(line)
 			case strings.HasPrefix(line, "-"):
-				b.WriteString(diffDelStyle.Render(line))
+				styled = diffDelStyle.Render(line)
 			default:
-				b.WriteString(diffContextStyle.Render(line))
+				styled = diffContextStyle.Render(line)
 			}
+			lines = append(lines, outputStyle.Render(styled))
 		}
 	}
-	return outputStyle.Render(b.String())
+	return strings.Join(lines, "\n")
 }
 
 func (m model) renderResponse(raw string) string {

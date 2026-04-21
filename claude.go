@@ -255,6 +255,10 @@ func assistantTodos(ev map[string]any) ([]todoItem, bool) {
 
 func userToolDiff(ev map[string]any) (string, []diffHunk, bool) {
 	result, _ := ev["tool_use_result"].(map[string]any)
+	return parseStructuredPatch(result)
+}
+
+func parseStructuredPatch(result map[string]any) (string, []diffHunk, bool) {
 	if result == nil {
 		return "", nil, false
 	}
