@@ -187,6 +187,7 @@ func (m model) View() tea.View {
 	var v tea.View
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
+	v.BackgroundColor = themeBackground
 
 	bodyStart := time.Now()
 	body := m.viewBody()
@@ -327,6 +328,23 @@ func (m model) View() tea.View {
 				Min: image.Pt(mX, mY),
 				Max: image.Pt(mX+mW, mY+mH),
 			})
+			if m.configThemePickerActive {
+				picker := m.viewThemePicker()
+				pW := lipgloss.Width(picker)
+				pH := lipgloss.Height(picker)
+				pX := (m.width - pW) / 2
+				pY := (m.height - pH) / 2
+				if pX < 0 {
+					pX = 0
+				}
+				if pY < 0 {
+					pY = 0
+				}
+				uv.NewStyledString(picker).Draw(canvas, image.Rectangle{
+					Min: image.Pt(pX, pY),
+					Max: image.Pt(pX+pW, pY+pH),
+				})
+			}
 		}
 		if needCancelConfirm {
 			confirm := m.viewCancelTurnConfirm()

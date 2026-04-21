@@ -8,22 +8,9 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	lipgloss "charm.land/lipgloss/v2"
 )
 
 const ollamaModelOption = "ollama (configure...)"
-
-var (
-	ollamaBoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("14")).
-			Padding(1, 2)
-	ollamaTitleStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
-	ollamaLabelStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-	ollamaActiveArrow = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
-	ollamaErrStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	ollamaHelpStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-)
 
 const ollamaBoxWidth = 58
 

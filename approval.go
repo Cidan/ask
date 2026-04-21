@@ -7,19 +7,6 @@ import (
 	lipgloss "charm.land/lipgloss/v2"
 )
 
-var (
-	approvalBoxStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("11")).
-				Padding(1, 2)
-	approvalBtnStyle          = lipgloss.NewStyle().Padding(0, 2).Foreground(lipgloss.Color("8"))
-	approvalDenyActiveStyle   = lipgloss.NewStyle().Padding(0, 2).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("9")).Bold(true)
-	approvalAllowActiveStyle  = lipgloss.NewStyle().Padding(0, 2).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("10")).Bold(true)
-	approvalAlwaysActiveStyle = lipgloss.NewStyle().Padding(0, 2).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("11")).Bold(true)
-	approvalTitleStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
-	approvalToolStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
-	approvalSummaryStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
-)
 
 const (
 	approvalBoxWidth      = 90

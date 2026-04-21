@@ -22,7 +22,23 @@ func applyCursorBlink(ta *textarea.Model, enabled bool) {
 	ta.SetStyles(s)
 }
 
+// applyInputTheme clears the textarea bubble's hardcoded CursorLine background
+// (ansi 0 / 255) so the focused row inherits the theme's background instead of
+// flashing a dark band across the input.
+func applyInputTheme(ta *textarea.Model) {
+	s := ta.Styles()
+	s.Focused.CursorLine = lipgloss.NewStyle()
+	s.Blurred.CursorLine = lipgloss.NewStyle()
+	ta.SetStyles(s)
+}
+
 func initialModel(cfg askConfig) model {
+	themeName := cfg.UI.Theme
+	if themeName == "" {
+		themeName = "default"
+	}
+	applyTheme(themeByName(themeName))
+
 	ta := textarea.New()
 	ta.Placeholder = "ask anything (try /resume)"
 	ta.Prompt = ""
@@ -40,6 +56,7 @@ func initialModel(cfg askConfig) model {
 
 	cursorBlink := cfg.UI.CursorBlink == nil || *cfg.UI.CursorBlink
 	applyCursorBlink(&ta, cursorBlink)
+	applyInputTheme(&ta)
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -64,6 +81,7 @@ func initialModel(cfg askConfig) model {
 		claudeModel:        cfg.Claude.Model,
 		ollamaHost:         cfg.Claude.Ollama.Host,
 		ollamaModel:        cfg.Claude.Ollama.Model,
+		themeName:          themeName,
 		quietMode:          cfg.UI.QuietMode == nil || *cfg.UI.QuietMode,
 		cursorBlink:        cursorBlink,
 		renderDiffs:        cfg.UI.RenderDiffs == nil || *cfg.UI.RenderDiffs,

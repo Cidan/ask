@@ -36,22 +36,10 @@ func (m model) configItemsAll() []configItem {
 		{"Cursor Blink", blink, "cursorBlink"},
 		{"Render Diffs", diffs, "renderDiffs"},
 		{"Skip All Permissions", skipPerms, "skipAllPermissions"},
+		{"Theme", m.themeName, "theme"},
 	}
 }
 
-var (
-	configBoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("13")).
-			Padding(0, 1)
-	configTitleStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true)
-	configPromptStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
-	configPlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	configCaretStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
-	configSelectedRowStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("13")).Bold(true)
-	configKeyDimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	configHelpStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-)
 
 func (m model) refreshHistoryCmd() tea.Cmd {
 	if m.busy || m.sessionID == "" {
@@ -92,6 +80,9 @@ func (m model) filteredConfigItems() []configItem {
 func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
 		return m, tea.Quit
+	}
+	if m.configThemePickerActive {
+		return m.updateThemePicker(msg)
 	}
 	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
 		return m.clearConfigModal(), nil
@@ -153,6 +144,9 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					debugLog("saveConfig err: %v", err)
 				}
 				m.killProc()
+				return m, nil
+			case "theme":
+				m = m.openThemePicker()
 				return m, nil
 			}
 		}
@@ -246,6 +240,133 @@ func (m model) viewConfigModal() string {
 	}, "\n")
 
 	return configBoxStyle.Render(body)
+}
+
+func (m model) openThemePicker() model {
+	m.configThemePickerActive = true
+	m.configThemeBackup = m.themeName
+	m.configThemeCursor = 0
+	for i, t := range themeRegistry {
+		if t.name == m.themeName {
+			m.configThemeCursor = i
+			break
+		}
+	}
+	return m
+}
+
+func (m model) closeThemePicker() model {
+	m.configThemePickerActive = false
+	m.configThemeBackup = ""
+	m.configThemeCursor = 0
+	return m
+}
+
+func (m *model) invalidateThemedRender() {
+	for i := range m.history {
+		switch m.history[i].kind {
+		case histResponse, histUser:
+			m.history[i].rendered = ""
+		}
+	}
+	m.lastContentFP = ""
+	m.fc = &frameCache{}
+}
+
+func (m model) previewTheme(idx int) model {
+	if idx < 0 || idx >= len(themeRegistry) {
+		return m
+	}
+	t := themeRegistry[idx]
+	m.configThemeCursor = idx
+	m.themeName = t.name
+	applyTheme(t)
+	(&m).invalidateThemedRender()
+	return m
+}
+
+func (m model) updateThemePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
+		m = m.previewTheme(themeIndexByName(m.configThemeBackup))
+		m = m.closeThemePicker()
+		return m, nil
+	case msg.Code == tea.KeyUp:
+		if m.configThemeCursor > 0 {
+			m = m.previewTheme(m.configThemeCursor - 1)
+		}
+		return m, nil
+	case msg.Code == tea.KeyDown:
+		if m.configThemeCursor < len(themeRegistry)-1 {
+			m = m.previewTheme(m.configThemeCursor + 1)
+		}
+		return m, nil
+	case msg.Code == tea.KeyEnter:
+		cfg, _ := loadConfig()
+		cfg.UI.Theme = m.themeName
+		if err := saveConfig(cfg); err != nil {
+			debugLog("saveConfig err: %v", err)
+		}
+		m = m.closeThemePicker()
+		return m, m.refreshHistoryCmd()
+	}
+	return m, nil
+}
+
+func themeIndexByName(name string) int {
+	for i, t := range themeRegistry {
+		if t.name == name {
+			return i
+		}
+	}
+	return 0
+}
+
+func (m model) viewThemePicker() string {
+	innerW := 0
+	for _, t := range themeRegistry {
+		if w := lipgloss.Width(t.name); w > innerW {
+			innerW = w
+		}
+	}
+	innerW += 4
+	if innerW < 24 {
+		innerW = 24
+	}
+
+	title := themePickerTitleStyle.Render("Theme")
+
+	rows := make([]string, 0, len(themeRegistry))
+	for i, t := range themeRegistry {
+		line := "  " + t.name
+		if i == m.configThemeCursor {
+			line = "▸ " + t.name
+			pad := innerW - lipgloss.Width(line)
+			if pad < 0 {
+				pad = 0
+			}
+			line += strings.Repeat(" ", pad)
+			line = themePickerRowStyle.Render(line)
+		} else {
+			pad := innerW - lipgloss.Width(line)
+			if pad > 0 {
+				line += strings.Repeat(" ", pad)
+			}
+		}
+		rows = append(rows, line)
+	}
+
+	help := themePickerHelpStyle.Render("↑↓ preview · enter save · esc cancel")
+
+	body := strings.Join([]string{
+		title,
+		"",
+		strings.Join(rows, "\n"),
+		"",
+		help,
+	}, "\n")
+
+	return themePickerBoxStyle.Render(body)
 }
 
 func renderConfigRow(it configItem, width int, selected bool) string {

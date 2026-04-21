@@ -11,7 +11,6 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	glamour "charm.land/glamour/v2"
-	lipgloss "charm.land/lipgloss/v2"
 )
 
 type claudeResult struct {
@@ -165,43 +164,6 @@ type historyLoadedMsg struct {
 	silent    bool
 }
 
-var (
-	selectedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true)
-	dimStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	promptStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
-	promptArrowStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
-	promptDotStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-	cwdStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
-	errStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	userBarStyle     = lipgloss.NewStyle().
-				MarginLeft(3).
-				Border(lipgloss.NormalBorder(), false, false, false, true).
-				BorderForeground(lipgloss.Color("13")).
-				PaddingLeft(1)
-	outputStyle   = lipgloss.NewStyle().MarginLeft(5)
-	thinkingStyle = lipgloss.NewStyle().MarginLeft(3)
-	chipStyle        = lipgloss.NewStyle().MarginLeft(3).Foreground(lipgloss.Color("13")).Bold(true)
-	scrollThumbStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	scrollTrackStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("0"))
-	thumbBorderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
-	pathBoxStyle  = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("13")).
-			Padding(0, 1)
-	todoBoxStyle = lipgloss.NewStyle().
-			MarginLeft(3).
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("6")).
-			Padding(0, 1)
-	todoPendingStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	todoProgressStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
-	todoCompletedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Strikethrough(true)
-	diffPathStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
-	diffHunkHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	diffAddStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	diffDelStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	diffContextStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-)
 
 type frameCache struct {
 	vpFP   string
@@ -267,6 +229,12 @@ type model struct {
 
 	configFilter string
 	configCursor int
+
+	configThemePickerActive bool
+	configThemeCursor       int
+	configThemeBackup       string
+
+	themeName string
 
 	quietMode          bool
 	cursorBlink        bool

@@ -161,12 +161,12 @@ func renderLsOutput(target string, paths []string) string {
 func formatLsName(r lsRow) string {
 	switch {
 	case r.isLnk:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Render(r.name) +
+		return fileSymlinkStyle.Render(r.name) +
 			dimStyle.Render(" → "+r.link)
 	case r.isDir:
 		return cwdStyle.Render(r.name + "/")
 	case r.isExe:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render(r.name + "*")
+		return fileExeStyle.Render(r.name + "*")
 	default:
 		return r.name
 	}

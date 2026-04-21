@@ -36,30 +36,6 @@ const (
 	askEditNote
 )
 
-var (
-	askBoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("13")).
-			Padding(1, 2)
-	askTabStyle        = lipgloss.NewStyle().Padding(0, 2).Foreground(lipgloss.Color("8"))
-	askTabActiveStyle  = lipgloss.NewStyle().Padding(0, 2).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("5")).Bold(true)
-	askPromptStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
-	askOptionSelected  = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	askOptionCursorFG  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	askOptionRowStyle  = lipgloss.NewStyle().Background(lipgloss.Color("237"))
-	askHelpStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	askConfirmKeyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
-	askSummaryDimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	askNoteLabelStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-	askPlaceholder     = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Italic(true)
-	askCaretStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
-	askConfirmBoxStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("9")).
-				Padding(1, 2)
-	askConfirmBtnStyle       = lipgloss.NewStyle().Padding(0, 3).Foreground(lipgloss.Color("8"))
-	askConfirmBtnActiveStyle = lipgloss.NewStyle().Padding(0, 3).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("9")).Bold(true)
-)
 
 const askBoxWidth = 100
 
@@ -642,16 +618,11 @@ func (m model) renderDiagramGrid(idx int) string {
 	ans := m.askAnswers[idx]
 	diagrams := padDiagrams(normalizeDiagrams(q.diagrams))
 
-	previewStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("14")).
-		Padding(0, 1)
-
 	var previewContent string
 	if m.askCursor >= 0 && m.askCursor < len(diagrams) {
 		previewContent = diagrams[m.askCursor]
 	}
-	preview := previewStyle.Render(previewContent)
+	preview := diagramPreviewStyle.Render(previewContent)
 
 	var listLines []string
 	for i, opt := range q.options {
