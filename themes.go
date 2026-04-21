@@ -45,6 +45,8 @@ var themeRegistry = []theme{
 	catppuccinMochaTheme(),
 	rosePineTheme(),
 	fighterTheme(),
+	hackerTheme(),
+	amberTheme(),
 	loveTheme(),
 }
 
@@ -287,6 +289,56 @@ func fighterTheme() theme {
 		scrollTrack: lipgloss.Color("#2D2A2E"),
 		tabActive:   lipgloss.Color("#AB9DF2"),
 		background:  lipgloss.Color("#2D2A2E"),
+	}
+}
+
+// hackerTheme is the Matrix: phosphor green on CRT black, with amber for
+// warnings (that 1970s terminal tint) and a crimson red reserved for "access
+// denied" errors. Everything else lives on the green ramp.
+func hackerTheme() theme {
+	return theme{
+		name:        "hacker",
+		accent:      lipgloss.Color("#3FDF5A"),
+		accentAlt:   lipgloss.Color("#5DE880"),
+		prompt:      lipgloss.Color("#3FDF5A"),
+		promptDot:   lipgloss.Color("#1E8F35"),
+		success:     lipgloss.Color("#3FDF5A"),
+		errorFG:     lipgloss.Color("#E03048"),
+		warn:        lipgloss.Color("#E0A500"),
+		dim:         lipgloss.Color("#0E4A1A"),
+		muted:       lipgloss.Color("#25A838"),
+		inverseFG:   lipgloss.Color("#050805"),
+		darkFG:      lipgloss.Color("#000000"),
+		rowHL:       lipgloss.Color("#0A2510"),
+		scrollTrack: lipgloss.Color("#050805"),
+		tabActive:   lipgloss.Color("#5DE880"),
+		background:  lipgloss.Color("#050805"),
+		foreground:  lipgloss.Color("#3FDF5A"),
+	}
+}
+
+// amberTheme is hacker's sibling: amber CRT phosphor on a warm near-black,
+// the look of a 1970s DEC/IBM amber-screen terminal. Red is reserved for
+// errors; everything else lives on the amber ramp.
+func amberTheme() theme {
+	return theme{
+		name:        "amber",
+		accent:      lipgloss.Color("#E0A44A"),
+		accentAlt:   lipgloss.Color("#FFC857"),
+		prompt:      lipgloss.Color("#E0A44A"),
+		promptDot:   lipgloss.Color("#B37F2C"),
+		success:     lipgloss.Color("#D4C04B"),
+		errorFG:     lipgloss.Color("#D14545"),
+		warn:        lipgloss.Color("#FFC857"),
+		dim:         lipgloss.Color("#5A3E14"),
+		muted:       lipgloss.Color("#B37F2C"),
+		inverseFG:   lipgloss.Color("#0F0A00"),
+		darkFG:      lipgloss.Color("#000000"),
+		rowHL:       lipgloss.Color("#291B00"),
+		scrollTrack: lipgloss.Color("#0F0A00"),
+		tabActive:   lipgloss.Color("#FFC857"),
+		background:  lipgloss.Color("#0F0A00"),
+		foreground:  lipgloss.Color("#E0A44A"),
 	}
 }
 
