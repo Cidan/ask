@@ -27,6 +27,10 @@ type theme struct {
 	// background drives tea.View.BackgroundColor (OSC 11). Nil leaves the
 	// terminal's own background untouched — used by the default theme.
 	background color.Color
+	// foreground drives tea.View.ForegroundColor (OSC 10). Set it whenever a
+	// theme forces background against the grain of the terminal's default fg
+	// (e.g. light-background themes where the terminal default is still light).
+	foreground color.Color
 }
 
 var themeRegistry = []theme{
@@ -35,8 +39,12 @@ var themeRegistry = []theme{
 	nordTheme(),
 	gruvboxDarkTheme(),
 	tokyoNightTheme(),
+	catppuccinLatteTheme(),
+	catppuccinFrappeTheme(),
+	catppuccinMacchiatoTheme(),
 	catppuccinMochaTheme(),
 	rosePineTheme(),
+	fighterTheme(),
 	loveTheme(),
 }
 
@@ -145,9 +153,80 @@ func tokyoNightTheme() theme {
 	}
 }
 
+// Catppuccin: four official flavors with a consistent role mapping.
+// Pink→accent, Sky→accentAlt, Blue→prompt, Teal→promptDot, Green→success,
+// Red→errorFG, Yellow→warn, Overlay0→dim, Subtext1→muted, Mauve→tabActive,
+// Surface0→rowHL, Base→background+scrollTrack. inverseFG/darkFG flip between
+// the three dark flavors (Text on colored bg, Base on warn) and Latte (Base on
+// colored bg, Text on warn) so contrast stays legible in both directions.
+
+func catppuccinLatteTheme() theme {
+	return theme{
+		name:        "latte",
+		accent:      lipgloss.Color("#EA76CB"),
+		accentAlt:   lipgloss.Color("#04A5E5"),
+		prompt:      lipgloss.Color("#1E66F5"),
+		promptDot:   lipgloss.Color("#179299"),
+		success:     lipgloss.Color("#40A02B"),
+		errorFG:     lipgloss.Color("#D20F39"),
+		warn:        lipgloss.Color("#DF8E1D"),
+		dim:         lipgloss.Color("#9CA0B0"),
+		muted:       lipgloss.Color("#5C5F77"),
+		inverseFG:   lipgloss.Color("#EFF1F5"),
+		darkFG:      lipgloss.Color("#4C4F69"),
+		rowHL:       lipgloss.Color("#CCD0DA"),
+		scrollTrack: lipgloss.Color("#E6E9EF"),
+		tabActive:   lipgloss.Color("#8839EF"),
+		background:  lipgloss.Color("#EFF1F5"),
+		foreground:  lipgloss.Color("#4C4F69"),
+	}
+}
+
+func catppuccinFrappeTheme() theme {
+	return theme{
+		name:        "frappé",
+		accent:      lipgloss.Color("#F4B8E4"),
+		accentAlt:   lipgloss.Color("#99D1DB"),
+		prompt:      lipgloss.Color("#8CAAEE"),
+		promptDot:   lipgloss.Color("#81C8BE"),
+		success:     lipgloss.Color("#A6D189"),
+		errorFG:     lipgloss.Color("#E78284"),
+		warn:        lipgloss.Color("#E5C890"),
+		dim:         lipgloss.Color("#737994"),
+		muted:       lipgloss.Color("#B5BFE2"),
+		inverseFG:   lipgloss.Color("#C6D0F5"),
+		darkFG:      lipgloss.Color("#303446"),
+		rowHL:       lipgloss.Color("#414559"),
+		scrollTrack: lipgloss.Color("#303446"),
+		tabActive:   lipgloss.Color("#CA9EE6"),
+		background:  lipgloss.Color("#303446"),
+	}
+}
+
+func catppuccinMacchiatoTheme() theme {
+	return theme{
+		name:        "macchiato",
+		accent:      lipgloss.Color("#F5BDE6"),
+		accentAlt:   lipgloss.Color("#91D7E3"),
+		prompt:      lipgloss.Color("#8AADF4"),
+		promptDot:   lipgloss.Color("#8BD5CA"),
+		success:     lipgloss.Color("#A6DA95"),
+		errorFG:     lipgloss.Color("#ED8796"),
+		warn:        lipgloss.Color("#EED49F"),
+		dim:         lipgloss.Color("#6E738D"),
+		muted:       lipgloss.Color("#B8C0E0"),
+		inverseFG:   lipgloss.Color("#CAD3F5"),
+		darkFG:      lipgloss.Color("#24273A"),
+		rowHL:       lipgloss.Color("#363A4F"),
+		scrollTrack: lipgloss.Color("#24273A"),
+		tabActive:   lipgloss.Color("#C6A0F6"),
+		background:  lipgloss.Color("#24273A"),
+	}
+}
+
 func catppuccinMochaTheme() theme {
 	return theme{
-		name:        "catppuccin",
+		name:        "mocha",
 		accent:      lipgloss.Color("#F5C2E7"),
 		accentAlt:   lipgloss.Color("#89DCEB"),
 		prompt:      lipgloss.Color("#89B4FA"),
@@ -184,6 +263,30 @@ func rosePineTheme() theme {
 		scrollTrack: lipgloss.Color("#1F1D2E"),
 		tabActive:   lipgloss.Color("#C4A7E7"),
 		background:  lipgloss.Color("#191724"),
+	}
+}
+
+// fighterTheme uses the Monokai Pro (Octagon) palette — softer than classic
+// Monokai so borders and accents read as muted pastels rather than neon. The
+// name nods to the Octagon filter (MMA cage).
+func fighterTheme() theme {
+	return theme{
+		name:        "fighter",
+		accent:      lipgloss.Color("#AB9DF2"),
+		accentAlt:   lipgloss.Color("#78DCE8"),
+		prompt:      lipgloss.Color("#AB9DF2"),
+		promptDot:   lipgloss.Color("#A9DC76"),
+		success:     lipgloss.Color("#A9DC76"),
+		errorFG:     lipgloss.Color("#FF6188"),
+		warn:        lipgloss.Color("#FFD866"),
+		dim:         lipgloss.Color("#727072"),
+		muted:       lipgloss.Color("#C1C0C0"),
+		inverseFG:   lipgloss.Color("#FCFCFA"),
+		darkFG:      lipgloss.Color("#2D2A2E"),
+		rowHL:       lipgloss.Color("#403E41"),
+		scrollTrack: lipgloss.Color("#2D2A2E"),
+		tabActive:   lipgloss.Color("#AB9DF2"),
+		background:  lipgloss.Color("#2D2A2E"),
 	}
 }
 
@@ -302,10 +405,14 @@ var (
 	themePickerRowStyle   lipgloss.Style
 
 	themeBackground color.Color
+	themeForeground color.Color
+	activeTheme     theme
 )
 
 func applyTheme(t theme) {
+	activeTheme = t
 	themeBackground = t.background
+	themeForeground = t.foreground
 	selectedStyle = lipgloss.NewStyle().Foreground(t.accent).Bold(true)
 	dimStyle = lipgloss.NewStyle().Foreground(t.dim)
 	promptStyle = lipgloss.NewStyle().Foreground(t.prompt)
@@ -387,7 +494,7 @@ func applyTheme(t theme) {
 	configPromptStyle = lipgloss.NewStyle().Foreground(t.accentAlt)
 	configPlaceholderStyle = lipgloss.NewStyle().Foreground(t.dim)
 	configCaretStyle = lipgloss.NewStyle().Foreground(t.accent)
-	configSelectedRowStyle = lipgloss.NewStyle().Foreground(t.inverseFG).Background(t.accent).Bold(true)
+	configSelectedRowStyle = lipgloss.NewStyle().Foreground(t.darkFG).Background(t.accent).Bold(true)
 	configKeyDimStyle = lipgloss.NewStyle().Foreground(t.dim)
 	configHelpStyle = lipgloss.NewStyle().Foreground(t.dim)
 
@@ -414,7 +521,7 @@ func applyTheme(t theme) {
 		Padding(1, 2)
 	themePickerTitleStyle = lipgloss.NewStyle().Foreground(t.accent).Bold(true)
 	themePickerHelpStyle = lipgloss.NewStyle().Foreground(t.dim)
-	themePickerRowStyle = lipgloss.NewStyle().Foreground(t.inverseFG).Background(t.accent).Bold(true)
+	themePickerRowStyle = lipgloss.NewStyle().Foreground(t.darkFG).Background(t.accent).Bold(true)
 }
 
 func init() {

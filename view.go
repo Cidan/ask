@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"image"
+	"image/color"
 	"path/filepath"
 	"strings"
 	"time"
@@ -11,13 +12,14 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	glamour "charm.land/glamour/v2"
+	"charm.land/glamour/v2/ansi"
 	"charm.land/glamour/v2/styles"
 	lipgloss "charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 )
 
 func newRenderer(width int) *glamour.TermRenderer {
-	style := *styles.DefaultStyles[styles.DarkStyle]
+	style := buildGlamourStyle(activeTheme)
 	zero := uint(0)
 	style.Document.Margin = &zero
 	wrap := width - 10
@@ -29,6 +31,90 @@ func newRenderer(width int) *glamour.TermRenderer {
 		glamour.WithWordWrap(wrap),
 	)
 	return r
+}
+
+// hexOf renders a color.Color as "#RRGGBB". Returns "" for nil.
+func hexOf(c color.Color) string {
+	if c == nil {
+		return ""
+	}
+	r, g, b, _ := c.RGBA()
+	return fmt.Sprintf("#%02X%02X%02X", byte(r>>8), byte(g>>8), byte(b>>8))
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+// buildGlamourStyle derives a markdown style from the active theme so body
+// text, inline code, headings, and code-block chroma all use the palette
+// currently in effect. Themes with no background (the default theme) get
+// glamour's built-in DarkStyle untouched so they match the terminal.
+func buildGlamourStyle(t theme) ansi.StyleConfig {
+	s := *styles.DefaultStyles[styles.DarkStyle]
+	if t.background == nil {
+		return s
+	}
+
+	fg := t.foreground
+	if fg == nil {
+		fg = t.inverseFG
+	}
+	textHex := hexOf(fg)
+	accentHex := hexOf(t.accent)
+	altHex := hexOf(t.accentAlt)
+	dimHex := hexOf(t.dim)
+	mutedHex := hexOf(t.muted)
+	invHex := hexOf(t.inverseFG)
+	rowHex := hexOf(t.rowHL)
+	promptDotHex := hexOf(t.promptDot)
+	successHex := hexOf(t.success)
+	warnHex := hexOf(t.warn)
+	errHex := hexOf(t.errorFG)
+
+	s.Document.StylePrimitive.Color = &textHex
+
+	s.Heading.StylePrimitive.Color = &accentHex
+	s.H1.StylePrimitive.Color = &invHex
+	s.H1.StylePrimitive.BackgroundColor = &accentHex
+	s.H6.StylePrimitive.Color = &promptDotHex
+
+	s.Link.Color = &altHex
+	s.LinkText.Color = &promptDotHex
+	s.HorizontalRule.Color = &dimHex
+
+	s.Code.StylePrimitive.Color = &mutedHex
+	s.Code.StylePrimitive.BackgroundColor = &rowHex
+
+	s.CodeBlock.StyleBlock.StylePrimitive.Color = &textHex
+	s.CodeBlock.Chroma = &ansi.Chroma{
+		Text:                ansi.StylePrimitive{Color: &textHex},
+		Error:               ansi.StylePrimitive{Color: &invHex, BackgroundColor: &errHex},
+		Comment:             ansi.StylePrimitive{Color: &dimHex},
+		CommentPreproc:      ansi.StylePrimitive{Color: &warnHex},
+		Keyword:             ansi.StylePrimitive{Color: &accentHex},
+		KeywordReserved:     ansi.StylePrimitive{Color: &promptDotHex},
+		KeywordNamespace:    ansi.StylePrimitive{Color: &errHex},
+		KeywordType:         ansi.StylePrimitive{Color: &altHex},
+		Operator:            ansi.StylePrimitive{Color: &mutedHex},
+		Punctuation:         ansi.StylePrimitive{Color: &mutedHex},
+		Name:                ansi.StylePrimitive{Color: &textHex},
+		NameBuiltin:         ansi.StylePrimitive{Color: &altHex},
+		NameTag:             ansi.StylePrimitive{Color: &accentHex},
+		NameAttribute:       ansi.StylePrimitive{Color: &warnHex},
+		NameClass:           ansi.StylePrimitive{Color: &promptDotHex, Bold: boolPtr(true)},
+		NameDecorator:       ansi.StylePrimitive{Color: &warnHex},
+		NameFunction:        ansi.StylePrimitive{Color: &altHex},
+		LiteralNumber:       ansi.StylePrimitive{Color: &warnHex},
+		LiteralString:       ansi.StylePrimitive{Color: &successHex},
+		LiteralStringEscape: ansi.StylePrimitive{Color: &accentHex},
+		GenericDeleted:      ansi.StylePrimitive{Color: &errHex},
+		GenericEmph:         ansi.StylePrimitive{Italic: boolPtr(true)},
+		GenericInserted:     ansi.StylePrimitive{Color: &successHex},
+		GenericStrong:       ansi.StylePrimitive{Bold: boolPtr(true)},
+		GenericSubheading:   ansi.StylePrimitive{Color: &dimHex},
+		Background:          ansi.StylePrimitive{BackgroundColor: &rowHex},
+	}
+
+	return s
 }
 
 func (m *model) layout() {
@@ -188,6 +274,7 @@ func (m model) View() tea.View {
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
 	v.BackgroundColor = themeBackground
+	v.ForegroundColor = themeForeground
 
 	bodyStart := time.Now()
 	body := m.viewBody()

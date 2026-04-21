@@ -281,6 +281,11 @@ func (m model) previewTheme(idx int) model {
 	m.configThemeCursor = idx
 	m.themeName = t.name
 	applyTheme(t)
+	w := m.width
+	if w <= 0 {
+		w = 100
+	}
+	m.renderer = newRenderer(w)
 	(&m).invalidateThemedRender()
 	return m
 }
