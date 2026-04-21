@@ -183,6 +183,14 @@ var (
 	todoCompletedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Strikethrough(true)
 )
 
+type frameCache struct {
+	vpFP   string
+	vpView string
+
+	vbFP      string
+	vbWithBar string
+}
+
 type model struct {
 	input     textarea.Model
 	viewport  viewport.Model
@@ -236,6 +244,10 @@ type model struct {
 
 	quietMode  bool
 	turnBuffer []string
+
+	lastContentFP string
+
+	fc *frameCache
 
 	mcpPort         int
 	claudeModel     string

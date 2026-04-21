@@ -11,10 +11,11 @@ var (
 	debugMu   sync.Mutex
 	debugFile *os.File
 	debugInit sync.Once
+	debugOn   = os.Getenv("ASK_DEBUG") != ""
 )
 
 func debugLog(format string, args ...any) {
-	if os.Getenv("ASK_DEBUG") == "" {
+	if !debugOn {
 		return
 	}
 	debugInit.Do(func() {
@@ -29,4 +30,11 @@ func debugLog(format string, args ...any) {
 	debugMu.Lock()
 	defer debugMu.Unlock()
 	fmt.Fprintf(debugFile, "%s "+format+"\n", append([]any{time.Now().Format("15:04:05.000")}, args...)...)
+}
+
+func debugTrace(label string, start time.Time) {
+	if !debugOn {
+		return
+	}
+	debugLog("%s %dµs", label, time.Since(start).Microseconds())
 }

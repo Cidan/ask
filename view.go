@@ -34,35 +34,62 @@ func newRenderer(width int) *glamour.TermRenderer {
 func (m *model) layout() {
 	atBottom := m.viewport.AtBottom()
 	inputH := m.input.Height()
-	extra := m.pendingBlockHeight() + m.todoBlockHeight()
+	extra := m.pendingBlockHeight() + m.todoBlockHeight() + m.spinnerBlockHeight()
 	vpH := m.height - 1 - inputH - extra
 	if vpH < 1 {
 		vpH = 1
 	}
-	m.viewport.SetWidth(m.width)
+	vpW := m.width - 1
+	if vpW < 1 {
+		vpW = 1
+	}
+	m.viewport.SetWidth(vpW)
 	m.viewport.SetHeight(vpH)
-	m.viewport.SetContent(m.viewportContent())
+	if fp := m.contentFingerprint(); fp != m.lastContentFP {
+		m.viewport.SetContent(m.viewportContent())
+		m.lastContentFP = fp
+	}
 	if atBottom {
 		m.viewport.GotoBottom()
 	}
 }
 
+func (m *model) contentFingerprint() string {
+	return fmt.Sprintf("%d|%d", len(m.history), m.width)
+}
+
 func (m *model) viewportContent() string {
-	parts := make([]string, 0, len(m.history)+1)
+	parts := make([]string, 0, len(m.history))
 	for i := range m.history {
-		if m.history[i].kind == histResponse && m.history[i].rendered == "" {
-			m.history[i].rendered = m.renderResponse(m.history[i].text)
+		if m.history[i].rendered == "" {
+			switch m.history[i].kind {
+			case histResponse:
+				m.history[i].rendered = m.renderResponse(m.history[i].text)
+			case histUser:
+				m.history[i].rendered = m.renderUserBar(m.history[i].text)
+			}
 		}
 		parts = append(parts, m.renderEntry(m.history[i]))
 	}
-	if m.busy {
-		s := m.status
-		if s == "" {
-			s = "thinking…"
-		}
-		parts = append(parts, thinkingStyle.Render(m.spinner.View()+dimStyle.Render(s)))
-	}
 	return strings.Join(parts, "\n\n")
+}
+
+func (m model) spinnerLine() string {
+	if !m.busy {
+		return ""
+	}
+	s := m.status
+	if s == "" {
+		s = "thinking…"
+	}
+	return thinkingStyle.Render(m.spinner.View() + dimStyle.Render(s))
+}
+
+func (m model) spinnerBlockHeight() int {
+	if !m.busy {
+		return 0
+	}
+	return 1
 }
 
 func (m model) renderResponse(raw string) string {
@@ -73,16 +100,18 @@ func (m model) renderResponse(raw string) string {
 	return outputStyle.Render(strings.Trim(rendered, "\n"))
 }
 
+func (m model) renderUserBar(text string) string {
+	w := m.width - 8
+	if w < 20 {
+		w = 20
+	}
+	return userBarStyle.Width(w).Render(text)
+}
+
 func (m model) renderEntry(e historyEntry) string {
 	switch e.kind {
-	case histResponse:
+	case histResponse, histUser:
 		return e.rendered
-	case histUser:
-		w := m.width - 8
-		if w < 20 {
-			w = 20
-		}
-		return userBarStyle.Width(w).Render(e.text)
 	default:
 		return e.text
 	}
@@ -90,17 +119,14 @@ func (m model) renderEntry(e historyEntry) string {
 
 func (m *model) appendHistory(entry string) {
 	m.history = append(m.history, historyEntry{kind: histPrerendered, text: entry})
-	m.layout()
 }
 
 func (m *model) appendResponse(raw string) {
 	m.history = append(m.history, historyEntry{kind: histResponse, text: raw})
-	m.layout()
 }
 
 func (m *model) appendUser(text string) {
 	m.history = append(m.history, historyEntry{kind: histUser, text: text})
-	m.layout()
 }
 
 func (m *model) refreshPrompt() {
@@ -128,11 +154,18 @@ func (m *model) refreshPrompt() {
 }
 
 func (m model) View() tea.View {
+	if debugOn {
+		defer debugTrace("View", time.Now())
+	}
 	var v tea.View
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
 
+	bodyStart := time.Now()
 	body := m.viewBody()
+	if debugOn {
+		debugTrace("  viewBody", bodyStart)
+	}
 
 	var box string
 	if m.mode == modeInput && !m.busy {
@@ -144,26 +177,21 @@ func (m model) View() tea.View {
 		}
 	}
 
-	vpH := m.viewport.Height()
-	needScroll := m.mode == modeInput && vpH > 0 && m.viewport.TotalLineCount() > vpH
 	needBox := box != ""
 	needModal := m.mode == modeAskQuestion
 	needApproval := m.mode == modeApproval
 	needConfig := m.mode == modeConfig
 	needCancelConfirm := m.cancelTurnConfirming && m.mode == modeInput
 
-	if (needBox || needScroll || needModal || needApproval || needConfig || needCancelConfirm) && m.width > 0 && m.height > 0 {
+	if (needBox || needModal || needApproval || needConfig || needCancelConfirm) && m.width > 0 && m.height > 0 {
+		cbStart := time.Now()
 		canvas := uv.NewScreenBuffer(m.width, m.height)
 		uv.NewStyledString(body).Draw(canvas, image.Rectangle{
 			Min: image.Pt(0, 0),
 			Max: image.Pt(m.width, m.height),
 		})
-		if needScroll {
-			bar := renderScrollbar(m.viewport)
-			uv.NewStyledString(bar).Draw(canvas, image.Rectangle{
-				Min: image.Pt(m.width-1, 0),
-				Max: image.Pt(m.width, vpH),
-			})
+		if debugOn {
+			debugTrace("  canvas+bodyDraw", cbStart)
 		}
 		if needBox {
 			boxW := lipgloss.Width(box)
@@ -273,9 +301,22 @@ func (m model) View() tea.View {
 				Max: image.Pt(cX+cW, cY+cH),
 			})
 		}
-		v.Content = canvas.Render()
+		rStart := time.Now()
+		rendered := canvas.Render()
+		if debugOn {
+			debugTrace("  canvas.Render", rStart)
+		}
+		tStart := time.Now()
+		v.Content = trimTrailingSpaces(rendered)
+		if debugOn {
+			debugTrace("  trim", tStart)
+		}
 	} else {
-		v.Content = body
+		tStart := time.Now()
+		v.Content = trimTrailingSpaces(body)
+		if debugOn {
+			debugTrace("  trim", tStart)
+		}
 	}
 
 	if m.mode == modeInput {
@@ -302,10 +343,62 @@ func (m *model) scrollViewportTo(y int) {
 	m.viewport.SetYOffset(int(pct * float64(total-vpH)))
 }
 
-func renderScrollbar(vp viewport.Model) string {
+func trimTrailingSpaces(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " ")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m model) viewportWithScrollbar() string {
+	if m.fc == nil {
+		return m.buildViewportWithScrollbar()
+	}
+	fp := fmt.Sprintf("%d|%d|%d|%s|%t",
+		m.viewport.Width(),
+		m.viewport.Height(),
+		m.viewport.YOffset(),
+		m.lastContentFP,
+		m.mode == modeInput)
+	if m.fc.vbFP == fp {
+		if debugOn {
+			debugLog("    vb cache HIT")
+		}
+		return m.fc.vbWithBar
+	}
+	bs := time.Now()
+	m.fc.vbWithBar = m.buildViewportWithScrollbar()
+	m.fc.vbFP = fp
+	if debugOn {
+		debugTrace("    vb build (miss)", bs)
+	}
+	return m.fc.vbWithBar
+}
+
+func (m model) buildViewportWithScrollbar() string {
+	vpView := m.cachedViewportView()
+	if m.mode != modeInput || m.viewport.TotalLineCount() <= m.viewport.Height() {
+		return vpView
+	}
+	bar := scrollbarChars(m.viewport)
+	if len(bar) == 0 {
+		return vpView
+	}
+	lines := strings.Split(vpView, "\n")
+	for i := range lines {
+		if i < len(bar) {
+			lines[i] += bar[i]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func scrollbarChars(vp viewport.Model) []string {
 	height := vp.Height()
 	if height <= 0 {
-		return ""
+		return nil
 	}
 	total := vp.TotalLineCount()
 	visible := vp.VisibleLineCount()
@@ -327,18 +420,39 @@ func renderScrollbar(vp viewport.Model) string {
 			thumbStart = height - thumbSize
 		}
 	}
-	var b strings.Builder
+	out := make([]string, height)
 	for i := 0; i < height; i++ {
 		if i >= thumbStart && i < thumbStart+thumbSize {
-			b.WriteString(scrollThumbStyle.Render("█"))
+			out[i] = scrollThumbStyle.Render("█")
 		} else {
-			b.WriteString(scrollTrackStyle.Render("│"))
-		}
-		if i < height-1 {
-			b.WriteString("\n")
+			out[i] = scrollTrackStyle.Render("│")
 		}
 	}
-	return b.String()
+	return out
+}
+
+func (m model) cachedViewportView() string {
+	if m.fc == nil {
+		return m.viewport.View()
+	}
+	fp := fmt.Sprintf("%d|%d|%d|%s",
+		m.viewport.Width(),
+		m.viewport.Height(),
+		m.viewport.YOffset(),
+		m.lastContentFP)
+	if m.fc.vpFP == fp {
+		if debugOn {
+			debugLog("  viewport cache HIT")
+		}
+		return m.fc.vpView
+	}
+	vs := time.Now()
+	m.fc.vpView = m.viewport.View()
+	m.fc.vpFP = fp
+	if debugOn {
+		debugTrace("  viewport.View (miss)", vs)
+	}
+	return m.fc.vpView
 }
 
 func (m model) viewBody() string {
@@ -346,8 +460,13 @@ func (m model) viewBody() string {
 		return m.viewPicker()
 	}
 	var b strings.Builder
-	b.WriteString(m.viewport.View())
+	vs := time.Now()
+	b.WriteString(m.viewportWithScrollbar())
 	b.WriteString("\n\n")
+	if debugOn {
+		debugTrace("    vb.viewport+bar", vs)
+	}
+	ps := time.Now()
 	if block := m.renderPendingArea(); block != "" {
 		indent := strings.Repeat(" ", 3)
 		for _, row := range strings.Split(block, "\n") {
@@ -357,6 +476,10 @@ func (m model) viewBody() string {
 		}
 		b.WriteString("\n")
 	}
+	if debugOn {
+		debugTrace("    vb.pending", ps)
+	}
+	ts := time.Now()
 	if block := m.todoBlock(); block != "" {
 		for _, row := range strings.Split(block, "\n") {
 			b.WriteString(row)
@@ -364,7 +487,22 @@ func (m model) viewBody() string {
 		}
 		b.WriteString("\n")
 	}
+	if debugOn {
+		debugTrace("    vb.todos", ts)
+	}
+	ss := time.Now()
+	if line := m.spinnerLine(); line != "" {
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	if debugOn {
+		debugTrace("    vb.spinner", ss)
+	}
+	is := time.Now()
 	b.WriteString(m.input.View())
+	if debugOn {
+		debugTrace("    vb.input.View", is)
+	}
 	return b.String()
 }
 

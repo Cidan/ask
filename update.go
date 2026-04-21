@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
@@ -13,7 +14,16 @@ func (m model) Init() tea.Cmd {
 	return probeClaudeInitCmd(m.mcpPort)
 }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
+	if debugOn {
+		defer debugTrace(fmt.Sprintf("Update[%T]", msg), time.Now())
+	}
+	defer func() {
+		if mm, ok := newModel.(model); ok {
+			(&mm).layout()
+			newModel = mm
+		}
+	}()
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -21,11 +31,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetWidth(msg.Width - 5)
 		m.renderer = newRenderer(msg.Width)
 		for i := range m.history {
-			if m.history[i].kind == histResponse {
+			switch m.history[i].kind {
+			case histResponse, histUser:
 				m.history[i].rendered = ""
 			}
 		}
-		m.layout()
 		return m, nil
 
 	case spinner.TickMsg:
@@ -34,7 +44,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
-		m.layout()
 		return m, cmd
 
 	case streamStatusMsg:
@@ -44,7 +53,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		wasIdle := !m.busy
 		m.busy = true
 		m.status = msg.status
-		m.layout()
 		var cmds []tea.Cmd
 		if m.streamCh != nil {
 			cmds = append(cmds, nextStreamCmd(m.streamCh))
@@ -62,7 +70,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.todos = msg.todos
-		m.layout()
 		if m.streamCh != nil {
 			return m, nextStreamCmd(m.streamCh)
 		}
@@ -139,7 +146,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd = nextStreamCmd(m.streamCh)
 		}
 		m.refreshPathMatches()
-		m.layout()
 		return m, cmd
 
 	case assistantTextMsg:
@@ -150,7 +156,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = true
 		if m.quietMode {
 			m.turnBuffer = append(m.turnBuffer, msg.text)
-			m.layout()
 		} else {
 			m.appendResponse(msg.text)
 		}
@@ -175,7 +180,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		m.todos = nil
 		m.dismissCancelTurnConfirmIfIdle()
-		m.layout()
 		if m.streamCh != nil {
 			return m, nextStreamCmd(m.streamCh)
 		}
@@ -195,7 +199,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			text: outputStyle.Render(promptStyle.Render(
 				fmt.Sprintf("✓ resumed session %s", short(m.sessionID)))),
 		})
-		m.layout()
 		m.viewport.GotoBottom()
 		return m, nil
 
@@ -253,7 +256,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.pending = append(m.pending, att)
-		m.layout()
 		return m, nil
 
 	case tea.MouseWheelMsg:
@@ -293,7 +295,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
 			m.refreshPathMatches()
-			m.layout()
 			return m, cmd
 		}
 		return m, nil
@@ -344,7 +345,6 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.pending = nil
 		m.resetHistoryNav()
 		m.refreshPathMatches()
-		m.layout()
 		return m, nil
 	}
 	if msg.Mod == tea.ModCtrl && msg.Code == 'v' {
@@ -358,7 +358,6 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if len(m.pending) > 0 {
 			m.pending = nil
-			m.layout()
 			return m, nil
 		}
 		return m, nil
@@ -385,7 +384,6 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			if m.historyIdx >= 0 || m.input.Line() == 0 {
 				if m.historyPrev() {
-					m.layout()
 					return m, nil
 				}
 			}
@@ -404,7 +402,6 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			if m.historyIdx >= 0 {
 				m.historyNext()
-				m.layout()
 				return m, nil
 			}
 		case tea.KeyTab:
@@ -413,7 +410,6 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.input.SetValue(m.pathPickerCmd() + " " + pick + "/")
 				m.resetHistoryNav()
 				m.refreshPathMatches()
-				m.layout()
 				return m, nil
 			}
 			if menuOpen {
@@ -421,7 +417,6 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.input.SetValue(pick)
 				m.menuIdx = 0
 				m.resetHistoryNav()
-				m.layout()
 				return m, nil
 			}
 		case tea.KeyPgUp:
@@ -449,18 +444,15 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 				m.input.Reset()
 				m.refreshPathMatches()
-				m.layout()
 				return m.runPathCommand(cmd, target)
 			}
 			if cmd := bareCommand(line); cmd != "" {
 				m.input.Reset()
-				m.layout()
 				return m.runPathCommand(cmd, "")
 			}
 			m.input.Reset()
 			m.menuIdx = 0
 			if strings.HasPrefix(line, "/") {
-				m.layout()
 				return m.handleCommand(line)
 			}
 			return m.sendToClaude(val)
@@ -481,7 +473,6 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.pathMatches = nil
 		m.pathIdx = 0
 	}
-	m.layout()
 	return m, cmd
 }
 

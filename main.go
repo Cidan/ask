@@ -51,6 +51,7 @@ func initialModel(cfg askConfig) model {
 		claudeModel:     cfg.Claude.Model,
 		quietMode:       cfg.UI.QuietMode == nil || *cfg.UI.QuietMode,
 		historyIdx:      -1,
+		fc:              &frameCache{},
 	}
 	m.refreshPrompt()
 	return m
@@ -66,7 +67,7 @@ func main() {
 	_ = saveConfig(cfg)
 	m := initialModel(cfg)
 	m.mcpPort = bridge.port
-	p := tea.NewProgram(m)
+	p := tea.NewProgram(m, tea.WithFPS(120))
 	bridge.start(p)
 	final, err := p.Run()
 	if m, ok := final.(model); ok {
