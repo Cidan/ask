@@ -28,20 +28,20 @@ func (m model) doCd(target string) (tea.Model, tea.Cmd) {
 		m.appendHistory(outputStyle.Render(errStyle.Render("cd: " + err.Error())))
 		return m, nil
 	}
-	if cwd, err := os.Getwd(); err == nil && cwd == abs {
+	if m.cwd == abs {
 		return m, nil
 	}
 	if err := os.Chdir(abs); err != nil {
 		m.appendHistory(outputStyle.Render(errStyle.Render("cd: " + err.Error())))
 		return m, nil
 	}
+	m.cwd = abs
 	m.killProc()
 	m.sessionID = ""
 	m.history = nil
-	cwd, _ := os.Getwd()
 	m.refreshPrompt()
 	m.appendHistory(outputStyle.Render(
-		promptStyle.Render("✓ cd "+cwd) + "  " + dimStyle.Render("(session cleared)"),
+		promptStyle.Render("✓ cd "+abs) + "  " + dimStyle.Render("(session cleared)"),
 	))
 	return m, nil
 }

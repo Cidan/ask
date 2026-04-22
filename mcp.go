@@ -50,6 +50,7 @@ type askReply struct {
 }
 
 type askToolRequestMsg struct {
+	tabID     int
 	questions []question
 	reply     chan askReply
 }
@@ -75,6 +76,7 @@ type approvalReply struct {
 }
 
 type approvalRequestMsg struct {
+	tabID     int
 	toolName  string
 	input     map[string]any
 	toolUseID string
@@ -111,13 +113,20 @@ Diagram format (pick_diagram only; strict):
 Set allow_custom=true on pick_one or pick_many to append an Enter-your-own
 option that accepts free-form multi-line text from the user.`
 
-type mcpBridge struct {
-	program atomic.Pointer[tea.Program]
-	port    int
-	ln      net.Listener
-	server  *mcp.Server
+// teaProgramPtr is shared by every tab's mcpBridge. main.go stores the
+// *tea.Program into it after tea.NewProgram so bridges can route tool
+// requests (ask / approval) back to the owning tab through the app.
+var teaProgramPtr atomic.Pointer[tea.Program]
 
-	// alwaysAllow is a per-process session allowlist. When the user picks
+func setTeaProgram(p *tea.Program) { teaProgramPtr.Store(p) }
+
+type mcpBridge struct {
+	tabID  int
+	port   int
+	ln     net.Listener
+	server *mcp.Server
+
+	// alwaysAllow is a per-tab session allowlist. When the user picks
 	// "Always allow" in the approval modal, the corresponding permissionRule
 	// lands here, and subsequent approval_prompt invocations matching the
 	// same rule auto-allow without popping a modal. We also return the same
@@ -128,12 +137,13 @@ type mcpBridge struct {
 	alwaysAllow map[permissionRule]struct{}
 }
 
-func newMCPBridge() (*mcpBridge, error) {
+func newMCPBridge(tabID int) (*mcpBridge, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
 	b := &mcpBridge{
+		tabID:       tabID,
 		ln:          ln,
 		port:        ln.Addr().(*net.TCPAddr).Port,
 		alwaysAllow: map[permissionRule]struct{}{},
@@ -148,11 +158,6 @@ func newMCPBridge() (*mcpBridge, error) {
 		Description: approvalToolDescription,
 		InputSchema: approvalInputSchema,
 	}, b.approvalTool)
-	return b, nil
-}
-
-func (b *mcpBridge) start(p *tea.Program) {
-	b.program.Store(p)
 	handler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return b.server },
 		&mcp.StreamableHTTPOptions{DisableLocalhostProtection: true, Stateless: true},
@@ -160,18 +165,27 @@ func (b *mcpBridge) start(p *tea.Program) {
 	go func() {
 		_ = http.Serve(b.ln, handler)
 	}()
+	return b, nil
+}
+
+func (b *mcpBridge) stop() {
+	if b == nil || b.ln == nil {
+		return
+	}
+	_ = b.ln.Close()
 }
 
 func (b *mcpBridge) askTool(ctx context.Context, req *mcp.CallToolRequest, in askInput) (*mcp.CallToolResult, askOutput, error) {
 	if len(in.Questions) == 0 {
 		return nil, askOutput{}, errors.New("at least one question is required")
 	}
-	p := b.program.Load()
+	p := teaProgramPtr.Load()
 	if p == nil {
 		return nil, askOutput{}, errors.New("ask UI not ready")
 	}
 	reply := make(chan askReply, 1)
 	p.Send(askToolRequestMsg{
+		tabID:     b.tabID,
 		questions: convertMCPQuestions(in.Questions),
 		reply:     reply,
 	})
@@ -229,12 +243,13 @@ func (b *mcpBridge) approvalTool(ctx context.Context, req *mcp.CallToolRequest) 
 			Content: []mcp.Content{&mcp.TextContent{Text: string(body)}},
 		}, nil
 	}
-	p := b.program.Load()
+	p := teaProgramPtr.Load()
 	if p == nil {
 		return nil, errors.New("ask UI not ready")
 	}
 	reply := make(chan approvalReply, 1)
 	p.Send(approvalRequestMsg{
+		tabID:     b.tabID,
 		toolName:  in.ToolName,
 		input:     in.Input,
 		toolUseID: in.ToolUseID,

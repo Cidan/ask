@@ -324,6 +324,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case shellBatchMsg:
+		if msg.tabID != m.id {
+			return m, nil
+		}
 		if len(msg.lines) > 0 {
 			parts := make([]string, 0, len(msg.lines))
 			for _, l := range msg.lines {
@@ -351,13 +354,12 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			m.shellOutIdx = -1
 			m.shellCh = nil
 			m.shellProc = nil
-			if d.newCwd != "" {
-				if cur, err := os.Getwd(); err != nil || cur != d.newCwd {
-					if err := os.Chdir(d.newCwd); err == nil {
-						m.refreshPrompt()
-						m.pending = nil
-						m.refreshPathMatches()
-					}
+			if d.newCwd != "" && d.newCwd != m.cwd {
+				if err := os.Chdir(d.newCwd); err == nil {
+					m.cwd = d.newCwd
+					m.refreshPrompt()
+					m.pending = nil
+					m.refreshPathMatches()
 				}
 			}
 			if d.err != nil {
@@ -367,7 +369,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		if m.shellCh != nil {
-			return m, nextShellStreamCmd(m.shellCh)
+			return m, nextShellStreamCmd(m.shellCh, m.id)
 		}
 		return m, nil
 
@@ -394,7 +396,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 
 func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
-		return m, tea.Quit
+		return m, closeTabCmd(m.id)
 	}
 	if m.shellMode {
 		return m.updateShellInput(msg)
@@ -409,6 +411,9 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.cancelTurnConfirming {
 		return m.updateCancelTurnConfirm(msg)
 	}
+	if m.closeTabConfirming {
+		return m.updateCloseTabConfirm(msg)
+	}
 	isCtrlC := msg.Mod == tea.ModCtrl && msg.Code == 'c'
 	if !isCtrlC {
 		m.exitArmed = false
@@ -421,7 +426,7 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.input.Value() == "" && len(m.pending) == 0 {
 			if m.exitArmed {
-				return m, tea.Quit
+				return m, closeTabCmd(m.id)
 			}
 			m.exitArmed = true
 			m.appendHistory(outputStyle.Render(dimStyle.Render("Press ctrl+c again to exit")))
@@ -444,6 +449,11 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if len(m.pending) > 0 {
 			m.pending = nil
+			return m, nil
+		}
+		if m.input.Value() == "" {
+			m.closeTabConfirming = true
+			m.closeTabChoice = 0
 			return m, nil
 		}
 		return m, nil
@@ -741,9 +751,46 @@ func (m *model) dismissCancelTurnConfirmIfIdle() {
 	}
 }
 
+func (m model) updateCloseTabConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case msg.Mod == tea.ModCtrl && msg.Code == 'd':
+		m.closeTabConfirming = false
+		return m, closeTabCmd(m.id)
+	case msg.Mod == tea.ModCtrl && msg.Code == 'c':
+		m.closeTabConfirming = false
+		m.closeTabChoice = 0
+		return m, nil
+	case msg.Code == tea.KeyEsc, msg.Code == 'n' && msg.Mod == 0:
+		m.closeTabConfirming = false
+		m.closeTabChoice = 0
+		return m, nil
+	case msg.Code == 'y' && msg.Mod == 0:
+		m.closeTabConfirming = false
+		return m, closeTabCmd(m.id)
+	case msg.Code == tea.KeyLeft, msg.Code == 'h' && msg.Mod == 0:
+		m.closeTabChoice = 0
+		return m, nil
+	case msg.Code == tea.KeyRight, msg.Code == 'l' && msg.Mod == 0:
+		m.closeTabChoice = 1
+		return m, nil
+	case msg.Code == tea.KeyTab:
+		m.closeTabChoice = 1 - m.closeTabChoice
+		return m, nil
+	case msg.Code == tea.KeyEnter:
+		if m.closeTabChoice == 1 {
+			m.closeTabConfirming = false
+			return m, closeTabCmd(m.id)
+		}
+		m.closeTabConfirming = false
+		m.closeTabChoice = 0
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m model) updatePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
-		return m, tea.Quit
+		return m, closeTabCmd(m.id)
 	}
 	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
 		m.mode = modeInput

@@ -87,6 +87,13 @@ func shortCwd() string {
 	if err != nil {
 		return "?"
 	}
+	return shortCwdOf(cwd)
+}
+
+func shortCwdOf(cwd string) string {
+	if cwd == "" {
+		return "?"
+	}
 	home, _ := os.UserHomeDir()
 	p := cwd
 	if home != "" && (cwd == home || strings.HasPrefix(cwd, home+string(os.PathSeparator))) {

@@ -199,6 +199,26 @@ func (m *model) killProc() {
 	m.todos = nil
 }
 
+// drainPendingReplies unblocks any MCP tool call that was waiting on this
+// tab (ask/approval modal). Called when a tab is closed with a modal still
+// open so claude's request side doesn't hang on a dangling channel.
+func (m *model) drainPendingReplies() {
+	if m.askReply != nil {
+		select {
+		case m.askReply <- askReply{cancelled: true}:
+		default:
+		}
+		m.askReply = nil
+	}
+	if m.approvalReply != nil {
+		select {
+		case m.approvalReply <- approvalReply{allow: false}:
+		default:
+		}
+		m.approvalReply = nil
+	}
+}
+
 func readClaudeStream(stdout io.Reader, proc *claudeProc, ch chan tea.Msg) {
 	defer close(ch)
 	sc := bufio.NewScanner(stdout)

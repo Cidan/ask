@@ -304,8 +304,9 @@ func (m model) View() tea.View {
 	needApproval := m.mode == modeApproval
 	needConfig := m.mode == modeConfig
 	needCancelConfirm := m.cancelTurnConfirming && m.mode == modeInput
+	needCloseTabConfirm := m.closeTabConfirming && m.mode == modeInput
 
-	if (needBox || needModal || needApproval || needConfig || needCancelConfirm) && m.width > 0 && m.height > 0 {
+	if (needBox || needModal || needApproval || needConfig || needCancelConfirm || needCloseTabConfirm) && m.width > 0 && m.height > 0 {
 		cbStart := time.Now()
 		canvas := uv.NewScreenBuffer(m.width, m.height)
 		uv.NewStyledString(body).Draw(canvas, image.Rectangle{
@@ -442,6 +443,23 @@ func (m model) View() tea.View {
 		}
 		if needCancelConfirm {
 			confirm := m.viewCancelTurnConfirm()
+			cW := lipgloss.Width(confirm)
+			cH := lipgloss.Height(confirm)
+			cX := (m.width - cW) / 2
+			cY := (m.height - cH) / 2
+			if cX < 0 {
+				cX = 0
+			}
+			if cY < 0 {
+				cY = 0
+			}
+			uv.NewStyledString(confirm).Draw(canvas, image.Rectangle{
+				Min: image.Pt(cX, cY),
+				Max: image.Pt(cX+cW, cY+cH),
+			})
+		}
+		if needCloseTabConfirm {
+			confirm := m.viewCloseTabConfirm()
 			cW := lipgloss.Width(confirm)
 			cH := lipgloss.Height(confirm)
 			cX := (m.width - cW) / 2

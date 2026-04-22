@@ -32,7 +32,7 @@ func applyInputTheme(ta *textarea.Model) {
 	ta.SetStyles(s)
 }
 
-func initialModel(cfg askConfig) model {
+func newTab(id int, cfg askConfig) (*model, error) {
 	themeName := cfg.UI.Theme
 	if themeName == "" {
 		themeName = "default"
@@ -69,7 +69,18 @@ func initialModel(cfg askConfig) model {
 	vp.SoftWrap = true
 	vp.MouseWheelEnabled = true
 
-	m := model{
+	bridge, err := newMCPBridge(id)
+	if err != nil {
+		return nil, err
+	}
+
+	cwd, _ := os.Getwd()
+
+	m := &model{
+		id:                 id,
+		cwd:                cwd,
+		mcpBridge:          bridge,
+		mcpPort:            bridge.port,
 		mode:               modeInput,
 		input:              ta,
 		viewport:           vp,
@@ -93,27 +104,26 @@ func initialModel(cfg askConfig) model {
 		fc:                 &frameCache{},
 	}
 	m.refreshPrompt()
-	return m
+	return m, nil
 }
 
 func main() {
-	bridge, err := newMCPBridge()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "ask: mcp:", err)
-		os.Exit(1)
-	}
 	cfg, _ := loadConfig()
 	_ = saveConfig(cfg)
 	if cfg.UI.Worktree != nil && *cfg.UI.Worktree {
 		ensureWorktreeGitignore()
 	}
-	m := initialModel(cfg)
-	m.mcpPort = bridge.port
-	p := tea.NewProgram(m, tea.WithFPS(120))
-	bridge.start(p)
+	first, err := newTab(1, cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ask: mcp:", err)
+		os.Exit(1)
+	}
+	a := newApp(first, cfg)
+	p := tea.NewProgram(a, tea.WithFPS(120))
+	setTeaProgram(p)
 	final, err := p.Run()
-	if m, ok := final.(model); ok {
-		m.killProc()
+	if fa, ok := final.(app); ok {
+		fa.shutdown()
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ask:", err)

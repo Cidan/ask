@@ -32,6 +32,7 @@ type shellDoneMsg struct {
 // every message currently queued on the shell channel into one batch so large
 // outputs don't line-by-line re-render.
 type shellBatchMsg struct {
+	tabID int
 	lines []shellLineMsg
 	done  *shellDoneMsg
 }
@@ -59,9 +60,10 @@ func shellSingleQuote(s string) string {
 // command's stdout/stderr line-by-line into ask via shellBatchMsg, and finishes
 // with shellDoneMsg carrying the subshell's final cwd so `cd` persists.
 func (m *model) startShellCmd(input string) tea.Cmd {
+	tabID := m.id
 	tmp, err := os.CreateTemp("", "ask-shell-cwd-*")
 	if err != nil {
-		return oneShellDone(input, "", err)
+		return oneShellDone(tabID, input, "", err)
 	}
 	tmpPath := tmp.Name()
 	_ = tmp.Close()
@@ -74,16 +76,16 @@ func (m *model) startShellCmd(input string) tea.Cmd {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = os.Remove(tmpPath)
-		return oneShellDone(input, "", err)
+		return oneShellDone(tabID, input, "", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		_ = os.Remove(tmpPath)
-		return oneShellDone(input, "", err)
+		return oneShellDone(tabID, input, "", err)
 	}
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(tmpPath)
-		return oneShellDone(input, "", err)
+		return oneShellDone(tabID, input, "", err)
 	}
 
 	ch := make(chan tea.Msg, 256)
@@ -108,7 +110,7 @@ func (m *model) startShellCmd(input string) tea.Cmd {
 		close(ch)
 	}()
 
-	return nextShellStreamCmd(ch)
+	return nextShellStreamCmd(ch, tabID)
 }
 
 func streamShellPipe(r io.Reader, ch chan tea.Msg, isErr bool, wg *sync.WaitGroup, st *shellStreamState) {
@@ -134,13 +136,13 @@ func streamShellPipe(r io.Reader, ch chan tea.Msg, isErr bool, wg *sync.WaitGrou
 // nextShellStreamCmd blocks on the first queued message, then non-blockingly
 // drains everything else that's already available into a single shellBatchMsg
 // so Update re-renders once per batch, not once per line.
-func nextShellStreamCmd(ch chan tea.Msg) tea.Cmd {
+func nextShellStreamCmd(ch chan tea.Msg, tabID int) tea.Cmd {
 	return func() tea.Msg {
 		first, ok := <-ch
 		if !ok {
 			return nil
 		}
-		batch := shellBatchMsg{}
+		batch := shellBatchMsg{tabID: tabID}
 		switch v := first.(type) {
 		case shellLineMsg:
 			batch.lines = append(batch.lines, v)
@@ -172,9 +174,9 @@ func nextShellStreamCmd(ch chan tea.Msg) tea.Cmd {
 	}
 }
 
-func oneShellDone(input, cwd string, err error) tea.Cmd {
+func oneShellDone(tabID int, input, cwd string, err error) tea.Cmd {
 	return func() tea.Msg {
-		return shellBatchMsg{done: &shellDoneMsg{input: input, newCwd: cwd, err: err}}
+		return shellBatchMsg{tabID: tabID, done: &shellDoneMsg{input: input, newCwd: cwd, err: err}}
 	}
 }
 

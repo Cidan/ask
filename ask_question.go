@@ -172,7 +172,7 @@ func (m model) isOnConfirmTab() bool {
 
 func (m model) updateAsk(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
-		return m, tea.Quit
+		return m, closeTabCmd(m.id)
 	}
 	if m.askConfirmingCancel {
 		return m.updateAskCancelConfirm(msg)
@@ -407,6 +407,10 @@ func (m model) viewAskCancelConfirm() string {
 
 func (m model) viewCancelTurnConfirm() string {
 	return renderCancelConfirmBox("Stop this turn?", "Cancels claude immediately.", m.cancelTurnChoice)
+}
+
+func (m model) viewCloseTabConfirm() string {
+	return renderCancelConfirmBox("Close this tab?", "Stops claude in this tab.", m.closeTabChoice)
 }
 
 func renderCancelConfirmBox(title, sub string, choice int) string {

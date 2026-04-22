@@ -46,7 +46,7 @@ func (m model) clearAskOllamaConfig() model {
 
 func (m model) updateAskOllamaConfig(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
-		return m, tea.Quit
+		return m, closeTabCmd(m.id)
 	}
 	switch {
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c':

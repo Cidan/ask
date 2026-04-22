@@ -173,7 +173,15 @@ type frameCache struct {
 	vbWithBar string
 }
 
+type closeTabMsg struct {
+	tabID int
+}
+
 type model struct {
+	id        int
+	cwd       string
+	mcpBridge *mcpBridge
+
 	input     textarea.Model
 	viewport  viewport.Model
 	spinner   spinner.Model
@@ -226,6 +234,9 @@ type model struct {
 
 	cancelTurnConfirming bool
 	cancelTurnChoice     int
+
+	closeTabConfirming bool
+	closeTabChoice     int
 
 	shellMode         bool
 	shellBsArmed      bool

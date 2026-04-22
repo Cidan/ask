@@ -84,7 +84,7 @@ func (m model) filteredConfigItems() []configItem {
 
 func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
-		return m, tea.Quit
+		return m, closeTabCmd(m.id)
 	}
 	if m.configThemePickerActive {
 		return m.updateThemePicker(msg)
