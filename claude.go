@@ -151,6 +151,9 @@ func (m *model) ensureProc() error {
 	// looks it up via its own cwd, so the subprocess has to run inside that
 	// worktree for `--resume` to find the file.
 	if m.sessionID != "" && m.resumeCwd != "" {
+		if err := ensureResumeWorktree(m.resumeCwd); err != nil {
+			return err
+		}
 		cmd.Dir = m.resumeCwd
 	}
 	stdin, err := cmd.StdinPipe()

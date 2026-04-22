@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -109,6 +110,42 @@ func pruneWorktrees() {
 		}
 		debugLog("branch deleted %s", branch)
 	}
+}
+
+// ensureResumeWorktree recreates a `.claude/worktrees/<name>` directory that
+// was pruned between sessions so `claude --resume` has a cwd to run in. No-op
+// when resumeCwd doesn't point at a worktree, or when the dir already exists.
+// Tries to reattach the original `worktree-<name>` branch; falls back to
+// creating it if pruning also deleted the branch.
+func ensureResumeWorktree(resumeCwd string) error {
+	if resumeCwd == "" {
+		return nil
+	}
+	name := worktreeNameFromCwd(resumeCwd)
+	if name == "" {
+		return nil
+	}
+	if _, err := os.Stat(resumeCwd); err == nil {
+		return nil
+	}
+	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(resumeCwd)))
+	branch := "worktree-" + name
+	add := exec.Command("git", "worktree", "add", resumeCwd, branch)
+	add.Dir = repoRoot
+	out, err := add.CombinedOutput()
+	if err == nil {
+		debugLog("worktree recreated at %s on branch %s", resumeCwd, branch)
+		return nil
+	}
+	create := exec.Command("git", "worktree", "add", "-b", branch, resumeCwd)
+	create.Dir = repoRoot
+	out2, err2 := create.CombinedOutput()
+	if err2 == nil {
+		debugLog("worktree recreated at %s on new branch %s", resumeCwd, branch)
+		return nil
+	}
+	return fmt.Errorf("git worktree add %s: %w\n%s\n%s",
+		resumeCwd, err2, bytes.TrimSpace(out), bytes.TrimSpace(out2))
 }
 
 func gitignoreCoversWorktrees(contents string) bool {
