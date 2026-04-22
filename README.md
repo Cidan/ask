@@ -37,6 +37,116 @@ with a far richer tabbed modal.
   - `approval_prompt` — wired as Claude's `--permission-prompt-tool`, shows a per-tool allow / deny / always-allow modal (concise one-line summary — no field dump) before the tool runs; "always allow" records a session-scoped rule so repeat calls for the same file or command skip the prompt
 - **PreToolUse hook** injected at launch that blocks Claude's built-in `AskUserQuestion` and redirects the model to our MCP tool instead
 
+## Demos
+
+Rendered with [VHS](https://github.com/charmbracelet/vhs).
+
+### `cd`, `ls`, and tabs
+
+![cd, ls, and tabs](https://vhs.charm.sh/vhs-6Dul4zuJDXNHmG60kqg8Cg.gif)
+
+ask intercepts `cd` and `ls` as local shell-style builtins — the line
+never reaches claude — so you can walk the tree, inspect mode bits,
+sizes, and "X ago" mtimes, and land at the right cwd without ever
+leaving the TUI. `Tab` on `cd ` / `ls ` completes against the current
+prefix, `~` and `~/foo` expand to `$HOME`, and globs (`*`, `?`, `[…]`)
+work for `ls`. `cd` also kills the live claude subprocess and clears the
+turn history, because claude sessions are bound to a cwd — the next
+send spawns a fresh session rooted at the new directory.
+
+`Ctrl+T` opens a new tab. Each tab is a fully independent sandbox: its
+own claude subprocess, shell subprocess, MCP bridge on its own localhost
+port, session id, viewport scroll, pending attachments, and cwd. Nothing
+about one tab leaks into another — pasting an image, running a shell
+command, or typing `cd` only affects the active tab. A new tab inherits
+the active tab's cwd at spawn time; after that the two drift apart.
+`Ctrl+Left` / `Ctrl+Right` cycle (wrapping at the ends) and `ask`
+`chdir`s the process on each switch so anything that reads `os.Getwd` —
+`/resume`, path completion, the prompt — sees that tab's directory.
+
+The byobu-style strip at the bottom appears whenever more than one tab
+is open. It shows each tab's shortened cwd; the active tab is
+highlighted, and any tab with a streaming turn or a running shell
+command gets a leading `▸` so background work is visible at a glance.
+If the bar runs out of width, overflow tabs collapse into a trailing
+`…`. `Ctrl+D` (or a second `Ctrl+C` on an empty idle prompt) closes the
+current tab; closing the last one quits ask.
+
+See [Built-in path commands](#built-in-path-commands) and
+[Tabs](#tabs) for the full reference.
+
+### The `/config` modal
+
+![/config modal](https://vhs.charm.sh/vhs-1B2hEL8frht4oFbNQk7gb7.gif)
+
+`/config` opens a filterable modal backed by `~/.config/ask/ask.json`.
+Every toggle writes to disk the moment you press `Enter`, so there's no
+save step; `↑` / `↓` move the cursor, `Enter` flips the highlighted
+entry, and typing narrows the list on the fly — the cursor snaps to
+the first remaining match so `render` + `Enter` toggles Render Diffs
+without scrolling.
+
+The toggles on offer are **Quiet Mode** (batch vs. streaming assistant
+output), **Cursor Blink** (steady vs. 650 ms blink), **Render Diffs**
+(inline colored unified diffs for `Edit` / `Write` / `NotebookEdit`),
+**Skip All Permissions** (pass `--dangerously-skip-permissions` to
+claude), and **Worktree** (run each session inside an isolated git
+worktree). The last two kill the running claude subprocess so the next
+send respawns with the new flag state; toggling Worktree on also
+appends `.claude/worktrees/` to the repo's `.gitignore` if no existing
+rule already covers it.
+
+A sixth row, **Theme**, opens the picker shown below.
+See [Config](#config) for the full table of defaults and behaviors.
+
+### Themes
+
+![theme picker](https://vhs.charm.sh/vhs-5Zk9peJkMSQB0eKgdAAKmf.gif)
+
+The Theme row under `/config` opens a dedicated picker with live
+preview — `↑` / `↓` repaint the backgrounds, prompt colors, borders,
+glamour markdown, inline diffs, and scrollbar on every press, so you
+can eyeball each palette against the real conversation underneath
+rather than a swatch. `Enter` saves the selection to
+`~/.config/ask/ask.json`; `Esc` reverts to whatever theme was active
+when you opened the picker.
+
+Fifteen flavors ship by default: `default` (respects your terminal's
+own background), `dracula`, `nord`, `gruvbox`, `tokyo night`, all four
+official Catppuccin variants (`latte`, `frappé`, `macchiato`, `mocha`),
+the green-leaning Mocha sibling `matcha`, `rose pine`, `fighter` (the
+softer Monokai Pro / Octagon palette), `love` (the Charm crush
+charmtone palette), `hacker` (Matrix phosphor green on CRT black), and
+`amber` (1970s DEC/IBM amber phosphor). All glamour markdown and
+syntax highlighting follow the active theme, so code blocks in
+responses re-theme too.
+
+### The slash-command popover
+
+![slash-command popover](https://vhs.charm.sh/vhs-8HLPTov9XsaMEG03QIMDh.gif)
+
+Typing `/` at the prompt opens a popover with every slash command ask
+knows about. Five are built into the TUI itself — `/resume`, `/new`,
+`/clear`, `/model`, `/config` — and the rest are discovered from
+claude's init event the first time the subprocess starts and cached
+into `~/.config/ask/ask.json` so the popover has completions from the
+first keystroke on the next launch.
+
+Descriptions for the discovered commands are harvested from the YAML
+frontmatter of the command and skill files on disk. ask walks
+`~/.claude/commands/`, `./.claude/commands/`, `~/.claude/skills/`, and
+`./.claude/skills/` for project- and user-level entries, and
+`~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/commands` and
+`.../skills/` for plugin-published ones. Plugin commands get prefixed
+with `<plugin>:` so two plugins can both expose a `/review` without
+colliding.
+
+Continue typing to filter both sets together — `/r` narrows to
+`/resume` alongside any claude-side `/release-notes`, `/review`,
+`/security-review`, etc., while `/mod` jumps to `/model`. `↑` / `↓`
+walk the filtered list and `Tab` auto-completes the highlighted entry
+into the input.
+
 ## Install
 
 ```
