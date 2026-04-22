@@ -249,17 +249,28 @@ func readClaudeStream(stdout io.Reader, proc *claudeProc, ch chan tea.Msg) {
 					ch <- claudeCwdMsg{cwd: cwd, proc: proc}
 				}
 			case "task_started":
-				if tt, _ := ev["task_type"].(string); tt == "background" {
-					if id, _ := ev["task_id"].(string); id != "" {
-						ch <- bgTaskStartedMsg{taskID: id, proc: proc}
-					}
+				// task_type is optional on the wire and only populated for
+				// newer CLIs; task_started itself is only emitted when the
+				// Agent tool is invoked with run_in_background=true, so any
+				// occurrence counts as a live background worker.
+				if id, _ := ev["task_id"].(string); id != "" {
+					debugLog("system task_started id=%s task_type=%q desc=%q",
+						id, ev["task_type"], ev["description"])
+					ch <- bgTaskStartedMsg{taskID: id, proc: proc}
 				}
 			case "task_notification":
-				switch status, _ := ev["status"].(string); status {
+				status, _ := ev["status"].(string)
+				id, _ := ev["task_id"].(string)
+				debugLog("system task_notification id=%s status=%q", id, status)
+				switch status {
 				case "completed", "failed", "stopped":
-					if id, _ := ev["task_id"].(string); id != "" {
+					if id != "" {
 						ch <- bgTaskEndedMsg{taskID: id, proc: proc}
 					}
+				}
+			default:
+				if subtype != "" {
+					debugLog("system subtype=%q keys=%v", subtype, mapKeys(ev))
 				}
 			}
 		case "assistant":
@@ -367,6 +378,14 @@ func parseStructuredPatch(result map[string]any) (string, []diffHunk, bool) {
 func jsonInt(v any) int {
 	f, _ := v.(float64)
 	return int(f)
+}
+
+func mapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 func streamEventEndTurn(ev map[string]any) bool {
