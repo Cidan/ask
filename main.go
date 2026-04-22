@@ -113,6 +113,7 @@ func main() {
 	if cfg.UI.Worktree != nil && *cfg.UI.Worktree {
 		ensureWorktreeGitignore()
 	}
+	pruneWorktrees()
 	first, err := newTab(1, cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ask: mcp:", err)
@@ -125,6 +126,7 @@ func main() {
 	if fa, ok := final.(app); ok {
 		fa.shutdown()
 	}
+	pruneWorktrees()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ask:", err)
 		os.Exit(1)

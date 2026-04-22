@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -60,6 +62,53 @@ func worktreeNameFromCwd(cwd string) string {
 		return name
 	}
 	return rest
+}
+
+// pruneWorktrees removes every sibling under `.claude/worktrees/` using
+// `git worktree remove` (no --force) and then deletes the matching
+// `worktree-<name>` branch with `git branch -d`. Both commands refuse to
+// drop uncommitted / unmerged work, so this cannot lose changes. No-op
+// outside a cwd-level git checkout, and never runs when ask itself is
+// launched inside one of those worktrees.
+func pruneWorktrees() {
+	if !inGitCheckout() {
+		return
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	if worktreeNameFromCwd(cwd) != "" {
+		return
+	}
+	entries, err := os.ReadDir(filepath.Join(cwd, ".claude", "worktrees"))
+	if err != nil {
+		if !os.IsNotExist(err) {
+			debugLog("worktree prune readdir: %v", err)
+		}
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		path := filepath.Join(cwd, ".claude", "worktrees", e.Name())
+		rm := exec.Command("git", "worktree", "remove", path)
+		rm.Dir = cwd
+		if out, err := rm.CombinedOutput(); err != nil {
+			debugLog("worktree remove %s: %v (%s)", path, err, bytes.TrimSpace(out))
+			continue
+		}
+		debugLog("worktree removed %s", path)
+		branch := "worktree-" + e.Name()
+		br := exec.Command("git", "branch", "-d", branch)
+		br.Dir = cwd
+		if out, err := br.CombinedOutput(); err != nil {
+			debugLog("branch delete %s: %v (%s)", branch, err, bytes.TrimSpace(out))
+			continue
+		}
+		debugLog("branch deleted %s", branch)
+	}
 }
 
 func gitignoreCoversWorktrees(contents string) bool {
