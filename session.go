@@ -12,16 +12,57 @@ import (
 )
 
 func sessionPath(sessionID string) (string, error) {
-	cwd, err := os.Getwd()
+	dirs, err := candidateSessionDirs()
 	if err != nil {
 		return "", err
+	}
+	file := sessionID + ".jsonl"
+	for _, d := range dirs {
+		p := filepath.Join(d, file)
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return filepath.Join(dirs[0], file), nil
+}
+
+// candidateSessionDirs returns the `~/.claude/projects/<encoded>` directory
+// for the current cwd plus every sibling directory that corresponds to a
+// `.claude/worktrees/<name>` subdir claude spawned with `--worktree`. The
+// main dir is always first and is always returned even if it doesn't exist
+// on disk (callers may still want its path for error reporting).
+//
+// Claude encodes project cwd as `ReplaceAll(cwd, "/", "-")` for path
+// segments without dots, but replaces `.` with `-` too — so
+// `/foo/ask/.claude/worktrees/bar` becomes `-foo-ask--claude-worktrees-bar`.
+// We rely on that literal prefix to find siblings.
+func candidateSessionDirs() ([]string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	dir := filepath.Join(home, ".claude", "projects", strings.ReplaceAll(cwd, "/", "-"))
-	return filepath.Join(dir, sessionID+".jsonl"), nil
+	base := filepath.Join(home, ".claude", "projects")
+	mainName := strings.ReplaceAll(cwd, "/", "-")
+	dirs := []string{filepath.Join(base, mainName)}
+	prefix := mainName + "--claude-worktrees-"
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return dirs, nil
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		dirs = append(dirs, filepath.Join(base, e.Name()))
+	}
+	return dirs, nil
 }
 
 func loadHistoryCmd(sessionID string, renderDiffs, quietMode, silent bool) tea.Cmd {
@@ -116,34 +157,44 @@ func loadHistoryCmd(sessionID string, renderDiffs, quietMode, silent bool) tea.C
 
 func loadSessionsCmd() tea.Cmd {
 	return func() tea.Msg {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return sessionsLoadedMsg{err: err}
-		}
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return sessionsLoadedMsg{err: err}
-		}
-		dir := filepath.Join(home, ".claude", "projects", strings.ReplaceAll(cwd, "/", "-"))
-		entries, err := os.ReadDir(dir)
+		dirs, err := candidateSessionDirs()
 		if err != nil {
 			return sessionsLoadedMsg{err: err}
 		}
 		var sessions []sessionEntry
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
-				continue
-			}
-			info, err := e.Info()
+		seen := make(map[string]struct{})
+		var firstErr error
+		for _, dir := range dirs {
+			entries, err := os.ReadDir(dir)
 			if err != nil {
+				if firstErr == nil && !os.IsNotExist(err) {
+					firstErr = err
+				}
 				continue
 			}
-			full := filepath.Join(dir, e.Name())
-			sessions = append(sessions, sessionEntry{
-				id:      strings.TrimSuffix(e.Name(), ".jsonl"),
-				preview: readSessionPreview(full),
-				modTime: info.ModTime(),
-			})
+			for _, e := range entries {
+				if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+					continue
+				}
+				id := strings.TrimSuffix(e.Name(), ".jsonl")
+				if _, dup := seen[id]; dup {
+					continue
+				}
+				info, err := e.Info()
+				if err != nil {
+					continue
+				}
+				full := filepath.Join(dir, e.Name())
+				seen[id] = struct{}{}
+				sessions = append(sessions, sessionEntry{
+					id:      id,
+					preview: readSessionPreview(full),
+					modTime: info.ModTime(),
+				})
+			}
+		}
+		if len(sessions) == 0 && firstErr != nil {
+			return sessionsLoadedMsg{err: firstErr}
 		}
 		sort.Slice(sessions, func(i, j int) bool {
 			return sessions[i].modTime.After(sessions[j].modTime)
