@@ -24,17 +24,8 @@ type claudeConfig struct {
 
 type codexConfig struct {
 	SlashCommands []providerSlashEntry `json:"slashCommands,omitempty"`
-	// Models is the last-known model/list cache from the codex app
-	// server. Populated by codexProvider.ProbeInit, consumed by
-	// ModelPicker and the Ctrl+B quick switcher so the picker shows
-	// the account's real models without blocking on an RPC.
-	Models []string `json:"models,omitempty"`
-	// ModelsFetchedAt is a Unix timestamp in seconds; ProbeInit
-	// consults it to avoid re-forking the app-server on every tab
-	// open when a fresh cache is already on disk.
-	ModelsFetchedAt int64  `json:"modelsFetchedAt,omitempty"`
-	Model           string `json:"model,omitempty"`
-	Effort          string `json:"effort,omitempty"`
+	Model         string               `json:"model,omitempty"`
+	Effort        string               `json:"effort,omitempty"`
 }
 
 type ollamaConfig struct {

@@ -37,34 +37,22 @@ func TestCodexParseModelList_SkipsBadEntries(t *testing.T) {
 	}
 }
 
-func TestCodex_ModelPicker_IncludesCachedModels(t *testing.T) {
-	// With cached model list in config, the picker should surface
-	// them alongside the "default" + "Enter your own" rows.
+func TestCodex_ModelPicker_AlwaysSeedsDefaultAndAllowCustom(t *testing.T) {
+	// With no codex binary on PATH (test env) the live fetch fails,
+	// and the picker must still return a usable shell: a single
+	// "default" row plus AllowCustom so /model can still prompt for
+	// a typed model id.
 	isolateHome(t)
-	cfg := askConfig{
-		Codex: codexConfig{Models: []string{"gpt-5", "o3"}},
-	}
-	if err := saveConfig(cfg); err != nil {
-		t.Fatalf("saveConfig: %v", err)
-	}
+	t.Setenv("PATH", "/nonexistent")
 	var cp codexProvider
 	picker := cp.ModelPicker()
-	// Expected: default, gpt-5, o3 (in that order). Quick switcher
-	// appends "Enter your own"; /model uses AllowCustom branch.
-	want := []string{"default", "gpt-5", "o3"}
-	if !reflect.DeepEqual(picker.Options, want) {
-		t.Errorf("Options=%v want %v", picker.Options, want)
+	if len(picker.Options) == 0 {
+		t.Fatal("ModelPicker must never return an empty option list")
+	}
+	if picker.Options[0] != "default" {
+		t.Errorf("first option=%q want 'default'", picker.Options[0])
 	}
 	if !picker.AllowCustom {
-		t.Error("AllowCustom must stay true so typing still works")
-	}
-}
-
-func TestCodex_ModelPicker_FallsBackToDefaultOnly(t *testing.T) {
-	isolateHome(t)
-	var cp codexProvider
-	picker := cp.ModelPicker()
-	if len(picker.Options) != 1 || picker.Options[0] != "default" {
-		t.Errorf("uncached picker should be just [default], got %v", picker.Options)
+		t.Error("AllowCustom must stay true so typed ids still work")
 	}
 }

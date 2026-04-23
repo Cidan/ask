@@ -181,6 +181,10 @@ func TestSwitcher_ApplyPersistsModelInProviderSettings(t *testing.T) {
 	m, _, p2 := providerSwitcherFixture(t)
 	m = m.openProviderSwitch()
 	m.providerSwitchProvIdx = 1 // codex
+	// Simulate the Level 0 → Level 1 descent so the cached options
+	// are populated from the target provider's (fake) picker instead
+	// of reaching for a live RPC.
+	m.providerSwitchModelOpts = switcherFetchModelOptions(1)
 	m.providerSwitchLevel = 1
 	m.providerSwitchModelIdx = 0 // "default"
 
@@ -319,7 +323,7 @@ func TestSwitcherModelOptions_AppendsEnterYourOwnWhenAllowed(t *testing.T) {
 	p := newFakeProvider()
 	p.modelPicker = ProviderPicker{Options: []string{"a", "b"}, AllowCustom: true}
 	withRegisteredProviders(t, p)
-	opts := switcherModelOptions(0)
+	opts := switcherFetchModelOptions(0)
 	if len(opts) != 3 {
 		t.Fatalf("AllowCustom must append 'Enter your own' row, got %v", opts)
 	}
@@ -332,7 +336,7 @@ func TestSwitcherModelOptions_OmitsEnterYourOwnWhenNotAllowed(t *testing.T) {
 	p := newFakeProvider()
 	p.modelPicker = ProviderPicker{Options: []string{"a", "b"}, AllowCustom: false}
 	withRegisteredProviders(t, p)
-	opts := switcherModelOptions(0)
+	opts := switcherFetchModelOptions(0)
 	if len(opts) != 2 {
 		t.Errorf("non-custom picker must not expose the row, got %v", opts)
 	}
@@ -413,7 +417,7 @@ func TestSwitcher_CrossProviderStillClearsSession(t *testing.T) {
 
 func TestSwitcherModelOptions_OutOfBoundsReturnsNil(t *testing.T) {
 	withRegisteredProviders(t, newFakeProvider())
-	if opts := switcherModelOptions(42); opts != nil {
+	if opts := switcherFetchModelOptions(42); opts != nil {
 		t.Errorf("out-of-bounds should return nil, got %v", opts)
 	}
 }

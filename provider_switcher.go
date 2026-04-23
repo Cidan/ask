@@ -25,12 +25,12 @@ func switcherProviderOptions() []string {
 	return out
 }
 
-// switcherModelOptions returns the model picker options for the
-// provider at provIdx. When the provider advertises AllowCustom, the
-// trailing "Enter your own" row is appended — selecting it flips the
-// switcher into a text-input sub-mode (providerSwitchCustomActive)
-// where typing collects a custom model id before Enter applies it.
-func switcherModelOptions(provIdx int) []string {
+// switcherFetchModelOptions calls the provider's ModelPicker once —
+// the codex implementation does a live RPC — and returns the options
+// with the optional "Enter your own" row appended. Callers stash the
+// result on the model so per-keystroke renders don't re-trigger the
+// RPC fork.
+func switcherFetchModelOptions(provIdx int) []string {
 	if provIdx < 0 || provIdx >= len(providerRegistry) {
 		return nil
 	}
@@ -56,6 +56,7 @@ func (m model) openProviderSwitch() model {
 	m.providerSwitchModelIdx = 0
 	m.providerSwitchCustomActive = false
 	m.providerSwitchCustomText = ""
+	m.providerSwitchModelOpts = nil
 	return m
 }
 
@@ -67,6 +68,7 @@ func (m model) closeProviderSwitch() model {
 	m.providerSwitchModelIdx = 0
 	m.providerSwitchCustomActive = false
 	m.providerSwitchCustomText = ""
+	m.providerSwitchModelOpts = nil
 	return m
 }
 
@@ -111,7 +113,10 @@ func (m model) updateProviderSwitchLevel0(msg tea.KeyPressMsg) (tea.Model, tea.C
 		}
 		return m, nil
 	case msg.Code == tea.KeyEnter:
-		opts := switcherModelOptions(m.providerSwitchProvIdx)
+		// Fork the picker source once — for codex this does a live
+		// model/list RPC — and cache the snapshot for the duration
+		// of this Level 1 session.
+		opts := switcherFetchModelOptions(m.providerSwitchProvIdx)
 		if len(opts) == 0 {
 			// No model picker for this provider; apply the provider
 			// switch immediately with whatever model the provider has
@@ -119,6 +124,7 @@ func (m model) updateProviderSwitchLevel0(msg tea.KeyPressMsg) (tea.Model, tea.C
 			return m.applyProviderSwitch("")
 		}
 		m.providerSwitchLevel = 1
+		m.providerSwitchModelOpts = opts
 		m.providerSwitchModelIdx = seedModelCursor(m.providerSwitchProvIdx, opts)
 		return m, nil
 	}
@@ -160,7 +166,7 @@ func (m model) updateProviderSwitchLevel1(msg tea.KeyPressMsg) (tea.Model, tea.C
 	if m.providerSwitchCustomActive {
 		return m.updateProviderSwitchCustom(msg)
 	}
-	opts := switcherModelOptions(m.providerSwitchProvIdx)
+	opts := m.providerSwitchModelOpts
 	switch {
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c':
 		return m.closeProviderSwitch(), nil
@@ -327,7 +333,7 @@ func (m model) viewProviderSwitch() string {
 		}
 		rows = renderSwitcherRows(opts, m.providerSwitchProvIdx, innerW)
 	case 1:
-		opts := switcherModelOptions(m.providerSwitchProvIdx)
+		opts := m.providerSwitchModelOpts
 		for _, o := range opts {
 			if w := lipgloss.Width(o); w > innerW {
 				innerW = w

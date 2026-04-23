@@ -26,7 +26,7 @@ func customSwitcherFixture(t *testing.T) model {
 	mi, _ := m.updateProviderSwitch(pressSpecial(tea.KeyEnter))
 	m = mi.(model)
 	// Move cursor to the last row (the custom one).
-	opts := switcherModelOptions(m.providerSwitchProvIdx)
+	opts := switcherFetchModelOptions(m.providerSwitchProvIdx)
 	m.providerSwitchModelIdx = len(opts) - 1
 	return m
 }

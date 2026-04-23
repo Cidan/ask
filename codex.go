@@ -36,18 +36,21 @@ func (codexProvider) Capabilities() ProviderCapabilities {
 	}
 }
 
-// ModelPicker exposes /model for codex. Options come from the cached
-// model/list response populated by ProbeInit; we seed "default" at
-// the top so the user always has a "let codex pick" option, and
-// AllowCustom stays on so typed model ids still flow through.
+// ModelPicker exposes /model for codex. Options are fetched live
+// from a short-lived `codex app-server model/list` probe so the list
+// reflects whatever the account has access to right now — model
+// releases don't strand users on stale cached names. The probe costs
+// ~0.5s; callers (the /model flow and the Ctrl+B switcher) invoke
+// ModelPicker once when the picker opens and reuse the snapshot for
+// the picker's lifetime, so this isn't called on every render.
+// Failure silently degrades to the "default" row + AllowCustom so
+// users can still type a model id by hand.
 func (codexProvider) ModelPicker() ProviderPicker {
 	opts := []string{"default"}
-	cfg, _ := loadConfig()
-	for _, id := range cfg.Codex.Models {
-		if id == "" {
-			continue
-		}
-		opts = append(opts, id)
+	if live, err := fetchCodexModels(); err == nil {
+		opts = append(opts, live...)
+	} else {
+		debugLog("codex ModelPicker: live fetch failed: %v", err)
 	}
 	return ProviderPicker{
 		Prompt:      "Select Codex model",
@@ -73,46 +76,7 @@ func (codexProvider) BaseSlashCommands() []slashCmd {
 	}
 }
 
-// codexModelCacheTTL bounds how long a cached model/list response
-// stays fresh before ProbeInit re-queries the app-server. Model
-// releases are rare; a day-long window cuts per-tab subprocess forks
-// without making the picker noticeably stale.
-const codexModelCacheTTL = 24 * time.Hour
-
-// ProbeInit forks a short-lived codex app-server, initializes it,
-// calls model/list, and caches the returned model ids into
-// codexConfig.Models so the picker has them next time the user opens
-// /model or Ctrl+B. Failures are logged and swallowed: the picker
-// still works with its static "default" row + AllowCustom row, it
-// just won't know about newly-released models until the probe
-// succeeds. Re-queries are gated by codexModelCacheTTL so rapid tab
-// switches don't fork a fresh app-server every time.
-func (codexProvider) ProbeInit(_ ProviderSessionArgs) tea.Cmd {
-	return func() tea.Msg {
-		cfg, _ := loadConfig()
-		if len(cfg.Codex.Models) > 0 && cfg.Codex.ModelsFetchedAt > 0 {
-			age := time.Now().Unix() - cfg.Codex.ModelsFetchedAt
-			if age < int64(codexModelCacheTTL/time.Second) {
-				return nil
-			}
-		}
-		models, err := fetchCodexModels()
-		if err != nil {
-			debugLog("codex ProbeInit: %v", err)
-			return nil
-		}
-		if len(models) == 0 {
-			return nil
-		}
-		cfg, _ = loadConfig()
-		cfg.Codex.Models = models
-		cfg.Codex.ModelsFetchedAt = time.Now().Unix()
-		if err := saveConfig(cfg); err != nil {
-			debugLog("codex ProbeInit save: %v", err)
-		}
-		return nil
-	}
-}
+func (codexProvider) ProbeInit(_ ProviderSessionArgs) tea.Cmd { return nil }
 
 func (codexProvider) ListSessions(cwd string) ([]sessionEntry, error) {
 	return loadCodexSessions(cwd)

@@ -253,6 +253,12 @@ type model struct {
 	providerSwitchModelIdx     int
 	providerSwitchCustomActive bool
 	providerSwitchCustomText   string
+	// providerSwitchModelOpts is the snapshot of the target
+	// provider's model picker options captured at Level-0 → Level-1
+	// descent. Caching here keeps the switcher's view renderer off
+	// ModelPicker() (which for codex costs a forked app-server RPC)
+	// on every keystroke.
+	providerSwitchModelOpts []string
 
 	themeName string
 
