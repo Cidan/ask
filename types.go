@@ -70,6 +70,29 @@ type bgTaskEndedMsg struct {
 	proc   *providerProc
 }
 
+// hookSubagentStartMsg is delivered when claude's SubagentStart hook
+// fires. It covers every Task-spawned sub-agent (foreground and
+// background); the bgTasks map is driven by the background-only
+// task_started stream event, so this message is observability-only
+// unless agent_id happens to equal a task_id we're already tracking.
+type hookSubagentStartMsg struct {
+	tabID     int
+	agentID   string
+	agentType string
+}
+
+// hookSubagentStopMsg is delivered when claude's SubagentStop hook
+// fires. We use it as an authoritative cleanup signal: if agent_id
+// matches a key in bgTasks (which is the stream-event task_id), we
+// drop it, plugging the case where task_notification never arrives.
+// For foreground sub-agents the key won't be present and delete is a
+// no-op, which is fine.
+type hookSubagentStopMsg struct {
+	tabID     int
+	agentID   string
+	agentType string
+}
+
 // cancelWatchdogMsg fires some seconds after a cooperative cancel
 // (Provider.Interrupt reported handled=true). If the same proc is
 // still busy when it arrives, the UI treats the interrupt as lost

@@ -162,10 +162,66 @@ func newMCPBridge(tabID int) (*mcpBridge, error) {
 		func(*http.Request) *mcp.Server { return b.server },
 		&mcp.StreamableHTTPOptions{DisableLocalhostProtection: true, Stateless: true},
 	)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/hooks/subagent-start", b.handleHookSubagentStart)
+	mux.HandleFunc("/hooks/subagent-stop", b.handleHookSubagentStop)
+	mux.Handle("/", handler)
 	go func() {
-		_ = http.Serve(b.ln, handler)
+		_ = http.Serve(b.ln, mux)
 	}()
 	return b, nil
+}
+
+// hookInput is the subset of the claude hook-event JSON we consume.
+// The wire schema is defined in the Python SDK at
+// src/claude_agent_sdk/types.py (SubagentStartHookInput /
+// SubagentStopHookInput). We ignore the rest of the fields.
+type hookInput struct {
+	AgentID   string `json:"agent_id"`
+	AgentType string `json:"agent_type"`
+}
+
+func (b *mcpBridge) handleHookSubagentStart(w http.ResponseWriter, r *http.Request) {
+	ev, ok := b.decodeHook(w, r)
+	if !ok {
+		return
+	}
+	debugLog("hook SubagentStart tab=%d agent_id=%s agent_type=%s",
+		b.tabID, ev.AgentID, ev.AgentType)
+	if p := teaProgramPtr.Load(); p != nil {
+		p.Send(hookSubagentStartMsg{
+			tabID:     b.tabID,
+			agentID:   ev.AgentID,
+			agentType: ev.AgentType,
+		})
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (b *mcpBridge) handleHookSubagentStop(w http.ResponseWriter, r *http.Request) {
+	ev, ok := b.decodeHook(w, r)
+	if !ok {
+		return
+	}
+	debugLog("hook SubagentStop tab=%d agent_id=%s agent_type=%s",
+		b.tabID, ev.AgentID, ev.AgentType)
+	if p := teaProgramPtr.Load(); p != nil {
+		p.Send(hookSubagentStopMsg{
+			tabID:     b.tabID,
+			agentID:   ev.AgentID,
+			agentType: ev.AgentType,
+		})
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (b *mcpBridge) decodeHook(w http.ResponseWriter, r *http.Request) (hookInput, bool) {
+	var ev hookInput
+	if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return hookInput{}, false
+	}
+	return ev, true
 }
 
 func (b *mcpBridge) stop() {

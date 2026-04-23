@@ -122,6 +122,12 @@ func newTab(id int, cfg askConfig) (*model, error) {
 }
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "_hook" {
+		if err := runHookSubcommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "ask _hook:", err)
+		}
+		return
+	}
 	cfg, _ := loadConfig()
 	_ = saveConfig(cfg)
 	if cfg.UI.Worktree != nil && *cfg.UI.Worktree {

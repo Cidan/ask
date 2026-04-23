@@ -59,10 +59,64 @@ func (claudeProvider) BaseSlashCommands() []slashCmd {
 	}
 }
 
-// askUserQuestionHookSettings redirects the built-in AskUserQuestion
-// tool to our MCP bridge via a PreToolUse hook. Claude's MCP tool calls
-// block on the user-question modal so the default timeout is too short.
-const askUserQuestionHookSettings = `{"hooks":{"PreToolUse":[{"matcher":"AskUserQuestion","hooks":[{"type":"command","command":"echo 'BLOCKED: the built-in AskUserQuestion tool is disabled here. Use the mcp__ask__ask_user_question MCP tool instead. It supports pick_one, pick_many, and pick_diagram question kinds and lets you bundle multiple questions in a single call; the user sees them as tabs and submits all answers together.' >&2; exit 2"}]}]}}`
+// askUserQuestionBlockCommand is the shell command claude's PreToolUse
+// hook runs when it sees the built-in AskUserQuestion tool. Exit 2
+// blocks the call and forces the model to use our MCP variant instead,
+// which handles the user-question modal with a long timeout.
+const askUserQuestionBlockCommand = `echo 'BLOCKED: the built-in AskUserQuestion tool is disabled here. Use the mcp__ask__ask_user_question MCP tool instead. It supports pick_one, pick_many, and pick_diagram question kinds and lets you bundle multiple questions in a single call; the user sees them as tabs and submits all answers together.' >&2; exit 2`
+
+// claudeHookSettings builds the JSON passed via --settings. It wires
+// three hooks into claude:
+//   - PreToolUse[AskUserQuestion]: redirects to our MCP tool (see above).
+//   - SubagentStart: posts to our MCP bridge so we can correlate
+//     agent_id with the stream's task_id (observability).
+//   - SubagentStop: posts to our MCP bridge as an authoritative "clean
+//     up this background task" signal, plugging the case where
+//     task_notification is never emitted.
+//
+// The hook command invokes ask itself (ask _hook <event> --port <n>) so
+// there is no external dependency on curl.
+func claudeHookSettings(mcpPort int) string {
+	exe, err := os.Executable()
+	if err != nil || exe == "" {
+		// Fall back to a PATH lookup; less reliable but better than nothing.
+		exe = "ask"
+	}
+	hookCmd := func(event string) string {
+		return fmt.Sprintf("%s _hook %s --port %d", shellQuote(exe), event, mcpPort)
+	}
+	cfg := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{map[string]any{
+				"matcher": "AskUserQuestion",
+				"hooks": []any{map[string]any{
+					"type":    "command",
+					"command": askUserQuestionBlockCommand,
+				}},
+			}},
+			"SubagentStart": []any{map[string]any{
+				"hooks": []any{map[string]any{
+					"type":    "command",
+					"command": hookCmd("subagent-start"),
+				}},
+			}},
+			"SubagentStop": []any{map[string]any{
+				"hooks": []any{map[string]any{
+					"type":    "command",
+					"command": hookCmd("subagent-stop"),
+				}},
+			}},
+		},
+	}
+	b, _ := json.Marshal(cfg)
+	return string(b)
+}
+
+// shellQuote wraps s in single quotes so it survives /bin/sh -c intact.
+// Embedded single quotes are escaped via the classic '\'' sequence.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
 
 const mcpTimeoutMillis = "86400000"
 
@@ -97,7 +151,7 @@ func claudeCLIArgs(args ProviderSessionArgs, probe bool) []string {
 	if args.MCPPort > 0 {
 		out = append(out, "--mcp-config",
 			fmt.Sprintf(`{"mcpServers":{"ask":{"type":"http","url":"http://127.0.0.1:%d/"}}}`, args.MCPPort))
-		out = append(out, "--settings", askUserQuestionHookSettings)
+		out = append(out, "--settings", claudeHookSettings(args.MCPPort))
 		if !probe {
 			out = append(out, "--permission-prompt-tool", "mcp__ask__approval_prompt")
 		}

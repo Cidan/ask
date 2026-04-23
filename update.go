@@ -115,6 +115,31 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		return m, nil
 
+	case hookSubagentStartMsg:
+		// Observability only: SubagentStart fires for every Task-spawned
+		// sub-agent, including foreground ones, so we can't use it as a
+		// bgTasks increment without over-counting. The debug log is
+		// useful for verifying whether agent_id correlates with the
+		// task_id we get from the stream's task_started event.
+		debugLog("hookSubagentStartMsg tab=%d agent_id=%s agent_type=%s bgTasks=%d",
+			msg.tabID, msg.agentID, msg.agentType, len(m.bgTasks))
+		return m, nil
+
+	case hookSubagentStopMsg:
+		// Authoritative cleanup. If agent_id matches a stuck task_id
+		// (stream's task_notification was dropped), drop it. If it
+		// doesn't match (foreground sub-agent, or agent_id != task_id),
+		// the delete is a harmless no-op.
+		if _, stuck := m.bgTasks[msg.agentID]; stuck {
+			debugLog("hookSubagentStopMsg reaping stuck bgTask tab=%d agent_id=%s bgTasks=%d→%d",
+				msg.tabID, msg.agentID, len(m.bgTasks), len(m.bgTasks)-1)
+			delete(m.bgTasks, msg.agentID)
+		} else {
+			debugLog("hookSubagentStopMsg tab=%d agent_id=%s agent_type=%s not in bgTasks",
+				msg.tabID, msg.agentID, msg.agentType)
+		}
+		return m, nil
+
 	case toolDiffMsg:
 		if msg.proc != m.proc {
 			return m, nil

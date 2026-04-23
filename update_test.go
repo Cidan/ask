@@ -285,6 +285,66 @@ func TestUpdate_BgTaskStartedAndEnded(t *testing.T) {
 	}
 }
 
+// When the SubagentStop hook fires for an agent_id that matches a
+// stream-tracked background task, the hook reaps it. This is the core
+// "chip is 100% correct" fix: it plugs the case where
+// task_notification was dropped so the counter got stuck.
+func TestUpdate_HookSubagentStopReapsStuckBgTask(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.bgTasks = map[string]struct{}{"task_a": {}, "task_b": {}}
+	m2, _ := runUpdate(t, m, hookSubagentStopMsg{
+		tabID: m.id, agentID: "task_a", agentType: "general-purpose",
+	})
+	if _, ok := m2.bgTasks["task_a"]; ok {
+		t.Errorf("bgTasks should no longer contain task_a")
+	}
+	if _, ok := m2.bgTasks["task_b"]; !ok {
+		t.Errorf("bgTasks should still contain task_b (unrelated)")
+	}
+}
+
+// A SubagentStop whose agent_id isn't in bgTasks is a harmless no-op —
+// covers both foreground sub-agents and the case where agent_id and
+// task_id are different identifier namespaces.
+func TestUpdate_HookSubagentStopUnknownIDIsNoOp(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.bgTasks = map[string]struct{}{"task_a": {}}
+	m2, _ := runUpdate(t, m, hookSubagentStopMsg{
+		tabID: m.id, agentID: "unrelated_fg_agent",
+	})
+	if len(m2.bgTasks) != 1 {
+		t.Errorf("bgTasks should be unchanged, got %d entries", len(m2.bgTasks))
+	}
+}
+
+// SubagentStop on a nil bgTasks map must not panic — this happens
+// routinely because killProc and providerExitedMsg set it to nil, and
+// a late hook can still arrive after those.
+func TestUpdate_HookSubagentStopOnNilMap(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.bgTasks = nil
+	m2, _ := runUpdate(t, m, hookSubagentStopMsg{tabID: m.id, agentID: "x"})
+	if m2.bgTasks != nil {
+		t.Errorf("nil bgTasks must remain nil, got %+v", m2.bgTasks)
+	}
+}
+
+// SubagentStart is observability-only: it must NOT add to bgTasks,
+// otherwise foreground sub-agents would inflate the chip count.
+func TestUpdate_HookSubagentStartDoesNotMutateBgTasks(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.bgTasks = map[string]struct{}{"existing": {}}
+	m2, _ := runUpdate(t, m, hookSubagentStartMsg{
+		tabID: m.id, agentID: "new_agent", agentType: "code-reviewer",
+	})
+	if _, ok := m2.bgTasks["new_agent"]; ok {
+		t.Errorf("SubagentStart must not add to bgTasks (over-counts foreground subagents)")
+	}
+	if len(m2.bgTasks) != 1 {
+		t.Errorf("bgTasks count changed, got %d entries", len(m2.bgTasks))
+	}
+}
+
 func TestUpdate_TodoUpdatedMsg(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}

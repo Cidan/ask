@@ -105,6 +105,68 @@ func TestClaudeCLIArgs_MCPConfigAndSettings(t *testing.T) {
 	}
 }
 
+// The --settings payload must wire SubagentStart/SubagentStop hooks at
+// the port we pass in, so claude fires them into our HTTP bridge and
+// the chip stays in sync with what's actually running.
+func TestClaudeHookSettings_RegistersSubagentHooks(t *testing.T) {
+	raw := claudeHookSettings(54321)
+	var parsed struct {
+		Hooks map[string][]struct {
+			Matcher string `json:"matcher"`
+			Hooks   []struct {
+				Type    string `json:"type"`
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		t.Fatalf("settings not JSON (%v): %s", err, raw)
+	}
+	for _, ev := range []string{"PreToolUse", "SubagentStart", "SubagentStop"} {
+		if _, ok := parsed.Hooks[ev]; !ok {
+			t.Errorf("settings missing %s hook: %s", ev, raw)
+		}
+	}
+	// The port and _hook subcommand wiring must survive into the
+	// embedded shell commands — that's what tells the hooks to POST
+	// back to our bridge instead of disappearing into /dev/null.
+	for _, want := range []string{
+		"_hook subagent-start",
+		"_hook subagent-stop",
+		"--port 54321",
+	} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("settings missing %q: %s", want, raw)
+		}
+	}
+	// The PreToolUse block still has to filter on AskUserQuestion — that
+	// redirect is what gives the MCP variant its long timeout.
+	var sawAsk bool
+	for _, entry := range parsed.Hooks["PreToolUse"] {
+		if entry.Matcher == "AskUserQuestion" {
+			sawAsk = true
+		}
+	}
+	if !sawAsk {
+		t.Errorf("PreToolUse should still match AskUserQuestion: %s", raw)
+	}
+}
+
+func TestShellQuote_EscapesSingleQuotes(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"/usr/local/bin/ask", `'/usr/local/bin/ask'`},
+		{"/home/a'b/bin/ask", `'/home/a'\''b/bin/ask'`},
+		{"plain", `'plain'`},
+	}
+	for _, c := range cases {
+		if got := shellQuote(c.in); got != c.want {
+			t.Errorf("shellQuote(%q)=%q want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestClaudeCLIArgs_NoMCPNoMCPConfig(t *testing.T) {
 	args := claudeCLIArgs(ProviderSessionArgs{}, false)
 	if containsArg(args, "--mcp-config") || containsArg(args, "--settings") {

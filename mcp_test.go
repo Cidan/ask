@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"net"
+	"net/http"
 	"strconv"
 	"sync"
 	"testing"
@@ -312,5 +315,92 @@ func TestPermissionRuleFor_UnknownToolEmptyContent(t *testing.T) {
 	r := permissionRuleFor("CustomTool", map[string]any{"anything": "x"})
 	if r.ruleContent != "" {
 		t.Errorf("unknown tool should leave ruleContent empty, got %+v", r)
+	}
+}
+
+// postHook POSTs a hook event body to the bridge and returns the status
+// code. The bridge is spun up for real (real listener, real mux) so the
+// routing through http.ServeMux is covered end-to-end; we just don't
+// care about tea.Program delivery here (teaProgramPtr may be nil in
+// tests, the handler guards against it).
+func postHook(t *testing.T, port int, event string, body any) int {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/hooks/%s", port, event)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
+func TestMCPBridge_HookEndpointsReturn200(t *testing.T) {
+	b, err := newMCPBridge(7)
+	if err != nil {
+		t.Fatalf("bridge: %v", err)
+	}
+	defer b.stop()
+
+	start := map[string]any{
+		"session_id":      "s1",
+		"hook_event_name": "SubagentStart",
+		"agent_id":        "agent_123",
+		"agent_type":      "general-purpose",
+	}
+	if code := postHook(t, b.port, "subagent-start", start); code != http.StatusOK {
+		t.Errorf("subagent-start POST got %d want 200", code)
+	}
+
+	stop := map[string]any{
+		"session_id":      "s1",
+		"hook_event_name": "SubagentStop",
+		"agent_id":        "agent_123",
+		"agent_type":      "general-purpose",
+	}
+	if code := postHook(t, b.port, "subagent-stop", stop); code != http.StatusOK {
+		t.Errorf("subagent-stop POST got %d want 200", code)
+	}
+}
+
+func TestMCPBridge_HookEndpointsRejectBadJSON(t *testing.T) {
+	b, err := newMCPBridge(1)
+	if err != nil {
+		t.Fatalf("bridge: %v", err)
+	}
+	defer b.stop()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/hooks/subagent-start", b.port)
+	resp, err := http.Post(url, "application/json", bytes.NewReader([]byte("not-json")))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad JSON should 400, got %d", resp.StatusCode)
+	}
+}
+
+// The MCP streamable-HTTP endpoint must still be reachable after the
+// mux is wired up — the catch-all "/" route has to keep working
+// alongside /hooks/*.
+func TestMCPBridge_MCPEndpointStillRoutes(t *testing.T) {
+	b, err := newMCPBridge(1)
+	if err != nil {
+		t.Fatalf("bridge: %v", err)
+	}
+	defer b.stop()
+	// A GET to "/" should reach the MCP handler; we don't care about the
+	// body, just that we get an HTTP response (not a mux-level 404).
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", b.port))
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		t.Errorf("MCP handler unreachable: got 404 at /")
 	}
 }
