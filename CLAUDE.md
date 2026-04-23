@@ -61,19 +61,46 @@ One `package main`, one file per concern.
 | `mcp.go`               | MCP server bridge (Streamable HTTP), `ask_user_question` tool schema + handler. |
 | `util.go`              | Small helpers (`short`, `humanDuration`, `humanBytes`, `shortCwd`).     |
 | `debug.go`             | `ASK_DEBUG=1` → `/tmp/ask.log`.                                         |
+| `*_test.go`            | Fast, behavior-only tests. See "Test layout" below.                    |
 
 ## Build, verify, install
 
 ```
 go build ./...
 go vet ./...
+go test ./...
 go install .
 ```
 
-The installed binary lives at `$(go env GOPATH)/bin/ask`. No test
-suite yet — verify changes by running the binary in a real terminal.
-TUI-level feature changes must be exercised by the user; code alone
-won't catch layout regressions.
+The installed binary lives at `$(go env GOPATH)/bin/ask`. The test
+suite is behavior-only (no UI rendering) and must stay fast — well
+under a second end-to-end. TUI-level feature changes must still be
+exercised by the user; code alone won't catch layout regressions.
+
+### Test layout
+
+| File                       | Scope                                                             |
+|----------------------------|-------------------------------------------------------------------|
+| `testhelpers_test.go`      | `fakeProvider`, `initGitRepo`, `isolateHome`, `newTestModel`, etc. |
+| `provider_test.go`         | Provider registry + claudeProvider metadata + Send protocol.     |
+| `claude_cli_test.go`       | `claudeCLIArgs` / `claudeEnv` flag construction.                 |
+| `claude_stream_test.go`    | `readClaudeStream` stream-json → `tea.Msg` translation.          |
+| `mcp_test.go`              | MCP bridge conversion + permission/approval wire shapes.         |
+| `worktree_test.go`         | `.claude/worktrees/` lifecycle against tmp git repos.            |
+| `session_test.go`          | `~/.claude/projects/` parsing + history loading.                 |
+| `config_test.go`           | `loadConfig` / `saveConfig` / ollama validation.                 |
+| `update_test.go`           | `model.Update` dispatcher behavior via `fakeProvider`.           |
+| `util_test.go` / `paths_test.go` | Pure helpers, path completion, frontmatter parsing.       |
+
+### Testing conventions
+
+- **Every new piece of functionality ships with tests.** This is non-negotiable: when adding a feature, fixing a bug, or refactoring anything in the file table above, add or extend tests in the matching `_test.go` file. A PR that grows the codebase without growing the tests is incomplete.
+- Tests must be **behavioral**, not rendering-based. Assert on `model` state, emitted `tea.Msg` values, serialized JSON bytes, file-system state, exec argv — never on styled output strings or view snapshots.
+- **No subprocess spawning** except `git` in `worktree_test.go`. Everything else uses the `fakeProvider` from `testhelpers_test.go` or direct function calls.
+- Worktree / git tests use `t.TempDir()` + `t.Chdir(...)` so they self-isolate and survive parallel runs.
+- HOME-sensitive tests (`session`, `config`, `paths`) call `isolateHome(t)` to pin `$HOME` at a tmp dir so the user's real state is never touched.
+- Prefer a few larger scenarios over dozens of trivial one-liners, but do cover each branch of complex functions (see `claudeCLIArgs` and `readClaudeStream` tests for the pattern).
+- Keep the full suite under ~1 second — if you add something slow, figure out how to fake it.
 
 ## Bubble Tea wiring
 

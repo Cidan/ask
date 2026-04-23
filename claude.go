@@ -380,7 +380,10 @@ func readClaudeStream(stdout io.Reader, proc *providerProc, ch chan tea.Msg) {
 			ch <- turnCompleteMsg{proc: proc}
 		}
 	}
-	err := proc.cmd.Wait()
+	var err error
+	if proc.cmd != nil {
+		err = proc.cmd.Wait()
+	}
 	ch <- providerExitedMsg{err: err, proc: proc}
 }
 
