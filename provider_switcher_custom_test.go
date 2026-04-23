@@ -28,18 +28,18 @@ func customSwitcherFixture(t *testing.T) model {
 	return m
 }
 
-func TestSwitcherCustom_PreseedsSavedCustomModelInSharedAskModal(t *testing.T) {
+func TestSwitcherCustom_PreseedsCurrentTabCustomModelInSharedAskModal(t *testing.T) {
 	isolateHome(t)
 	p := newFakeProvider()
 	p.id = "codex"
 	p.displayName = "Codex"
-	p.settings = ProviderSettings{Model: "custom-model-id"}
 	p.modelPicker = ProviderPicker{
 		Options:     []string{"default", "gpt-5"},
 		AllowCustom: true,
 	}
 	withRegisteredProviders(t, p)
 	m := newTestModel(t, p)
+	m.providerModel = "custom-model-id"
 	m = m.openProviderSwitch()
 	m = stepKey(t, m, pressSpecial(tea.KeyEnter))
 

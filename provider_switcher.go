@@ -11,9 +11,7 @@ import (
 // registered provider; once a provider is chosen, Level 1 reuses the
 // shared /model ask modal for that provider instead of a separate
 // switcher-specific picker. Applying both switches the current tab's
-// provider (killing the active proc), persists the model under that
-// provider's settings, and updates cfg.Provider so new tabs also
-// default to the same backend.
+// provider/model in memory only and leaves persisted defaults alone.
 
 // switcherProviderOptions returns provider labels in registry order —
 // label is DisplayName so the picker reads nicely, but we key back to
@@ -100,8 +98,7 @@ func (m model) updateProviderSwitchLevel0(msg tea.KeyPressMsg) (tea.Model, tea.C
 		opts := modelPickerOptions(picker)
 		if len(opts) == 0 {
 			// No model picker for this provider; apply the provider
-			// switch immediately with whatever model the provider has
-			// saved (may be empty → provider default).
+			// switch immediately using the provider default model.
 			return m.applyProviderSwitch("")
 		}
 		return m.startProviderSwitchModelPicker(picker), nil
@@ -114,8 +111,12 @@ func (m model) startProviderSwitchModelPicker(picker ProviderPicker) model {
 		return m.closeProviderSwitch()
 	}
 	prov := providerRegistry[m.providerSwitchProvIdx]
+	selectedModel := prov.LoadSettings().Model
+	if m.provider != nil && m.provider.ID() == prov.ID() {
+		selectedModel = m.providerModel
+	}
 	m.providerSwitchLevel = 1
-	return m.startModelPickerWith(prov, picker, prov.LoadSettings().Model, askForProviderSwitchModel)
+	return m.startModelPickerWith(prov, picker, selectedModel, askForProviderSwitchModel)
 }
 
 func (m model) cancelProviderSwitchModelPicker() model {
@@ -126,10 +127,11 @@ func (m model) cancelProviderSwitchModelPicker() model {
 }
 
 // applyProviderSwitch swaps the current tab to providerRegistry[provIdx]
-// with the given model, kills the active proc, reloads per-provider
-// settings, and saves cfg.Provider as the new default. Same-provider
-// swaps (model-only changes) preserve sessionID/resumeCwd so the next
-// ensureProc picks up where the conversation left off.
+// with the given model, kills the active proc, and reloads the target
+// provider's saved effort/slash-command defaults. Same-provider swaps
+// (model-only changes) preserve sessionID/resumeCwd so the next
+// ensureProc picks up where the conversation left off. No on-disk
+// config is changed here; Ctrl+B is tab-local only.
 func (m model) applyProviderSwitch(model string) (tea.Model, tea.Cmd) {
 	if m.providerSwitchProvIdx < 0 || m.providerSwitchProvIdx >= len(providerRegistry) {
 		return m.closeProviderSwitch(), nil
@@ -154,18 +156,6 @@ func (m model) applyProviderSwitch(model string) (tea.Model, tea.Cmd) {
 		// the same branch.
 		m.sessionID = ""
 		m.resumeCwd = ""
-	}
-
-	// Persist the model selection under the new provider, and pin the
-	// default provider for new tabs.
-	newSettings.Model = model
-	if err := newProv.SaveSettings(newSettings); err != nil {
-		debugLog("SaveSettings err: %v", err)
-	}
-	cfg, _ := loadConfig()
-	cfg.Provider = newProv.ID()
-	if err := saveConfig(cfg); err != nil {
-		debugLog("saveConfig err: %v", err)
 	}
 
 	var msg string

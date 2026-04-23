@@ -277,8 +277,8 @@ type model struct {
 	// with model options advances to Level 1, which reuses the shared
 	// ask/model modal rather than a separate switcher-specific editor.
 	// Esc from that modal pops back to the provider list; applying a
-	// choice switches the current tab and saves cfg.Provider for new
-	// tabs.
+	// choice switches the current tab only and leaves persisted defaults
+	// alone.
 	providerSwitchLevel   int
 	providerSwitchProvIdx int
 

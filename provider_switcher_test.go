@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -149,11 +150,14 @@ func TestSwitcher_ModelModalEscReturnsToProviderList(t *testing.T) {
 	}
 }
 
-func TestSwitcher_ApplySwapsProviderAndSavesDefault(t *testing.T) {
+func TestSwitcher_ApplySwapsProviderWithoutSavingDefault(t *testing.T) {
 	m, _, p2 := providerSwitcherFixture(t)
 	m.sessionID = "old-session-id"
 	m.resumeCwd = "/somewhere"
 	m.worktreeName = "ask-claude-abc123def456"
+	if err := saveConfig(askConfig{Provider: "claude"}); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
 
 	m = m.openProviderSwitch()
 	m = stepKey(t, m, pressSpecial(tea.KeyDown))
@@ -182,23 +186,104 @@ func TestSwitcher_ApplySwapsProviderAndSavesDefault(t *testing.T) {
 	}
 
 	cfg, _ := loadConfig()
-	if cfg.Provider != "codex" {
-		t.Errorf("cfg.Provider=%q want codex", cfg.Provider)
+	if cfg.Provider != "claude" {
+		t.Errorf("cfg.Provider=%q want claude", cfg.Provider)
+	}
+
+	a := newApp(&m)
+	newA, _ := a.openTab()
+	a2, ok := newA.(app)
+	if !ok {
+		t.Fatalf("openTab returned %T, want app", newA)
+	}
+	if len(a2.tabs) != 2 {
+		t.Fatalf("tabs=%d after openTab, want 2", len(a2.tabs))
+	}
+	nt := a2.tabs[1]
+	t.Cleanup(func() {
+		if nt.mcpBridge != nil {
+			nt.mcpBridge.stop()
+		}
+	})
+	if nt.provider == nil || nt.provider.ID() != "claude" {
+		got := "<nil>"
+		if nt.provider != nil {
+			got = nt.provider.ID()
+		}
+		t.Errorf("new tab provider=%q want claude; Ctrl+B must not change new-tab defaults", got)
 	}
 }
 
-func TestSwitcher_ApplyPersistsModelInProviderSettings(t *testing.T) {
-	m, _, p2 := providerSwitcherFixture(t)
+func TestSwitcher_ApplyDoesNotPersistModelInProviderSettings(t *testing.T) {
+	m, p1, _ := providerSwitcherFixture(t)
+	p1.settings = ProviderSettings{Model: "sonnet"}
+	m.providerModel = "sonnet"
 	m = m.openProviderSwitch()
-	m.providerSwitchProvIdx = 1
-	m = m.startProviderSwitchModelPicker(p2.ModelPicker())
+	m = stepKey(t, m, pressSpecial(tea.KeyEnter))
+	m = stepKey(t, m, pressSpecial(tea.KeyDown))
 	m = stepKey(t, m, pressSpecial(tea.KeyEnter))
 
-	if len(p2.savedState) == 0 {
-		t.Fatal("SaveSettings was never called on the target provider")
+	if len(p1.savedState) != 0 {
+		t.Fatalf("SaveSettings should not be called from Ctrl+B; got %d saves", len(p1.savedState))
 	}
-	if last := p2.savedState[len(p2.savedState)-1]; last.Model != "" {
-		t.Errorf("saved Model=%q want empty (default)", last.Model)
+	if p1.settings.Model != "sonnet" {
+		t.Errorf("saved default model=%q want sonnet", p1.settings.Model)
+	}
+}
+
+func TestSwitcher_SameProviderModelDoesNotAffectNewTabs(t *testing.T) {
+	isolateHome(t)
+	cwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	p1 := newFakeProvider()
+	p1.id = "claude"
+	p1.displayName = "Claude"
+	p1.modelPicker = ProviderPicker{Options: []string{"default", "sonnet", "opus"}}
+	p1.settings = ProviderSettings{Model: "sonnet"}
+	withRegisteredProviders(t, p1)
+
+	if err := saveConfig(askConfig{Provider: "claude"}); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+
+	first, err := newTab(1, askConfig{Provider: "claude"})
+	if err != nil {
+		t.Fatalf("newTab first: %v", err)
+	}
+	t.Cleanup(func() {
+		if first.mcpBridge != nil {
+			first.mcpBridge.stop()
+		}
+	})
+
+	m := *first
+	m = stepKey(t, m, pressKey('b', tea.ModCtrl))
+	m = stepKey(t, m, pressSpecial(tea.KeyEnter))
+	m = stepKey(t, m, pressSpecial(tea.KeyDown))
+	m = stepKey(t, m, pressSpecial(tea.KeyEnter))
+	if m.providerModel != "opus" {
+		t.Fatalf("current tab providerModel=%q want opus", m.providerModel)
+	}
+	*first = m
+
+	a := newApp(first)
+	newA, _ := a.openTab()
+	a2, ok := newA.(app)
+	if !ok {
+		t.Fatalf("openTab returned %T, want app", newA)
+	}
+	if len(a2.tabs) != 2 {
+		t.Fatalf("tabs=%d after openTab, want 2", len(a2.tabs))
+	}
+	nt := a2.tabs[1]
+	t.Cleanup(func() {
+		if nt.mcpBridge != nil {
+			nt.mcpBridge.stop()
+		}
+	})
+	if nt.providerModel != "sonnet" {
+		t.Errorf("new tab providerModel=%q want sonnet; Ctrl+B must stay in-memory", nt.providerModel)
 	}
 }
 
