@@ -32,7 +32,6 @@ type fakeProvider struct {
 	sendFn         func(*providerProc, string, []pendingAttachment) error
 	listSessionsFn func(string) ([]sessionEntry, error)
 	loadHistoryFn  func(string, HistoryOpts) ([]historyEntry, error)
-	ensureResumeFn func(string) error
 	loadSettingsFn func() ProviderSettings
 	saveSettingsFn func(ProviderSettings) error
 
@@ -116,13 +115,6 @@ func (f *fakeProvider) LoadHistory(id string, opts HistoryOpts) ([]historyEntry,
 		return f.loadHistoryFn(id, opts)
 	}
 	return nil, nil
-}
-
-func (f *fakeProvider) EnsureResumeCwd(cwd string) error {
-	if f.ensureResumeFn != nil {
-		return f.ensureResumeFn(cwd)
-	}
-	return nil
 }
 
 func (f *fakeProvider) LoadSettings() ProviderSettings {

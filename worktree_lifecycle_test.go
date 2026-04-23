@@ -1,12 +1,22 @@
 package main
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 )
+
+// testGit builds a git command rooted at dir without spawning it.
+func testGit(dir string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	return cmd
+}
 
 // TestEnsureProc_CreatesWorktreeFirstCall verifies that ensureProc with
 // m.worktree=true creates a new .claude/worktrees/<adj>-<verb>-<noun>
@@ -87,7 +97,7 @@ func TestEnsureProc_ResumeWithWorktreeSetsCwd(t *testing.T) {
 	m.sessionID = "prior-session"
 	// resumeCwd points at a (possibly pruned) worktree path; the name
 	// is the only thing ensureProc needs — reuse keys off name alone.
-	m.worktreeName = "ask-claude-sharedid1234"
+	m.worktreeName = "dapper-brewing-dolphin"
 	m.resumeCwd = filepath.Join(dir, ".claude", "worktrees", m.worktreeName)
 
 	if err := m.ensureProc(); err != nil {
@@ -97,6 +107,96 @@ func TestEnsureProc_ResumeWithWorktreeSetsCwd(t *testing.T) {
 		t.Errorf("resume+worktree: StartSession Cwd=%q want %q",
 			p.startArgs[0].Cwd, m.resumeCwd)
 	}
+}
+
+// TestEnsureProc_ResumeDerivesWorktreeFromResumeCwd covers the full
+// /resume flow: only m.sessionID + m.resumeCwd are set (worktreeName
+// empty). ensureProc must recover the worktree name from resumeCwd
+// and point StartSession at the worktree path. This is the regression
+// guard for the claude worktree-resume path after --worktree was
+// removed from the CLI flags.
+func TestEnsureProc_ResumeDerivesWorktreeFromResumeCwd(t *testing.T) {
+	dir := initGitRepo(t)
+	t.Chdir(dir)
+	isolateHome(t)
+	p := newFakeProvider()
+	p.caps = ProviderCapabilities{Resume: true}
+	withRegisteredProviders(t, p)
+	m := newTestModel(t, p)
+	m.sessionID = "claude-session-uuid"
+	// User picked a worktree session from /resume; only resumeCwd is
+	// set, worktreeName is empty until ensureProc derives it.
+	wt := "witty-napping-peach"
+	if _, _, err := createWorktreeAtName(dir, wt); err != nil {
+		t.Fatalf("seed worktree: %v", err)
+	}
+	m.resumeCwd = filepath.Join(dir, ".claude", "worktrees", wt)
+
+	if err := m.ensureProc(); err != nil {
+		t.Fatalf("ensureProc: %v", err)
+	}
+	if m.worktreeName != wt {
+		t.Errorf("ensureProc should derive worktreeName from resumeCwd, got %q", m.worktreeName)
+	}
+	if p.startArgs[0].Cwd != m.resumeCwd {
+		t.Errorf("resume without worktree=true must still run in the worktree dir, got %q", p.startArgs[0].Cwd)
+	}
+}
+
+// TestEnsureProc_ResumeRecreatesMissingWorktree covers the case
+// where prune removed the worktree directory between sessions.
+// ensureProc's ensureResumeWorktree call must restore the dir before
+// handing it to StartSession.
+func TestEnsureProc_ResumeRecreatesMissingWorktree(t *testing.T) {
+	dir := initGitRepo(t)
+	t.Chdir(dir)
+	isolateHome(t)
+	p := newFakeProvider()
+	p.caps = ProviderCapabilities{Resume: true}
+	withRegisteredProviders(t, p)
+	m := newTestModel(t, p)
+	m.sessionID = "sess"
+	wt := "sparkly-swooping-glacier"
+	wtPath, _, err := createWorktreeAtName(dir, wt)
+	if err != nil {
+		t.Fatalf("seed worktree: %v", err)
+	}
+	// Simulate prune: unlock + remove the worktree but leave the branch
+	// so ensureResumeWorktree can re-attach.
+	runGit(t, dir, "worktree", "unlock", wtPath)
+	runGit(t, dir, "worktree", "remove", "--force", wtPath)
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("sanity: worktree should be gone before ensureProc runs")
+	}
+	m.resumeCwd = wtPath
+
+	if err := m.ensureProc(); err != nil {
+		t.Fatalf("ensureProc: %v", err)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Errorf("ensureProc must recreate pruned worktree: %v", err)
+	}
+	if p.startArgs[0].Cwd != wtPath {
+		t.Errorf("StartSession Cwd=%q want %q", p.startArgs[0].Cwd, wtPath)
+	}
+}
+
+// createWorktreeAtName is a test helper that seeds a worktree with a
+// specific directory name (bypassing the whimsy generator) so the
+// test can later reference it deterministically.
+func createWorktreeAtName(repoRoot, name string) (string, string, error) {
+	path := filepath.Join(repoRoot, ".claude", "worktrees", name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", "", err
+	}
+	branch := "worktree-" + name
+	cmd := testGit(repoRoot, "worktree", "add", "-b", branch, path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", "", fmt.Errorf("worktree add: %v\n%s", err, out)
+	}
+	// Lock as ours so it interacts with the real lock/prune path.
+	lockWorktree(name)
+	return path, branch, nil
 }
 
 // TestEnsureProc_OutsideGitNoWorktree proves ensureProc is a no-op for

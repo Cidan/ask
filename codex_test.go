@@ -20,8 +20,10 @@ func TestCodexProvider_Metadata(t *testing.T) {
 	if !caps.ModelPicker {
 		t.Error("ModelPicker capability should be true so /model + Ctrl+B work")
 	}
-	if caps.Resume || caps.EffortPicker ||
-		caps.AskUserQuestionMCP || caps.PermissionPromptMCP {
+	if !caps.Resume {
+		t.Error("Resume capability should be true so /resume works")
+	}
+	if caps.EffortPicker || caps.AskUserQuestionMCP || caps.PermissionPromptMCP {
 		t.Errorf("deferred capabilities should stay false, got %+v", caps)
 	}
 	mp := p.ModelPicker()
@@ -39,7 +41,7 @@ func TestCodexProvider_Metadata(t *testing.T) {
 	for _, s := range p.BaseSlashCommands() {
 		names[s.name] = true
 	}
-	for _, want := range []string{"/new", "/clear", "/model"} {
+	for _, want := range []string{"/resume", "/new", "/clear", "/model"} {
 		if !names[want] {
 			t.Errorf("BaseSlashCommands missing %q (got %v)", want, names)
 		}

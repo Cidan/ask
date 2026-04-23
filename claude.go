@@ -126,20 +126,13 @@ func (claudeProvider) StartSession(args ProviderSessionArgs) (*providerProc, cha
 	cliArgs := claudeCLIArgs(args, false)
 	cmd := exec.Command("claude", cliArgs...)
 	cmd.Env = claudeEnv(args)
-	// When resuming a worktree session, the jsonl lives under
-	// `~/.claude/projects/<main-encoded>--claude-worktrees-<name>/` — claude
-	// looks it up via its own cwd, so the subprocess has to run inside that
-	// worktree for `--resume` to find the file. For fresh sessions we honour
-	// args.Cwd, which the app points at the ask-managed worktree under
-	// `.claude/worktrees/ask-<provider>-<id>/` (or at the project root when
-	// the worktree preference is off).
-	switch {
-	case args.SessionID != "" && args.ResumeCwd != "":
-		if err := ensureResumeWorktree(args.ResumeCwd); err != nil {
-			return nil, nil, err
-		}
-		cmd.Dir = args.ResumeCwd
-	case args.Cwd != "":
+	// ask's ensureProc already points args.Cwd at the right directory:
+	// the ask-managed worktree for worktree sessions (including
+	// resumes — ensureResumeWorktree has already recreated the dir if
+	// prune removed it), or the project root when worktree is off.
+	// Claude's own `--resume` finds the session jsonl by cwd, so
+	// running under that cwd is enough.
+	if args.Cwd != "" {
 		cmd.Dir = args.Cwd
 	}
 	stdin, err := cmd.StdinPipe()
@@ -173,8 +166,6 @@ func (claudeProvider) Send(p *providerProc, text string, attachments []pendingAt
 	_, err := p.stdin.Write(append(b, '\n'))
 	return err
 }
-
-func (claudeProvider) EnsureResumeCwd(resumeCwd string) error { return ensureResumeWorktree(resumeCwd) }
 
 func (claudeProvider) LoadSettings() ProviderSettings {
 	cfg, _ := loadConfig()

@@ -64,11 +64,6 @@ type Provider interface {
 	// entries the UI can render directly.
 	LoadHistory(sessionID string, opts HistoryOpts) ([]historyEntry, error)
 
-	// EnsureResumeCwd guarantees the filesystem path a session was
-	// recorded in still exists so --resume (or its equivalent) can run
-	// inside it. No-op when the provider doesn't pin sessions to a cwd.
-	EnsureResumeCwd(resumeCwd string) error
-
 	// LoadSettings returns the provider's persisted UI settings (model,
 	// effort, cached slash commands). Each provider owns its own config
 	// section so /model, /effort and slash-command caches never trample

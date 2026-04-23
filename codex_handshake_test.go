@@ -140,6 +140,50 @@ func TestCodexHandshake_IgnoresMalformedLines(t *testing.T) {
 	}
 }
 
+func TestCodexHandshake_ResumeSwapsMethodAndPassesThreadID(t *testing.T) {
+	serverOut := `{"id":2,"result":{"thread":{"id":"prior-id"}}}
+`
+	state, stdin, err := fakeHandshake(t, serverOut, ProviderSessionArgs{
+		SessionID: "prior-id",
+		Cwd:       "/work",
+	})
+	if err != nil {
+		t.Fatalf("handshake err: %v", err)
+	}
+	if state.threadID != "prior-id" {
+		t.Errorf("threadID=%q want prior-id", state.threadID)
+	}
+	frames := decodeFrames(t, stdin.Bytes())
+	if len(frames) != 3 {
+		t.Fatalf("want 3 client frames, got %d: %v", len(frames), frames)
+	}
+	if frames[2]["method"] != "thread/resume" {
+		t.Errorf("resume handshake must use thread/resume, got method=%v", frames[2]["method"])
+	}
+	params, _ := frames[2]["params"].(map[string]any)
+	if params["threadId"] != "prior-id" {
+		t.Errorf("params.threadId=%v want prior-id", params["threadId"])
+	}
+	if params["cwd"] != "/work" {
+		t.Errorf("params.cwd=%v want /work", params["cwd"])
+	}
+}
+
+func TestCodexHandshake_FreshSessionStillUsesThreadStart(t *testing.T) {
+	// Guard the non-resume path: empty SessionID must keep sending
+	// thread/start.
+	serverOut := `{"id":2,"result":{"thread":{"id":"new-id"}}}
+`
+	_, stdin, err := fakeHandshake(t, serverOut, ProviderSessionArgs{})
+	if err != nil {
+		t.Fatalf("handshake err: %v", err)
+	}
+	frames := decodeFrames(t, stdin.Bytes())
+	if frames[2]["method"] != "thread/start" {
+		t.Errorf("fresh handshake must use thread/start, got %v", frames[2]["method"])
+	}
+}
+
 // decodeFrames splits the stdin byte stream at newlines and JSON-parses each
 // frame.
 func decodeFrames(t *testing.T, raw []byte) []map[string]any {

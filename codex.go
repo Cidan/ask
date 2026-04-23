@@ -29,6 +29,7 @@ func (codexProvider) DisplayName() string { return "Codex" }
 
 func (codexProvider) Capabilities() ProviderCapabilities {
 	return ProviderCapabilities{
+		Resume:      true,
 		ModelPicker: true,
 	}
 }
@@ -49,6 +50,7 @@ func (codexProvider) EffortOptions() []string { return nil }
 
 func (codexProvider) BaseSlashCommands() []slashCmd {
 	return []slashCmd{
+		{"/resume", "resume a previous Codex session"},
 		{"/new", "start a new Codex session"},
 		{"/clear", "start a new Codex session"},
 		{"/model", "select the Codex model"},
@@ -57,13 +59,13 @@ func (codexProvider) BaseSlashCommands() []slashCmd {
 
 func (codexProvider) ProbeInit(_ ProviderSessionArgs) tea.Cmd { return nil }
 
-func (codexProvider) ListSessions(_ string) ([]sessionEntry, error) { return nil, nil }
-
-func (codexProvider) LoadHistory(_ string, _ HistoryOpts) ([]historyEntry, error) {
-	return nil, nil
+func (codexProvider) ListSessions(cwd string) ([]sessionEntry, error) {
+	return loadCodexSessions(cwd)
 }
 
-func (codexProvider) EnsureResumeCwd(_ string) error { return nil }
+func (codexProvider) LoadHistory(sessionID string, opts HistoryOpts) ([]historyEntry, error) {
+	return loadCodexHistory(sessionID, opts)
+}
 
 func (codexProvider) LoadSettings() ProviderSettings {
 	cfg, _ := loadConfig()
@@ -177,11 +179,20 @@ func codexHandshake(stdin io.Writer, sc *bufio.Scanner, state *codexState, args 
 	if err := codexWriteJSON(stdin, codexNotification("initialized", nil)); err != nil {
 		return err
 	}
-	threadParams := map[string]any{}
+	method := "thread/start"
+	params := map[string]any{}
 	if args.Cwd != "" {
-		threadParams["cwd"] = args.Cwd
+		params["cwd"] = args.Cwd
 	}
-	if err := codexWriteJSON(stdin, codexRequest(codexThreadStartID, "thread/start", threadParams)); err != nil {
+	if args.SessionID != "" {
+		// Resume: thread/resume takes the thread id directly and
+		// returns the same shape as thread/start (thread{id}). Our
+		// stored id carries forward; conversation history is
+		// replayed from disk by loadCodexHistory earlier in the flow.
+		method = "thread/resume"
+		params["threadId"] = args.SessionID
+	}
+	if err := codexWriteJSON(stdin, codexRequest(codexThreadStartID, method, params)); err != nil {
 		return err
 	}
 	for sc.Scan() {

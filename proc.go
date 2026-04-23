@@ -41,27 +41,35 @@ func (m *model) ensureProc() error {
 	}
 	args := m.sessionArgs()
 	// Resume paths derive the worktree name from where the prior
-	// session lived. Do this first so the worktree block below can
-	// reuse the name like any other pre-set value.
+	// session lived. Do this first so the step below can treat a
+	// resumed worktree name the same as any other pre-set value.
 	if m.sessionID != "" && m.resumeCwd != "" && m.worktreeName == "" {
 		m.worktreeName = worktreeNameFromCwd(m.resumeCwd)
 	}
-	if m.worktree && inGitCheckout() {
+
+	// Fresh session + worktree preference on: create a new worktree.
+	if m.worktreeName == "" && m.sessionID == "" && m.worktree && inGitCheckout() {
+		path, name, err := createWorktree()
+		if err != nil {
+			return err
+		}
+		args.Cwd = path
+		m.worktreeName = name
+	}
+
+	// With a worktree name in hand (freshly created, reused on swap,
+	// or resume-derived), point the provider at its directory and
+	// recreate it from its branch if prune wiped it between sessions.
+	// This runs even when m.worktree is currently off so a resumed
+	// session lands in the same branch it was created on.
+	if m.worktreeName != "" {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return err
 		}
-		switch {
-		case m.worktreeName != "":
-			// Reuse (provider swap, proc restart, or resume).
-			args.Cwd = worktreePath(cwd, m.worktreeName)
-		case m.sessionID == "":
-			path, name, err := createWorktree()
-			if err != nil {
-				return err
-			}
-			args.Cwd = path
-			m.worktreeName = name
+		args.Cwd = worktreePath(cwd, m.worktreeName)
+		if err := ensureResumeWorktree(args.Cwd); err != nil {
+			return err
 		}
 	}
 	proc, ch, err := m.provider.StartSession(args)
