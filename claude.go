@@ -28,7 +28,6 @@ func (claudeProvider) DisplayName() string { return "Claude" }
 
 func (claudeProvider) Capabilities() ProviderCapabilities {
 	return ProviderCapabilities{
-		NativeWorktree:      true,
 		Resume:              true,
 		ModelPicker:         true,
 		EffortPicker:        true,
@@ -114,15 +113,12 @@ func claudeCLIArgs(args ProviderSessionArgs, probe bool) []string {
 	if args.Effort != "" {
 		out = append(out, "--effort", args.Effort)
 	}
-	if !probe {
-		if args.SessionID != "" {
-			out = append(out, "--resume", args.SessionID)
-		} else if args.Worktree && inGitCheckout() {
-			// claude refuses to start with --worktree outside a git checkout,
-			// so drop the flag silently in that case.
-			out = append(out, "--worktree")
-		}
+	if !probe && args.SessionID != "" {
+		out = append(out, "--resume", args.SessionID)
 	}
+	// Note: ask manages its own worktree lifecycle now — we never pass
+	// claude's --worktree flag, and instead run the subprocess with
+	// cmd.Dir set to a worktree we created under .claude/worktrees/.
 	return out
 }
 
@@ -134,9 +130,9 @@ func (claudeProvider) StartSession(args ProviderSessionArgs) (*providerProc, cha
 	// `~/.claude/projects/<main-encoded>--claude-worktrees-<name>/` — claude
 	// looks it up via its own cwd, so the subprocess has to run inside that
 	// worktree for `--resume` to find the file. For fresh sessions we honour
-	// args.Cwd, which the app sets either to the user's cwd or (for
-	// externally-managed worktrees, driven by providers with NativeWorktree
-	// false) to the ask-created worktree directory.
+	// args.Cwd, which the app points at the ask-managed worktree under
+	// `.claude/worktrees/ask-<provider>-<id>/` (or at the project root when
+	// the worktree preference is off).
 	switch {
 	case args.SessionID != "" && args.ResumeCwd != "":
 		if err := ensureResumeWorktree(args.ResumeCwd); err != nil {

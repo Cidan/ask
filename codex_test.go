@@ -20,7 +20,7 @@ func TestCodexProvider_Metadata(t *testing.T) {
 	if !caps.ModelPicker {
 		t.Error("ModelPicker capability should be true so /model + Ctrl+B work")
 	}
-	if caps.NativeWorktree || caps.Resume || caps.EffortPicker ||
+	if caps.Resume || caps.EffortPicker ||
 		caps.AskUserQuestionMCP || caps.PermissionPromptMCP {
 		t.Errorf("deferred capabilities should stay false, got %+v", caps)
 	}

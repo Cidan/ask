@@ -114,8 +114,11 @@ func TestUpdate_ProviderExitedMsgResetsState(t *testing.T) {
 	if m2.bgTasks != nil {
 		t.Error("bgTasks should be cleared")
 	}
-	if m2.worktreeName != "" {
-		t.Errorf("worktreeName should be cleared, got %q", m2.worktreeName)
+	// worktreeName is intentionally preserved across proc exits so the
+	// next turn (or a provider swap) reuses the same directory. /new,
+	// /clear, and the worktree-off toggle clear it explicitly.
+	if m2.worktreeName != "w1" {
+		t.Errorf("worktreeName should survive proc exit, got %q", m2.worktreeName)
 	}
 }
 

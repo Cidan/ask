@@ -169,6 +169,11 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 				if m.worktree {
 					ensureWorktreeGitignore()
+				} else {
+					// Detaching from the active worktree: forget it so
+					// the next turn runs in the project root. The on-disk
+					// directory survives until prune reaps it.
+					m.worktreeName = ""
 				}
 				m.killProc()
 				return m, nil

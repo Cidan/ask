@@ -90,13 +90,8 @@ type ProviderSettings struct {
 
 // ProviderCapabilities flags optional features a provider supports. The
 // app consults these to decide whether to engage ask-side fallbacks
-// (e.g., our own worktree manager when the provider has no --worktree).
+// (e.g., hiding /resume for providers that can't resume).
 type ProviderCapabilities struct {
-	// NativeWorktree means the provider handles worktree creation on
-	// its own. When false and the user's worktree preference is on, ask
-	// manages worktree lifecycle externally before StartSession runs.
-	NativeWorktree bool
-
 	// Resume means /resume makes sense for this provider.
 	Resume bool
 

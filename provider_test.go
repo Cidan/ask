@@ -71,7 +71,7 @@ func TestClaudeProvider_Metadata(t *testing.T) {
 		t.Errorf("DisplayName=%q want Claude", got)
 	}
 	caps := p.Capabilities()
-	if !caps.NativeWorktree || !caps.Resume || !caps.ModelPicker || !caps.EffortPicker ||
+	if !caps.Resume || !caps.ModelPicker || !caps.EffortPicker ||
 		!caps.AskUserQuestionMCP || !caps.PermissionPromptMCP {
 		t.Errorf("Capabilities missing expected flags: %+v", caps)
 	}

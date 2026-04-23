@@ -133,7 +133,7 @@ func TestSwitcher_ApplySwapsProviderAndSavesDefault(t *testing.T) {
 	m, _, p2 := providerSwitcherFixture(t)
 	m.sessionID = "old-session-id"
 	m.resumeCwd = "/somewhere"
-	m.worktreeName = "old-worktree"
+	m.worktreeName = "ask-claude-abc123def456"
 
 	m = m.openProviderSwitch()
 	// Move cursor to p2 (codex), Enter, Enter (picks "default" model).
@@ -156,9 +156,15 @@ func TestSwitcher_ApplySwapsProviderAndSavesDefault(t *testing.T) {
 		// "default" label → empty string in our decoder
 		t.Errorf("providerModel=%q want empty after picking default", m.providerModel)
 	}
-	if m.sessionID != "" || m.resumeCwd != "" || m.worktreeName != "" {
-		t.Errorf("session/resume/worktree state should be cleared on swap, got s=%q r=%q w=%q",
-			m.sessionID, m.resumeCwd, m.worktreeName)
+	// session-scoped state belongs to claude; cross-provider swap clears it.
+	if m.sessionID != "" || m.resumeCwd != "" {
+		t.Errorf("session/resume state should clear on cross-provider swap, got s=%q r=%q",
+			m.sessionID, m.resumeCwd)
+	}
+	// Worktree is shared across providers — the directory on disk is
+	// the same branch, so codex runs inside the claude-tagged dir.
+	if m.worktreeName != "ask-claude-abc123def456" {
+		t.Errorf("worktreeName should survive cross-provider swap (shared dir), got %q", m.worktreeName)
 	}
 	if m.mode != modeInput {
 		t.Errorf("mode after apply=%v want modeInput", m.mode)
@@ -369,11 +375,13 @@ func TestSwitcher_SameProviderDifferentModelKeepsSession(t *testing.T) {
 }
 
 func TestSwitcher_CrossProviderStillClearsSession(t *testing.T) {
-	// The cross-provider path should still wipe session state —
-	// resume IDs are provider-specific.
+	// The cross-provider path should wipe session state (resume ids
+	// are provider-specific) but preserve the worktree directory —
+	// every provider in the tab shares the same branch.
 	m, _, _ := providerSwitcherFixture(t)
 	m.sessionID = "claude-session"
 	m.resumeCwd = "/work/here"
+	m.worktreeName = "ask-claude-shared"
 
 	m = m.openProviderSwitch()
 	// Navigate to codex (idx 1), descend to Level 1, pick default.
@@ -387,6 +395,9 @@ func TestSwitcher_CrossProviderStillClearsSession(t *testing.T) {
 	if m.sessionID != "" || m.resumeCwd != "" {
 		t.Errorf("cross-provider swap must clear session state; got s=%q r=%q",
 			m.sessionID, m.resumeCwd)
+	}
+	if m.worktreeName != "ask-claude-shared" {
+		t.Errorf("cross-provider swap must preserve worktree dir; got %q", m.worktreeName)
 	}
 }
 

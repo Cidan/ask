@@ -2,8 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -153,40 +151,35 @@ func TestClaudeCLIArgs_Effort(t *testing.T) {
 	}
 }
 
-func TestClaudeCLIArgs_ResumeDropsWorktree(t *testing.T) {
-	args := claudeCLIArgs(ProviderSessionArgs{SessionID: "s-1", Worktree: true}, false)
+func TestClaudeCLIArgs_ResumeFlag(t *testing.T) {
+	args := claudeCLIArgs(ProviderSessionArgs{SessionID: "s-1"}, false)
 	if got := argAfter(args, "--resume"); got != "s-1" {
 		t.Errorf("--resume want s-1 got %q", got)
 	}
-	if containsArg(args, "--worktree") {
-		t.Errorf("--worktree must not appear alongside --resume: %v", args)
+}
+
+func TestClaudeCLIArgs_NeverPassesWorktreeFlag(t *testing.T) {
+	// ask owns worktree lifecycle end-to-end now; claude's own
+	// --worktree machinery must not be triggered regardless of input.
+	dir := initGitRepo(t)
+	t.Chdir(dir)
+	for _, probe := range []bool{false, true} {
+		for _, sid := range []string{"", "s-1"} {
+			args := claudeCLIArgs(ProviderSessionArgs{
+				Worktree: true, SessionID: sid,
+			}, probe)
+			if containsArg(args, "--worktree") {
+				t.Errorf("probe=%v sid=%q: --worktree must never appear (ask manages worktrees): %v",
+					probe, sid, args)
+			}
+		}
 	}
 }
 
-func TestClaudeCLIArgs_WorktreeOnlyInsideGitCheckout(t *testing.T) {
-	// Case 1: outside a git checkout.
-	outside := t.TempDir()
-	t.Chdir(outside)
-	args := claudeCLIArgs(ProviderSessionArgs{Worktree: true}, false)
-	if containsArg(args, "--worktree") {
-		t.Errorf("outside a git checkout, --worktree should be dropped silently: %v", args)
-	}
-
-	// Case 2: inside a git checkout.
-	dir := initGitRepo(t)
-	t.Chdir(dir)
-	argsIn := claudeCLIArgs(ProviderSessionArgs{Worktree: true}, false)
-	if !containsArg(argsIn, "--worktree") {
-		t.Errorf("inside a git checkout, --worktree should be present: %v", argsIn)
-	}
-}
-
-func TestClaudeCLIArgs_ProbeDropsResumeAndWorktree(t *testing.T) {
-	dir := initGitRepo(t)
-	t.Chdir(dir)
-	probe := claudeCLIArgs(ProviderSessionArgs{SessionID: "s-1", Worktree: true}, true)
-	if containsArg(probe, "--resume") || containsArg(probe, "--worktree") {
-		t.Errorf("probe args must not include --resume or --worktree: %v", probe)
+func TestClaudeCLIArgs_ProbeDropsResume(t *testing.T) {
+	probe := claudeCLIArgs(ProviderSessionArgs{SessionID: "s-1"}, true)
+	if containsArg(probe, "--resume") {
+		t.Errorf("probe args must not include --resume: %v", probe)
 	}
 }
 
@@ -286,27 +279,11 @@ func TestClaudeCLIArgs_OrderStableForSameInput(t *testing.T) {
 	}
 }
 
-func TestClaudeCLIArgs_FreshWorktreeUnderRepo(t *testing.T) {
+func TestClaudeCLIArgs_FreshSessionNoResume(t *testing.T) {
 	dir := initGitRepo(t)
 	t.Chdir(dir)
 	args := claudeCLIArgs(ProviderSessionArgs{Worktree: true}, false)
-	if !containsArg(args, "--worktree") {
-		t.Errorf("expected --worktree for fresh session in repo: %v", args)
-	}
 	if containsArg(args, "--resume") {
 		t.Errorf("fresh session should not add --resume: %v", args)
-	}
-}
-
-func TestClaudeCLIArgs_OutsideRepoNoWorktree(t *testing.T) {
-	tmp := t.TempDir()
-	// Make sure no .git exists.
-	if _, err := os.Stat(filepath.Join(tmp, ".git")); err == nil {
-		t.Fatalf("unexpected .git inside tmp %s", tmp)
-	}
-	t.Chdir(tmp)
-	args := claudeCLIArgs(ProviderSessionArgs{Worktree: true}, false)
-	if containsArg(args, "--worktree") {
-		t.Errorf("outside git checkout must skip --worktree: %v", args)
 	}
 }

@@ -132,18 +132,71 @@ func TestWorktreeNameFromCwd(t *testing.T) {
 	}
 }
 
-func TestNewExternalWorktreeName_AvoidsCollisions(t *testing.T) {
+func TestNewWorktreeName_FormatAndProviderTag(t *testing.T) {
 	tmp := t.TempDir()
-	// Seed a collision at the base name by creating a dummy .claude/worktrees/ask-<first>.
-	name1 := newExternalWorktreeName(tmp)
-	parent := filepath.Join(tmp, ".claude", "worktrees")
-	if err := os.MkdirAll(filepath.Join(parent, name1), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
+	name := newWorktreeName(tmp, "codex")
+	// Shape: ask-<provider>-<12 lowercase alphanum>.
+	if !strings.HasPrefix(name, "ask-codex-") {
+		t.Errorf("expected ask-codex- prefix, got %q", name)
 	}
-	name2 := newExternalWorktreeName(tmp)
-	// name2 should either be the same base (new timestamp) or a -1 variant.
-	if name2 == name1 {
-		t.Errorf("newExternalWorktreeName collided: %s == %s", name1, name2)
+	tail := strings.TrimPrefix(name, "ask-codex-")
+	if len(tail) != 12 {
+		t.Errorf("tail len=%d want 12: %q", len(tail), tail)
+	}
+	for _, r := range tail {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'z')) {
+			t.Errorf("tail has non-alphanum rune %q: %q", r, tail)
+		}
+	}
+}
+
+func TestNewWorktreeName_DifferentIDsEachCall(t *testing.T) {
+	tmp := t.TempDir()
+	seen := map[string]bool{}
+	for i := 0; i < 50; i++ {
+		n := newWorktreeName(tmp, "claude")
+		if seen[n] {
+			t.Fatalf("newWorktreeName collided after %d calls: %q", i, n)
+		}
+		seen[n] = true
+	}
+}
+
+func TestNewWorktreeName_SanitizesProviderSegment(t *testing.T) {
+	tmp := t.TempDir()
+	// Uppercase + a path-traversal attempt + mixed chars — must collapse
+	// to the safe subset without leaving bad path bits in the name.
+	n := newWorktreeName(tmp, "Code/x../!")
+	if !strings.HasPrefix(n, "ask-codex-") {
+		t.Errorf("unsafe chars should be stripped; got %q", n)
+	}
+}
+
+func TestSanitizeProviderSegment(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"claude", "claude"},
+		{"codex", "codex"},
+		{"Codex", "codex"},
+		{"co-dex", "co-dex"},
+		{"CO/DEX", "codex"},
+		{"", "x"},
+		{"///", "x"},
+	}
+	for _, c := range cases {
+		if got := sanitizeProviderSegment(c.in); got != c.want {
+			t.Errorf("sanitizeProviderSegment(%q)=%q want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestWorktreePath_Absolute(t *testing.T) {
+	tmp := t.TempDir()
+	got := worktreePath(tmp, "ask-claude-abc123def456")
+	want := filepath.Join(tmp, ".claude", "worktrees", "ask-claude-abc123def456")
+	if got != want {
+		t.Errorf("worktreePath=%q want %q", got, want)
 	}
 }
 
@@ -192,7 +245,7 @@ func TestCreateExternalWorktree_MakesSiblingAndBranch(t *testing.T) {
 	}
 	dir := initGitRepo(t)
 	t.Chdir(dir)
-	path, name, err := createExternalWorktree()
+	path, name, err := createWorktree("claude")
 	if err != nil {
 		t.Fatalf("createExternalWorktree: %v", err)
 	}
@@ -241,7 +294,7 @@ func TestPruneWorktrees_NoOpInsideWorktree(t *testing.T) {
 	}
 	dir := initGitRepo(t)
 	t.Chdir(dir)
-	path, _, err := createExternalWorktree()
+	path, _, err := createWorktree("claude")
 	if err != nil {
 		t.Fatalf("createExternalWorktree: %v", err)
 	}
@@ -259,7 +312,7 @@ func TestPruneWorktrees_RemovesOurOwnLocked(t *testing.T) {
 	}
 	dir := initGitRepo(t)
 	t.Chdir(dir)
-	path, name, err := createExternalWorktree()
+	path, name, err := createWorktree("claude")
 	if err != nil {
 		t.Fatalf("createExternalWorktree: %v", err)
 	}
@@ -309,7 +362,7 @@ func TestWorktreeLocks_ParsesPorcelain(t *testing.T) {
 	}
 	dir := initGitRepo(t)
 	t.Chdir(dir)
-	path, name, err := createExternalWorktree()
+	path, name, err := createWorktree("claude")
 	if err != nil {
 		t.Fatalf("createExternalWorktree: %v", err)
 	}
@@ -343,7 +396,7 @@ func TestEnsureResumeWorktree_RecreatesMissingDir(t *testing.T) {
 	}
 	dir := initGitRepo(t)
 	t.Chdir(dir)
-	path, name, err := createExternalWorktree()
+	path, name, err := createWorktree("claude")
 	if err != nil {
 		t.Fatalf("createExternalWorktree: %v", err)
 	}

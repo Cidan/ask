@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+
 	tea "charm.land/bubbletea/v2"
 )
 
@@ -24,29 +26,42 @@ func (m model) sessionArgs() ProviderSessionArgs {
 // ensureProc lazily starts a provider session on first send in a turn.
 // Subsequent calls are no-ops while the process is alive.
 //
-// For providers without a native --worktree flag, ensureProc manages
-// the worktree lifecycle itself when the user's worktree preference is
-// on: a `.claude/worktrees/<name>` sibling is created before fork, the
-// subprocess runs inside it (via ProviderSessionArgs.Cwd), and the
-// existing prune/lock scaffolding reaps it on shutdown. Providers that
-// advertise NativeWorktree=true still drive their own worktree code
-// path and emit providerCwdMsg so the chip updates asynchronously.
+// Worktree lifecycle is owned entirely by ask (no provider opts out):
+// when the user's worktree preference is on and we're inside a git
+// checkout, a `.claude/worktrees/ask-<provider>-<id>` sibling is
+// created before fork and `args.Cwd` points at it. Subsequent calls
+// (after a provider swap or a proc exit) reuse `m.worktreeName`
+// verbatim so the same directory serves every backend in the tab —
+// the provider tag in the name is informational only, not a filter.
+// Resume paths populate `m.worktreeName` from `m.resumeCwd` if the
+// prior session lived inside a worktree.
 func (m *model) ensureProc() error {
 	if m.proc != nil {
 		return nil
 	}
 	args := m.sessionArgs()
-	if !m.provider.Capabilities().NativeWorktree {
+	// Resume paths derive the worktree name from where the prior
+	// session lived. Do this first so the worktree block below can
+	// reuse the name like any other pre-set value.
+	if m.sessionID != "" && m.resumeCwd != "" && m.worktreeName == "" {
+		m.worktreeName = worktreeNameFromCwd(m.resumeCwd)
+	}
+	if m.worktree && inGitCheckout() {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
 		switch {
-		case m.worktree && m.sessionID == "" && inGitCheckout():
-			path, name, err := createExternalWorktree()
+		case m.worktreeName != "":
+			// Reuse (provider swap, proc restart, or resume).
+			args.Cwd = worktreePath(cwd, m.worktreeName)
+		case m.sessionID == "":
+			path, name, err := createWorktree(m.provider.ID())
 			if err != nil {
 				return err
 			}
 			args.Cwd = path
 			m.worktreeName = name
-		case m.sessionID != "" && m.resumeCwd != "":
-			m.worktreeName = worktreeNameFromCwd(m.resumeCwd)
 		}
 	}
 	proc, ch, err := m.provider.StartSession(args)

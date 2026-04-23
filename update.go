@@ -152,7 +152,10 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m.bgTasks = nil
 		m.streamCh = nil
 		m.proc = nil
-		m.worktreeName = ""
+		// Keep m.worktreeName across proc exits — the directory still
+		// exists on disk and the next turn (or a provider swap) reuses
+		// it. /new, /clear, and the worktree-off toggle clear it
+		// explicitly; prune reaps it on shutdown.
 		m.dismissCancelTurnConfirmIfIdle()
 		if m.mode == modeApproval {
 			m = m.clearApproval()
@@ -885,6 +888,7 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		m.killProc()
 		m.sessionID = ""
 		m.resumeCwd = ""
+		m.worktreeName = ""
 		m.history = nil
 		m.appendHistory(outputStyle.Render(promptStyle.Render("✓ new session")))
 		return m, nil

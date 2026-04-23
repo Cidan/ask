@@ -208,11 +208,13 @@ func (m model) applyProviderSwitch(model string) (tea.Model, tea.Cmd) {
 	m.providerEffort = newSettings.Effort
 	m.providerSlashCmds = newSettings.SlashCommands
 	if !sameProvider {
-		// Cross-provider swaps: the old session/worktree belong to a
-		// different backend and are not resumable.
+		// Cross-provider swaps drop the old session id (session ids
+		// are provider-specific), but the worktree is shared: every
+		// backend in this tab runs inside the same
+		// .claude/worktrees/ask-… directory so they collaborate on
+		// the same branch.
 		m.sessionID = ""
 		m.resumeCwd = ""
-		m.worktreeName = ""
 	}
 
 	// Persist the model selection under the new provider, and pin the
