@@ -76,7 +76,23 @@ func (codexProvider) BaseSlashCommands() []slashCmd {
 	}
 }
 
-func (codexProvider) ProbeInit(_ ProviderSessionArgs) tea.Cmd { return nil }
+// ProbeInit forks a short-lived codex app-server, runs skills/list,
+// and returns a providerInitLoadedMsg so the existing update.go
+// handler persists the entries via persistSlashCmdsCmd. Re-runs on
+// every tab Init so a new skill installed between launches shows up
+// immediately, matching claude's per-launch cache-refresh pattern.
+// Errors are non-fatal: the picker still works with the static
+// BaseSlashCommands list even if discovery failed this round.
+func (codexProvider) ProbeInit(args ProviderSessionArgs) tea.Cmd {
+	return func() tea.Msg {
+		skills, err := fetchCodexSkills(args.Cwd)
+		if err != nil {
+			debugLog("codex ProbeInit skills/list: %v", err)
+			return providerInitLoadedMsg{err: err}
+		}
+		return providerInitLoadedMsg{slashCmds: skills}
+	}
+}
 
 func (codexProvider) ListSessions(cwd string) ([]sessionEntry, error) {
 	return loadCodexSessions(cwd)
@@ -644,6 +660,129 @@ func fetchCodexModels() ([]string, error) {
 		return nil, err
 	}
 	return nil, fmt.Errorf("codex exited before model/list response")
+}
+
+// fetchCodexSkills queries the running codex app-server for the
+// skills available at cwd. Each returned skill maps to a slash
+// command: typing `/<skill-name>` lets the user invoke it from the
+// prompt. Disabled skills are dropped so the picker only advertises
+// what codex will actually run. Uses the same short-lived-probe +
+// watchdog pattern as fetchCodexModels.
+func fetchCodexSkills(cwd string) ([]providerSlashEntry, error) {
+	cmd := exec.Command("codex", codexCLIArgs(ProviderSessionArgs{})...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	killed := false
+	cleanup := func() {
+		if killed {
+			return
+		}
+		killed = true
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}
+	defer cleanup()
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-done:
+		case <-time.After(codexHandshakeTimeout):
+			_ = cmd.Process.Kill()
+		}
+	}()
+
+	if err := codexWriteJSON(stdin, codexRequest(1, "initialize", map[string]any{
+		"clientInfo": map[string]any{"name": "ask", "version": "0.1"},
+	})); err != nil {
+		return nil, err
+	}
+	if err := codexWriteJSON(stdin, codexNotification("initialized", nil)); err != nil {
+		return nil, err
+	}
+	params := map[string]any{}
+	if cwd != "" {
+		params["cwds"] = []string{cwd}
+	}
+	if err := codexWriteJSON(stdin, codexRequest(2, "skills/list", params)); err != nil {
+		return nil, err
+	}
+
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 1<<20), 1<<22)
+	for sc.Scan() {
+		var ev map[string]any
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			continue
+		}
+		idf, ok := ev["id"].(float64)
+		if !ok || int(idf) != 2 {
+			continue
+		}
+		if rpcErr, ok := ev["error"].(map[string]any); ok {
+			msg, _ := rpcErr["message"].(string)
+			return nil, fmt.Errorf("skills/list rejected: %s", msg)
+		}
+		result, _ := ev["result"].(map[string]any)
+		data, _ := result["data"].([]any)
+		return codexParseSkillsList(data), nil
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("codex exited before skills/list response")
+}
+
+// codexParseSkillsList flattens the per-cwd SkillsListEntry records
+// into a single deduped list of slash entries. Duplicates (same skill
+// visible from multiple cwds) collapse to the first occurrence. A
+// missing description falls back to shortDescription, matching how
+// codex itself surfaces skills in its own UI.
+func codexParseSkillsList(data []any) []providerSlashEntry {
+	seen := map[string]struct{}{}
+	var out []providerSlashEntry
+	for _, entry := range data {
+		em, _ := entry.(map[string]any)
+		if em == nil {
+			continue
+		}
+		skills, _ := em["skills"].([]any)
+		for _, s := range skills {
+			sm, _ := s.(map[string]any)
+			if sm == nil {
+				continue
+			}
+			if enabled, has := sm["enabled"].(bool); has && !enabled {
+				continue
+			}
+			name, _ := sm["name"].(string)
+			if name == "" {
+				continue
+			}
+			if _, dup := seen[name]; dup {
+				continue
+			}
+			seen[name] = struct{}{}
+			desc, _ := sm["description"].(string)
+			if desc == "" {
+				desc, _ = sm["shortDescription"].(string)
+			}
+			out = append(out, providerSlashEntry{Name: name, Description: desc})
+		}
+	}
+	return out
 }
 
 // codexParseModelList pulls model ids out of a /model/list data
