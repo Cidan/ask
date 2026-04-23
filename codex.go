@@ -472,6 +472,8 @@ func codexEventToMsgs(ev map[string]any, proc *providerProc) []tea.Msg {
 				})
 			}
 			return msgs
+		case "commandExecution", "mcpToolCall":
+			return codexToolOutputMsgs(item, proc)
 		}
 		return nil
 	case "turn/completed":
@@ -519,6 +521,88 @@ func codexEventToMsgs(ev map[string]any, proc *providerProc) []tea.Msg {
 		}
 	}
 	return nil
+}
+
+// codexToolOutputMsgs converts a completed commandExecution or
+// mcpToolCall item into a toolCallMsg + toolResultMsg pair. The
+// consumer in update.go gates rendering on
+// `renderToolOutput && !quietMode` — same contract as toolDiffMsg.
+//
+// Codex bundles call info and output on a single item/completed frame,
+// so we always have both halves when we get here; we emit them as two
+// messages to match claude's wire shape (tool_use on assistant, then
+// tool_result on the next user turn) and keep update.go's handling
+// uniform across providers.
+func codexToolOutputMsgs(item map[string]any, proc *providerProc) []tea.Msg {
+	itype, _ := item["type"].(string)
+	name, input := codexToolCallSummary(itype, item)
+	output, isError := codexToolResultSummary(item)
+	var msgs []tea.Msg
+	if name != "" || len(input) > 0 {
+		msgs = append(msgs, toolCallMsg{name: name, input: input, proc: proc})
+	}
+	if output != "" || isError {
+		msgs = append(msgs, toolResultMsg{name: name, output: output, isError: isError, proc: proc})
+	}
+	return msgs
+}
+
+// codexToolCallSummary pulls the human-readable name and input payload
+// off the item. For commandExecution that's "shell" + {command, cwd};
+// for mcpToolCall it's "mcp: server/tool" + the arguments map.
+func codexToolCallSummary(itype string, item map[string]any) (string, map[string]any) {
+	switch itype {
+	case "commandExecution":
+		input := map[string]any{}
+		if cmd, _ := item["command"].(string); cmd != "" {
+			input["command"] = cmd
+		}
+		if cwd, _ := item["cwd"].(string); cwd != "" {
+			input["cwd"] = cwd
+		}
+		return "shell", input
+	case "mcpToolCall":
+		server, _ := item["server"].(string)
+		tool, _ := item["tool"].(string)
+		name := "mcp"
+		switch {
+		case server != "" && tool != "":
+			name = "mcp: " + server + "/" + tool
+		case tool != "":
+			name = "mcp: " + tool
+		}
+		args, _ := item["arguments"].(map[string]any)
+		return name, args
+	}
+	return itype, nil
+}
+
+// codexToolResultSummary pulls the output string and error flag off a
+// completed item. Codex varies field names across item types (output /
+// stdout / result), so we try several before giving up.
+func codexToolResultSummary(item map[string]any) (string, bool) {
+	isError := false
+	if status, _ := item["status"].(string); status != "" && status != "completed" && status != "applied" && status != "succeeded" {
+		isError = true
+	}
+	if code, ok := item["exitCode"].(float64); ok && code != 0 {
+		isError = true
+	}
+	for _, key := range []string{"output", "result", "stdout"} {
+		if s, _ := item[key].(string); s != "" {
+			return s, isError
+		}
+	}
+	// Some variants split stdout/stderr. Concatenate when present.
+	stdout, _ := item["stdout"].(string)
+	stderr, _ := item["stderr"].(string)
+	switch {
+	case stdout != "" && stderr != "":
+		return stdout + "\n" + stderr, isError
+	case stderr != "":
+		return stderr, true
+	}
+	return "", isError
 }
 
 // codexItemStatus maps an item/started payload to a single-line status

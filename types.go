@@ -93,6 +93,25 @@ type toolDiffMsg struct {
 	proc     *providerProc
 }
 
+// toolCallMsg reports that a tool is about to run. Emitted when the
+// provider announces the call (Claude tool_use block, Codex
+// commandExecution/mcpToolCall item). The UI renders it only when
+// `Render Tool Output` is on and quiet mode is off.
+type toolCallMsg struct {
+	name  string
+	input map[string]any
+	proc  *providerProc
+}
+
+// toolResultMsg carries a tool's output back to the UI. Rendered with
+// the same gate as toolCallMsg.
+type toolResultMsg struct {
+	name    string
+	output  string
+	isError bool
+	proc    *providerProc
+}
+
 type stderrBuf struct {
 	mu   sync.Mutex
 	data []byte
@@ -269,6 +288,7 @@ type model struct {
 	quietMode          bool
 	cursorBlink        bool
 	renderDiffs        bool
+	renderToolOutput   bool
 	skipAllPermissions bool
 	worktree           bool
 	worktreeName       string

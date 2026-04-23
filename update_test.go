@@ -311,6 +311,82 @@ func TestUpdate_ToolDiffMsgRendersWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestUpdate_ToolCallMsgRendersWhenEnabled(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.renderToolOutput = true
+	m.quietMode = false
+	m2, _ := runUpdate(t, m, toolCallMsg{
+		name:  "Read",
+		input: map[string]any{"file_path": "/a.txt"},
+		proc:  m.proc,
+	})
+	if len(m2.history) != 1 {
+		t.Fatalf("want 1 history entry, got %d", len(m2.history))
+	}
+	if !strings.Contains(m2.history[0].text, "Read") || !strings.Contains(m2.history[0].text, "/a.txt") {
+		t.Errorf("history entry missing call details: %q", m2.history[0].text)
+	}
+}
+
+func TestUpdate_ToolCallMsgDroppedWhenToggleOff(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.renderToolOutput = false
+	m.quietMode = false
+	m2, _ := runUpdate(t, m, toolCallMsg{name: "Read", proc: m.proc})
+	if len(m2.history) != 0 {
+		t.Errorf("toggle off should swallow tool call; got %+v", m2.history)
+	}
+}
+
+func TestUpdate_ToolCallMsgDroppedWhenQuiet(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.renderToolOutput = true
+	m.quietMode = true
+	m2, _ := runUpdate(t, m, toolCallMsg{name: "Read", proc: m.proc})
+	if len(m2.history) != 0 {
+		t.Errorf("quiet mode should swallow tool call; got %+v", m2.history)
+	}
+}
+
+func TestUpdate_ToolResultMsgRendersWhenEnabled(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.renderToolOutput = true
+	m.quietMode = false
+	m2, _ := runUpdate(t, m, toolResultMsg{output: "hello\nworld", proc: m.proc})
+	if len(m2.history) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(m2.history))
+	}
+	if !strings.Contains(m2.history[0].text, "hello") {
+		t.Errorf("history entry missing output: %q", m2.history[0].text)
+	}
+}
+
+func TestUpdate_ToolResultMsgDroppedWhenToggleOff(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.renderToolOutput = false
+	m.quietMode = false
+	m2, _ := runUpdate(t, m, toolResultMsg{output: "hello", proc: m.proc})
+	if len(m2.history) != 0 {
+		t.Errorf("toggle off should swallow result; got %+v", m2.history)
+	}
+}
+
+func TestUpdate_ToolResultMsgDroppedWhenQuiet(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.renderToolOutput = true
+	m.quietMode = true
+	m2, _ := runUpdate(t, m, toolResultMsg{output: "hello", proc: m.proc})
+	if len(m2.history) != 0 {
+		t.Errorf("quiet mode should swallow result; got %+v", m2.history)
+	}
+}
+
 func TestUpdate_ToolDiffMsgDroppedWhenQuiet(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}

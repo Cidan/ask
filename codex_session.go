@@ -225,35 +225,111 @@ func loadCodexHistory(sessionID string, opts HistoryOpts) ([]historyEntry, error
 		if rec.Type != "response_item" {
 			continue
 		}
-		var item codexRolloutItem
-		if json.Unmarshal(rec.Payload, &item) != nil {
+		// Peek the payload type once so we can branch: messages are the
+		// conversation turns, function_call / function_call_output /
+		// custom_tool_call carry tool activity the new Render Tool
+		// Output toggle surfaces.
+		var head struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(rec.Payload, &head) != nil {
 			continue
 		}
-		if item.Type != "message" {
-			continue
-		}
-		txt := item.firstText()
-		if txt == "" {
-			continue
-		}
-		switch item.Role {
-		case "user":
-			if isCodexEnvironmentText(txt) {
+		switch head.Type {
+		case "message":
+			var item codexRolloutItem
+			if json.Unmarshal(rec.Payload, &item) != nil {
 				continue
 			}
-			entries = append(entries, historyEntry{kind: histUser, text: txt})
-			lastAssistantIdx = -1
-		case "assistant":
-			if opts.QuietMode && lastAssistantIdx >= 0 {
-				entries[lastAssistantIdx].text = txt
-				entries[lastAssistantIdx].rendered = ""
+			txt := item.firstText()
+			if txt == "" {
 				continue
 			}
-			entries = append(entries, historyEntry{kind: histResponse, text: txt})
-			lastAssistantIdx = len(entries) - 1
+			switch item.Role {
+			case "user":
+				if isCodexEnvironmentText(txt) {
+					continue
+				}
+				entries = append(entries, historyEntry{kind: histUser, text: txt})
+				lastAssistantIdx = -1
+			case "assistant":
+				if opts.QuietMode && lastAssistantIdx >= 0 {
+					entries[lastAssistantIdx].text = txt
+					entries[lastAssistantIdx].rendered = ""
+					continue
+				}
+				entries = append(entries, historyEntry{kind: histResponse, text: txt})
+				lastAssistantIdx = len(entries) - 1
+			}
+		case "function_call", "custom_tool_call":
+			if !opts.RenderToolOutput || opts.QuietMode {
+				continue
+			}
+			name, input := codexRolloutCallSummary(rec.Payload)
+			entries = append(entries, historyEntry{
+				kind: histPrerendered,
+				text: renderToolCallBlock(name, input),
+			})
+		case "function_call_output":
+			if !opts.RenderToolOutput || opts.QuietMode {
+				continue
+			}
+			output, isError := codexRolloutOutputSummary(rec.Payload)
+			entries = append(entries, historyEntry{
+				kind: histPrerendered,
+				text: renderToolResultBlock(output, isError),
+			})
 		}
 	}
 	return entries, nil
+}
+
+// codexRolloutCallSummary extracts the tool name and input map from a
+// function_call / custom_tool_call response_item payload. function_call
+// carries its input as a JSON-encoded string in `arguments`; we parse
+// that into a map so renderToolCallBlock can list the keys inline.
+// custom_tool_call uses `input` instead (a raw string), which we surface
+// as a single-key map to keep the renderer's format uniform.
+func codexRolloutCallSummary(payload []byte) (string, map[string]any) {
+	var rec struct {
+		Type      string `json:"type"`
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+		Input     string `json:"input"`
+	}
+	if json.Unmarshal(payload, &rec) != nil {
+		return "", nil
+	}
+	name := rec.Name
+	if name == "" {
+		name = rec.Type
+	}
+	if rec.Arguments != "" {
+		var m map[string]any
+		if json.Unmarshal([]byte(rec.Arguments), &m) == nil {
+			return name, m
+		}
+		return name, map[string]any{"arguments": rec.Arguments}
+	}
+	if rec.Input != "" {
+		return name, map[string]any{"input": rec.Input}
+	}
+	return name, nil
+}
+
+// codexRolloutOutputSummary extracts the output string from a
+// function_call_output response_item payload. Codex marks failed calls
+// with status != "completed"; we map anything else to isError=true so
+// the renderer can style the block accordingly.
+func codexRolloutOutputSummary(payload []byte) (string, bool) {
+	var rec struct {
+		Output string `json:"output"`
+		Status string `json:"status"`
+	}
+	if json.Unmarshal(payload, &rec) != nil {
+		return "", false
+	}
+	return rec.Output, rec.Status != "" && rec.Status != "completed"
 }
 
 // findCodexRollout locates the jsonl for a given thread id. Codex

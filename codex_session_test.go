@@ -38,6 +38,58 @@ func writeCodexRollout(t *testing.T, homeDir, threadID, cwd string, items []stri
 	return path
 }
 
+func TestCodex_LoadHistory_RenderToolOutput(t *testing.T) {
+	home := isolateHome(t)
+	cwd := t.TempDir()
+	items := []string{
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"run pwd"}]}`,
+		`{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"pwd\"}","call_id":"c1"}`,
+		`{"type":"function_call_output","call_id":"c1","output":"/tmp/here\n","status":"completed"}`,
+		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}`,
+	}
+	writeCodexRollout(t, home, "tools-aaaaaaaa", cwd, items, time.Now())
+
+	// Toggle off → no tool entries.
+	off, err := loadCodexHistory("tools-aaaaaaaa", HistoryOpts{})
+	if err != nil {
+		t.Fatalf("off: %v", err)
+	}
+	for _, e := range off {
+		if strings.Contains(e.text, "pwd") && !strings.Contains(e.text, "run pwd") {
+			t.Errorf("toggle off leaked call: %+v", e)
+		}
+		if strings.Contains(e.text, "/tmp/here") {
+			t.Errorf("toggle off leaked output: %+v", e)
+		}
+	}
+
+	// Toggle on → call + output visible.
+	on, err := loadCodexHistory("tools-aaaaaaaa", HistoryOpts{RenderToolOutput: true})
+	if err != nil {
+		t.Fatalf("on: %v", err)
+	}
+	var sawCall, sawOut bool
+	for _, e := range on {
+		if strings.Contains(e.text, "exec_command") {
+			sawCall = true
+		}
+		if strings.Contains(e.text, "/tmp/here") {
+			sawOut = true
+		}
+	}
+	if !sawCall || !sawOut {
+		t.Errorf("call=%v out=%v entries=%+v", sawCall, sawOut, on)
+	}
+
+	// Quiet mode suppresses even when toggle on.
+	quiet, _ := loadCodexHistory("tools-aaaaaaaa", HistoryOpts{RenderToolOutput: true, QuietMode: true})
+	for _, e := range quiet {
+		if strings.Contains(e.text, "exec_command") || strings.Contains(e.text, "/tmp/here") {
+			t.Errorf("quiet should suppress tool entries; saw %+v", e)
+		}
+	}
+}
+
 func TestCodex_ListSessions_FiltersByCwd(t *testing.T) {
 	home := isolateHome(t)
 	cwd := t.TempDir()

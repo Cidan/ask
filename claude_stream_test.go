@@ -154,6 +154,165 @@ func TestReadClaudeStream_TodoWriteEmitsTodoUpdatedMsg(t *testing.T) {
 	}
 }
 
+func TestReadClaudeStream_ToolUseEmitsToolCallMsg(t *testing.T) {
+	ev := map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{
+					"type":  "tool_use",
+					"name":  "Read",
+					"input": map[string]any{"file_path": "/x.go"},
+				},
+			},
+		},
+	}
+	b, _ := json.Marshal(ev)
+	msgs := runStream(t, string(b))
+	var got *toolCallMsg
+	for _, m := range msgs {
+		if c, ok := m.(toolCallMsg); ok {
+			got = &c
+		}
+	}
+	if got == nil {
+		t.Fatalf("no toolCallMsg: %#v", msgs)
+	}
+	if got.name != "Read" {
+		t.Errorf("name=%q want Read", got.name)
+	}
+	if fp, _ := got.input["file_path"].(string); fp != "/x.go" {
+		t.Errorf("input file_path=%q want /x.go; input=%+v", fp, got.input)
+	}
+}
+
+func TestReadClaudeStream_TodoWriteDoesNotEmitToolCallMsg(t *testing.T) {
+	// TodoWrite is routed through todoUpdatedMsg; rendering it as a
+	// generic tool call would double-count it.
+	ev := map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{
+					"type":  "tool_use",
+					"name":  "TodoWrite",
+					"input": map[string]any{"todos": []any{}},
+				},
+			},
+		},
+	}
+	b, _ := json.Marshal(ev)
+	msgs := runStream(t, string(b))
+	for _, m := range msgs {
+		if _, ok := m.(toolCallMsg); ok {
+			t.Fatalf("TodoWrite should not emit toolCallMsg; msgs=%#v", msgs)
+		}
+	}
+}
+
+func TestReadClaudeStream_ToolResultEmitsToolResultMsg(t *testing.T) {
+	ev := map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{
+					"type":       "tool_result",
+					"tool_use_id": "abc",
+					"content":    "hello world",
+				},
+			},
+		},
+	}
+	b, _ := json.Marshal(ev)
+	msgs := runStream(t, string(b))
+	var got *toolResultMsg
+	for _, m := range msgs {
+		if r, ok := m.(toolResultMsg); ok {
+			got = &r
+		}
+	}
+	if got == nil {
+		t.Fatalf("no toolResultMsg: %#v", msgs)
+	}
+	if got.output != "hello world" {
+		t.Errorf("output=%q want 'hello world'", got.output)
+	}
+	if got.isError {
+		t.Errorf("non-error result flagged as error")
+	}
+}
+
+func TestReadClaudeStream_ToolResultWithStructuredPatchIsDiffOnly(t *testing.T) {
+	// When a tool_result carries a structuredPatch (Edit/Write output),
+	// the diff block owns the render; emitting toolResultMsg too would
+	// surface a duplicate "The file has been updated" stub.
+	ev := map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{"type": "tool_result", "content": "The file has been updated"},
+			},
+		},
+		"tool_use_result": map[string]any{
+			"filePath": "/z.txt",
+			"structuredPatch": []any{
+				map[string]any{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1, "lines": []any{"-a", "+b"}},
+			},
+		},
+	}
+	b, _ := json.Marshal(ev)
+	msgs := runStream(t, string(b))
+	var diffs, results int
+	for _, m := range msgs {
+		if _, ok := m.(toolDiffMsg); ok {
+			diffs++
+		}
+		if _, ok := m.(toolResultMsg); ok {
+			results++
+		}
+	}
+	if diffs != 1 || results != 0 {
+		t.Errorf("diffs=%d results=%d want 1/0; msgs=%#v", diffs, results, msgs)
+	}
+}
+
+func TestReadClaudeStream_ToolResultListContent(t *testing.T) {
+	// Some tools return content as an array of {type:"text",text:...}
+	// blocks. We flatten them so the consumer gets one string.
+	ev := map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{
+					"type": "tool_result",
+					"content": []any{
+						map[string]any{"type": "text", "text": "first"},
+						map[string]any{"type": "text", "text": "second"},
+					},
+					"is_error": true,
+				},
+			},
+		},
+	}
+	b, _ := json.Marshal(ev)
+	msgs := runStream(t, string(b))
+	var got *toolResultMsg
+	for _, m := range msgs {
+		if r, ok := m.(toolResultMsg); ok {
+			got = &r
+		}
+	}
+	if got == nil {
+		t.Fatalf("no toolResultMsg: %#v", msgs)
+	}
+	if got.output != "first\nsecond" {
+		t.Errorf("output=%q want 'first\\nsecond'", got.output)
+	}
+	if !got.isError {
+		t.Error("is_error=true should propagate")
+	}
+}
+
 func TestReadClaudeStream_StructuredPatchEmitsDiff(t *testing.T) {
 	ev := map[string]any{
 		"type": "user",

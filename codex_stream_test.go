@@ -138,6 +138,79 @@ func TestCodexEventToMsgs_ItemCompletedReasoningSilent(t *testing.T) {
 	}
 }
 
+func TestCodexEventToMsgs_CommandExecutionCompletedEmitsCallAndResult(t *testing.T) {
+	proc := &providerProc{}
+	ev := parseCodexEvent(t, `{"method":"item/completed","params":{"item":{
+		"type":"commandExecution","id":"c","command":"ls -la","cwd":"/tmp",
+		"output":"total 0\n","exitCode":0,"status":"completed"
+	}}}`)
+	msgs := codexEventToMsgs(ev, proc)
+	if len(msgs) != 2 {
+		t.Fatalf("want 2 msgs (call+result), got %d: %v", len(msgs), msgs)
+	}
+	call, ok := msgs[0].(toolCallMsg)
+	if !ok {
+		t.Fatalf("msg[0] %T want toolCallMsg", msgs[0])
+	}
+	if call.name != "shell" {
+		t.Errorf("name=%q want shell", call.name)
+	}
+	if cmd, _ := call.input["command"].(string); cmd != "ls -la" {
+		t.Errorf("input command=%q want 'ls -la'", cmd)
+	}
+	res, ok := msgs[1].(toolResultMsg)
+	if !ok {
+		t.Fatalf("msg[1] %T want toolResultMsg", msgs[1])
+	}
+	if !strings.Contains(res.output, "total 0") {
+		t.Errorf("output=%q want containing 'total 0'", res.output)
+	}
+	if res.isError {
+		t.Errorf("exitCode=0 should not flag isError")
+	}
+}
+
+func TestCodexEventToMsgs_CommandExecutionFailedMarksError(t *testing.T) {
+	proc := &providerProc{}
+	ev := parseCodexEvent(t, `{"method":"item/completed","params":{"item":{
+		"type":"commandExecution","id":"c","command":"false","output":"","exitCode":1,"status":"failed"
+	}}}`)
+	msgs := codexEventToMsgs(ev, proc)
+	// Expect a call + result where isError=true.
+	var sawErrorResult bool
+	for _, m := range msgs {
+		if r, ok := m.(toolResultMsg); ok && r.isError {
+			sawErrorResult = true
+		}
+	}
+	if !sawErrorResult {
+		t.Fatalf("non-zero exit or failed status should flag result isError; msgs=%v", msgs)
+	}
+}
+
+func TestCodexEventToMsgs_McpToolCallCompletedEmitsCallAndResult(t *testing.T) {
+	proc := &providerProc{}
+	ev := parseCodexEvent(t, `{"method":"item/completed","params":{"item":{
+		"type":"mcpToolCall","id":"m","server":"gh","tool":"pr_read",
+		"arguments":{"number":42},"result":"title: Fix the thing","status":"completed"
+	}}}`)
+	msgs := codexEventToMsgs(ev, proc)
+	if len(msgs) != 2 {
+		t.Fatalf("want 2 msgs, got %d: %v", len(msgs), msgs)
+	}
+	call := msgs[0].(toolCallMsg)
+	if call.name != "mcp: gh/pr_read" {
+		t.Errorf("call.name=%q want 'mcp: gh/pr_read'", call.name)
+	}
+	if n, _ := call.input["number"].(float64); n != 42 {
+		t.Errorf("arguments.number=%v want 42; input=%+v", n, call.input)
+	}
+	res := msgs[1].(toolResultMsg)
+	if !strings.Contains(res.output, "Fix the thing") {
+		t.Errorf("output missing result body: %q", res.output)
+	}
+}
+
 func TestCodexEventToMsgs_TurnCompletedEmitsDoneAndComplete(t *testing.T) {
 	proc := &providerProc{}
 	ev := parseCodexEvent(t, `{"method":"turn/completed","params":{"threadId":"tid-abc","turn":{"id":"r","status":"completed"}}}`)

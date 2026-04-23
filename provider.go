@@ -150,8 +150,9 @@ type ProviderSessionArgs struct {
 
 // HistoryOpts narrows what the history replay renders.
 type HistoryOpts struct {
-	RenderDiffs bool
-	QuietMode   bool
+	RenderDiffs      bool
+	RenderToolOutput bool
+	QuietMode        bool
 }
 
 // providerProc is an opaque subprocess handle. The UI uses it as an

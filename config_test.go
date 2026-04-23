@@ -24,6 +24,7 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	home := isolateHome(t)
 	qmTrue := true
 	diffsTrue := true
+	toolOutTrue := true
 	worktreeTrue := true
 	want := askConfig{
 		Provider: "claude",
@@ -36,10 +37,11 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 			Ollama: ollamaConfig{Host: "localhost:11434", Model: "llama3"},
 		},
 		UI: uiConfig{
-			QuietMode:   &qmTrue,
-			RenderDiffs: &diffsTrue,
-			Worktree:    &worktreeTrue,
-			Theme:       "catppuccin-mocha",
+			QuietMode:        &qmTrue,
+			RenderDiffs:      &diffsTrue,
+			RenderToolOutput: &toolOutTrue,
+			Worktree:         &worktreeTrue,
+			Theme:            "catppuccin-mocha",
 		},
 	}
 	if err := saveConfig(want); err != nil {
@@ -63,6 +65,9 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	}
 	if got.UI.QuietMode == nil || *got.UI.QuietMode != true {
 		t.Errorf("quietMode lost: %+v", got.UI.QuietMode)
+	}
+	if got.UI.RenderToolOutput == nil || *got.UI.RenderToolOutput != true {
+		t.Errorf("renderToolOutput lost: %+v", got.UI.RenderToolOutput)
 	}
 	if got.UI.Theme != "catppuccin-mocha" {
 		t.Errorf("theme lost: %q", got.UI.Theme)

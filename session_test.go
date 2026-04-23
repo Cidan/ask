@@ -160,6 +160,54 @@ func TestLoadClaudeHistory_SkipsMetaAndSidechain(t *testing.T) {
 	}
 }
 
+func TestLoadClaudeHistory_RenderToolOutput(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","name":"Bash","input":{"command":"ls"}},` +
+			`{"type":"text","text":"running it"}` +
+			`]}}`,
+		`{"type":"user","message":{"role":"user","content":[` +
+			`{"type":"tool_result","tool_use_id":"abc","content":"output here"}` +
+			`]}}`,
+	}
+	_, id := setupHistoryFixture(t, "tooled", strings.Join(lines, "\n"))
+	// Toggle off → no tool-output entries.
+	offEntries, err := loadClaudeHistory(id, HistoryOpts{})
+	if err != nil {
+		t.Fatalf("off: %v", err)
+	}
+	for _, e := range offEntries {
+		if strings.Contains(e.text, "ls") || strings.Contains(e.text, "output here") {
+			t.Errorf("toggle off should hide tool output, but saw it in entry: %+v", e)
+		}
+	}
+	// Toggle on → call + result entries surface.
+	onEntries, err := loadClaudeHistory(id, HistoryOpts{RenderToolOutput: true})
+	if err != nil {
+		t.Fatalf("on: %v", err)
+	}
+	var sawCall, sawResult bool
+	for _, e := range onEntries {
+		if strings.Contains(e.text, "Bash") && strings.Contains(e.text, "ls") {
+			sawCall = true
+		}
+		if strings.Contains(e.text, "output here") {
+			sawResult = true
+		}
+	}
+	if !sawCall || !sawResult {
+		t.Errorf("replay should include both call and result when toggle on; call=%v result=%v entries=%+v",
+			sawCall, sawResult, onEntries)
+	}
+	// Quiet mode wins even when the tool toggle is on.
+	quietEntries, _ := loadClaudeHistory(id, HistoryOpts{RenderToolOutput: true, QuietMode: true})
+	for _, e := range quietEntries {
+		if strings.Contains(e.text, "Bash") || strings.Contains(e.text, "output here") {
+			t.Errorf("quiet mode should override tool toggle; saw entry %+v", e)
+		}
+	}
+}
+
 func TestLoadClaudeHistory_RenderDiffsWhenNotQuiet(t *testing.T) {
 	// A "user" record carrying a structuredPatch tool result. The message
 	// field is required (non-nil) even when there's no user text; the actual

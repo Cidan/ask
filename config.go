@@ -37,6 +37,7 @@ type uiConfig struct {
 	QuietMode          *bool  `json:"quietMode,omitempty"`
 	CursorBlink        *bool  `json:"cursorBlink,omitempty"`
 	RenderDiffs        *bool  `json:"renderDiffs,omitempty"`
+	RenderToolOutput   *bool  `json:"renderToolOutput,omitempty"`
 	SkipAllPermissions *bool  `json:"skipAllPermissions,omitempty"`
 	Worktree           *bool  `json:"worktree,omitempty"`
 	Theme              string `json:"theme,omitempty"`

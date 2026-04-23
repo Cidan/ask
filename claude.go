@@ -348,12 +348,21 @@ func readClaudeStream(stdout io.Reader, proc *providerProc, ch chan tea.Msg) {
 			if todos, ok := assistantTodos(ev); ok {
 				ch <- todoUpdatedMsg{todos: todos, proc: proc}
 			}
+			for _, call := range assistantToolCalls(ev) {
+				ch <- toolCallMsg{name: call.name, input: call.input, proc: proc}
+			}
 			if text := assistantText(ev); text != "" {
 				ch <- assistantTextMsg{text: text, proc: proc}
 			}
 		case "user":
 			if path, hunks, ok := userToolDiff(ev); ok {
 				ch <- toolDiffMsg{filePath: path, hunks: hunks, proc: proc}
+				// tool_result for a structured patch is already shown as
+				// a diff block; don't double-render it as raw text.
+				continue
+			}
+			if res, ok := userToolResult(ev); ok {
+				ch <- toolResultMsg{name: res.name, output: res.output, isError: res.isError, proc: proc}
 			}
 		case "stream_event":
 			if streamEventEndTurn(ev) {
@@ -408,6 +417,85 @@ func assistantTodos(ev map[string]any) ([]todoItem, bool) {
 func userToolDiff(ev map[string]any) (string, []diffHunk, bool) {
 	result, _ := ev["tool_use_result"].(map[string]any)
 	return parseStructuredPatch(result)
+}
+
+// claudeToolCall is the parsed shape of a `tool_use` block — the tool
+// invocation announced by an assistant message. TodoWrite is routed
+// separately (via assistantTodos) so it's skipped here.
+type claudeToolCall struct {
+	name  string
+	input map[string]any
+}
+
+func assistantToolCalls(ev map[string]any) []claudeToolCall {
+	msg, _ := ev["message"].(map[string]any)
+	content, _ := msg["content"].([]any)
+	var out []claudeToolCall
+	for _, item := range content {
+		b, _ := item.(map[string]any)
+		if b["type"] != "tool_use" {
+			continue
+		}
+		name, _ := b["name"].(string)
+		if name == "TodoWrite" {
+			continue
+		}
+		input, _ := b["input"].(map[string]any)
+		out = append(out, claudeToolCall{name: name, input: input})
+	}
+	return out
+}
+
+// claudeToolResult is the parsed shape of a `tool_result` block on a
+// user message. content may arrive as a bare string or as a list of
+// {type:"text",text:...} blocks — userToolResult flattens both into a
+// single output string.
+type claudeToolResult struct {
+	name    string
+	output  string
+	isError bool
+}
+
+func userToolResult(ev map[string]any) (claudeToolResult, bool) {
+	msg, _ := ev["message"].(map[string]any)
+	content, _ := msg["content"].([]any)
+	for _, item := range content {
+		b, _ := item.(map[string]any)
+		if b["type"] != "tool_result" {
+			continue
+		}
+		res := claudeToolResult{
+			output: claudeToolResultText(b["content"]),
+		}
+		res.isError, _ = b["is_error"].(bool)
+		// Tool name isn't carried on the tool_result block itself; the
+		// sidecar `tool_use_result` record sometimes has a `type` field
+		// identifying the tool, but we don't rely on it — the rendered
+		// output stands on its own without a header when name is empty.
+		return res, true
+	}
+	return claudeToolResult{}, false
+}
+
+// claudeToolResultText flattens either a bare string content or an
+// array of {type:"text",text:...} blocks into a single output string.
+// Image blocks and other non-text entries are dropped.
+func claudeToolResultText(raw any) string {
+	switch v := raw.(type) {
+	case string:
+		return v
+	case []any:
+		var parts []string
+		for _, item := range v {
+			if m, ok := item.(map[string]any); ok && m["type"] == "text" {
+				if txt, _ := m["text"].(string); txt != "" {
+					parts = append(parts, txt)
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	return ""
 }
 
 func parseStructuredPatch(result map[string]any) (string, []diffHunk, bool) {

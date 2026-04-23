@@ -133,6 +133,15 @@ func loadClaudeHistory(sessionID string, opts HistoryOpts) ([]historyEntry, erro
 						kind: histPrerendered,
 						text: renderDiffBlock(fp, hunks),
 					})
+					continue
+				}
+			}
+			if opts.RenderToolOutput && !opts.QuietMode {
+				if res, ok := userToolResult(rec); ok {
+					entries = append(entries, historyEntry{
+						kind: histPrerendered,
+						text: renderToolResultBlock(res.output, res.isError),
+					})
 				}
 			}
 		case "assistant":
@@ -142,6 +151,14 @@ func loadClaudeHistory(sessionID string, opts HistoryOpts) ([]historyEntry, erro
 			arr, ok := msg["content"].([]any)
 			if !ok {
 				continue
+			}
+			if opts.RenderToolOutput && !opts.QuietMode {
+				for _, call := range assistantToolCalls(rec) {
+					entries = append(entries, historyEntry{
+						kind: histPrerendered,
+						text: renderToolCallBlock(call.name, call.input),
+					})
+				}
 			}
 			var b strings.Builder
 			for _, item := range arr {
