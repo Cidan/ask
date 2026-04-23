@@ -362,6 +362,14 @@ func readClaudeStream(stdout io.Reader, proc *providerProc, ch chan tea.Msg) {
 				continue
 			}
 			if res, ok := userToolResult(ev); ok {
+				// Bash's background-launch acknowledgement ("Command
+				// running in background with ID: X. Output is being
+				// written to: Y") carries nothing the user can act on
+				// — the completion notification arrives separately —
+				// so we drop it instead of rendering a dead line.
+				if strings.HasPrefix(res.output, "Command running in background with ID:") {
+					continue
+				}
 				ch <- toolResultMsg{name: res.name, output: res.output, isError: res.isError, proc: proc}
 			}
 		case "stream_event":

@@ -276,6 +276,30 @@ func TestReadClaudeStream_ToolResultWithStructuredPatchIsDiffOnly(t *testing.T) 
 	}
 }
 
+func TestReadClaudeStream_BackgroundLaunchAckSuppressed(t *testing.T) {
+	// Bash's "Command running in background with ID: …" acknowledgement
+	// is noise — the matching completion message arrives later. Drop it
+	// at the source so it never reaches the renderer.
+	ev := map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{
+					"type":    "tool_result",
+					"content": "Command running in background with ID: bwukbmxb5. Output is being written to: /tmp/x",
+				},
+			},
+		},
+	}
+	b, _ := json.Marshal(ev)
+	msgs := runStream(t, string(b))
+	for _, m := range msgs {
+		if _, ok := m.(toolResultMsg); ok {
+			t.Fatalf("background-launch ack should not emit toolResultMsg; msgs=%#v", msgs)
+		}
+	}
+}
+
 func TestReadClaudeStream_ToolResultListContent(t *testing.T) {
 	// Some tools return content as an array of {type:"text",text:...}
 	// blocks. We flatten them so the consumer gets one string.
