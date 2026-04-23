@@ -349,3 +349,32 @@ func TestClaudeCLIArgs_FreshSessionNoResume(t *testing.T) {
 		t.Errorf("fresh session should not add --resume: %v", args)
 	}
 }
+
+func TestClaudeCLIArgs_PluginDirPassedWhenSet(t *testing.T) {
+	args := claudeCLIArgs(ProviderSessionArgs{PluginDir: "/tmp/ask-plugins"}, false)
+	if got := argAfter(args, "--plugin-dir"); got != "/tmp/ask-plugins" {
+		t.Errorf("--plugin-dir want /tmp/ask-plugins, got %q; argv=%v", got, args)
+	}
+}
+
+func TestClaudeCLIArgs_PluginDirOmittedWhenEmpty(t *testing.T) {
+	args := claudeCLIArgs(ProviderSessionArgs{}, false)
+	if containsArg(args, "--plugin-dir") {
+		t.Errorf("empty PluginDir must leave --plugin-dir out of argv: %v", args)
+	}
+	// And in probe mode too — the plugin isn't relevant to the handshake.
+	probe := claudeCLIArgs(ProviderSessionArgs{}, true)
+	if containsArg(probe, "--plugin-dir") {
+		t.Errorf("probe with empty PluginDir must not include --plugin-dir: %v", probe)
+	}
+}
+
+func TestClaudeCLIArgs_PluginDirPassedOnProbe(t *testing.T) {
+	// Probes run a minimal handshake but still extract slash commands
+	// for the session; the usage plugin's SessionStart hook should fire
+	// for those init probes too so we can prime the cache early.
+	args := claudeCLIArgs(ProviderSessionArgs{PluginDir: "/tmp/ask-plugins"}, true)
+	if got := argAfter(args, "--plugin-dir"); got != "/tmp/ask-plugins" {
+		t.Errorf("probe should still pass --plugin-dir; got %q; argv=%v", got, args)
+	}
+}

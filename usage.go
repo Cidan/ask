@@ -22,15 +22,62 @@ type usageWindow struct {
 	ResetsAt    time.Time `json:"resets_at"`
 }
 
-// readUsageCache reads the claude CLI's usage cache file.
-//
-//   - (nil, nil) when the file is absent — claude may not have written it
-//     yet, or this machine has never run claude. Best-effort: callers
-//     should treat this as "no data" and just omit the 5h/wk segments.
-//   - (nil, err) when JSON is malformed or the file is otherwise unreadable
-//     (permissions, IO). debugLog records the reason.
-//   - (populated, nil) on success.
+// readUsageCache returns the freshest plan-usage snapshot we can find.
+// Preferred source is the ask-usage plugin's cache (camelCase flat
+// shape written by our SessionStart hook on every claude run); the
+// fallback is claude's own ~/.claude/.usage-cache.json (snake_case
+// nested shape, often stale because -p mode doesn't refresh it).
+// Callers never surface errors from telemetry reads — a parse failure
+// on the preferred source silently falls through to the fallback.
 func readUsageCache() (*usageCache, error) {
+	if uc := readPluginUsageCache(usagePluginCacheFile()); uc != nil {
+		return uc, nil
+	}
+	return readLegacyUsageCache()
+}
+
+// readPluginUsageCache parses the ask-usage plugin's flat camelCase
+// cache. Returns nil on any error (missing, malformed, wrong shape) so
+// callers can fall through.
+func readPluginUsageCache(path string) *usageCache {
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			debugLog("plugin usage cache read: %v", err)
+		}
+		return nil
+	}
+	var p struct {
+		Timestamp        int64   `json:"timestamp"`
+		FiveHourPercent  float64 `json:"fiveHourPercent"`
+		WeeklyPercent    float64 `json:"weeklyPercent"`
+		FiveHourResetsAt string  `json:"fiveHourResetsAt"`
+		WeeklyResetsAt   string  `json:"weeklyResetsAt"`
+	}
+	if err := json.Unmarshal(data, &p); err != nil {
+		debugLog("plugin usage cache parse: %v", err)
+		return nil
+	}
+	uc := &usageCache{
+		FiveHour: usageWindow{Utilization: p.FiveHourPercent},
+		SevenDay: usageWindow{Utilization: p.WeeklyPercent},
+	}
+	if t, err := time.Parse(time.RFC3339, p.FiveHourResetsAt); err == nil {
+		uc.FiveHour.ResetsAt = t
+	}
+	if t, err := time.Parse(time.RFC3339, p.WeeklyResetsAt); err == nil {
+		uc.SevenDay.ResetsAt = t
+	}
+	return uc
+}
+
+// readLegacyUsageCache reads claude's own ~/.claude/.usage-cache.json.
+// Returns (nil, nil) when absent; surfaces parse errors because this
+// is the terminal fallback.
+func readLegacyUsageCache() (*usageCache, error) {
 	path := usageCachePath()
 	data, err := os.ReadFile(path)
 	if err != nil {

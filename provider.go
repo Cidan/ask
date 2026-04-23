@@ -146,6 +146,10 @@ type ProviderSessionArgs struct {
 	Worktree           bool
 	SessionID          string
 	ResumeCwd          string
+	// PluginDir is passed to claude as --plugin-dir so the embedded
+	// ask-usage plugin's SessionStart hook fires. Empty when the plugin
+	// failed to extract at startup.
+	PluginDir string
 }
 
 // HistoryOpts narrows what the history replay renders. ToolOutput is

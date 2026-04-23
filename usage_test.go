@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -238,6 +239,97 @@ func TestUsageCachePath_ConfigDirOverride(t *testing.T) {
 	want := filepath.Join(alt, ".usage-cache.json")
 	if got != want {
 		t.Errorf("usageCachePath() with CLAUDE_CONFIG_DIR = %q, want %q", got, want)
+	}
+}
+
+func TestReadPluginUsageCache_Valid(t *testing.T) {
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, ".cache.json")
+	writeFile(t, cachePath, `{
+		"timestamp": 1776973869143,
+		"fiveHourPercent": 15,
+		"weeklyPercent": 2,
+		"fiveHourResetsAt": "2026-04-23T22:40:00Z",
+		"weeklyResetsAt": "2026-04-29T19:00:00Z"
+	}`)
+	uc := readPluginUsageCache(cachePath)
+	if uc == nil {
+		t.Fatal("expected populated usageCache")
+	}
+	if uc.FiveHour.Utilization != 15 {
+		t.Errorf("five_hour utilization = %v, want 15", uc.FiveHour.Utilization)
+	}
+	if uc.SevenDay.Utilization != 2 {
+		t.Errorf("seven_day utilization = %v, want 2", uc.SevenDay.Utilization)
+	}
+	wantFH, _ := time.Parse(time.RFC3339, "2026-04-23T22:40:00Z")
+	if !uc.FiveHour.ResetsAt.Equal(wantFH) {
+		t.Errorf("five_hour resets_at = %v, want %v", uc.FiveHour.ResetsAt, wantFH)
+	}
+}
+
+func TestReadPluginUsageCache_Missing(t *testing.T) {
+	if uc := readPluginUsageCache(""); uc != nil {
+		t.Errorf("empty path should return nil, got %+v", uc)
+	}
+	if uc := readPluginUsageCache(filepath.Join(t.TempDir(), "nope.json")); uc != nil {
+		t.Errorf("missing file should return nil, got %+v", uc)
+	}
+}
+
+func TestReadPluginUsageCache_Malformed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".cache.json")
+	writeFile(t, path, "{not: valid}")
+	if uc := readPluginUsageCache(path); uc != nil {
+		t.Errorf("malformed JSON should return nil, got %+v", uc)
+	}
+}
+
+// TestReadUsageCache_PrefersPlugin verifies that when both the plugin
+// cache and the legacy cache file are present, the plugin's snapshot
+// wins — it's the source the SessionStart hook kept fresh.
+func TestReadUsageCache_PrefersPlugin(t *testing.T) {
+	home := isolateHome(t)
+	xdg := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", xdg)
+
+	// Legacy cache: stale-looking 0%.
+	legacyPath := filepath.Join(home, ".claude", ".usage-cache.json")
+	writeFile(t, legacyPath, `{"five_hour":{"utilization":0,"resets_at":"2026-04-23T22:40:00Z"},"seven_day":{"utilization":0,"resets_at":"2026-04-29T19:00:00Z"}}`)
+
+	// Plugin cache: fresh 15%.
+	pluginPath := filepath.Join(xdg, "ask", "plugins", "ask-usage", ".cache.json")
+	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, pluginPath, `{"timestamp":1,"fiveHourPercent":15,"weeklyPercent":2,"fiveHourResetsAt":"2026-04-23T22:40:00Z","weeklyResetsAt":"2026-04-29T19:00:00Z"}`)
+
+	uc, err := readUsageCache()
+	if err != nil {
+		t.Fatalf("readUsageCache: %v", err)
+	}
+	if uc == nil || uc.FiveHour.Utilization != 15 {
+		t.Errorf("plugin cache should win: got %+v", uc)
+	}
+}
+
+// TestReadUsageCache_FallsBackToLegacy verifies that when the plugin
+// cache is absent, the legacy ~/.claude/.usage-cache.json is used.
+func TestReadUsageCache_FallsBackToLegacy(t *testing.T) {
+	home := isolateHome(t)
+	xdg := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", xdg)
+
+	legacyPath := filepath.Join(home, ".claude", ".usage-cache.json")
+	writeFile(t, legacyPath, `{"five_hour":{"utilization":42,"resets_at":"2026-04-23T22:40:00Z"},"seven_day":{"utilization":7,"resets_at":"2026-04-29T19:00:00Z"}}`)
+
+	uc, err := readUsageCache()
+	if err != nil {
+		t.Fatalf("readUsageCache: %v", err)
+	}
+	if uc == nil || uc.FiveHour.Utilization != 42 {
+		t.Errorf("legacy cache should be used when plugin absent: got %+v", uc)
 	}
 }
 

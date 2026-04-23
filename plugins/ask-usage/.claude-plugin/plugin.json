@@ -1,0 +1,8 @@
+{
+  "name": "ask-usage",
+  "version": "0.1.0",
+  "description": "Fetches plan-usage snapshots for the ask TUI chip",
+  "author": {
+    "name": "ask"
+  }
+}

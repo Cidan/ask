@@ -148,6 +148,9 @@ func claudeCLIArgs(args ProviderSessionArgs, probe bool) []string {
 	if args.SkipAllPermissions {
 		out = append(out, "--dangerously-skip-permissions")
 	}
+	if args.PluginDir != "" {
+		out = append(out, "--plugin-dir", args.PluginDir)
+	}
 	if args.MCPPort > 0 {
 		out = append(out, "--mcp-config",
 			fmt.Sprintf(`{"mcpServers":{"ask":{"type":"http","url":"http://127.0.0.1:%d/"}}}`, args.MCPPort))

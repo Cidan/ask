@@ -15,6 +15,13 @@ import (
 
 const cursorBlinkSpeed = 650 * time.Millisecond
 
+// usagePluginDir is the --plugin-dir value we pass to every claude
+// subprocess, set once at startup by main() after extracting the
+// embedded ask-usage plugin. Empty when extraction failed, in which
+// case claudeCLIArgs omits --plugin-dir entirely and the chip just
+// goes without 5h/wk segments.
+var usagePluginDir string
+
 func applyCursorBlink(ta *textarea.Model, enabled bool) {
 	s := ta.Styles()
 	s.Cursor.Blink = enabled
@@ -137,6 +144,11 @@ func main() {
 		ensureWorktreeGitignore()
 	}
 	pruneWorktrees()
+	if dir, err := extractUsagePlugin(); err != nil {
+		debugLog("usage plugin extract: %v", err)
+	} else {
+		usagePluginDir = dir
+	}
 	first, err := newTab(1, cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ask: mcp:", err)

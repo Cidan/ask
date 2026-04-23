@@ -30,6 +30,7 @@ func (m model) sessionArgs() ProviderSessionArgs {
 		Worktree:           m.worktree,
 		SessionID:          m.sessionID,
 		ResumeCwd:          m.resumeCwd,
+		PluginDir:          usagePluginDir,
 	}
 }
 
