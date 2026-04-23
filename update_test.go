@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,26 @@ func runUpdate(t *testing.T, m model, msg tea.Msg) (model, tea.Cmd) {
 		t.Fatalf("Update returned %T, want model", nm)
 	}
 	return mm, cmd
+}
+
+func runProviderStartCmd(t *testing.T, cmd tea.Cmd) providerStartDoneMsg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected provider start command, got nil")
+	}
+	msg := cmd()
+	switch msg := msg.(type) {
+	case providerStartDoneMsg:
+		return msg
+	case tea.BatchMsg:
+		if len(msg) == 0 {
+			t.Fatal("provider start batch was empty")
+		}
+		return runProviderStartCmd(t, msg[0])
+	default:
+		t.Fatalf("provider start command returned %T", msg)
+		return providerStartDoneMsg{}
+	}
 }
 
 func TestUpdate_AssistantTextMsgIgnoredForStaleProc(t *testing.T) {
@@ -366,9 +387,10 @@ func TestHandleCommand_ProviderSlashForwardsThroughSend(t *testing.T) {
 	fp := newFakeProvider()
 	m := newTestModel(t, fp)
 	m.providerSlashCmds = []providerSlashEntry{{Name: "echo", Description: "echo"}}
-	m2, _ := m.handleCommand("/echo hello")
+	m2, cmd := m.handleCommand("/echo hello")
 	mm := m2.(model)
-	// sendToProvider calls Send on the fake provider.
+	done := runProviderStartCmd(t, cmd)
+	mm, _ = runUpdate(t, mm, done)
 	if len(fp.sentTexts) != 1 || fp.sentTexts[0] != "/echo hello" {
 		t.Errorf("provider slash command should be forwarded verbatim; got %+v", fp.sentTexts)
 	}
@@ -429,25 +451,105 @@ func TestDrainPendingReplies_SendsCancelAndDeny(t *testing.T) {
 func TestSendToProvider_WiresProcAndStream(t *testing.T) {
 	fp := newFakeProvider()
 	m := newTestModel(t, fp)
-	m2any, _ := m.sendToProvider("hello")
+	m2any, cmd := m.sendToProvider("hello")
 	m2 := m2any.(model)
-	if m2.proc == nil {
-		t.Error("sendToProvider should start proc")
+	if m2.proc != nil {
+		t.Error("sendToProvider should not wire proc until async start command completes")
 	}
-	if m2.streamCh == nil {
-		t.Error("streamCh should be wired up")
+	if !m2.procStarting {
+		t.Error("sendToProvider should mark procStarting")
 	}
 	if !m2.busy {
 		t.Error("busy should be true")
 	}
-	if m2.status != "thinking…" {
-		t.Errorf("status=%q want thinking…", m2.status)
+	if m2.status != "starting Fake..." {
+		t.Errorf("status=%q want starting Fake...", m2.status)
+	}
+	if len(fp.startArgs) != 0 {
+		t.Errorf("StartSession should not be called inline; got %d", len(fp.startArgs))
+	}
+	if len(fp.sentTexts) != 0 {
+		t.Errorf("Send should not be called inline; got %+v", fp.sentTexts)
+	}
+
+	done := runProviderStartCmd(t, cmd)
+	m3, streamCmd := runUpdate(t, m2, done)
+	if m3.proc == nil {
+		t.Error("providerStartDoneMsg should wire proc")
+	}
+	if m3.streamCh == nil {
+		t.Error("providerStartDoneMsg should wire streamCh")
+	}
+	if m3.procStarting {
+		t.Error("procStarting should clear after start completes")
+	}
+	if !m3.busy {
+		t.Error("busy should remain true")
+	}
+	if m3.status != "thinking…" {
+		t.Errorf("status=%q want thinking…", m3.status)
 	}
 	if len(fp.startArgs) != 1 {
 		t.Errorf("StartSession should be called once; got %d", len(fp.startArgs))
 	}
 	if len(fp.sentTexts) != 1 || fp.sentTexts[0] != "hello" {
 		t.Errorf("Send called with %+v, want ['hello']", fp.sentTexts)
+	}
+	if streamCmd == nil {
+		t.Error("start completion should schedule stream reader")
+	}
+}
+
+func TestSendToProvider_QueuesWhileProcStarting(t *testing.T) {
+	fp := newFakeProvider()
+	m := newTestModel(t, fp)
+	m.procStarting = true
+	m.procStartSeq = 7
+	m.busy = true
+	m.status = "starting Fake..."
+
+	m2any, cmd := m.sendToProvider("second")
+	m2 := m2any.(model)
+	if cmd != nil {
+		t.Error("queueing during startup should not launch another command")
+	}
+	if len(m2.queuedTurns) != 1 || m2.queuedTurns[0].text != "second" {
+		t.Fatalf("queuedTurns=%+v want one queued second turn", m2.queuedTurns)
+	}
+	if len(fp.startArgs) != 0 || len(fp.sentTexts) != 0 {
+		t.Fatalf("provider should not be touched while startup is pending: starts=%d sends=%v",
+			len(fp.startArgs), fp.sentTexts)
+	}
+}
+
+func TestProviderStartDone_SendsQueuedTurns(t *testing.T) {
+	fp := newFakeProvider()
+	m := newTestModel(t, fp)
+	m.procStarting = true
+	m.procStartSeq = 3
+	m.busy = true
+	m.queuedTurns = []providerQueuedTurn{{text: "queued"}}
+
+	proc := &providerProc{stdin: &bufferCloser{Buffer: &bytes.Buffer{}}}
+	ch := make(chan tea.Msg, 1)
+	m2, cmd := runUpdate(t, m, providerStartDoneMsg{
+		tabID:      m.id,
+		seq:        3,
+		providerID: fp.id,
+		proc:       proc,
+		streamCh:   ch,
+	})
+	if m2.proc != proc {
+		t.Error("proc should be stored")
+	}
+	if len(m2.queuedTurns) != 0 {
+		t.Errorf("queuedTurns should be cleared, got %+v", m2.queuedTurns)
+	}
+	if len(fp.sentTexts) != 1 || fp.sentTexts[0] != "queued" {
+		t.Errorf("queued turn was not sent: %+v", fp.sentTexts)
+	}
+	if cmd == nil {
+		t.Error("start completion should schedule stream reader")
 	}
 }
 

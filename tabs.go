@@ -91,6 +91,8 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.dispatchByTabID(m.tabID, msg)
 	case shellBatchMsg:
 		return a.dispatchByTabID(m.tabID, msg)
+	case providerStartDoneMsg:
+		return a.dispatchByTabID(m.tabID, msg)
 
 	default:
 		// proc-tagged messages (streamStatusMsg, providerDoneMsg, etc.) and
@@ -134,6 +136,10 @@ func (a app) dispatchByTabID(tabID int, msg tea.Msg) (tea.Model, tea.Cmd) {
 		case approvalRequestMsg:
 			if m.reply != nil {
 				m.reply <- approvalReply{allow: false}
+			}
+		case providerStartDoneMsg:
+			if m.proc != nil {
+				m.proc.kill()
 			}
 		}
 		return a, nil
@@ -362,4 +368,3 @@ func tabBarLabel(t *model) string {
 	}
 	return " " + label + " "
 }
-

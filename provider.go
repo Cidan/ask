@@ -211,6 +211,22 @@ type providerCwdMsg struct {
 	proc *providerProc
 }
 
+type providerQueuedTurn struct {
+	text        string
+	attachments []pendingAttachment
+}
+
+type providerStartDoneMsg struct {
+	tabID        int
+	seq          uint64
+	providerID   string
+	proc         *providerProc
+	streamCh     chan tea.Msg
+	worktreeName string
+	err          error
+	turn         providerQueuedTurn
+}
+
 var providerRegistry []Provider
 
 // registerProvider is called from each provider's init() so the app can

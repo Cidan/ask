@@ -136,6 +136,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m.providerSlashCmds = msg.slashCmds
 		return m, persistSlashCmdsCmd(m.provider, msg.slashCmds)
 
+	case providerStartDoneMsg:
+		return m.handleProviderStartDone(msg)
+
 	case cancelWatchdogMsg:
 		// Cooperative cancel never completed within the grace window.
 		// If the same proc is still running and still busy, kill it

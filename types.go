@@ -183,6 +183,10 @@ type model struct {
 	streamCh chan tea.Msg
 	proc     *providerProc
 
+	procStarting bool
+	procStartSeq uint64
+	queuedTurns  []providerQueuedTurn
+
 	pending     []pendingAttachment
 	nextImageID uint32
 

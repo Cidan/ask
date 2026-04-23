@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"time"
 
@@ -49,37 +50,13 @@ func (m *model) ensureProc() error {
 		return nil
 	}
 	args := m.sessionArgs()
-	// Resume paths derive the worktree name from where the prior
-	// session lived. Do this first so the step below can treat a
-	// resumed worktree name the same as any other pre-set value.
-	if m.sessionID != "" && m.resumeCwd != "" && m.worktreeName == "" {
-		m.worktreeName = worktreeNameFromCwd(m.resumeCwd)
+	rootCwd, err := os.Getwd()
+	if err != nil {
+		return err
 	}
-
-	// Fresh session + worktree preference on: create a new worktree.
-	if m.worktreeName == "" && m.sessionID == "" && m.worktree && inGitCheckout() {
-		path, name, err := createWorktree()
-		if err != nil {
-			return err
-		}
-		args.Cwd = path
-		m.worktreeName = name
-	}
-
-	// With a worktree name in hand (freshly created, reused on swap,
-	// or resume-derived), point the provider at its directory and
-	// recreate it from its branch if prune wiped it between sessions.
-	// This runs even when m.worktree is currently off so a resumed
-	// session lands in the same branch it was created on.
-	if m.worktreeName != "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return err
-		}
-		args.Cwd = worktreePath(cwd, m.worktreeName)
-		if err := ensureResumeWorktree(args.Cwd); err != nil {
-			return err
-		}
+	args, m.worktreeName, err = prepareProviderSessionAt(args, m.worktreeName, rootCwd)
+	if err != nil {
+		return err
 	}
 	proc, ch, err := m.provider.StartSession(args)
 	if err != nil {
@@ -88,6 +65,60 @@ func (m *model) ensureProc() error {
 	m.proc = proc
 	m.streamCh = ch
 	return nil
+}
+
+func prepareProviderSession(args ProviderSessionArgs, worktreeName string) (ProviderSessionArgs, string, error) {
+	rootCwd := args.Cwd
+	if rootCwd == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return args, worktreeName, err
+		}
+		rootCwd = cwd
+	}
+	return prepareProviderSessionAt(args, worktreeName, rootCwd)
+}
+
+func prepareProviderSessionAt(args ProviderSessionArgs, worktreeName, rootCwd string) (ProviderSessionArgs, string, error) {
+	if rootCwd == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return args, worktreeName, err
+		}
+		rootCwd = cwd
+	}
+	if args.Cwd == "" {
+		args.Cwd = rootCwd
+	}
+	// Resume paths derive the worktree name from where the prior
+	// session lived. Do this first so the step below can treat a
+	// resumed worktree name the same as any other pre-set value.
+	if args.SessionID != "" && args.ResumeCwd != "" && worktreeName == "" {
+		worktreeName = worktreeNameFromCwd(args.ResumeCwd)
+	}
+
+	// Fresh session + worktree preference on: create a new worktree.
+	if worktreeName == "" && args.SessionID == "" && args.Worktree && inGitCheckoutAt(rootCwd) {
+		path, name, err := createWorktreeAt(rootCwd)
+		if err != nil {
+			return args, worktreeName, err
+		}
+		args.Cwd = path
+		worktreeName = name
+	}
+
+	// With a worktree name in hand (freshly created, reused on swap,
+	// or resume-derived), point the provider at its directory and
+	// recreate it from its branch if prune wiped it between sessions.
+	// This runs even when worktree is currently off so a resumed
+	// session lands in the same branch it was created on.
+	if worktreeName != "" {
+		args.Cwd = worktreePath(rootCwd, worktreeName)
+		if err := ensureResumeWorktree(args.Cwd); err != nil {
+			return args, worktreeName, err
+		}
+	}
+	return args, worktreeName, nil
 }
 
 // sendToProvider delivers a user turn (text + pending attachments) to
@@ -99,13 +130,36 @@ func (m model) sendToProvider(line string) (tea.Model, tea.Cmd) {
 	debugLog("sendToProvider provider=%s line=%q attachments=%d procNil=%v busy=%v sessionID=%q",
 		m.provider.ID(), line, nAtt, m.proc == nil, m.busy, m.sessionID)
 	m.appendUser(userBarText(line, nAtt))
-	newProc := m.proc == nil
+	turn := providerQueuedTurn{
+		text:        line,
+		attachments: append([]pendingAttachment(nil), m.pending...),
+	}
 	wasIdle := !m.busy
-	if err := m.ensureProc(); err != nil {
-		debugLog("ensureProc err: %v", err)
-		m.appendHistory(outputStyle.Render(errStyle.Render("could not start " + m.provider.DisplayName() + ": " + err.Error())))
+
+	if m.procStarting && m.proc == nil {
+		m.queuedTurns = append(m.queuedTurns, turn)
+		m.pending = nil
+		m.busy = true
+		if m.status == "" {
+			m.status = "starting " + m.provider.DisplayName() + "..."
+		}
 		return m, nil
 	}
+
+	if m.proc == nil {
+		m.procStartSeq++
+		seq := m.procStartSeq
+		m.procStarting = true
+		m.pending = nil
+		m.busy = true
+		m.status = "starting " + m.provider.DisplayName() + "..."
+		cmd := startAndSendProviderCmd(m.provider, m.sessionArgs(), m.worktreeName, turn, seq)
+		if wasIdle {
+			return m, tea.Batch(cmd, m.spinner.Tick)
+		}
+		return m, cmd
+	}
+
 	if err := m.provider.Send(m.proc, line, m.pending); err != nil {
 		debugLog("provider send err: %v", err)
 		m.appendHistory(outputStyle.Render(errStyle.Render("write to " + m.provider.DisplayName() + " failed: " + err.Error())))
@@ -116,9 +170,6 @@ func (m model) sendToProvider(line string) (tea.Model, tea.Cmd) {
 	m.busy = true
 	m.status = "thinking…"
 	var cmds []tea.Cmd
-	if newProc {
-		cmds = append(cmds, nextStreamCmd(m.streamCh))
-	}
 	if wasIdle {
 		cmds = append(cmds, m.spinner.Tick)
 	}
@@ -126,6 +177,101 @@ func (m model) sendToProvider(line string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, tea.Batch(cmds...)
+}
+
+func startAndSendProviderCmd(p Provider, args ProviderSessionArgs, worktreeName string, turn providerQueuedTurn, seq uint64) tea.Cmd {
+	tabID := args.TabID
+	providerID := p.ID()
+	displayName := p.DisplayName()
+	return func() tea.Msg {
+		args, worktreeName, err := prepareProviderSession(args, worktreeName)
+		if err != nil {
+			return providerStartDoneMsg{
+				tabID:      tabID,
+				seq:        seq,
+				providerID: providerID,
+				err:        fmt.Errorf("could not start %s: %w", displayName, err),
+				turn:       turn,
+			}
+		}
+		proc, ch, err := p.StartSession(args)
+		if err != nil {
+			return providerStartDoneMsg{
+				tabID:      tabID,
+				seq:        seq,
+				providerID: providerID,
+				err:        fmt.Errorf("could not start %s: %w", displayName, err),
+				turn:       turn,
+			}
+		}
+		if err := p.Send(proc, turn.text, turn.attachments); err != nil {
+			proc.kill()
+			return providerStartDoneMsg{
+				tabID:      tabID,
+				seq:        seq,
+				providerID: providerID,
+				err:        fmt.Errorf("write to %s failed: %w", displayName, err),
+				turn:       turn,
+			}
+		}
+		return providerStartDoneMsg{
+			tabID:        tabID,
+			seq:          seq,
+			providerID:   providerID,
+			proc:         proc,
+			streamCh:     ch,
+			worktreeName: worktreeName,
+			turn:         turn,
+		}
+	}
+}
+
+func (m model) handleProviderStartDone(msg providerStartDoneMsg) (tea.Model, tea.Cmd) {
+	if msg.tabID != m.id {
+		return m, nil
+	}
+	if !m.procStarting || msg.seq != m.procStartSeq ||
+		m.provider == nil || msg.providerID != m.provider.ID() {
+		if msg.proc != nil {
+			msg.proc.kill()
+		}
+		return m, nil
+	}
+
+	m.procStarting = false
+	if msg.err != nil {
+		debugLog("provider start/send err: %v", msg.err)
+		m.busy = false
+		m.status = ""
+		m.todos = nil
+		m.queuedTurns = nil
+		if len(msg.turn.attachments) > 0 && len(m.pending) == 0 {
+			m.pending = append([]pendingAttachment(nil), msg.turn.attachments...)
+		}
+		m.appendHistory(outputStyle.Render(errStyle.Render(msg.err.Error())))
+		return m, nil
+	}
+
+	m.proc = msg.proc
+	m.streamCh = msg.streamCh
+	m.worktreeName = msg.worktreeName
+	m.busy = true
+	m.status = "thinking…"
+
+	queued := m.queuedTurns
+	m.queuedTurns = nil
+	for _, turn := range queued {
+		if err := m.provider.Send(m.proc, turn.text, turn.attachments); err != nil {
+			debugLog("provider queued send err: %v", err)
+			m.appendHistory(outputStyle.Render(errStyle.Render("write to " + m.provider.DisplayName() + " failed: " + err.Error())))
+			m.killProc()
+			return m, nil
+		}
+	}
+	if m.streamCh != nil {
+		return m, nextStreamCmd(m.streamCh)
+	}
+	return m, nil
 }
 
 // cancelTurn asks the provider to cancel cooperatively (turn/interrupt
@@ -181,7 +327,16 @@ func (m *model) flushTurnBuffer() {
 // killProc tears down the active provider subprocess (if any) and
 // resets all per-turn UI state. Safe to call on an idle model.
 func (m *model) killProc() {
+	if m.procStarting {
+		m.procStarting = false
+		m.procStartSeq++
+		m.queuedTurns = nil
+	}
 	if m.proc == nil {
+		m.busy = false
+		m.status = ""
+		m.todos = nil
+		m.bgTasks = nil
 		return
 	}
 	m.proc.kill()

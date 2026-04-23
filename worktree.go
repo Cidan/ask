@@ -54,7 +54,14 @@ func inGitCheckout() bool {
 	if err != nil {
 		return false
 	}
-	_, err = os.Stat(filepath.Join(cwd, ".git"))
+	return inGitCheckoutAt(cwd)
+}
+
+func inGitCheckoutAt(cwd string) bool {
+	if cwd == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(cwd, ".git"))
 	return err == nil
 }
 
@@ -148,11 +155,15 @@ func pruneWorktrees() {
 // (git leaves the existing lock intact), which is fine — the existing lock is
 // still ours from earlier in this ask's life.
 func lockWorktree(name string) {
-	if name == "" || !inGitCheckout() {
-		return
-	}
 	cwd, err := os.Getwd()
 	if err != nil {
+		return
+	}
+	lockWorktreeAt(cwd, name)
+}
+
+func lockWorktreeAt(cwd, name string) {
+	if name == "" || !inGitCheckoutAt(cwd) {
 		return
 	}
 	path := filepath.Join(cwd, ".claude", "worktrees", name)
@@ -250,6 +261,10 @@ func createWorktree() (path, name string, err error) {
 	if err != nil {
 		return "", "", err
 	}
+	return createWorktreeAt(cwd)
+}
+
+func createWorktreeAt(cwd string) (path, name string, err error) {
 	name = newWorktreeName(cwd)
 	path = worktreePath(cwd, name)
 	if err := os.MkdirAll(filepath.Join(cwd, ".claude", "worktrees"), 0o755); err != nil {
@@ -267,7 +282,7 @@ func createWorktree() (path, name string, err error) {
 	// could remove this directory. Practically negligible (sub-ms) and
 	// the collision-probability of the 12-char random tail already
 	// makes cross-instance targeting unlikely.
-	lockWorktree(name)
+	lockWorktreeAt(cwd, name)
 	debugLog("worktree created at %s on branch %s", path, branch)
 	return path, name, nil
 }
