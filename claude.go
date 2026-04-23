@@ -303,6 +303,14 @@ func readClaudeStream(stdout io.Reader, proc *providerProc, ch chan tea.Msg) {
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 1<<20), 1<<22)
 	var pending providerResult
+	// Tool calls launched with run_in_background=true (Bash, Agent) are
+	// hidden from the rendered history: their ack body ("Command running
+	// in background with ID: …") and the call line itself carry no
+	// information the user can act on — completion arrives via
+	// task_notification, which already has its own UX path. Track the
+	// suppressed tool_use ids here so we can drop the matching
+	// tool_result when it arrives.
+	bgIDs := map[string]bool{}
 	for sc.Scan() {
 		var ev map[string]any
 		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
@@ -349,6 +357,12 @@ func readClaudeStream(stdout io.Reader, proc *providerProc, ch chan tea.Msg) {
 				ch <- todoUpdatedMsg{todos: todos, proc: proc}
 			}
 			for _, call := range assistantToolCalls(ev) {
+				if call.background {
+					if call.id != "" {
+						bgIDs[call.id] = true
+					}
+					continue
+				}
 				ch <- toolCallMsg{name: call.name, input: call.input, proc: proc}
 			}
 			if text := assistantText(ev); text != "" {
@@ -362,12 +376,8 @@ func readClaudeStream(stdout io.Reader, proc *providerProc, ch chan tea.Msg) {
 				continue
 			}
 			if res, ok := userToolResult(ev); ok {
-				// Bash's background-launch acknowledgement ("Command
-				// running in background with ID: X. Output is being
-				// written to: Y") carries nothing the user can act on
-				// — the completion notification arrives separately —
-				// so we drop it instead of rendering a dead line.
-				if strings.HasPrefix(res.output, "Command running in background with ID:") {
+				if res.toolUseID != "" && bgIDs[res.toolUseID] {
+					delete(bgIDs, res.toolUseID)
 					continue
 				}
 				ch <- toolResultMsg{name: res.name, output: res.output, isError: res.isError, proc: proc}
@@ -429,10 +439,15 @@ func userToolDiff(ev map[string]any) (string, []diffHunk, bool) {
 
 // claudeToolCall is the parsed shape of a `tool_use` block — the tool
 // invocation announced by an assistant message. TodoWrite is routed
-// separately (via assistantTodos) so it's skipped here.
+// separately (via assistantTodos) so it's skipped here. background is
+// set when the tool input carries run_in_background=true (Bash/Agent);
+// the caller uses it to suppress both the call and its matching result
+// from the rendered history.
 type claudeToolCall struct {
-	name  string
-	input map[string]any
+	id         string
+	name       string
+	input      map[string]any
+	background bool
 }
 
 func assistantToolCalls(ev map[string]any) []claudeToolCall {
@@ -448,8 +463,10 @@ func assistantToolCalls(ev map[string]any) []claudeToolCall {
 		if name == "TodoWrite" {
 			continue
 		}
+		id, _ := b["id"].(string)
 		input, _ := b["input"].(map[string]any)
-		out = append(out, claudeToolCall{name: name, input: input})
+		bg, _ := input["run_in_background"].(bool)
+		out = append(out, claudeToolCall{id: id, name: name, input: input, background: bg})
 	}
 	return out
 }
@@ -457,11 +474,13 @@ func assistantToolCalls(ev map[string]any) []claudeToolCall {
 // claudeToolResult is the parsed shape of a `tool_result` block on a
 // user message. content may arrive as a bare string or as a list of
 // {type:"text",text:...} blocks — userToolResult flattens both into a
-// single output string.
+// single output string. toolUseID lets the caller pair the result with
+// its originating tool_use (for background-call suppression).
 type claudeToolResult struct {
-	name    string
-	output  string
-	isError bool
+	toolUseID string
+	name      string
+	output    string
+	isError   bool
 }
 
 func userToolResult(ev map[string]any) (claudeToolResult, bool) {
@@ -475,6 +494,7 @@ func userToolResult(ev map[string]any) (claudeToolResult, bool) {
 		res := claudeToolResult{
 			output: claudeToolResultText(b["content"]),
 		}
+		res.toolUseID, _ = b["tool_use_id"].(string)
 		res.isError, _ = b["is_error"].(bool)
 		// Tool name isn't carried on the tool_result block itself; the
 		// sidecar `tool_use_result` record sometimes has a `type` field

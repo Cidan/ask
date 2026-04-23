@@ -276,27 +276,76 @@ func TestReadClaudeStream_ToolResultWithStructuredPatchIsDiffOnly(t *testing.T) 
 	}
 }
 
-func TestReadClaudeStream_BackgroundLaunchAckSuppressed(t *testing.T) {
-	// Bash's "Command running in background with ID: …" acknowledgement
-	// is noise — the matching completion message arrives later. Drop it
-	// at the source so it never reaches the renderer.
+func TestReadClaudeStream_BackgroundCallSuppressed(t *testing.T) {
+	// A tool_use with run_in_background=true and its matching tool_result
+	// (the "Command running in background with ID: …" ack) both belong off
+	// the rendered history — completion is reported separately. Pair the
+	// two events through a single stream so we exercise the id handoff
+	// from assistantToolCalls into the result-suppression set.
+	call := map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{
+					"type": "tool_use",
+					"id":   "tool_bg",
+					"name": "Bash",
+					"input": map[string]any{
+						"command":           "sleep 5",
+						"run_in_background": true,
+					},
+				},
+			},
+		},
+	}
+	result := map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": "tool_bg",
+					"content":     "Command running in background with ID: tool_bg.",
+				},
+			},
+		},
+	}
+	cb, _ := json.Marshal(call)
+	rb, _ := json.Marshal(result)
+	msgs := runStream(t, string(cb), string(rb))
+	for _, m := range msgs {
+		switch m.(type) {
+		case toolCallMsg, toolResultMsg:
+			t.Fatalf("background call should not emit tool messages; got %T msgs=%#v", m, msgs)
+		}
+	}
+}
+
+func TestReadClaudeStream_NonBackgroundResultStillEmits(t *testing.T) {
+	// Sibling guard for the suppression path: a tool_result whose id was
+	// never marked background must still reach the renderer untouched.
 	ev := map[string]any{
 		"type": "user",
 		"message": map[string]any{
 			"content": []any{
 				map[string]any{
-					"type":    "tool_result",
-					"content": "Command running in background with ID: bwukbmxb5. Output is being written to: /tmp/x",
+					"type":        "tool_result",
+					"tool_use_id": "tool_fg",
+					"content":     "ok",
 				},
 			},
 		},
 	}
 	b, _ := json.Marshal(ev)
 	msgs := runStream(t, string(b))
+	var got *toolResultMsg
 	for _, m := range msgs {
-		if _, ok := m.(toolResultMsg); ok {
-			t.Fatalf("background-launch ack should not emit toolResultMsg; msgs=%#v", msgs)
+		if r, ok := m.(toolResultMsg); ok {
+			got = &r
 		}
+	}
+	if got == nil || got.output != "ok" {
+		t.Fatalf("foreground result missing or wrong; msgs=%#v", msgs)
 	}
 }
 
