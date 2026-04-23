@@ -135,19 +135,32 @@ func TestWorktreeNameFromCwd(t *testing.T) {
 func TestNewWorktreeName_FormatAndProviderTag(t *testing.T) {
 	tmp := t.TempDir()
 	name := newWorktreeName(tmp, "codex")
-	// Shape: ask-<provider>-<12 lowercase alphanum>.
-	if !strings.HasPrefix(name, "ask-codex-") {
-		t.Errorf("expected ask-codex- prefix, got %q", name)
+	// Shape: ask-<provider>-<adjective>-<verb>-<noun>. Parts split
+	// to exactly five dash-separated segments with the provider in
+	// position 2 and each whimsy word drawn from the curated lists.
+	parts := strings.Split(name, "-")
+	if len(parts) != 5 {
+		t.Fatalf("want 5 dash-separated parts, got %d: %q", len(parts), name)
 	}
-	tail := strings.TrimPrefix(name, "ask-codex-")
-	if len(tail) != 12 {
-		t.Errorf("tail len=%d want 12: %q", len(tail), tail)
+	if parts[0] != "ask" {
+		t.Errorf("first segment=%q want 'ask'", parts[0])
 	}
-	for _, r := range tail {
-		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'z')) {
-			t.Errorf("tail has non-alphanum rune %q: %q", r, tail)
+	if parts[1] != "codex" {
+		t.Errorf("provider segment=%q want 'codex'", parts[1])
+	}
+	assertInList(t, "adjective", parts[2], worktreeAdjectives)
+	assertInList(t, "verb", parts[3], worktreeVerbs)
+	assertInList(t, "noun", parts[4], worktreeNouns)
+}
+
+func assertInList(t *testing.T, kind, word string, list []string) {
+	t.Helper()
+	for _, w := range list {
+		if w == word {
+			return
 		}
 	}
+	t.Errorf("%s %q is not in the curated list", kind, word)
 }
 
 func TestNewWorktreeName_DifferentIDsEachCall(t *testing.T) {
@@ -169,6 +182,88 @@ func TestNewWorktreeName_SanitizesProviderSegment(t *testing.T) {
 	n := newWorktreeName(tmp, "Code/x../!")
 	if !strings.HasPrefix(n, "ask-codex-") {
 		t.Errorf("unsafe chars should be stripped; got %q", n)
+	}
+}
+
+func TestWorktreeWordLists_Exactly50Each(t *testing.T) {
+	// The comment on worktree_words.go promises 50³ combinations. If
+	// someone accidentally grows a list past 50 entries they break
+	// review-screening assumptions — make the regression loud.
+	if n := len(worktreeAdjectives); n != 50 {
+		t.Errorf("adjectives=%d want 50", n)
+	}
+	if n := len(worktreeVerbs); n != 50 {
+		t.Errorf("verbs=%d want 50", n)
+	}
+	if n := len(worktreeNouns); n != 50 {
+		t.Errorf("nouns=%d want 50", n)
+	}
+}
+
+func TestWorktreeWordLists_UniqueWithinList(t *testing.T) {
+	for name, list := range map[string][]string{
+		"adjectives": worktreeAdjectives,
+		"verbs":      worktreeVerbs,
+		"nouns":      worktreeNouns,
+	} {
+		seen := map[string]int{}
+		for i, w := range list {
+			if j, dup := seen[w]; dup {
+				t.Errorf("%s[%d]=%q duplicates %s[%d]", name, i, w, name, j)
+			}
+			seen[w] = i
+		}
+	}
+}
+
+func TestWorktreeWordLists_LowercaseAndWordlike(t *testing.T) {
+	// All words must be lowercase a-z so the final worktree path is
+	// portable across case-sensitive and case-insensitive filesystems
+	// and so git branches formed from them don't trip on ref-name
+	// rules.
+	for name, list := range map[string][]string{
+		"adjectives": worktreeAdjectives,
+		"verbs":      worktreeVerbs,
+		"nouns":      worktreeNouns,
+	} {
+		for _, w := range list {
+			if w == "" {
+				t.Errorf("%s: empty entry in list", name)
+				continue
+			}
+			for _, r := range w {
+				if r < 'a' || r > 'z' {
+					t.Errorf("%s: %q has non-lowercase-letter %q", name, w, r)
+					break
+				}
+			}
+		}
+	}
+}
+
+func TestRandomWhimsy_ShapeAndDraws(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		triple := randomWhimsy()
+		parts := strings.Split(triple, "-")
+		if len(parts) != 3 {
+			t.Fatalf("randomWhimsy()=%q want 3 dash-separated parts", triple)
+		}
+		assertInList(t, "adjective", parts[0], worktreeAdjectives)
+		assertInList(t, "verb", parts[1], worktreeVerbs)
+		assertInList(t, "noun", parts[2], worktreeNouns)
+	}
+}
+
+func TestRandomWhimsy_ProducesVariedOutput(t *testing.T) {
+	// With 125,000 combinations, 100 draws should easily yield >30
+	// distinct triples. This is a weak lower bound that catches a
+	// regression where one of the pickWord calls returned a constant.
+	seen := map[string]bool{}
+	for i := 0; i < 100; i++ {
+		seen[randomWhimsy()] = true
+	}
+	if len(seen) < 30 {
+		t.Errorf("randomWhimsy looks biased: only %d distinct triples in 100 draws", len(seen))
 	}
 }
 

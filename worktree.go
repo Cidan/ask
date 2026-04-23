@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"fmt"
+	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -278,23 +279,44 @@ func worktreePath(cwd, name string) string {
 }
 
 // newWorktreeName returns a fresh worktree directory name:
-// `ask-<providerID>-<12 random alphanumeric chars>`. The random suffix
-// uses crypto/rand so concurrent ask sessions don't need a shared
-// counter to avoid collisions. A stat-based collision check retries
-// the random half if (against astronomical odds) the directory already
-// exists — same cheap safeguard the old timestamp-based name had.
+// `ask-<providerID>-<adjective>-<verb>-<noun>`. Words are drawn
+// uniformly from the curated lists in worktree_words.go (125,000
+// combinations). A stat-based collision check retries the triple if
+// the directory happens to exist; after eight draws we fall back to
+// the same triple plus a 6-char alphanumeric tail so the function
+// can't spin forever even in pathological repos.
 func newWorktreeName(cwd, providerID string) string {
 	pid := sanitizeProviderSegment(providerID)
 	parent := filepath.Join(cwd, ".claude", "worktrees")
 	for attempt := 0; attempt < 8; attempt++ {
-		name := "ask-" + pid + "-" + randomAlphanum(12)
+		name := "ask-" + pid + "-" + randomWhimsy()
 		if _, err := os.Stat(filepath.Join(parent, name)); os.IsNotExist(err) {
 			return name
 		}
 	}
-	// Astronomically unlikely, but if eight draws somehow collided fall
-	// back to a longer tail so we don't spin forever.
-	return "ask-" + pid + "-" + randomAlphanum(20)
+	return "ask-" + pid + "-" + randomWhimsy() + "-" + randomAlphanum(6)
+}
+
+// randomWhimsy picks one adjective, one verb, one noun from the
+// curated lists and joins them with dashes.
+func randomWhimsy() string {
+	return pickWord(worktreeAdjectives) + "-" +
+		pickWord(worktreeVerbs) + "-" +
+		pickWord(worktreeNouns)
+}
+
+// pickWord returns a uniformly-random entry from list using
+// crypto/rand.Int so the distribution has no modulo bias.
+func pickWord(list []string) string {
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(list))))
+	if err != nil {
+		// rand.Reader errors are essentially "the OS is broken". The
+		// generator still needs to return something; picking index 0
+		// keeps the name shape valid while logging the oddity.
+		debugLog("pickWord: rand.Int: %v", err)
+		return list[0]
+	}
+	return list[n.Int64()]
 }
 
 // sanitizeProviderSegment defends against an unexpected provider ID
