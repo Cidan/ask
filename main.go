@@ -117,6 +117,9 @@ func newTab(id int, cfg askConfig) (*model, error) {
 		shellHistoryIdx:    -1,
 		fc:                 &frameCache{},
 	}
+	if uc, err := readUsageCache(); err == nil {
+		m.usageCache = uc
+	}
 	m.refreshPrompt()
 	return m, nil
 }

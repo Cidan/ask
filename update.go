@@ -92,6 +92,26 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		return m, nil
 
+	case providerModelMsg:
+		if msg.proc != m.proc {
+			return m, nil
+		}
+		m.modelForContext = msg.model
+		if m.streamCh != nil {
+			return m, nextStreamCmd(m.streamCh)
+		}
+		return m, nil
+
+	case usageMsg:
+		if msg.proc != m.proc {
+			return m, nil
+		}
+		m.lastUsageTokens = msg.tokens
+		if m.streamCh != nil {
+			return m, nextStreamCmd(m.streamCh)
+		}
+		return m, nil
+
 	case bgTaskStartedMsg:
 		if msg.proc != m.proc {
 			return m, nil
@@ -257,6 +277,13 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m.dismissCancelTurnConfirmIfIdle()
 		if msg.res.SessionID != "" {
 			m.sessionID = msg.res.SessionID
+		}
+		// Claude just finished a turn, which means it hit the API and
+		// wrote a fresh .usage-cache.json. Re-read so the 5h/wk chip
+		// segments reflect the latest utilization. Errors are silent:
+		// the previous snapshot (or nil) stays in place.
+		if uc, err := readUsageCache(); err == nil {
+			m.usageCache = uc
 		}
 		switch {
 		case msg.err != nil:

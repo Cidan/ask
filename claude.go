@@ -377,6 +377,9 @@ func readClaudeStream(stdout io.Reader, proc *providerProc, ch chan tea.Msg) {
 				if cwd, _ := ev["cwd"].(string); cwd != "" {
 					ch <- providerCwdMsg{cwd: cwd, proc: proc}
 				}
+				if mdl, _ := ev["model"].(string); mdl != "" {
+					ch <- providerModelMsg{model: mdl, proc: proc}
+				}
 			case "task_started":
 				// task_type is optional on the wire and only populated for
 				// newer CLIs; task_started itself is only emitted when the
@@ -423,6 +426,9 @@ func readClaudeStream(stdout io.Reader, proc *providerProc, ch chan tea.Msg) {
 			}
 			if text := assistantText(ev); text != "" {
 				ch <- assistantTextMsg{text: text, proc: proc}
+			}
+			if tokens, ok := assistantUsage(ev); ok {
+				ch <- usageMsg{tokens: tokens, proc: proc}
 			}
 		case "user":
 			if path, hunks, ok := userToolDiff(ev); ok {

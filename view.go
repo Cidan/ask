@@ -775,30 +775,44 @@ func renderTodoLine(t todoItem) string {
 // chip is always shown so the user can glance to see which backend they
 // are talking to; the left chip appears only when there's something to
 // report.
+//
+// When the terminal is narrow, the right chip drops its usage segments
+// (ctx → wk → 5h) before the left chip is sacrificed.
 func (m model) statusChipRow() string {
 	left := m.worktreeChip()
-	right := m.providerChip()
-	if right == "" && left == "" {
-		return ""
-	}
 	const leftMargin = 3
-	// Reserve width-2 for the scrollbar column so the chip doesn't get
-	// overwritten by viewport chrome. Width may be 0 during tests/init —
-	// fall back to just returning the two pieces joined.
 	if m.width <= 0 {
+		right := m.providerChip()
+		if right == "" && left == "" {
+			return ""
+		}
 		if left == "" {
 			return right
 		}
 		return strings.Repeat(" ", leftMargin) + left + "  " + right
 	}
 	lw := lipgloss.Width(left)
-	rw := lipgloss.Width(right)
 	usable := m.width - 2
+	// Budget for the right chip assuming the left stays. A pad of 1
+	// column separates them; when the left chip is empty the right
+	// gets the full usable width.
+	rightBudget := usable
+	if left != "" {
+		rightBudget = usable - leftMargin - lw - 1
+	}
+	right := m.providerChipFitting(rightBudget)
+	rw := lipgloss.Width(right)
+	if right == "" && left == "" {
+		return ""
+	}
 	pad := usable - leftMargin - lw - rw
 	if pad < 1 {
-		// Not enough room for both — favour the provider chip.
+		// Even the trimmed right chip won't coexist with left; drop
+		// the left entirely and re-fit against the full usable width.
 		if rw+leftMargin > usable {
-			return right
+			right = m.providerChipFitting(usable)
+			rw = lipgloss.Width(right)
+			return strings.Repeat(" ", usable-rw) + right
 		}
 		pad = 1
 	}
@@ -835,18 +849,67 @@ func (m model) worktreeChip() string {
 	return dimStyle.Render(strings.Join(parts, "  "))
 }
 
-// providerChip is the right-anchored status badge: current provider ID
-// and the model it's targeting. Shown even at idle so the user knows
-// which backend Ctrl+B will swap.
+// providerChip is the right-anchored status badge: current provider ID,
+// model, and — when data is available — live plan-usage segments
+// (5h/wk/ctx). Shown even at idle so the user knows which backend
+// Ctrl+B will swap.
 func (m model) providerChip() string {
+	return m.providerChipFitting(0)
+}
+
+// providerChipFitting renders the chip trimmed to fit within maxW
+// columns. Segments are dropped right-to-left (ctx → wk → 5h) until the
+// chip fits; if even the base doesn't fit, it's rendered anyway so the
+// caller never sees an empty chip. maxW ≤ 0 means no cap.
+func (m model) providerChipFitting(maxW int) string {
 	if m.provider == nil {
 		return ""
 	}
+	segs := m.providerChipSegments(time.Now())
+	for keep := len(segs); keep > 0; keep-- {
+		chip := m.renderProviderChip(segs[:keep])
+		if maxW <= 0 || lipgloss.Width(chip) <= maxW {
+			return chip
+		}
+	}
+	return m.renderProviderChip(nil)
+}
+
+// providerChipSegments returns the optional trailing segments of the
+// chip in drop-last-first order: [5h, wk, ctx]. 5h and wk are present
+// only when the usage cache was read successfully. ctx is always
+// present (0% before the first turn) so there's an immediate signal
+// that the feature is live.
+func (m model) providerChipSegments(now time.Time) []string {
+	var segs []string
+	if m.usageCache != nil {
+		fh := m.usageCache.FiveHour
+		segs = append(segs, fmt.Sprintf("5h:%d%%(%s)",
+			int(fh.Utilization+0.5), formatTTL(fh.ResetsAt, now)))
+		sd := m.usageCache.SevenDay
+		segs = append(segs, fmt.Sprintf("wk:%d%%(%s)",
+			int(sd.Utilization+0.5), formatTTL(sd.ResetsAt, now)))
+	}
+	mdl := m.modelForContext
+	if mdl == "" {
+		mdl = m.providerModel
+	}
+	ctxPct := contextPercent(m.lastUsageTokens, modelContextLimit(mdl))
+	segs = append(segs, fmt.Sprintf("ctx:%d%%", ctxPct))
+	return segs
+}
+
+func (m model) renderProviderChip(segs []string) string {
 	mdl := m.providerModel
 	if mdl == "" {
 		mdl = "default"
 	}
-	return dimStyle.Render("[ p: " + m.provider.ID() + "  m: " + mdl + " ]")
+	body := "[ p: " + m.provider.ID() + " m: " + mdl
+	for _, s := range segs {
+		body += " " + s
+	}
+	body += " ]"
+	return dimStyle.Render(body)
 }
 
 func (m model) pendingBlockHeight() int {

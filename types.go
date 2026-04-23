@@ -40,6 +40,25 @@ type streamStatusMsg struct {
 	proc   *providerProc
 }
 
+// usageMsg carries the running context size in tokens pulled from an
+// assistant event's message.usage block. Emitted once per assistant
+// message; update.go uses it to keep model.lastUsageTokens fresh for
+// the ctx chip segment.
+type usageMsg struct {
+	tokens int
+	proc   *providerProc
+}
+
+// providerModelMsg carries the model name claude reports in its
+// system/init event. The providerChip prefers this over the user's
+// selected alias ("opus[1m]") because claude resolves shorthands to a
+// full id ("claude-opus-4-7-1m"), which is what we need to pick the
+// right context-window denominator.
+type providerModelMsg struct {
+	model string
+	proc  *providerProc
+}
+
 type assistantTextMsg struct {
 	text string
 	proc *providerProc
@@ -336,6 +355,23 @@ type model struct {
 	todos []todoItem
 
 	bgTasks map[string]struct{}
+
+	// usageCache is the parsed ~/.claude/.usage-cache.json snapshot.
+	// Refreshed at startup and after every providerDoneMsg. Nil means
+	// the file is absent or unreadable — the chip omits the 5h/wk
+	// segments in that case.
+	usageCache *usageCache
+
+	// lastUsageTokens is the running context size reported by the
+	// most recent assistant event's message.usage block. Divided by
+	// modelContextLimit(modelForContext) for the ctx chip segment.
+	lastUsageTokens int
+
+	// modelForContext is the model id from claude's system/init event,
+	// preferred over providerModel for the context-limit denominator
+	// because claude resolves aliases ("opus[1m]") to fully-qualified
+	// ids. Falls back to providerModel before the init event lands.
+	modelForContext string
 }
 
 type askMode int
