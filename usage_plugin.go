@@ -15,13 +15,15 @@ var usagePluginFS embed.FS
 const embeddedPluginRoot = "plugins/ask-usage"
 
 // extractUsagePlugin writes the embedded ask-usage plugin tree to a
-// stable on-disk location and returns the *parent* directory (the one
-// that should be passed to `claude --plugin-dir`). Returns "" on any
-// failure; callers should debugLog and continue without the plugin.
+// stable on-disk location and returns the *plugin directory* — the
+// path that should be passed to `claude --plugin-dir`. Claude's
+// --plugin-dir flag treats the path as a plugin root (looks for
+// .claude-plugin/plugin.json directly under it), NOT as a parent
+// containing multiple plugins, so we return the leaf dir.
 //
 // Location: $XDG_CACHE_HOME/ask/plugins/ask-usage/ (default $HOME/.cache/...).
-// The parent returned is therefore .../ask/plugins/ — claude then scans
-// that dir and finds ask-usage/ as a plugin subdir.
+// Returns "" on any failure; callers should debugLog and continue
+// without the plugin.
 //
 // Idempotent: always overwrites the embedded files (version-bump-safe),
 // but never touches sibling files or the plugin's own .cache.json. The
@@ -36,8 +38,7 @@ func extractUsagePlugin() (string, error) {
 		}
 		cacheHome = filepath.Join(home, ".cache")
 	}
-	parent := filepath.Join(cacheHome, "ask", "plugins")
-	pluginDir := filepath.Join(parent, "ask-usage")
+	pluginDir := filepath.Join(cacheHome, "ask", "plugins", "ask-usage")
 	if err := os.MkdirAll(pluginDir, 0o700); err != nil {
 		return "", err
 	}
@@ -66,7 +67,7 @@ func extractUsagePlugin() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return parent, nil
+	return pluginDir, nil
 }
 
 // usagePluginCacheFile is the on-disk path the plugin writes its usage

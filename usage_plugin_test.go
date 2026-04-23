@@ -14,16 +14,18 @@ func TestExtractUsagePlugin_HonorsXDGCacheHome(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", xdg)
 
-	parent, err := extractUsagePlugin()
+	pluginDir, err := extractUsagePlugin()
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	wantParent := filepath.Join(xdg, "ask", "plugins")
-	if parent != wantParent {
-		t.Errorf("parent=%q want %q", parent, wantParent)
+	want := filepath.Join(xdg, "ask", "plugins", "ask-usage")
+	if pluginDir != want {
+		t.Errorf("pluginDir=%q want %q", pluginDir, want)
 	}
-	if _, err := os.Stat(filepath.Join(parent, "ask-usage")); err != nil {
-		t.Errorf("ask-usage dir missing under parent: %v", err)
+	// The returned path must itself be the plugin root — claude reads
+	// .claude-plugin/plugin.json directly under --plugin-dir.
+	if _, err := os.Stat(filepath.Join(pluginDir, ".claude-plugin", "plugin.json")); err != nil {
+		t.Errorf("plugin manifest missing at returned path: %v", err)
 	}
 }
 
@@ -50,11 +52,10 @@ func TestExtractUsagePlugin_WritesExpectedFiles(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", xdg)
 
-	parent, err := extractUsagePlugin()
+	pluginRoot, err := extractUsagePlugin()
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	pluginRoot := filepath.Join(parent, "ask-usage")
 	cases := []string{
 		filepath.Join(".claude-plugin", "plugin.json"),
 		filepath.Join("hooks", "hooks.json"),
@@ -103,11 +104,10 @@ func TestFetchUsageMjs_ThrottleSkipsWhenFresh(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", xdg)
 
-	parent, err := extractUsagePlugin()
+	pluginRoot, err := extractUsagePlugin()
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	pluginRoot := filepath.Join(parent, "ask-usage")
 	cachePath := filepath.Join(pluginRoot, ".cache.json")
 	if err := os.WriteFile(cachePath, []byte(`{"timestamp":0,"fiveHourPercent":0,"weeklyPercent":0}`), 0o600); err != nil {
 		t.Fatalf("seed cache: %v", err)
@@ -153,11 +153,10 @@ func TestFetchUsageMjs_MissingCredsSilent(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", xdg)
 
-	parent, err := extractUsagePlugin()
+	pluginRoot, err := extractUsagePlugin()
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	pluginRoot := filepath.Join(parent, "ask-usage")
 	cachePath := filepath.Join(pluginRoot, ".cache.json")
 
 	script := filepath.Join(pluginRoot, "scripts", "fetch-usage.mjs")

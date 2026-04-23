@@ -160,13 +160,15 @@ func withRegisteredProviders(t *testing.T, provs ...Provider) {
 	t.Cleanup(func() { providerRegistry = prev })
 }
 
-// isolateHome pins $HOME (and XDG_CONFIG_HOME) at a tmp dir so tests never
-// read or write the caller's real ~/.config or ~/.claude state.
+// isolateHome pins $HOME, $XDG_CONFIG_HOME and $XDG_CACHE_HOME at a
+// tmp dir so tests never read or write the caller's real ~/.config,
+// ~/.claude, or ~/.cache state (e.g. the ask-usage plugin cache).
 func isolateHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	return home
 }
 
