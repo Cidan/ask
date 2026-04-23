@@ -372,6 +372,13 @@ type model struct {
 	// because claude resolves aliases ("opus[1m]") to fully-qualified
 	// ids. Falls back to providerModel before the init event lands.
 	modelForContext string
+
+	// codexUsage holds the latest rate-limit snapshot codex streamed
+	// on this session (from account/rateLimits/updated) plus the
+	// current thread-level token count (from thread/tokenUsage/updated).
+	// hasRateLimits gates the pr/sc chip segments; context fields gate
+	// the ctx segment. Cleared on every provider switch.
+	codexUsage codexUsage
 }
 
 type askMode int

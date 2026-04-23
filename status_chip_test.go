@@ -216,6 +216,156 @@ func TestProviderChipFitting_DropsWkAfterCtx(t *testing.T) {
 	}
 }
 
+func TestProviderChip_CodexShowsPrSc(t *testing.T) {
+	p := newFakeProvider()
+	p.id = "codex"
+	m := newTestModel(t, p)
+	m.providerModel = "gpt-5-codex"
+	m.width = 200
+	now := time.Now()
+	m.codexUsage = codexUsage{
+		primary:       codexRateLimitWindow{usedPercent: 23, resetsAt: now.Add(4*time.Hour + 29*time.Minute)},
+		secondary:     codexRateLimitWindow{usedPercent: 3, resetsAt: now.Add(5*24*time.Hour + 23*time.Hour)},
+		hasRateLimits: true,
+	}
+	got := m.providerChip()
+	for _, want := range []string{"p: codex", "m: gpt-5-codex", "pr:23%", "sc:3%"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("chip missing %q: %q", want, got)
+		}
+	}
+	for _, nope := range []string{"5h:", "wk:"} {
+		if strings.Contains(got, nope) {
+			t.Errorf("chip must NOT contain claude label %q: %q", nope, got)
+		}
+	}
+}
+
+func TestProviderChip_ClaudeDoesNotShowPrSc(t *testing.T) {
+	p := newFakeProvider()
+	p.id = "claude"
+	m := newTestModel(t, p)
+	m.providerModel = "opus[1m]"
+	m.width = 200
+	now := time.Now()
+	m.usageCache = &usageCache{
+		FiveHour: usageWindow{Utilization: 7, ResetsAt: now.Add(3 * time.Hour)},
+		SevenDay: usageWindow{Utilization: 1, ResetsAt: now.Add(5 * 24 * time.Hour)},
+	}
+	// Even if codex fields somehow got populated, claude path must ignore them.
+	m.codexUsage = codexUsage{
+		primary:       codexRateLimitWindow{usedPercent: 99, resetsAt: now.Add(time.Hour)},
+		hasRateLimits: true,
+	}
+	got := m.providerChip()
+	if !strings.Contains(got, "5h:") || !strings.Contains(got, "wk:") {
+		t.Errorf("claude chip must show 5h/wk: %q", got)
+	}
+	for _, nope := range []string{"pr:", "sc:"} {
+		if strings.Contains(got, nope) {
+			t.Errorf("claude chip must NOT contain codex label %q: %q", nope, got)
+		}
+	}
+}
+
+func TestProviderChip_CodexContextUsesModelContextWindow(t *testing.T) {
+	p := newFakeProvider()
+	p.id = "codex"
+	m := newTestModel(t, p)
+	m.providerModel = "gpt-5-codex"
+	m.codexUsage = codexUsage{
+		contextTokens:      100_000,
+		modelContextWindow: 400_000,
+	}
+	got := m.providerChip()
+	if !strings.Contains(got, "ctx:25%") {
+		t.Errorf("codex ctx should divide tokens by modelContextWindow: %q", got)
+	}
+}
+
+func TestProviderChip_CodexContextFallsBackToModelHeuristic(t *testing.T) {
+	p := newFakeProvider()
+	p.id = "codex"
+	m := newTestModel(t, p)
+	m.providerModel = "gpt-5"
+	m.codexUsage = codexUsage{contextTokens: 50_000, modelContextWindow: 0}
+	// Default limit for non-1m model names is 200k; 50k/200k = 25%.
+	got := m.providerChip()
+	if !strings.Contains(got, "ctx:25%") {
+		t.Errorf("codex ctx fallback should use modelContextLimit: %q", got)
+	}
+}
+
+func TestApplyProviderSwitch_ClearsUsageFields(t *testing.T) {
+	pClaude := newFakeProvider()
+	pClaude.id = "claude"
+	pCodex := newFakeProvider()
+	pCodex.id = "codex"
+	withRegisteredProviders(t, pClaude, pCodex)
+	m := newTestModel(t, pClaude)
+	m.providerModel = "opus[1m]"
+	// Simulate both caches populated from a previous session.
+	now := time.Now()
+	m.usageCache = &usageCache{
+		FiveHour: usageWindow{Utilization: 7, ResetsAt: now.Add(3 * time.Hour)},
+	}
+	m.lastUsageTokens = 123_456
+	m.modelForContext = "claude-opus-4-7-1m"
+	m.codexUsage = codexUsage{
+		primary:            codexRateLimitWindow{usedPercent: 23},
+		hasRateLimits:      true,
+		contextTokens:      100_000,
+		modelContextWindow: 400_000,
+	}
+	m.providerSwitchProvIdx = 1 // swap to codex
+	next, _ := m.applyProviderSwitch("gpt-5-codex")
+	mi := next.(model)
+	if mi.usageCache != nil {
+		t.Errorf("usageCache should be nil after switch, got %+v", mi.usageCache)
+	}
+	if mi.lastUsageTokens != 0 {
+		t.Errorf("lastUsageTokens should be 0 after switch, got %d", mi.lastUsageTokens)
+	}
+	if mi.modelForContext != "" {
+		t.Errorf("modelForContext should be cleared, got %q", mi.modelForContext)
+	}
+	if mi.codexUsage.hasRateLimits {
+		t.Errorf("codexUsage.hasRateLimits should be false after switch")
+	}
+	if mi.codexUsage.contextTokens != 0 || mi.codexUsage.modelContextWindow != 0 {
+		t.Errorf("codexUsage context fields should be zero, got tokens=%d window=%d",
+			mi.codexUsage.contextTokens, mi.codexUsage.modelContextWindow)
+	}
+}
+
+func TestProviderChipFitting_CodexDropsSegmentsTailFirst(t *testing.T) {
+	p := newFakeProvider()
+	p.id = "codex"
+	m := newTestModel(t, p)
+	m.providerModel = "gpt-5-codex"
+	now := time.Now()
+	m.codexUsage = codexUsage{
+		primary:            codexRateLimitWindow{usedPercent: 23, resetsAt: now.Add(4 * time.Hour)},
+		secondary:          codexRateLimitWindow{usedPercent: 3, resetsAt: now.Add(5 * 24 * time.Hour)},
+		hasRateLimits:      true,
+		contextTokens:      100_000,
+		modelContextWindow: 400_000,
+	}
+	full := m.providerChipFitting(0)
+	if !strings.Contains(full, "pr:") || !strings.Contains(full, "sc:") || !strings.Contains(full, "ctx:") {
+		t.Fatalf("unbounded chip must keep all segments: %q", full)
+	}
+	fullW := visibleWidth(full)
+	// One col below full → drop ctx, keep pr + sc.
+	got := m.providerChipFitting(fullW - 1)
+	if strings.Contains(got, "ctx:") {
+		t.Errorf("narrower chip must drop ctx first: %q", got)
+	}
+	if !strings.Contains(got, "pr:") || !strings.Contains(got, "sc:") {
+		t.Errorf("narrower chip must keep pr and sc: %q", got)
+	}
+}
+
 func TestStatusChipRow_NarrowWidthDropsUsageSegments(t *testing.T) {
 	p := newFakeProvider()
 	p.id = "claude"

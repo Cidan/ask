@@ -148,6 +148,15 @@ func (m model) applyProviderSwitch(model string) (tea.Model, tea.Cmd) {
 	m.providerModel = model
 	m.providerEffort = newSettings.Effort
 	m.providerSlashCmds = newSettings.SlashCommands
+	// Zero all usage telemetry so the chip never shows stale numbers
+	// from the previous provider. Both cross-provider and same-provider
+	// swaps clear — a /model change for the same provider still drops
+	// session context, and the new session's first stream events will
+	// re-populate as needed.
+	m.usageCache = nil
+	m.lastUsageTokens = 0
+	m.modelForContext = ""
+	m.codexUsage = codexUsage{}
 	if !sameProvider {
 		// Cross-provider swaps drop the old session id (session ids
 		// are provider-specific), but the worktree is shared: every

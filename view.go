@@ -876,12 +876,38 @@ func (m model) providerChipFitting(maxW int) string {
 }
 
 // providerChipSegments returns the optional trailing segments of the
-// chip in drop-last-first order: [5h, wk, ctx]. 5h and wk are present
-// only when the usage cache was read successfully. ctx is always
-// present (0% before the first turn) so there's an immediate signal
-// that the feature is live.
+// chip in drop-last-first order (the width-degradation loop drops
+// from the tail).
+//
+// Per-provider shape:
+//   - claude: [5h, wk, ctx] — windows from the usage cache (plugin or legacy),
+//     ctx from accumulated message.usage.
+//   - codex:  [pr, sc, ctx] — primary/secondary from account/rateLimits/updated.
+//     Codex's windows aren't always 5h+7d (plan type can shift the second
+//     bucket), so we label them primary/secondary to avoid misrepresenting.
+//
+// ctx is always emitted (0% before data lands) so users see the
+// feature is live. 5h/wk and pr/sc are only emitted when their
+// provider has populated data for this session.
 func (m model) providerChipSegments(now time.Time) []string {
 	var segs []string
+	if m.provider != nil && m.provider.ID() == "codex" {
+		if m.codexUsage.hasRateLimits {
+			p := m.codexUsage.primary
+			segs = append(segs, fmt.Sprintf("pr:%d%%(%s)",
+				p.usedPercent, formatTTL(p.resetsAt, now)))
+			s := m.codexUsage.secondary
+			segs = append(segs, fmt.Sprintf("sc:%d%%(%s)",
+				s.usedPercent, formatTTL(s.resetsAt, now)))
+		}
+		limit := m.codexUsage.modelContextWindow
+		if limit <= 0 {
+			limit = modelContextLimit(m.providerModel)
+		}
+		segs = append(segs, fmt.Sprintf("ctx:%d%%",
+			contextPercent(m.codexUsage.contextTokens, limit)))
+		return segs
+	}
 	if m.usageCache != nil {
 		fh := m.usageCache.FiveHour
 		segs = append(segs, fmt.Sprintf("5h:%d%%(%s)",

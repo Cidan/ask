@@ -112,6 +112,29 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		return m, nil
 
+	case codexUsageMsg:
+		if msg.proc != m.proc {
+			return m, nil
+		}
+		m.codexUsage.primary = msg.primary
+		m.codexUsage.secondary = msg.secondary
+		m.codexUsage.hasRateLimits = true
+		if m.streamCh != nil {
+			return m, nextStreamCmd(m.streamCh)
+		}
+		return m, nil
+
+	case codexContextMsg:
+		if msg.proc != m.proc {
+			return m, nil
+		}
+		m.codexUsage.contextTokens = msg.tokens
+		m.codexUsage.modelContextWindow = msg.window
+		if m.streamCh != nil {
+			return m, nextStreamCmd(m.streamCh)
+		}
+		return m, nil
+
 	case bgTaskStartedMsg:
 		if msg.proc != m.proc {
 			return m, nil

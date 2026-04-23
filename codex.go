@@ -13,6 +13,41 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+// codexUsage snapshots what codex has reported about plan rate limits
+// and thread token usage. Codex ships these numbers directly in the
+// JSON-RPC stream (account/rateLimits/updated, thread/tokenUsage/updated),
+// so unlike claude we don't need an out-of-band plugin to fetch them.
+type codexUsage struct {
+	primary            codexRateLimitWindow
+	secondary          codexRateLimitWindow
+	hasRateLimits      bool
+	contextTokens      int
+	modelContextWindow int
+}
+
+type codexRateLimitWindow struct {
+	usedPercent int
+	resetsAt    time.Time
+}
+
+// codexUsageMsg is emitted when codex sends account/rateLimits/updated.
+// primary and secondary are individually nullable on the wire —
+// parseCodexRateLimitWindow returns a zero-valued window for either.
+type codexUsageMsg struct {
+	primary   codexRateLimitWindow
+	secondary codexRateLimitWindow
+	proc      *providerProc
+}
+
+// codexContextMsg is emitted when codex sends thread/tokenUsage/updated.
+// window == 0 means codex didn't report modelContextWindow; the chip
+// falls back to modelContextLimit(m.providerModel) in that case.
+type codexContextMsg struct {
+	tokens int
+	window int
+	proc   *providerProc
+}
+
 // codexProvider implements the Provider interface for OpenAI's codex CLI
 // running in `codex app-server` mode. The app-server speaks JSON-RPC 2.0
 // over stdio (newline-delimited), much like claude's stream-json. Every
@@ -501,6 +536,27 @@ func codexEventToMsgs(ev map[string]any, proc *providerProc) []tea.Msg {
 			providerDoneMsg{res: res, proc: proc},
 			turnCompleteMsg{proc: proc},
 		}
+	case "account/rateLimits/updated":
+		params, _ := ev["params"].(map[string]any)
+		rl, _ := params["rateLimits"].(map[string]any)
+		if rl == nil {
+			return nil
+		}
+		return []tea.Msg{codexUsageMsg{
+			primary:   parseCodexRateLimitWindow(rl["primary"]),
+			secondary: parseCodexRateLimitWindow(rl["secondary"]),
+			proc:      proc,
+		}}
+	case "thread/tokenUsage/updated":
+		params, _ := ev["params"].(map[string]any)
+		tu, _ := params["tokenUsage"].(map[string]any)
+		if tu == nil {
+			return nil
+		}
+		total, _ := tu["total"].(map[string]any)
+		tokens := jsonInt(total["totalTokens"])
+		window := jsonInt(tu["modelContextWindow"])
+		return []tea.Msg{codexContextMsg{tokens: tokens, window: window, proc: proc}}
 	case "error":
 		params, _ := ev["params"].(map[string]any)
 		errObj, _ := params["error"].(map[string]any)
@@ -640,6 +696,23 @@ func codexItemStatus(item map[string]any) string {
 }
 
 // codexRequest builds a JSON-RPC 2.0 request frame.
+// parseCodexRateLimitWindow decodes codex's RateLimitWindow shape. Nil
+// or malformed entries produce a zero-valued window — the chip treats
+// zero-percent + zero-time as "no data for this slot" and hides it.
+func parseCodexRateLimitWindow(raw any) codexRateLimitWindow {
+	m, ok := raw.(map[string]any)
+	if !ok || m == nil {
+		return codexRateLimitWindow{}
+	}
+	pct := jsonInt(m["usedPercent"])
+	var reset time.Time
+	// resetsAt is an int64 unix seconds timestamp (optional on the wire).
+	if secs := jsonInt(m["resetsAt"]); secs > 0 {
+		reset = time.Unix(int64(secs), 0).UTC()
+	}
+	return codexRateLimitWindow{usedPercent: pct, resetsAt: reset}
+}
+
 func codexRequest(id uint64, method string, params any) map[string]any {
 	return map[string]any{
 		"jsonrpc": "2.0",
