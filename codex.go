@@ -137,6 +137,10 @@ func (codexProvider) LoadHistory(sessionID string, opts HistoryOpts) ([]historyE
 	return loadCodexHistory(sessionID, opts)
 }
 
+func (codexProvider) Materialize(workspace string, turns []NeutralTurn) (string, string, error) {
+	return writeCodexSyntheticSession(workspace, turns)
+}
+
 func (codexProvider) LoadSettings() ProviderSettings {
 	cfg, _ := loadConfig()
 	return ProviderSettings{

@@ -392,23 +392,39 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if msg.silent {
 			m.history = msg.entries
 		} else {
-			doneNote := fmt.Sprintf("✓ resumed session %s", short(m.sessionID))
-			if m.sessionID == "" && m.pendingTranslationSource != "" {
-				doneNote = fmt.Sprintf("✓ translated from %s — next turn spawns a fresh %s session",
-					m.pendingTranslationSource, m.provider.DisplayName())
-			}
 			m.history = append(msg.entries, historyEntry{
 				kind: histPrerendered,
-				text: outputStyle.Render(promptStyle.Render(doneNote)),
+				text: outputStyle.Render(promptStyle.Render(
+					fmt.Sprintf("✓ resumed session %s", short(m.sessionID)))),
 			})
-		}
-		if m.pendingTranslationSource != "" {
-			m.pendingPrelude = buildTranslationPrelude(m.pendingTranslationSource, msg.entries)
-			m.pendingTranslationSource = ""
 		}
 		m.lastContentFP = ""
 		m.layout()
 		m.viewport.GotoBottom()
+		return m, nil
+
+	case virtualSessionMaterializedMsg:
+		if msg.vsID != m.virtualSessionID {
+			return m, nil
+		}
+		m.busy = false
+		m.status = ""
+		if msg.err != nil {
+			m.appendHistory(outputStyle.Render(errStyle.Render(
+				"translate: " + msg.err.Error())))
+			if msg.entries != nil {
+				m.history = msg.entries
+			}
+			return m, nil
+		}
+		m.sessionID = msg.nativeSessionID
+		m.resumeCwd = msg.nativeCwd
+		if msg.entries != nil {
+			m.history = msg.entries
+		}
+		m.appendHistory(outputStyle.Render(promptStyle.Render(
+			fmt.Sprintf("✓ translated to %s session %s",
+				m.provider.DisplayName(), short(msg.nativeSessionID)))))
 		return m, nil
 
 	case sessionsLoadedMsg:
@@ -1044,8 +1060,6 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 	m.virtualSessionID = vs.ID
 	m.mode = modeInput
 	m.history = nil
-	m.pendingPrelude = ""
-	m.pendingTranslationSource = ""
 
 	providerID := m.provider.ID()
 	opts := HistoryOpts{
@@ -1061,14 +1075,12 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 		return m, loadHistoryCmd(m.provider, ref.SessionID, vs.ID, opts, false)
 	}
 
-	// No mapping for the current provider: render history from any
-	// provider that has one so the user sees the conversation, and
-	// leave m.sessionID empty so the next send spawns a fresh native
-	// session. The historyLoadedMsg handler builds a translation
-	// prelude from the loaded entries; sendToProvider prepends it to
-	// the next wire turn so the target provider's LLM sees prior
-	// context. The post-turn upsert wires the new native id onto
-	// the same VS id.
+	// No mapping for the current provider: translate. translateVSCmd
+	// pulls the source's turns, materializes a fresh native session
+	// on the current provider, and upserts the new native id onto
+	// the same VS. The virtualSessionMaterializedMsg handler then
+	// sets m.sessionID so the next user turn resumes the synthesized
+	// file natively — no prelude injection, no token waste.
 	m.sessionID = ""
 	m.resumeCwd = ""
 	sourceProv, sourceRef, ok := pickSourceProvider(vs)
@@ -1077,11 +1089,19 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 			fmt.Sprintf("resumed %s — no prior provider history to replay", short(vs.ID)))))
 		return m, nil
 	}
-	m.pendingTranslationSource = sourceProv.DisplayName()
+	m.busy = true
+	m.status = "translating session…"
 	m.appendHistory(outputStyle.Render(dimStyle.Render(
 		fmt.Sprintf("translating %s from %s → %s…",
 			short(vs.ID), sourceProv.DisplayName(), m.provider.DisplayName()))))
-	return m, loadHistoryCmd(sourceProv, sourceRef.SessionID, vs.ID, opts, false)
+	return m, translateVSCmd(translateVSReq{
+		target:          m.provider,
+		vsID:            vs.ID,
+		workspace:       m.cwd,
+		source:          sourceProv,
+		sourceSessionID: sourceRef.SessionID,
+		opts:            opts,
+	})
 }
 
 // pickSourceProvider returns a registered provider that has a native
@@ -1126,8 +1146,6 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		m.resumeCwd = ""
 		m.worktreeName = ""
 		m.virtualSessionID = ""
-		m.pendingPrelude = ""
-		m.pendingTranslationSource = ""
 		m.history = nil
 		m.appendHistory(outputStyle.Render(promptStyle.Render("✓ new session")))
 		return m, nil

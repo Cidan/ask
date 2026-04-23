@@ -166,14 +166,11 @@ func (m model) applyProviderSwitch(model string) (tea.Model, tea.Cmd) {
 		// Cross-provider swap: if the tab is inside a virtual session,
 		// route the new provider's resume context through the VS store.
 		// A native mapping → resume it on the new provider (UI reloads
-		// via loadHistoryCmd). No mapping → stash a prelude built from
-		// the current on-screen history so the new provider's LLM sees
-		// prior context on the next send. Without a VS we fall through
-		// to the legacy reset (sessionID cleared, no prelude).
+		// via loadHistoryCmd). No mapping → materialize a synthetic
+		// native session file on the new provider from the current
+		// m.history and resume from that.
 		m.sessionID = ""
 		m.resumeCwd = ""
-		m.pendingPrelude = ""
-		m.pendingTranslationSource = ""
 		if m.virtualSessionID != "" {
 			historyCmd = m.applyVSProviderSwap(oldProvName, newProv)
 		}
@@ -202,15 +199,15 @@ func (m model) applyProviderSwitch(model string) (tea.Model, tea.Cmd) {
 	return m, probe
 }
 
-// applyVSProviderSwap routes a cross-provider swap through the
-// virtual session store: when the new provider already has a native
-// mapping for this VS, sets sessionID/resumeCwd and returns a
-// loadHistoryCmd so the UI reflects the new provider's view.
-// Otherwise stashes a translation prelude derived from the current
-// m.history so the new provider's LLM sees prior context on the
-// first send. Returns nil when the store is unreachable or the VS
-// has vanished between tabs — caller treats that as a plain reset.
+// applyVSProviderSwap routes a cross-provider swap through the VS
+// store. When the new provider already has a native mapping, sets
+// sessionID/resumeCwd and returns loadHistoryCmd so the UI reflects
+// the new provider's own file. When no mapping exists, materializes
+// a synthetic native session file from the current m.history turns
+// and schedules the new provider to resume it. Returns nil when the
+// store is unreachable or the VS has vanished between tabs.
 func (m *model) applyVSProviderSwap(oldProvName string, newProv Provider) tea.Cmd {
+	_ = oldProvName
 	store, err := loadVirtualSessions()
 	if err != nil {
 		debugLog("applyVSProviderSwap load: %v", err)
@@ -231,10 +228,18 @@ func (m *model) applyVSProviderSwap(oldProvName string, newProv Provider) tea.Cm
 		}
 		return loadHistoryCmd(newProv, ref.SessionID, vs.ID, opts, false)
 	}
-	if prelude := buildTranslationPrelude(oldProvName, m.history); prelude != "" {
-		m.pendingPrelude = prelude
+	turns := neutralTurnsFromHistory(m.history)
+	if len(turns) == 0 {
+		return nil
 	}
-	return nil
+	m.busy = true
+	m.status = "translating session…"
+	return translateVSCmd(translateVSReq{
+		target:      newProv,
+		vsID:        vs.ID,
+		workspace:   m.cwd,
+		directTurns: turns,
+	})
 }
 
 func (m model) viewProviderSwitch() string {

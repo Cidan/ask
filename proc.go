@@ -128,18 +128,11 @@ func prepareProviderSessionAt(args ProviderSessionArgs, worktreeName, rootCwd st
 // readers.
 func (m model) sendToProvider(line string) (tea.Model, tea.Cmd) {
 	nAtt := len(m.pending)
-	debugLog("sendToProvider provider=%s line=%q attachments=%d procNil=%v busy=%v sessionID=%q preludeLen=%d",
-		m.provider.ID(), line, nAtt, m.proc == nil, m.busy, m.sessionID, len(m.pendingPrelude))
+	debugLog("sendToProvider provider=%s line=%q attachments=%d procNil=%v busy=%v sessionID=%q",
+		m.provider.ID(), line, nAtt, m.proc == nil, m.busy, m.sessionID)
 	m.appendUser(userBarText(line, nAtt))
-	wireText := line
-	if m.pendingPrelude != "" {
-		// Prepend once; subsequent turns have no prelude since the
-		// provider now owns the conversation state natively.
-		wireText = m.pendingPrelude + "\n\n" + line
-		m.pendingPrelude = ""
-	}
 	turn := providerQueuedTurn{
-		text:        wireText,
+		text:        line,
 		attachments: append([]pendingAttachment(nil), m.pending...),
 	}
 	wasIdle := !m.busy
@@ -168,7 +161,7 @@ func (m model) sendToProvider(line string) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	if err := m.provider.Send(m.proc, wireText, m.pending); err != nil {
+	if err := m.provider.Send(m.proc, line, m.pending); err != nil {
 		debugLog("provider send err: %v", err)
 		m.appendHistory(outputStyle.Render(errStyle.Render("write to " + m.provider.DisplayName() + " failed: " + err.Error())))
 		m.killProc()

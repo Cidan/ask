@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -124,9 +125,6 @@ func loadClaudeHistory(sessionID string, opts HistoryOpts) ([]historyEntry, erro
 				continue
 			}
 			if s, ok := msg["content"].(string); ok && strings.TrimSpace(s) != "" {
-				if isTranslationPrelude(s) {
-					continue
-				}
 				entries = append(entries, historyEntry{
 					kind: histUser,
 					text: s,
@@ -301,6 +299,86 @@ func loadSessionsCmd(cwd string) tea.Cmd {
 			})
 		}
 		return sessionsLoadedMsg{sessions: sessions}
+	}
+}
+
+// writeClaudeSyntheticSession writes a fresh jsonl session file
+// under ~/.claude/projects/<encoded-workspace>/<uuid>.jsonl whose
+// contents are exactly the user/assistant turns we were handed.
+// Claude's `--resume <uuid>` reads this file on the next startup;
+// the schema matches what the CLI writes natively (parentUuid
+// chain, sessionId, cwd, version, userType="external",
+// entrypoint="sdk-cli"). Skips noisy metadata (hooks, queue ops,
+// stream events, tool blocks) — we emit only conversation turns so
+// the resumed thread feels like the source conversation without
+// leaking provider-specific baggage.
+func writeClaudeSyntheticSession(workspace string, turns []NeutralTurn) (string, string, error) {
+	if workspace == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", "", err
+		}
+		workspace = cwd
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", err
+	}
+	enc := strings.ReplaceAll(workspace, "/", "-")
+	enc = strings.ReplaceAll(enc, ".", "-")
+	dir := filepath.Join(home, ".claude", "projects", enc)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", "", err
+	}
+	sessionID := newUUIDv4()
+	path := filepath.Join(dir, sessionID+".jsonl")
+	f, err := os.Create(path)
+	if err != nil {
+		return "", "", err
+	}
+	defer f.Close()
+	base := time.Now().UTC()
+	var parentUUID any
+	for i, t := range turns {
+		uid := newUUIDv4()
+		ts := base.Add(time.Duration(i) * time.Millisecond).Format(time.RFC3339Nano)
+		rec := map[string]any{
+			"parentUuid":  parentUUID,
+			"isSidechain": false,
+			"type":        t.Role,
+			"uuid":        uid,
+			"timestamp":   ts,
+			"sessionId":   sessionID,
+			"cwd":         workspace,
+			"version":     "2.1.114",
+			"userType":    "external",
+			"entrypoint":  "sdk-cli",
+			"message":     claudeTurnMessage(t),
+		}
+		if err := writeJSONLine(f, rec); err != nil {
+			return "", "", err
+		}
+		parentUUID = uid
+	}
+	return sessionID, workspace, nil
+}
+
+// claudeTurnMessage builds the {role, content} message payload
+// claude persists per turn. User content is a bare string; assistant
+// content is a one-element `[{type:"text", text:"…"}]` list —
+// matching what the CLI emits natively on fresh turns.
+func claudeTurnMessage(t NeutralTurn) map[string]any {
+	switch t.Role {
+	case "assistant":
+		return map[string]any{
+			"role":    "assistant",
+			"content": []any{map[string]any{"type": "text", "text": t.Text}},
+		}
+	default:
+		return map[string]any{
+			"role":    "user",
+			"content": t.Text,
+		}
 	}
 }
 

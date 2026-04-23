@@ -80,6 +80,17 @@ type Provider interface {
 
 	// SaveSettings persists the provider's UI settings to disk.
 	SaveSettings(s ProviderSettings) error
+
+	// Materialize writes a fresh provider-native session file seeded
+	// with `turns` (a provider-neutral user/assistant transcript) and
+	// returns the new session id plus the cwd the provider resolves
+	// sessions under. Used by virtual-session translation: when the
+	// current tab's provider has no native mapping for a VS, the
+	// source provider's turns are distilled to []NeutralTurn and
+	// handed here so --resume / thread/resume can continue from the
+	// prior conversation natively, without injecting a prelude into
+	// the wire payload.
+	Materialize(workspace string, turns []NeutralTurn) (sessionID, cwd string, err error)
 }
 
 // ProviderSettings is the per-provider slice of askConfig the UI

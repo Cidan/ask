@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Codex session storage lives at:
@@ -247,7 +249,7 @@ func loadCodexHistory(sessionID string, opts HistoryOpts) ([]historyEntry, error
 			}
 			switch item.Role {
 			case "user":
-				if isCodexEnvironmentText(txt) || isTranslationPrelude(txt) {
+				if isCodexEnvironmentText(txt) {
 					continue
 				}
 				entries = append(entries, historyEntry{kind: histUser, text: txt})
@@ -330,6 +332,90 @@ func codexRolloutOutputSummary(payload []byte) (string, bool) {
 		return "", false
 	}
 	return rec.Output, rec.Status != "" && rec.Status != "completed"
+}
+
+// writeCodexSyntheticSession writes a fresh rollout file under
+// ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<threadid>.jsonl with
+// just the user/assistant turns we were handed. `thread/resume`
+// reads this file natively; we omit base_instructions, developer
+// preambles (permissions, AGENTS.md, environment_context,
+// collaboration_mode) and prior turn_context records — codex
+// re-injects those on resume from its own current config. The
+// returned thread id pairs with our path via findCodexRollout's
+// suffix match.
+func writeCodexSyntheticSession(workspace string, turns []NeutralTurn) (string, string, error) {
+	if workspace == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", "", err
+		}
+		workspace = cwd
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", err
+	}
+	now := time.Now().UTC()
+	dir := filepath.Join(home, ".codex", "sessions",
+		now.Format("2006"), now.Format("01"), now.Format("02"))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", "", err
+	}
+	threadID := newUUIDv4()
+	path := filepath.Join(dir,
+		fmt.Sprintf("rollout-%s-%s.jsonl", now.Format("2006-01-02T15-04-05"), threadID))
+	f, err := os.Create(path)
+	if err != nil {
+		return "", "", err
+	}
+	defer f.Close()
+	baseTS := now.Format(time.RFC3339Nano)
+	meta := map[string]any{
+		"timestamp": baseTS,
+		"type":      "session_meta",
+		"payload": map[string]any{
+			"id":          threadID,
+			"timestamp":   baseTS,
+			"cwd":         workspace,
+			"originator":  "ask",
+			"cli_version": "ask",
+			"source":      "cli",
+		},
+	}
+	if err := writeJSONLine(f, meta); err != nil {
+		return "", "", err
+	}
+	for i, t := range turns {
+		ts := now.Add(time.Duration(i) * time.Millisecond).Format(time.RFC3339Nano)
+		textType := "input_text"
+		if t.Role == "assistant" {
+			textType = "output_text"
+		}
+		item := map[string]any{
+			"timestamp": ts,
+			"type":      "response_item",
+			"payload": map[string]any{
+				"type":    "message",
+				"role":    t.Role,
+				"content": []any{map[string]any{"type": textType, "text": t.Text}},
+			},
+		}
+		if err := writeJSONLine(f, item); err != nil {
+			return "", "", err
+		}
+	}
+	return threadID, workspace, nil
+}
+
+// writeJSONLine marshals v and writes it as one newline-terminated
+// JSON record to w. Used by the synthetic session writers.
+func writeJSONLine(w io.Writer, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(b, '\n'))
+	return err
 }
 
 // findCodexRollout locates the jsonl for a given thread id. Codex

@@ -254,17 +254,6 @@ type model struct {
 	// ids under one id across providers. Set on /resume or first
 	// providerDoneMsg; cleared by /new and /clear.
 	virtualSessionID string
-
-	// pendingPrelude is a transcript prepended to the next user turn
-	// on wire (never on the UI bar) so the target provider's LLM sees
-	// prior conversation when no native mapping exists yet. Consumed
-	// once on first send; also cleared by /new, /clear, re-resume.
-	pendingPrelude string
-
-	// pendingTranslationSource carries the source provider's display
-	// name during a translation load; the historyLoadedMsg handler
-	// reads it to build pendingPrelude from the loaded entries.
-	pendingTranslationSource string
 	busy      bool
 	width     int
 	height    int

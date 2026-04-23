@@ -35,6 +35,7 @@ type fakeProvider struct {
 	loadHistoryFn  func(string, HistoryOpts) ([]historyEntry, error)
 	loadSettingsFn func() ProviderSettings
 	saveSettingsFn func(ProviderSettings) error
+	materializeFn  func(string, []NeutralTurn) (string, string, error)
 
 	settings ProviderSettings
 
@@ -143,6 +144,13 @@ func (f *fakeProvider) SaveSettings(s ProviderSettings) error {
 	return nil
 }
 
+func (f *fakeProvider) Materialize(workspace string, turns []NeutralTurn) (string, string, error) {
+	if f.materializeFn != nil {
+		return f.materializeFn(workspace, turns)
+	}
+	return "fake-" + f.id + "-" + newVirtualSessionID(), workspace, nil
+}
+
 // bufferCloser makes a bytes.Buffer satisfy io.WriteCloser; providerProc.stdin
 // is typed that way and is normally a pipe/file.
 type bufferCloser struct {
@@ -238,6 +246,32 @@ func drainCh(ch <-chan tea.Msg) []tea.Msg {
 		out = append(out, msg)
 	}
 	return out
+}
+
+// drainBatch executes cmd (expected to be a tea.BatchMsg-producing
+// batch or a plain cmd) and returns the flattened tea.Msg list that
+// the batched commands produced. Used by tests that fire compound
+// commands (e.g. probe + loadHistory + translate) and need to pick
+// specific messages out.
+func drainBatch(t *testing.T, cmd tea.Cmd) []tea.Msg {
+	t.Helper()
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	switch m := msg.(type) {
+	case tea.BatchMsg:
+		var out []tea.Msg
+		for _, sub := range m {
+			out = append(out, drainBatch(t, sub)...)
+		}
+		return out
+	default:
+		if msg == nil {
+			return nil
+		}
+		return []tea.Msg{msg}
+	}
 }
 
 func writeFile(t *testing.T, path, content string) {

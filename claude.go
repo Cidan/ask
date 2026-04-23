@@ -254,6 +254,10 @@ func (claudeProvider) LoadHistory(sessionID string, opts HistoryOpts) ([]history
 	return loadClaudeHistory(sessionID, opts)
 }
 
+func (claudeProvider) Materialize(workspace string, turns []NeutralTurn) (string, string, error) {
+	return writeClaudeSyntheticSession(workspace, turns)
+}
+
 func (claudeProvider) ProbeInit(args ProviderSessionArgs) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

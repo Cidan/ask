@@ -358,14 +358,17 @@ func TestResumeVirtualSession_NoMappingForCurrentProviderTranslatesFromSource(t 
 	claude := newFakeProvider()
 	claude.id = "claude"
 	claude.loadHistoryFn = func(id string, _ HistoryOpts) ([]historyEntry, error) {
-		return []historyEntry{{kind: histUser, text: "from-claude:" + id}}, nil
+		return []historyEntry{
+			{kind: histUser, text: "from-claude:" + id},
+			{kind: histResponse, text: "assistant reply"},
+		}, nil
 	}
 	codex := newFakeProvider()
 	codex.id = "codex"
-	var codexLoaded bool
-	codex.loadHistoryFn = func(id string, _ HistoryOpts) ([]historyEntry, error) {
-		codexLoaded = true
-		return nil, nil
+	var gotTurns []NeutralTurn
+	codex.materializeFn = func(ws string, turns []NeutralTurn) (string, string, error) {
+		gotTurns = append([]NeutralTurn(nil), turns...)
+		return "codex-synth", ws, nil
 	}
 	withRegisteredProviders(t, claude, codex)
 
@@ -383,52 +386,46 @@ func TestResumeVirtualSession_NoMappingForCurrentProviderTranslatesFromSource(t 
 	if mm.virtualSessionID != vsID {
 		t.Errorf("virtualSessionID not set: %q", mm.virtualSessionID)
 	}
-	if mm.sessionID != "" {
-		t.Errorf("sessionID=%q must stay empty so next turn spawns fresh codex session", mm.sessionID)
-	}
-	if mm.resumeCwd != "" {
-		t.Errorf("resumeCwd=%q must stay empty", mm.resumeCwd)
+	if !mm.busy {
+		t.Error("busy must be true while translation runs")
 	}
 	if cmd == nil {
-		t.Fatal("expected history load command, got nil")
+		t.Fatal("expected translate command, got nil")
 	}
-	msg := cmd()
-	hl, ok := msg.(historyLoadedMsg)
+	mat, ok := cmd().(virtualSessionMaterializedMsg)
 	if !ok {
-		t.Fatalf("cmd returned %T, want historyLoadedMsg", msg)
+		t.Fatalf("cmd returned %T, want virtualSessionMaterializedMsg", cmd())
 	}
-	// Source should be claude (the provider that has a native id on
-	// this VS), not codex — translation reads from the source store.
-	if codexLoaded {
-		t.Error("codex.LoadHistory must NOT be invoked when codex has no mapping — source is the provider that has the native id")
+	if mat.err != nil {
+		t.Fatalf("translate err: %v", mat.err)
 	}
-	if hl.sessionID != "c-sess" {
-		t.Errorf("source loaded with id=%q want c-sess", hl.sessionID)
+	if mat.nativeSessionID != "codex-synth" {
+		t.Errorf("nativeSessionID=%q want codex-synth", mat.nativeSessionID)
 	}
-	if len(hl.entries) != 1 || hl.entries[0].text != "from-claude:c-sess" {
-		t.Errorf("translated entries wrong: %+v", hl.entries)
+	// Source (claude) was asked for its history; turns passed to codex are the neutral form.
+	if len(gotTurns) != 2 ||
+		gotTurns[0] != (NeutralTurn{Role: "user", Text: "from-claude:c-sess"}) ||
+		gotTurns[1] != (NeutralTurn{Role: "assistant", Text: "assistant reply"}) {
+		t.Errorf("target.Materialize received wrong turns: %+v", gotTurns)
 	}
-	if hl.virtualSessionID != vsID {
-		t.Errorf("historyLoadedMsg not tagged with VS id: %+v", hl)
+	// Run the msg through Update: sessionID should now point at the synthesized codex id.
+	mm2, _ := runUpdate(t, mm, mat)
+	if mm2.sessionID != "codex-synth" {
+		t.Errorf("m.sessionID=%q want codex-synth after translate", mm2.sessionID)
 	}
-
-	// Feed through Update: the gate must match on VS id (not on the
-	// source's native sessionID) so the translated history actually
-	// renders. If the gate dropped the message we'd see an empty
-	// m.history and the regression would be invisible to a test that
-	// only inspects cmd().
-	mm2, _ := runUpdate(t, mm, hl)
+	if mm2.busy {
+		t.Error("busy must clear after translate completes")
+	}
 	if len(mm2.history) == 0 {
-		t.Fatal("translated history must render after Update processes historyLoadedMsg")
+		t.Error("history entries from source should be surfaced on the UI")
 	}
-	var found bool
-	for _, e := range mm2.history {
-		if strings.Contains(e.text, "from-claude:c-sess") {
-			found = true
-		}
+	// VS store now has a codex mapping too.
+	got, err := loadVirtualSessions()
+	if err != nil {
+		t.Fatalf("load: %v", err)
 	}
-	if !found {
-		t.Errorf("translated history entries missing; got %+v", mm2.history)
+	if got.Sessions[0].ProviderSessions["codex"].SessionID != "codex-synth" {
+		t.Errorf("VS codex mapping not upserted: %+v", got.Sessions[0].ProviderSessions)
 	}
 }
 
@@ -554,173 +551,159 @@ func TestListForWorkspace_FiltersAndSorts(t *testing.T) {
 	}
 }
 
-// ---- US-007: prelude injection ----
+// ---- US-013: claudeProvider.Materialize round-trip ----
 
-func TestBuildTranslationPrelude_IncludesUserAndAssistantTurns(t *testing.T) {
-	entries := []historyEntry{
-		{kind: histUser, text: "hi"},
-		{kind: histResponse, text: "hello"},
-		{kind: histPrerendered, text: "[tool block — should be skipped]"},
-		{kind: histUser, text: "more"},
-	}
-	got := buildTranslationPrelude("Claude", entries)
-	if got == "" {
-		t.Fatal("expected non-empty prelude")
-	}
-	if !strings.HasPrefix(strings.TrimLeft(got, " \t\n"), preludeSentinel) {
-		t.Errorf("prelude missing sentinel: %q", got)
-	}
-	if !strings.Contains(got, "Claude") {
-		t.Errorf("prelude missing source provider name: %q", got)
-	}
-	for _, needle := range []string{"## User", "## Assistant", "hi", "hello", "more"} {
-		if !strings.Contains(got, needle) {
-			t.Errorf("prelude missing %q: %q", needle, got)
-		}
-	}
-	if strings.Contains(got, "[tool block") {
-		t.Errorf("prerendered tool block should not leak into prelude: %q", got)
-	}
-	if !strings.Contains(got, preludeSentinelEnd) {
-		t.Errorf("prelude missing end sentinel: %q", got)
-	}
-}
+func TestClaudeMaterialize_RoundTripsViaLoadClaudeHistory(t *testing.T) {
+	home := isolateHome(t)
+	t.Chdir(t.TempDir())
+	cwd, _ := os.Getwd()
 
-func TestBuildTranslationPrelude_EmptyWhenNoTurns(t *testing.T) {
-	if got := buildTranslationPrelude("Claude", nil); got != "" {
-		t.Errorf("empty entries should return empty prelude, got %q", got)
+	turns := []NeutralTurn{
+		{Role: "user", Text: "first user"},
+		{Role: "assistant", Text: "first answer"},
+		{Role: "user", Text: "second user"},
+		{Role: "assistant", Text: "second answer"},
 	}
-	onlyTool := []historyEntry{{kind: histPrerendered, text: "just a tool block"}}
-	if got := buildTranslationPrelude("Claude", onlyTool); got != "" {
-		t.Errorf("tool-only history should return empty prelude, got %q", got)
+	sid, nativeCwd, err := writeClaudeSyntheticSession(cwd, turns)
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
 	}
-}
-
-func TestIsTranslationPrelude_MatchesSentinelPrefix(t *testing.T) {
-	if !isTranslationPrelude(preludeSentinel + "\nbody") {
-		t.Error("should match bare sentinel prefix")
+	if sid == "" {
+		t.Fatal("expected non-empty session id")
 	}
-	if !isTranslationPrelude("\n\n" + preludeSentinel + " foo") {
-		t.Error("should match after whitespace")
+	if nativeCwd != cwd {
+		t.Errorf("nativeCwd=%q want %q", nativeCwd, cwd)
 	}
-	if isTranslationPrelude("no sentinel here") {
-		t.Error("unrelated text should not match")
+	// File landed under HOME/.claude/projects/<enc>.
+	enc := strings.ReplaceAll(cwd, "/", "-")
+	enc = strings.ReplaceAll(enc, ".", "-")
+	fp := filepath.Join(home, ".claude", "projects", enc, sid+".jsonl")
+	if _, err := os.Stat(fp); err != nil {
+		t.Fatalf("synthetic file missing at %s: %v", fp, err)
 	}
-}
-
-func TestLoadClaudeHistory_SkipsTranslationPrelude(t *testing.T) {
-	lines := []string{
-		`{"type":"user","message":{"role":"user","content":"<<ASK_TRANSLATION_PRELUDE>>\nprior turns"}}`,
-		`{"type":"user","message":{"role":"user","content":"real follow up"}}`,
-		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}`,
-	}
-	_, id := setupHistoryFixture(t, "pre", strings.Join(lines, "\n"))
-	entries, err := loadClaudeHistory(id, HistoryOpts{})
+	// loadClaudeHistory sees the same 4 turns in order.
+	got, err := loadClaudeHistory(sid, HistoryOpts{})
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	// Should see only the real follow-up user turn + assistant.
-	var userEntries []string
-	for _, e := range entries {
-		if e.kind == histUser {
-			userEntries = append(userEntries, e.text)
+	if len(got) != 4 {
+		t.Fatalf("want 4 entries, got %d: %+v", len(got), got)
+	}
+	want := []struct {
+		kind historyKind
+		text string
+	}{
+		{histUser, "first user"},
+		{histResponse, "first answer"},
+		{histUser, "second user"},
+		{histResponse, "second answer"},
+	}
+	for i, w := range want {
+		if got[i].kind != w.kind || got[i].text != w.text {
+			t.Errorf("entry[%d] = {%v, %q}, want {%v, %q}", i, got[i].kind, got[i].text, w.kind, w.text)
 		}
 	}
-	if len(userEntries) != 1 || userEntries[0] != "real follow up" {
-		t.Errorf("prelude user entry not skipped; got user entries: %+v", userEntries)
-	}
 }
 
-func TestSendToProvider_PrependsPreludeAndClears(t *testing.T) {
-	fp := newFakeProvider()
-	m := newTestModel(t, fp)
-	m.proc = &providerProc{}
-	m.pendingPrelude = "<<ASK_TRANSLATION_PRELUDE>>\nprior body\n<<END_ASK_TRANSLATION_PRELUDE>>\n"
-	m2Tea, _ := m.sendToProvider("hello new provider")
-	m2 := m2Tea.(model)
-	if len(fp.sentTexts) != 1 {
-		t.Fatalf("want 1 send, got %d", len(fp.sentTexts))
-	}
-	if !strings.Contains(fp.sentTexts[0], "prior body") {
-		t.Errorf("prelude not on wire: %q", fp.sentTexts[0])
-	}
-	if !strings.HasSuffix(fp.sentTexts[0], "hello new provider") {
-		t.Errorf("user line not on wire tail: %q", fp.sentTexts[0])
-	}
-	if m2.pendingPrelude != "" {
-		t.Errorf("prelude should be cleared after send: %q", m2.pendingPrelude)
-	}
-	// Subsequent send must NOT carry the prelude.
-	m3Tea, _ := m2.sendToProvider("second turn")
-	_ = m3Tea
-	if len(fp.sentTexts) != 2 {
-		t.Fatalf("want 2 sends, got %d", len(fp.sentTexts))
-	}
-	if strings.Contains(fp.sentTexts[1], "prior body") {
-		t.Errorf("prelude leaked into subsequent send: %q", fp.sentTexts[1])
-	}
-}
+// ---- US-014: codexProvider.Materialize round-trip ----
 
-func TestResumeVirtualSession_TranslationPopulatesPrelude(t *testing.T) {
+func TestCodexMaterialize_RoundTripsViaLoadCodexHistory(t *testing.T) {
 	isolateHome(t)
-	claude := newFakeProvider()
-	claude.id = "claude"
-	claude.displayName = "Claude"
-	claude.loadHistoryFn = func(_ string, _ HistoryOpts) ([]historyEntry, error) {
-		return []historyEntry{
-			{kind: histUser, text: "earlier user"},
-			{kind: histResponse, text: "earlier assistant"},
-		}, nil
+	cwd := t.TempDir()
+	turns := []NeutralTurn{
+		{Role: "user", Text: "hi codex"},
+		{Role: "assistant", Text: "hello human"},
 	}
-	codex := newFakeProvider()
-	codex.id = "codex"
-	codex.displayName = "Codex"
-	withRegisteredProviders(t, claude, codex)
-
-	store := &virtualSessionStore{Version: 1}
-	vsID := upsertVirtualSession(store, "", "/ws", "claude", "c-id", "/ws", "hi", time.Now().UTC())
-	if err := saveVirtualSessions(store); err != nil {
-		t.Fatalf("save: %v", err)
+	threadID, nativeCwd, err := writeCodexSyntheticSession(cwd, turns)
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
 	}
-
-	m := newTestModel(t, codex)
-	m.cwd = "/ws"
-	newM, cmd := m.resumeVirtualSession(sessionEntry{id: vsID, virtualSessionID: vsID})
-	mm := newM.(model)
-	if mm.pendingTranslationSource != "Claude" {
-		t.Errorf("pendingTranslationSource=%q want Claude", mm.pendingTranslationSource)
+	if threadID == "" {
+		t.Fatal("expected non-empty thread id")
 	}
-	if cmd == nil {
-		t.Fatal("expected history load cmd")
+	if nativeCwd != cwd {
+		t.Errorf("nativeCwd=%q want %q", nativeCwd, cwd)
 	}
-	hl := cmd().(historyLoadedMsg)
-	mm2, _ := runUpdate(t, mm, hl)
-	if mm2.pendingPrelude == "" {
-		t.Fatal("pendingPrelude must be set after historyLoadedMsg for translation")
+	got, err := loadCodexHistory(threadID, HistoryOpts{})
+	if err != nil {
+		t.Fatalf("load: %v", err)
 	}
-	if !strings.Contains(mm2.pendingPrelude, "Claude") {
-		t.Errorf("prelude missing source name: %q", mm2.pendingPrelude)
+	if len(got) != 2 {
+		t.Fatalf("want 2 entries, got %d: %+v", len(got), got)
 	}
-	if !strings.Contains(mm2.pendingPrelude, "earlier user") {
-		t.Errorf("prelude missing transcript content: %q", mm2.pendingPrelude)
+	if got[0].kind != histUser || got[0].text != "hi codex" {
+		t.Errorf("entry[0] = {%v, %q}", got[0].kind, got[0].text)
 	}
-	if mm2.pendingTranslationSource != "" {
-		t.Errorf("pendingTranslationSource should be cleared after prelude built: %q", mm2.pendingTranslationSource)
+	if got[1].kind != histResponse || got[1].text != "hello human" {
+		t.Errorf("entry[1] = {%v, %q}", got[1].kind, got[1].text)
 	}
 }
 
-func TestHandleCommand_NewClearsPrelude(t *testing.T) {
-	m := newTestModel(t, newFakeProvider())
-	m.virtualSessionID = "vs-x"
-	m.pendingPrelude = "stale"
-	m.pendingTranslationSource = "Stale"
-	newM, _ := m.handleCommand("/new")
-	mm := newM.(model)
-	if mm.virtualSessionID != "" {
-		t.Errorf("virtualSessionID not cleared by /new")
+func TestCodexMaterialize_OmitsBaseInstructionsAndDeveloperPreambles(t *testing.T) {
+	home := isolateHome(t)
+	cwd := t.TempDir()
+	turns := []NeutralTurn{
+		{Role: "user", Text: "hi"},
+		{Role: "assistant", Text: "hello"},
 	}
-	if mm.pendingPrelude != "" || mm.pendingTranslationSource != "" {
-		t.Errorf("prelude state not cleared: prelude=%q src=%q", mm.pendingPrelude, mm.pendingTranslationSource)
+	threadID, _, err := writeCodexSyntheticSession(cwd, turns)
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	// Locate the rollout and inspect the raw bytes.
+	var found string
+	_ = filepath.Walk(filepath.Join(home, ".codex", "sessions"), func(p string, info os.FileInfo, werr error) error {
+		if werr != nil || info.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(p, threadID+".jsonl") {
+			found = p
+		}
+		return nil
+	})
+	if found == "" {
+		t.Fatal("rollout file not written")
+	}
+	data, err := os.ReadFile(found)
+	if err != nil {
+		t.Fatalf("read rollout: %v", err)
+	}
+	for _, forbidden := range []string{"base_instructions", "permissions instructions", "collaboration_mode", "environment_context", "AGENTS.md"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Errorf("synthetic rollout should not contain %q; file:\n%s", forbidden, string(data))
+		}
+	}
+	// session_meta + 2 response_items expected; every line is a single JSON object
+	// so splitting by newline gives us a predictable count.
+	lines := strings.Count(strings.TrimSpace(string(data)), "\n") + 1
+	if lines != 3 {
+		t.Errorf("want 3 lines (meta + 2 turns), got %d: %s", lines, string(data))
+	}
+}
+
+// ---- US-011: NeutralTurn extraction ----
+
+func TestNeutralTurnsFromHistory_MapsKindsAndSkipsTools(t *testing.T) {
+	history := []historyEntry{
+		{kind: histUser, text: "hi"},
+		{kind: histPrerendered, text: "[tool call — skipped]"},
+		{kind: histResponse, text: "hello"},
+		{kind: histPrerendered, text: "[tool result — skipped]"},
+		{kind: histUser, text: "more"},
+	}
+	got := neutralTurnsFromHistory(history)
+	if len(got) != 3 {
+		t.Fatalf("want 3 turns, got %d: %+v", len(got), got)
+	}
+	want := []NeutralTurn{
+		{Role: "user", Text: "hi"},
+		{Role: "assistant", Text: "hello"},
+		{Role: "user", Text: "more"},
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("turn[%d] = %+v, want %+v", i, got[i], w)
+		}
 	}
 }
 
@@ -763,15 +746,12 @@ func TestApplyProviderSwitch_CrossProviderWithMappingLoadsHistory(t *testing.T) 
 	if mm.resumeCwd != "/ws-B" {
 		t.Errorf("resumeCwd=%q want /ws-B", mm.resumeCwd)
 	}
-	if mm.pendingPrelude != "" {
-		t.Errorf("pendingPrelude should be empty when mapping exists, got %q", mm.pendingPrelude)
-	}
 	if cmd == nil {
 		t.Fatal("expected batched cmd (probe + loadHistory)")
 	}
 }
 
-func TestApplyProviderSwitch_CrossProviderWithoutMappingPopulatesPrelude(t *testing.T) {
+func TestApplyProviderSwitch_CrossProviderWithoutMappingMaterializes(t *testing.T) {
 	isolateHome(t)
 	pA := newFakeProvider()
 	pA.id = "fakeA"
@@ -779,9 +759,15 @@ func TestApplyProviderSwitch_CrossProviderWithoutMappingPopulatesPrelude(t *test
 	pB := newFakeProvider()
 	pB.id = "fakeB"
 	pB.displayName = "Fake B"
+	// Record what turns the target sees.
+	var gotTurns []NeutralTurn
+	pB.materializeFn = func(workspace string, turns []NeutralTurn) (string, string, error) {
+		gotTurns = append([]NeutralTurn(nil), turns...)
+		return "synth-B", workspace, nil
+	}
 	withRegisteredProviders(t, pA, pB)
 
-	// VS only has fakeA mapping; fakeB is the swap target.
+	// VS has fakeA only.
 	store := &virtualSessionStore{Version: 1}
 	vsID := upsertVirtualSession(store, "", "/ws", "fakeA", "nat-A", "/ws", "hi", time.Now().UTC())
 	if err := saveVirtualSessions(store); err != nil {
@@ -796,26 +782,49 @@ func TestApplyProviderSwitch_CrossProviderWithoutMappingPopulatesPrelude(t *test
 		{kind: histResponse, text: "prior assistant"},
 	}
 	m.providerSwitchProvIdx = 1
-	newM, _ := m.applyProviderSwitch("")
+	newM, cmd := m.applyProviderSwitch("")
 	mm := newM.(model)
-	if mm.sessionID != "" {
-		t.Errorf("sessionID=%q want empty (no mapping)", mm.sessionID)
-	}
-	if mm.pendingPrelude == "" {
-		t.Fatal("pendingPrelude must be populated on swap without mapping")
-	}
-	if !strings.Contains(mm.pendingPrelude, "Fake A") {
-		t.Errorf("prelude should cite source Fake A: %q", mm.pendingPrelude)
-	}
-	if !strings.Contains(mm.pendingPrelude, "prior user") {
-		t.Errorf("prelude missing prior turn: %q", mm.pendingPrelude)
+	if !mm.busy {
+		t.Error("busy should be true while translation runs")
 	}
 	if mm.virtualSessionID != vsID {
 		t.Errorf("VS id lost on swap: %q", mm.virtualSessionID)
 	}
+	if cmd == nil {
+		t.Fatal("expected batched cmd")
+	}
+	// Drain the batch to find the translate cmd's message.
+	msgs := drainBatch(t, cmd)
+	var matMsg *virtualSessionMaterializedMsg
+	for _, msg := range msgs {
+		if m, ok := msg.(virtualSessionMaterializedMsg); ok {
+			matMsg = &m
+		}
+	}
+	if matMsg == nil {
+		t.Fatalf("expected virtualSessionMaterializedMsg; got %T messages", msgs)
+	}
+	if matMsg.err != nil {
+		t.Fatalf("materialize err: %v", matMsg.err)
+	}
+	if matMsg.nativeSessionID != "synth-B" {
+		t.Errorf("nativeSessionID=%q want synth-B", matMsg.nativeSessionID)
+	}
+	// The target saw the two prior turns.
+	if len(gotTurns) != 2 || gotTurns[0].Text != "prior user" || gotTurns[1].Text != "prior assistant" {
+		t.Errorf("target.Materialize received wrong turns: %+v", gotTurns)
+	}
+	// Feed the msg back so state lands.
+	mm2, _ := runUpdate(t, mm, *matMsg)
+	if mm2.sessionID != "synth-B" {
+		t.Errorf("sessionID not set post-materialize: %q", mm2.sessionID)
+	}
+	if mm2.busy {
+		t.Error("busy should clear after materialize completes")
+	}
 }
 
-func TestApplyProviderSwitch_SameProviderDoesNotTouchPreludeOrSession(t *testing.T) {
+func TestApplyProviderSwitch_SameProviderDoesNotTouchSession(t *testing.T) {
 	isolateHome(t)
 	p := newFakeProvider()
 	p.id = "only"
@@ -824,15 +833,11 @@ func TestApplyProviderSwitch_SameProviderDoesNotTouchPreludeOrSession(t *testing
 	m.virtualSessionID = "vs-keep"
 	m.sessionID = "keep-session"
 	m.resumeCwd = "/keep"
-	m.pendingPrelude = "stash"
 	m.providerSwitchProvIdx = 0
 	newM, _ := m.applyProviderSwitch("new-model")
 	mm := newM.(model)
 	if mm.sessionID != "keep-session" {
 		t.Errorf("same-provider swap dropped sessionID: %q", mm.sessionID)
-	}
-	if mm.pendingPrelude != "stash" {
-		t.Errorf("same-provider swap touched pendingPrelude: %q", mm.pendingPrelude)
 	}
 	if mm.virtualSessionID != "vs-keep" {
 		t.Errorf("VS id dropped: %q", mm.virtualSessionID)

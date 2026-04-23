@@ -9,9 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"syscall"
 	"time"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // virtualSessionStoreVersion is the on-disk schema version for
@@ -148,6 +149,22 @@ func newVirtualSessionID() string {
 	return "vs-" + hex.EncodeToString(b[:])
 }
 
+// newUUIDv4 returns a fresh RFC-4122 v4 UUID string ("8-4-4-4-12" hex
+// form). Used when synthesising native session files whose ids must
+// match each provider's UUID-shaped expectations (claude's
+// session-file name, codex's thread id).
+func newUUIDv4() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Fall back on a time-seeded pseudo-uuid so we never panic.
+		ns := time.Now().UnixNano()
+		return fmt.Sprintf("00000000-0000-4000-8000-%012x", ns&0xFFFFFFFFFFFF)
+	}
+	b[6] = (b[6] & 0x0F) | 0x40 // version 4
+	b[8] = (b[8] & 0x3F) | 0x80 // variant RFC 4122
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
 // findVirtualSessionByID returns a pointer to the matching VS in
 // store.Sessions, or nil when absent.
 func (store *virtualSessionStore) findByID(id string) *VirtualSession {
@@ -204,6 +221,78 @@ func (store *virtualSessionStore) listForWorkspace(workspace string) []VirtualSe
 	return out
 }
 
+// translateVSReq bundles the inputs for a translate-VS async run.
+// Exactly one of (source+sourceSessionID) or directTurns should be
+// populated: source path loads history from the source provider's
+// on-disk file and derives both UI entries and wire turns from it;
+// direct path feeds pre-loaded turns straight to Materialize (used
+// by Ctrl+B mid-session when m.history already has the turns).
+type translateVSReq struct {
+	target          Provider
+	vsID            string
+	workspace       string
+	source          Provider
+	sourceSessionID string
+	directTurns     []NeutralTurn
+	opts            HistoryOpts
+}
+
+// virtualSessionMaterializedMsg lands on Update when translateVSCmd
+// finishes: nativeSessionID/nativeCwd point at the newly-written
+// native session file the target provider can --resume; entries
+// carries the source's rendered history for the UI when the source
+// path was used; err != nil means translation failed.
+type virtualSessionMaterializedMsg struct {
+	vsID            string
+	nativeSessionID string
+	nativeCwd       string
+	entries         []historyEntry
+	err             error
+}
+
+// translateVSCmd runs cross-provider translation off the UI thread:
+// loads source history (if source != nil), distills to []NeutralTurn,
+// asks the target provider to Materialize a native session file, and
+// upserts the new native id onto the VS. Returns
+// virtualSessionMaterializedMsg that the Update handler plumbs back
+// into model state.
+func translateVSCmd(req translateVSReq) tea.Cmd {
+	return func() tea.Msg {
+		turns := req.directTurns
+		var entries []historyEntry
+		if req.source != nil && req.sourceSessionID != "" {
+			loaded, err := req.source.LoadHistory(req.sourceSessionID, req.opts)
+			if err != nil {
+				return virtualSessionMaterializedMsg{vsID: req.vsID, err: err}
+			}
+			entries = loaded
+			turns = neutralTurnsFromHistory(loaded)
+		}
+		if len(turns) == 0 {
+			return virtualSessionMaterializedMsg{
+				vsID:    req.vsID,
+				entries: entries,
+				err:     errors.New("no prior turns to translate"),
+			}
+		}
+		newID, nativeCwd, err := req.target.Materialize(req.workspace, turns)
+		if err != nil {
+			return virtualSessionMaterializedMsg{vsID: req.vsID, entries: entries, err: err}
+		}
+		_ = mutateVirtualSessions(func(store *virtualSessionStore) error {
+			upsertVirtualSession(store, req.vsID, req.workspace,
+				req.target.ID(), newID, nativeCwd, "", time.Now().UTC())
+			return nil
+		})
+		return virtualSessionMaterializedMsg{
+			vsID:            req.vsID,
+			nativeSessionID: newID,
+			nativeCwd:       nativeCwd,
+			entries:         entries,
+		}
+	}
+}
+
 // recordVirtualSession upserts the current tab's conversation into
 // ~/.config/ask/sessions.json with the native id the provider just
 // reported. The load-modify-save runs under an advisory lock so
@@ -234,58 +323,33 @@ func (m *model) recordVirtualSession(nativeID string) {
 	}
 }
 
-// Translation prelude sentinels bracket the synthesized transcript
-// we prepend to the first wire turn on a cross-provider swap so the
-// target provider's LLM sees prior context. The sentinels are also
-// how loadClaudeHistory / loadCodexHistory recognise and hide the
-// prelude when the native session is later re-loaded.
-const (
-	preludeSentinel    = "<<ASK_TRANSLATION_PRELUDE>>"
-	preludeSentinelEnd = "<<END_ASK_TRANSLATION_PRELUDE>>"
-)
-
-// buildTranslationPrelude formats a transcript of histUser/histResponse
-// entries as an opaque text block the target provider reads as "prior
-// conversation, continue from here". Returns "" when there are no
-// visible turns so callers can skip the prepend entirely.
-func buildTranslationPrelude(sourceName string, entries []historyEntry) string {
-	if len(entries) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString(preludeSentinel)
-	b.WriteByte('\n')
-	if sourceName != "" {
-		fmt.Fprintf(&b, "(Prior conversation, originally in %s. Continue from this state.)\n\n", sourceName)
-	} else {
-		b.WriteString("(Prior conversation. Continue from this state.)\n\n")
-	}
-	bodyStart := b.Len()
-	for _, e := range entries {
-		switch e.kind {
-		case histUser:
-			b.WriteString("## User\n")
-			b.WriteString(e.text)
-			b.WriteString("\n\n")
-		case histResponse:
-			b.WriteString("## Assistant\n")
-			b.WriteString(e.text)
-			b.WriteString("\n\n")
-		}
-	}
-	if b.Len() == bodyStart {
-		return ""
-	}
-	b.WriteString(preludeSentinelEnd)
-	b.WriteByte('\n')
-	return b.String()
+// NeutralTurn is the provider-agnostic representation of a single
+// user or assistant conversational turn. Used as the lingua franca
+// for cross-provider session materialization: source provider's
+// history is distilled to []NeutralTurn and fed to the target
+// provider's Materialize to write a native session file it can
+// then --resume natively.
+type NeutralTurn struct {
+	Role string // "user" | "assistant"
+	Text string
 }
 
-// isTranslationPrelude reports whether s (a raw user-message body
-// off a native session) is our injected translation prelude so
-// history replay can skip it.
-func isTranslationPrelude(s string) bool {
-	return strings.HasPrefix(strings.TrimLeft(s, " \t\n"), preludeSentinel)
+// neutralTurnsFromHistory flattens a UI history slice to the
+// provider-neutral turn list. histPrerendered entries (tool blocks,
+// diff blocks) are deliberately skipped — they're noise when
+// seeding the target provider with conversational context and the
+// tools aren't portable across provider schemas anyway.
+func neutralTurnsFromHistory(history []historyEntry) []NeutralTurn {
+	out := make([]NeutralTurn, 0, len(history))
+	for _, e := range history {
+		switch e.kind {
+		case histUser:
+			out = append(out, NeutralTurn{Role: "user", Text: e.text})
+		case histResponse:
+			out = append(out, NeutralTurn{Role: "assistant", Text: e.text})
+		}
+	}
+	return out
 }
 
 // mutateVirtualSessions serializes load-modify-save against
