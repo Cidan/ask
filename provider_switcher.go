@@ -244,6 +244,7 @@ func (m *model) applyVSProviderSwap(oldProvName string, newProv Provider) tea.Cm
 		target:      newProv,
 		vsID:        vs.ID,
 		workspace:   m.cwd,
+		nativeCwd:   nativeCwdForUpsert(m.cwd, m.worktreeName),
 		directTurns: turns,
 	})
 }

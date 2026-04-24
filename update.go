@@ -1101,6 +1101,7 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 		target:          m.provider,
 		vsID:            vs.ID,
 		workspace:       m.cwd,
+		nativeCwd:       nativeCwdForUpsert(m.cwd, m.worktreeName),
 		source:          sourceProv,
 		sourceSessionID: sourceRef.SessionID,
 		opts:            opts,

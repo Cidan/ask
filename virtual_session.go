@@ -230,7 +230,8 @@ func (store *virtualSessionStore) listForWorkspace(workspace string) []VirtualSe
 type translateVSReq struct {
 	target          Provider
 	vsID            string
-	workspace       string
+	workspace       string // VS.Workspace (project root) — scopes /resume filtering
+	nativeCwd       string // cwd the target provider will actually run under — used for on-disk session file location so resume can find it
 	source          Provider
 	sourceSessionID string
 	directTurns     []NeutralTurn
@@ -275,7 +276,11 @@ func translateVSCmd(req translateVSReq) tea.Cmd {
 				err:     errors.New("no prior turns to translate"),
 			}
 		}
-		newID, nativeCwd, err := req.target.Materialize(req.workspace, turns)
+		nativeCwd := req.nativeCwd
+		if nativeCwd == "" {
+			nativeCwd = req.workspace
+		}
+		newID, nativeCwd, err := req.target.Materialize(nativeCwd, turns)
 		if err != nil {
 			return virtualSessionMaterializedMsg{vsID: req.vsID, entries: entries, err: err}
 		}

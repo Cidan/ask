@@ -693,6 +693,62 @@ func TestApplyProviderSwitch_StaleMappingTriggersTranslate(t *testing.T) {
 	}
 }
 
+func TestTranslate_PassesWorktreeCwdToMaterialize(t *testing.T) {
+	isolateHome(t)
+	pA := newFakeProvider()
+	pA.id = "fakeA"
+	pB := newFakeProvider()
+	pB.id = "fakeB"
+	var gotCwd string
+	pB.materializeFn = func(cwd string, _ []NeutralTurn) (string, string, error) {
+		gotCwd = cwd
+		return "synth-B", cwd, nil
+	}
+	withRegisteredProviders(t, pA, pB)
+
+	store := &virtualSessionStore{Version: 1}
+	vsID := upsertVirtualSession(store, "", "/ws", "fakeA", "nat-A", "/ws", "hi", time.Now().UTC())
+	if err := saveVirtualSessions(store); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	m := newTestModel(t, pA)
+	m.virtualSessionID = vsID
+	m.cwd = "/ws"
+	m.worktreeName = "ask-fakeA-1"
+	m.history = []historyEntry{
+		{kind: histUser, text: "hi"},
+		{kind: histResponse, text: "hello"},
+	}
+	m.providerSwitchProvIdx = 1
+	newM, cmd := m.applyProviderSwitch("")
+	mm := newM.(model)
+	if mm.provider.ID() != "fakeB" {
+		t.Fatalf("swap failed: %s", mm.provider.ID())
+	}
+	// Drain to find the translate cmd's msg.
+	msgs := drainBatch(t, cmd)
+	var mat *virtualSessionMaterializedMsg
+	for _, msg := range msgs {
+		if m, ok := msg.(virtualSessionMaterializedMsg); ok {
+			mat = &m
+		}
+	}
+	if mat == nil {
+		t.Fatal("expected virtualSessionMaterializedMsg")
+	}
+	wantCwd := "/ws/.claude/worktrees/ask-fakeA-1"
+	if gotCwd != wantCwd {
+		t.Errorf("Materialize got cwd=%q want %q — worktree path must propagate so claude --resume finds the synthetic file", gotCwd, wantCwd)
+	}
+	// VS's mapping Cwd should also carry the worktree path so ensureProc
+	// points the subprocess at the same directory on resume.
+	got, _ := loadVirtualSessions()
+	if ref := got.Sessions[0].ProviderSessions["fakeB"]; ref.Cwd != wantCwd {
+		t.Errorf("VS mapping Cwd=%q want %q", ref.Cwd, wantCwd)
+	}
+}
+
 // ---- US-013: claudeProvider.Materialize round-trip ----
 
 func TestClaudeMaterialize_RoundTripsViaLoadClaudeHistory(t *testing.T) {
