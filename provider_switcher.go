@@ -217,7 +217,13 @@ func (m *model) applyVSProviderSwap(oldProvName string, newProv Provider) tea.Cm
 	if vs == nil {
 		return nil
 	}
-	if ref, ok := vs.ProviderSessions[newProv.ID()]; ok && ref.SessionID != "" {
+	// Reuse the cached native id only when the new provider was also
+	// the last writer. Any other LastProvider means the cached
+	// mapping predates newer turns on a different backend, so the
+	// canonical state lives in m.history (which we just had rendered
+	// by the provider we're leaving) — translate from those turns.
+	if ref, ok := vs.ProviderSessions[newProv.ID()]; ok && ref.SessionID != "" &&
+		vs.LastProvider == newProv.ID() {
 		m.sessionID = ref.SessionID
 		m.resumeCwd = ref.Cwd
 		m.history = nil

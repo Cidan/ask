@@ -551,6 +551,148 @@ func TestListForWorkspace_FiltersAndSorts(t *testing.T) {
 	}
 }
 
+// ---- US-018: stale mapping must not be reused when VS.LastProvider differs ----
+
+func TestResumeVirtualSession_StaleMappingForCurrentProviderTriggersTranslate(t *testing.T) {
+	isolateHome(t)
+	claude := newFakeProvider()
+	claude.id = "claude"
+	claude.displayName = "Claude"
+	codex := newFakeProvider()
+	codex.id = "codex"
+	codex.displayName = "Codex"
+	codex.loadHistoryFn = func(_ string, _ HistoryOpts) ([]historyEntry, error) {
+		return []historyEntry{
+			{kind: histUser, text: "question in codex"},
+			{kind: histResponse, text: "codex answered"},
+		}, nil
+	}
+	var claudeMaterialized bool
+	claude.materializeFn = func(workspace string, turns []NeutralTurn) (string, string, error) {
+		claudeMaterialized = true
+		// Assert we're seeing codex's turns (not some stale claude snapshot).
+		if len(turns) != 2 || turns[0].Text != "question in codex" {
+			t.Errorf("claude.Materialize should receive codex's turns; got %+v", turns)
+		}
+		return "claude-fresh", workspace, nil
+	}
+	withRegisteredProviders(t, claude, codex)
+
+	// VS has both mappings, but codex wrote more recently (LastProvider=codex).
+	store := &virtualSessionStore{Version: 1}
+	now := time.Now().UTC()
+	vsID := upsertVirtualSession(store, "", "/ws", "claude", "stale-claude", "/ws", "hi", now.Add(-time.Hour))
+	upsertVirtualSession(store, vsID, "/ws", "codex", "fresh-codex", "/ws", "hi", now)
+	if err := saveVirtualSessions(store); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// Tab is on claude; the cached claude mapping is stale (codex wrote after).
+	m := newTestModel(t, claude)
+	m.cwd = "/ws"
+	newM, cmd := m.resumeVirtualSession(sessionEntry{id: vsID, virtualSessionID: vsID})
+	mm := newM.(model)
+	if mm.sessionID != "" {
+		t.Errorf("sessionID=%q — must be empty until translation completes (cannot reuse stale claude mapping)", mm.sessionID)
+	}
+	if !mm.busy {
+		t.Error("busy must be true during translation")
+	}
+	if cmd == nil {
+		t.Fatal("expected translateVSCmd, got nil")
+	}
+	mat, ok := cmd().(virtualSessionMaterializedMsg)
+	if !ok {
+		t.Fatalf("cmd returned %T, want virtualSessionMaterializedMsg (stale mapping must trigger translate)", cmd())
+	}
+	if !claudeMaterialized {
+		t.Error("claude.Materialize must be called to refresh the stale mapping")
+	}
+	if mat.err != nil {
+		t.Fatalf("translate err: %v", mat.err)
+	}
+	if mat.nativeSessionID != "claude-fresh" {
+		t.Errorf("nativeSessionID=%q want claude-fresh (materialized)", mat.nativeSessionID)
+	}
+	mm2, _ := runUpdate(t, mm, mat)
+	if mm2.sessionID != "claude-fresh" {
+		t.Errorf("m.sessionID=%q want claude-fresh after translate", mm2.sessionID)
+	}
+	// VS store: claude mapping is overwritten, LastProvider flipped to claude.
+	got, _ := loadVirtualSessions()
+	if got.Sessions[0].ProviderSessions["claude"].SessionID != "claude-fresh" {
+		t.Errorf("stale claude mapping not overwritten: %+v", got.Sessions[0].ProviderSessions)
+	}
+	if got.Sessions[0].LastProvider != "claude" {
+		t.Errorf("LastProvider=%q want claude after translate-back", got.Sessions[0].LastProvider)
+	}
+}
+
+func TestApplyProviderSwitch_StaleMappingTriggersTranslate(t *testing.T) {
+	isolateHome(t)
+	// fakeA will be the swap target; fakeB is where we're coming from (the
+	// provider that wrote most recently).
+	pA := newFakeProvider()
+	pA.id = "fakeA"
+	pA.displayName = "Fake A"
+	var aGotTurns []NeutralTurn
+	pA.materializeFn = func(ws string, turns []NeutralTurn) (string, string, error) {
+		aGotTurns = append([]NeutralTurn(nil), turns...)
+		return "fresh-A", ws, nil
+	}
+	pB := newFakeProvider()
+	pB.id = "fakeB"
+	pB.displayName = "Fake B"
+	withRegisteredProviders(t, pA, pB)
+
+	// VS has both mappings; fakeB is LastProvider (the latest writer).
+	store := &virtualSessionStore{Version: 1}
+	now := time.Now().UTC()
+	vsID := upsertVirtualSession(store, "", "/ws", "fakeA", "stale-A", "/ws", "hi", now.Add(-time.Hour))
+	upsertVirtualSession(store, vsID, "/ws", "fakeB", "current-B", "/ws", "hi", now)
+	if err := saveVirtualSessions(store); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// Model is on fakeB with the latest turns in-memory; swap to fakeA.
+	m := newTestModel(t, pB)
+	m.virtualSessionID = vsID
+	m.cwd = "/ws"
+	m.history = []historyEntry{
+		{kind: histUser, text: "user-B"},
+		{kind: histResponse, text: "assistant-B"},
+	}
+	m.providerSwitchProvIdx = 0 // target A
+	newM, cmd := m.applyProviderSwitch("")
+	mm := newM.(model)
+	if mm.provider.ID() != "fakeA" {
+		t.Fatalf("expected provider fakeA, got %s", mm.provider.ID())
+	}
+	if mm.sessionID != "" {
+		t.Errorf("sessionID=%q — must be empty during translation (stale mapping cannot be reused)", mm.sessionID)
+	}
+	if !mm.busy {
+		t.Error("busy should be true while translation runs")
+	}
+	// Drain the batched cmd and find the materialize msg.
+	msgs := drainBatch(t, cmd)
+	var matMsg *virtualSessionMaterializedMsg
+	for _, msg := range msgs {
+		if m, ok := msg.(virtualSessionMaterializedMsg); ok {
+			matMsg = &m
+		}
+	}
+	if matMsg == nil {
+		t.Fatalf("stale mapping must trigger translate; got msgs %T", msgs)
+	}
+	if matMsg.nativeSessionID != "fresh-A" {
+		t.Errorf("nativeSessionID=%q want fresh-A", matMsg.nativeSessionID)
+	}
+	if len(aGotTurns) != 2 || aGotTurns[0].Text != "user-B" || aGotTurns[1].Text != "assistant-B" {
+		t.Errorf("fakeA.Materialize should receive the B-tab turns; got %+v", aGotTurns)
+	}
+}
+
 // ---- US-013: claudeProvider.Materialize round-trip ----
 
 func TestClaudeMaterialize_RoundTripsViaLoadClaudeHistory(t *testing.T) {

@@ -422,9 +422,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if msg.entries != nil {
 			m.history = msg.entries
 		}
-		m.appendHistory(outputStyle.Render(promptStyle.Render(
-			fmt.Sprintf("✓ translated to %s session %s",
-				m.provider.DisplayName(), short(msg.nativeSessionID)))))
 		return m, nil
 
 	case sessionsLoadedMsg:
@@ -1067,7 +1064,14 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 		ToolOutput:  m.toolOutputMode,
 		QuietMode:   m.quietMode,
 	}
-	if ref, ok := vs.ProviderSessions[providerID]; ok && ref.SessionID != "" {
+	// Reuse the cached native id only when the current provider was
+	// also the last writer (or no last-writer recorded, treated as
+	// benign). A stale mapping — e.g. claude mapping cached before
+	// codex took subsequent turns — would strand the newer turns on
+	// the other provider's file; translating from VS.LastProvider is
+	// the only way to pick up the canonical state.
+	if ref, ok := vs.ProviderSessions[providerID]; ok && ref.SessionID != "" &&
+		(vs.LastProvider == "" || vs.LastProvider == providerID) {
 		m.sessionID = ref.SessionID
 		m.resumeCwd = ref.Cwd
 		m.appendHistory(outputStyle.Render(dimStyle.Render(
@@ -1075,12 +1079,11 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 		return m, loadHistoryCmd(m.provider, ref.SessionID, vs.ID, opts, false)
 	}
 
-	// No mapping for the current provider: translate. translateVSCmd
-	// pulls the source's turns, materializes a fresh native session
-	// on the current provider, and upserts the new native id onto
-	// the same VS. The virtualSessionMaterializedMsg handler then
-	// sets m.sessionID so the next user turn resumes the synthesized
-	// file natively — no prelude injection, no token waste.
+	// Translate from VS.LastProvider (or a registry-order fallback
+	// when LastProvider isn't registered): materialize a fresh
+	// native session on the current provider with the last-writer's
+	// turns, then resume that. The mapping for the current provider
+	// is overwritten so the next swap picks up from here.
 	m.sessionID = ""
 	m.resumeCwd = ""
 	sourceProv, sourceRef, ok := pickSourceProvider(vs)
