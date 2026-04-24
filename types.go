@@ -207,11 +207,13 @@ type historyEntry struct {
 }
 
 type sessionsLoadedMsg struct {
+	tabID    int
 	sessions []sessionEntry
 	err      error
 }
 
 type historyLoadedMsg struct {
+	tabID     int
 	sessionID string
 	// virtualSessionID tags the load so Update can pair the reply
 	// with the current VS. The translation path fires a load against
@@ -254,9 +256,9 @@ type model struct {
 	// ids under one id across providers. Set on /resume or first
 	// providerDoneMsg; cleared by /new and /clear.
 	virtualSessionID string
-	busy      bool
-	width     int
-	height    int
+	busy             bool
+	width            int
+	height           int
 
 	history []historyEntry
 

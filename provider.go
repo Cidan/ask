@@ -217,6 +217,7 @@ type providerExitedMsg struct {
 // providerInitLoadedMsg carries the discovered slash commands from a
 // ProbeInit run.
 type providerInitLoadedMsg struct {
+	tabID     int
 	slashCmds []providerSlashEntry
 	err       error
 }

@@ -232,7 +232,7 @@ func (m *model) applyVSProviderSwap(oldProvName string, newProv Provider) tea.Cm
 			ToolOutput:  m.toolOutputMode,
 			QuietMode:   m.quietMode,
 		}
-		return loadHistoryCmd(newProv, ref.SessionID, vs.ID, opts, false)
+		return loadHistoryCmd(m.id, newProv, ref.SessionID, vs.ID, opts, false)
 	}
 	turns := neutralTurnsFromHistory(m.history)
 	if len(turns) == 0 {
@@ -241,6 +241,7 @@ func (m *model) applyVSProviderSwap(oldProvName string, newProv Provider) tea.Cm
 	m.busy = true
 	m.status = "translating session…"
 	return translateVSCmd(translateVSReq{
+		tabID:       m.id,
 		target:      newProv,
 		vsID:        vs.ID,
 		workspace:   m.cwd,

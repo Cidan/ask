@@ -228,6 +228,7 @@ func (store *virtualSessionStore) listForWorkspace(workspace string) []VirtualSe
 // direct path feeds pre-loaded turns straight to Materialize (used
 // by Ctrl+B mid-session when m.history already has the turns).
 type translateVSReq struct {
+	tabID           int
 	target          Provider
 	vsID            string
 	workspace       string // VS.Workspace (project root) — scopes /resume filtering
@@ -244,6 +245,7 @@ type translateVSReq struct {
 // carries the source's rendered history for the UI when the source
 // path was used; err != nil means translation failed.
 type virtualSessionMaterializedMsg struct {
+	tabID           int
 	vsID            string
 	nativeSessionID string
 	nativeCwd       string
@@ -264,13 +266,14 @@ func translateVSCmd(req translateVSReq) tea.Cmd {
 		if req.source != nil && req.sourceSessionID != "" {
 			loaded, err := req.source.LoadHistory(req.sourceSessionID, req.opts)
 			if err != nil {
-				return virtualSessionMaterializedMsg{vsID: req.vsID, err: err}
+				return virtualSessionMaterializedMsg{tabID: req.tabID, vsID: req.vsID, err: err}
 			}
 			entries = loaded
 			turns = neutralTurnsFromHistory(loaded)
 		}
 		if len(turns) == 0 {
 			return virtualSessionMaterializedMsg{
+				tabID:   req.tabID,
 				vsID:    req.vsID,
 				entries: entries,
 				err:     errors.New("no prior turns to translate"),
@@ -282,7 +285,7 @@ func translateVSCmd(req translateVSReq) tea.Cmd {
 		}
 		newID, nativeCwd, err := req.target.Materialize(nativeCwd, turns)
 		if err != nil {
-			return virtualSessionMaterializedMsg{vsID: req.vsID, entries: entries, err: err}
+			return virtualSessionMaterializedMsg{tabID: req.tabID, vsID: req.vsID, entries: entries, err: err}
 		}
 		_ = mutateVirtualSessions(func(store *virtualSessionStore) error {
 			upsertVirtualSession(store, req.vsID, req.workspace,
@@ -290,6 +293,7 @@ func translateVSCmd(req translateVSReq) tea.Cmd {
 			return nil
 		})
 		return virtualSessionMaterializedMsg{
+			tabID:           req.tabID,
 			vsID:            req.vsID,
 			nativeSessionID: newID,
 			nativeCwd:       nativeCwd,

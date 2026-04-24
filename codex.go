@@ -123,9 +123,9 @@ func (codexProvider) ProbeInit(args ProviderSessionArgs) tea.Cmd {
 		skills, err := fetchCodexSkills(args.Cwd)
 		if err != nil {
 			debugLog("codex ProbeInit skills/list: %v", err)
-			return providerInitLoadedMsg{err: err}
+			return providerInitLoadedMsg{tabID: args.TabID, err: err}
 		}
-		return providerInitLoadedMsg{slashCmds: skills}
+		return providerInitLoadedMsg{tabID: args.TabID, slashCmds: skills}
 	}
 }
 

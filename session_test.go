@@ -348,11 +348,14 @@ func TestLoadHistoryCmd_DelegatesToProvider(t *testing.T) {
 	fp.loadHistoryFn = func(id string, opts HistoryOpts) ([]historyEntry, error) {
 		return []historyEntry{{kind: histResponse, text: id}}, nil
 	}
-	cmd := loadHistoryCmd(fp, "my-session", "", HistoryOpts{}, false)
+	cmd := loadHistoryCmd(7, fp, "my-session", "", HistoryOpts{}, false)
 	msg := cmd()
 	h, ok := msg.(historyLoadedMsg)
 	if !ok {
 		t.Fatalf("want historyLoadedMsg, got %T", msg)
+	}
+	if h.tabID != 7 {
+		t.Errorf("tabID=%d want 7", h.tabID)
 	}
 	if h.sessionID != "my-session" || len(h.entries) != 1 {
 		t.Errorf("wrong payload: %+v", h)
@@ -368,10 +371,13 @@ func TestLoadSessionsCmd_ReadsVirtualSessionsForWorkspace(t *testing.T) {
 	if err := saveVirtualSessions(store); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	msg := loadSessionsCmd("/ws-a")()
+	msg := loadSessionsCmd(9, "/ws-a")()
 	s, ok := msg.(sessionsLoadedMsg)
 	if !ok {
 		t.Fatalf("want sessionsLoadedMsg, got %T", msg)
+	}
+	if s.tabID != 9 {
+		t.Errorf("tabID=%d want 9", s.tabID)
 	}
 	if s.err != nil {
 		t.Fatalf("unexpected err: %v", s.err)
@@ -397,7 +403,7 @@ func TestLoadSessionsCmd_HidesLegacySessions(t *testing.T) {
 	cwd := t.TempDir()
 	seedClaudeProjects(t, home, cwd, "legacy", `{"type":"user","message":{"role":"user","content":"old"}}`)
 	// VS store is empty.
-	msg := loadSessionsCmd(cwd)()
+	msg := loadSessionsCmd(1, cwd)()
 	s := msg.(sessionsLoadedMsg)
 	if s.err != nil {
 		t.Fatalf("err: %v", s.err)
@@ -417,7 +423,7 @@ func TestLoadSessionsCmd_SortsNewestFirst(t *testing.T) {
 	if err := saveVirtualSessions(store); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	msg := loadSessionsCmd("/ws")()
+	msg := loadSessionsCmd(1, "/ws")()
 	s := msg.(sessionsLoadedMsg)
 	if len(s.sessions) != 3 {
 		t.Fatalf("want 3, got %d", len(s.sessions))
@@ -431,15 +437,17 @@ func TestLoadSessionsCmd_SortsNewestFirst(t *testing.T) {
 	}
 }
 
-
 // Sanity check that historyLoadedMsg carries err when provider errors out.
 func TestLoadHistoryCmd_PropagatesError(t *testing.T) {
 	fp := newFakeProvider()
 	fp.loadHistoryFn = func(id string, opts HistoryOpts) ([]historyEntry, error) {
 		return nil, errMarker{}
 	}
-	msg := loadHistoryCmd(fp, "sid", "", HistoryOpts{}, true)()
+	msg := loadHistoryCmd(3, fp, "sid", "", HistoryOpts{}, true)()
 	h := msg.(historyLoadedMsg)
+	if h.tabID != 3 {
+		t.Errorf("tabID=%d want 3", h.tabID)
+	}
 	if h.err == nil {
 		t.Errorf("err should propagate")
 	}
@@ -480,7 +488,7 @@ func TestLoadSessionsCmd_ReturnsError(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{garbage"), 0o600); err != nil {
 		t.Fatalf("write garbage: %v", err)
 	}
-	msg := loadSessionsCmd("/tmp")()
+	msg := loadSessionsCmd(1, "/tmp")()
 	s := msg.(sessionsLoadedMsg)
 	if s.err == nil {
 		t.Errorf("expected err to surface when sessions.json is corrupt")
@@ -489,5 +497,5 @@ func TestLoadSessionsCmd_ReturnsError(t *testing.T) {
 
 func TestLoadHistoryCmd_ReturnsTeaCmd(t *testing.T) {
 	fp := newFakeProvider()
-	var _ tea.Cmd = loadHistoryCmd(fp, "sid", "", HistoryOpts{}, false)
+	var _ tea.Cmd = loadHistoryCmd(1, fp, "sid", "", HistoryOpts{}, false)
 }

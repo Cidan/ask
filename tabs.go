@@ -93,7 +93,15 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.dispatchByTabID(m.tabID, msg)
 	case shellBatchMsg:
 		return a.dispatchByTabID(m.tabID, msg)
+	case providerInitLoadedMsg:
+		return a.dispatchByTabID(m.tabID, msg)
 	case providerStartDoneMsg:
+		return a.dispatchByTabID(m.tabID, msg)
+	case sessionsLoadedMsg:
+		return a.dispatchByTabID(m.tabID, msg)
+	case historyLoadedMsg:
+		return a.dispatchByTabID(m.tabID, msg)
+	case virtualSessionMaterializedMsg:
 		return a.dispatchByTabID(m.tabID, msg)
 	case hookSubagentStartMsg:
 		return a.dispatchByTabID(m.tabID, msg)

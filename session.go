@@ -261,10 +261,11 @@ func loadClaudeSessions(cwd string) ([]sessionEntry, error) {
 // id (cross-provider translation paths fire with sessionID pointing
 // at a non-current-provider native id, where the sessionID alone
 // can't pair the reply with the tab state).
-func loadHistoryCmd(p Provider, sessionID, vsID string, opts HistoryOpts, silent bool) tea.Cmd {
+func loadHistoryCmd(tabID int, p Provider, sessionID, vsID string, opts HistoryOpts, silent bool) tea.Cmd {
 	return func() tea.Msg {
 		entries, err := p.LoadHistory(sessionID, opts)
 		return historyLoadedMsg{
+			tabID:            tabID,
 			sessionID:        sessionID,
 			virtualSessionID: vsID,
 			entries:          entries,
@@ -281,11 +282,11 @@ func loadHistoryCmd(p Provider, sessionID, vsID string, opts HistoryOpts, silent
 // virtualSessionID so the picker's Enter handler can look the VS
 // back up and decide how to resume it (direct native-id resume,
 // translation, fresh native session) based on the current provider.
-func loadSessionsCmd(cwd string) tea.Cmd {
+func loadSessionsCmd(tabID int, cwd string) tea.Cmd {
 	return func() tea.Msg {
 		store, err := loadVirtualSessions()
 		if err != nil {
-			return sessionsLoadedMsg{err: err}
+			return sessionsLoadedMsg{tabID: tabID, err: err}
 		}
 		vss := store.listForWorkspace(cwd)
 		sessions := make([]sessionEntry, 0, len(vss))
@@ -298,7 +299,7 @@ func loadSessionsCmd(cwd string) tea.Cmd {
 				modTime:          vs.UpdatedAt,
 			})
 		}
-		return sessionsLoadedMsg{sessions: sessions}
+		return sessionsLoadedMsg{tabID: tabID, sessions: sessions}
 	}
 }
 

@@ -268,15 +268,15 @@ func (claudeProvider) ProbeInit(args ProviderSessionArgs) tea.Cmd {
 		cmd.Env = claudeEnv(args)
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
-			return providerInitLoadedMsg{err: err}
+			return providerInitLoadedMsg{tabID: args.TabID, err: err}
 		}
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
-			return providerInitLoadedMsg{err: err}
+			return providerInitLoadedMsg{tabID: args.TabID, err: err}
 		}
 		cmd.Stderr = io.Discard
 		if err := cmd.Start(); err != nil {
-			return providerInitLoadedMsg{err: err}
+			return providerInitLoadedMsg{tabID: args.TabID, err: err}
 		}
 		killed := false
 		kill := func() {
@@ -313,10 +313,10 @@ func (claudeProvider) ProbeInit(args ProviderSessionArgs) tea.Cmd {
 			if ev.Type == "system" && ev.Subtype == "init" {
 				kill()
 				debugLog("claude ProbeInit got %d slash commands", len(ev.SlashCommands))
-				return providerInitLoadedMsg{slashCmds: enrichSlashCommands(ev.SlashCommands)}
+				return providerInitLoadedMsg{tabID: args.TabID, slashCmds: enrichSlashCommands(ev.SlashCommands)}
 			}
 		}
-		return providerInitLoadedMsg{err: fmt.Errorf("claude init event not seen")}
+		return providerInitLoadedMsg{tabID: args.TabID, err: fmt.Errorf("claude init event not seen")}
 	}
 }
 

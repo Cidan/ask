@@ -812,6 +812,7 @@ func TestUpdate_HistoryLoadedAppendsEntriesOnResume(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.sessionID = "S-1"
 	msg := historyLoadedMsg{
+		tabID:     m.id,
 		sessionID: "S-1",
 		entries:   []historyEntry{{kind: histUser, text: "greeting"}},
 	}
@@ -832,6 +833,7 @@ func TestUpdate_HistoryLoadedSilentReplaces(t *testing.T) {
 	m.sessionID = "S-1"
 	m.history = []historyEntry{{kind: histUser, text: "stale"}}
 	msg := historyLoadedMsg{
+		tabID:     m.id,
 		sessionID: "S-1",
 		entries:   []historyEntry{{kind: histUser, text: "fresh"}},
 		silent:    true,
@@ -845,7 +847,7 @@ func TestUpdate_HistoryLoadedSilentReplaces(t *testing.T) {
 func TestUpdate_HistoryLoadedMismatchedIDIgnored(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.sessionID = "S-a"
-	msg := historyLoadedMsg{sessionID: "S-other", entries: []historyEntry{{text: "x"}}}
+	msg := historyLoadedMsg{tabID: m.id, sessionID: "S-other", entries: []historyEntry{{text: "x"}}}
 	m2, _ := runUpdate(t, m, msg)
 	if len(m2.history) != 0 {
 		t.Errorf("stale history load should be ignored, got %+v", m2.history)
@@ -855,7 +857,7 @@ func TestUpdate_HistoryLoadedMismatchedIDIgnored(t *testing.T) {
 func TestUpdate_HistoryLoadedErrorAppendsMessage(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.sessionID = "S"
-	m2, _ := runUpdate(t, m, historyLoadedMsg{sessionID: "S", err: errMarker{}})
+	m2, _ := runUpdate(t, m, historyLoadedMsg{tabID: m.id, sessionID: "S", err: errMarker{}})
 	if len(m2.history) == 0 {
 		t.Errorf("expected error entry in history")
 	}
@@ -864,7 +866,7 @@ func TestUpdate_HistoryLoadedErrorAppendsMessage(t *testing.T) {
 func TestUpdate_HistoryLoadedErrorSilentSwallows(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.sessionID = "S"
-	m2, _ := runUpdate(t, m, historyLoadedMsg{sessionID: "S", err: errMarker{}, silent: true})
+	m2, _ := runUpdate(t, m, historyLoadedMsg{tabID: m.id, sessionID: "S", err: errMarker{}, silent: true})
 	if len(m2.history) != 0 {
 		t.Errorf("silent error should not append history, got %+v", m2.history)
 	}
@@ -872,7 +874,7 @@ func TestUpdate_HistoryLoadedErrorSilentSwallows(t *testing.T) {
 
 func TestUpdate_SessionsLoadedEntersPicker(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
-	m2, _ := runUpdate(t, m, sessionsLoadedMsg{sessions: []sessionEntry{{id: "A"}, {id: "B"}}})
+	m2, _ := runUpdate(t, m, sessionsLoadedMsg{tabID: m.id, sessions: []sessionEntry{{id: "A"}, {id: "B"}}})
 	if m2.mode != modeSessionPicker {
 		t.Errorf("mode=%v want modeSessionPicker", m2.mode)
 	}
@@ -886,7 +888,7 @@ func TestUpdate_SessionsLoadedEntersPicker(t *testing.T) {
 
 func TestUpdate_SessionsLoadedEmptyAppendsDimNote(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
-	m2, _ := runUpdate(t, m, sessionsLoadedMsg{sessions: nil})
+	m2, _ := runUpdate(t, m, sessionsLoadedMsg{tabID: m.id, sessions: nil})
 	if m2.mode == modeSessionPicker {
 		t.Errorf("empty result must not enter picker")
 	}
@@ -897,7 +899,7 @@ func TestUpdate_SessionsLoadedEmptyAppendsDimNote(t *testing.T) {
 
 func TestUpdate_SessionsLoadedErrorAppendsError(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
-	m2, _ := runUpdate(t, m, sessionsLoadedMsg{err: errMarker{}})
+	m2, _ := runUpdate(t, m, sessionsLoadedMsg{tabID: m.id, err: errMarker{}})
 	if m2.mode == modeSessionPicker {
 		t.Errorf("err must not enter picker")
 	}

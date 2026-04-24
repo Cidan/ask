@@ -220,6 +220,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case providerInitLoadedMsg:
+		if msg.tabID != m.id {
+			return m, nil
+		}
 		if msg.err != nil {
 			debugLog("providerInitLoadedMsg err: %v", msg.err)
 			return m, nil
@@ -370,6 +373,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case historyLoadedMsg:
+		if msg.tabID != m.id {
+			return m, nil
+		}
 		// Cross-provider translation loads a source provider's native
 		// id while m.sessionID is still empty, so VS id is the only
 		// reliable pairing; fall back to sessionID for untagged loads.
@@ -404,6 +410,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case virtualSessionMaterializedMsg:
+		if msg.tabID != m.id {
+			return m, nil
+		}
 		if msg.vsID != m.virtualSessionID {
 			return m, nil
 		}
@@ -425,6 +434,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case sessionsLoadedMsg:
+		if msg.tabID != m.id {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.appendHistory(outputStyle.Render(errStyle.Render(fmt.Sprintf("could not load sessions: %v", msg.err))))
 			return m, nil
@@ -1076,7 +1088,7 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 		m.resumeCwd = ref.Cwd
 		m.appendHistory(outputStyle.Render(dimStyle.Render(
 			fmt.Sprintf("loading session %s…", short(vs.ID)))))
-		return m, loadHistoryCmd(m.provider, ref.SessionID, vs.ID, opts, false)
+		return m, loadHistoryCmd(m.id, m.provider, ref.SessionID, vs.ID, opts, false)
 	}
 
 	// Translate from VS.LastProvider (or a registry-order fallback
@@ -1098,6 +1110,7 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 		fmt.Sprintf("translating %s from %s → %s…",
 			short(vs.ID), sourceProv.DisplayName(), m.provider.DisplayName()))))
 	return m, translateVSCmd(translateVSReq{
+		tabID:           m.id,
 		target:          m.provider,
 		vsID:            vs.ID,
 		workspace:       m.cwd,
@@ -1143,7 +1156,7 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 	cmd, _, _ := strings.Cut(line, " ")
 	switch cmd {
 	case "/resume":
-		return m, loadSessionsCmd(m.cwd)
+		return m, loadSessionsCmd(m.id, m.cwd)
 	case "/new", "/clear":
 		m.killProc()
 		m.sessionID = ""
