@@ -584,6 +584,11 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case tea.KeyPressMsg:
+		// Lock-state modifiers (CapsLock/NumLock/ScrollLock) are reported
+		// on every keypress under the Kitty keyboard protocol. Treating
+		// them as real modifiers would silently break `Mod == 0` gates on
+		// arrow keys, Esc, Enter, etc., so strip them before dispatch.
+		msg.Mod &^= tea.ModCapsLock | tea.ModNumLock | tea.ModScrollLock
 		switch m.mode {
 		case modeSessionPicker:
 			return m.updatePicker(msg)

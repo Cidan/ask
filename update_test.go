@@ -808,6 +808,36 @@ func TestFilterSlashCmds_DeDupBuiltinsAndProvider(t *testing.T) {
 	}
 }
 
+// Lock-state modifiers (CapsLock/NumLock/ScrollLock) are reported on every
+// keypress under the Kitty keyboard protocol. They must not block arrow-key
+// navigation in the slash menu — that's what `Mod == 0` gates were silently
+// breaking before the dispatch-time mask was added.
+func TestUpdate_LockModifiersStrippedFromArrowKeys(t *testing.T) {
+	cases := []tea.KeyMod{
+		tea.ModNumLock,
+		tea.ModCapsLock,
+		tea.ModScrollLock,
+		tea.ModNumLock | tea.ModCapsLock,
+	}
+	for _, mod := range cases {
+		m := newTestModel(t, newFakeProvider())
+		m.providerSlashCmds = []providerSlashEntry{{Name: "alpha"}, {Name: "beta"}, {Name: "gamma"}}
+		m.input.SetValue("/")
+		if got := len(m.filterSlashCmds()); got < 2 {
+			t.Fatalf("test setup: expected >=2 slash items, got %d", got)
+		}
+
+		m2, _ := runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyDown, Mod: mod})
+		if m2.menuIdx != 1 {
+			t.Errorf("Mod=%v: KeyDown should advance menuIdx to 1, got %d", mod, m2.menuIdx)
+		}
+		m3, _ := runUpdate(t, m2, tea.KeyPressMsg{Code: tea.KeyUp, Mod: mod})
+		if m3.menuIdx != 0 {
+			t.Errorf("Mod=%v: KeyUp should retreat menuIdx to 0, got %d", mod, m3.menuIdx)
+		}
+	}
+}
+
 func TestUpdate_HistoryLoadedAppendsEntriesOnResume(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.sessionID = "S-1"
