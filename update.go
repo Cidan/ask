@@ -147,9 +147,11 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		if m.bgTasks == nil {
-			m.bgTasks = map[string]struct{}{}
+			m.bgTasks = map[string]string{}
 		}
-		m.bgTasks[msg.taskID] = struct{}{}
+		m.bgTasks[msg.taskID] = msg.toolUseID
+		debugLog("bgTaskStartedMsg tab=%d task_id=%s tool_use_id=%s bgTasks=%d",
+			m.id, msg.taskID, msg.toolUseID, len(m.bgTasks))
 		if m.streamCh != nil {
 			return m, nextStreamCmd(m.streamCh)
 		}
@@ -176,17 +178,19 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case hookSubagentStopMsg:
-		// Authoritative cleanup. If agent_id matches a stuck task_id
-		// (stream's task_notification was dropped), drop it. If it
-		// doesn't match (foreground sub-agent, or agent_id != task_id),
-		// the delete is a harmless no-op.
-		if _, stuck := m.bgTasks[msg.agentID]; stuck {
-			debugLog("hookSubagentStopMsg reaping stuck bgTask tab=%d agent_id=%s bgTasks=%d→%d",
-				msg.tabID, msg.agentID, len(m.bgTasks), len(m.bgTasks)-1)
-			delete(m.bgTasks, msg.agentID)
-		} else {
-			debugLog("hookSubagentStopMsg tab=%d agent_id=%s agent_type=%s not in bgTasks",
-				msg.tabID, msg.agentID, msg.agentType)
+		// Authoritative cleanup. agent_id may be the task_id (direct
+		// hit on the bgTasks key) or the spawning Task call's
+		// tool_use_id (claude's CLI uses different identifier
+		// namespaces depending on context). Try both before giving up.
+		// Foreground sub-agents and unknown ids are no-ops.
+		reaped := reapBgTaskByAgentID(m.bgTasks, msg.agentID)
+		switch reaped {
+		case "":
+			debugLog("hookSubagentStopMsg tab=%d agent_id=%s agent_type=%s no match in bgTasks=%d",
+				msg.tabID, msg.agentID, msg.agentType, len(m.bgTasks))
+		default:
+			debugLog("hookSubagentStopMsg reaping stuck bgTask tab=%d agent_id=%s task_id=%s bgTasks=%d→%d",
+				msg.tabID, msg.agentID, reaped, len(m.bgTasks)+1, len(m.bgTasks))
 		}
 		return m, nil
 
@@ -1359,4 +1363,26 @@ func (m model) filterSlashCmds() []slashCmd {
 		}
 	}
 	return out
+}
+
+// reapBgTaskByAgentID drops the bgTasks entry whose key (task_id) or
+// stored value (the spawning Task call's tool_use_id) equals agentID.
+// Returns the removed task_id, or "" when nothing matched. Tolerates a
+// nil map — late hook deliveries after killProc/providerExitedMsg
+// reset bgTasks to nil routinely.
+func reapBgTaskByAgentID(bgTasks map[string]string, agentID string) string {
+	if agentID == "" || len(bgTasks) == 0 {
+		return ""
+	}
+	if _, ok := bgTasks[agentID]; ok {
+		delete(bgTasks, agentID)
+		return agentID
+	}
+	for taskID, toolUseID := range bgTasks {
+		if toolUseID != "" && toolUseID == agentID {
+			delete(bgTasks, taskID)
+			return taskID
+		}
+	}
+	return ""
 }

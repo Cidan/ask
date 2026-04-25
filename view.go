@@ -830,16 +830,21 @@ func (m model) statusChipHeight() int {
 }
 
 // worktreeChip is the left-anchored status badge: worktree path plus a
-// count of live background workers. Returns "" when neither is active.
+// count of live background agents (Task/Agent calls launched with
+// run_in_background=true). Returns "" when neither is active. Bash
+// background tasks are intentionally not counted — claude's CLI
+// signals for them (task_notification, SubagentStop) are unreliable
+// for local_bash, so tracking them produced a chip that drifted
+// upward and never recovered.
 func (m model) worktreeChip() string {
 	var parts []string
 	if m.worktreeName != "" {
 		parts = append(parts, "[🌳 "+m.worktreeName+"]")
 	}
 	if n := len(m.bgTasks); n > 0 {
-		label := "worker"
+		label := "agent"
 		if n != 1 {
-			label = "workers"
+			label = "agents"
 		}
 		parts = append(parts, fmt.Sprintf("[%d background %s active]", n, label))
 	}

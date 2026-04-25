@@ -51,13 +51,16 @@ func TestReadClaudeStream_InitWithoutCwdEmitsNothing(t *testing.T) {
 
 func TestReadClaudeStream_TaskStartedAndNotification(t *testing.T) {
 	msgs := runStream(t,
-		`{"type":"system","subtype":"task_started","task_id":"t-1","task_type":"agent"}`,
+		`{"type":"system","subtype":"task_started","task_id":"t-1","tool_use_id":"toolu_1","task_type":"agent"}`,
 		`{"type":"system","subtype":"task_notification","task_id":"t-1","status":"completed"}`,
 	)
 	var started, ended int
 	for _, m := range msgs {
 		if s, ok := m.(bgTaskStartedMsg); ok && s.taskID == "t-1" {
 			started++
+			if s.toolUseID != "toolu_1" {
+				t.Errorf("bgTaskStartedMsg.toolUseID=%q want toolu_1", s.toolUseID)
+			}
 		}
 		if e, ok := m.(bgTaskEndedMsg); ok && e.taskID == "t-1" {
 			ended++
@@ -65,6 +68,58 @@ func TestReadClaudeStream_TaskStartedAndNotification(t *testing.T) {
 	}
 	if started != 1 || ended != 1 {
 		t.Errorf("started=%d ended=%d want 1/1; msgs=%#v", started, ended, msgs)
+	}
+}
+
+// task_started for an Agent worker without a tool_use_id (older CLIs)
+// still emits a bgTaskStartedMsg with empty toolUseID — the
+// SubagentStop reap path degrades to task_id-only matching, which is
+// still correct when claude's CLI happens to use task_id as the
+// agent_id.
+func TestReadClaudeStream_TaskStartedAgentWithoutToolUseID(t *testing.T) {
+	msgs := runStream(t, `{"type":"system","subtype":"task_started","task_id":"t-2","task_type":"agent"}`)
+	var saw *bgTaskStartedMsg
+	for _, m := range msgs {
+		if s, ok := m.(bgTaskStartedMsg); ok {
+			saw = &s
+		}
+	}
+	if saw == nil {
+		t.Fatalf("expected bgTaskStartedMsg, got %#v", msgs)
+	}
+	if saw.taskID != "t-2" || saw.toolUseID != "" {
+		t.Errorf("bgTaskStartedMsg{taskID=%q toolUseID=%q} want {t-2 \"\"}", saw.taskID, saw.toolUseID)
+	}
+}
+
+// task_started for a local_bash background worker (Bash with
+// run_in_background=true) must NOT feed the chip — claude's CLI
+// signals are unreliable for this task_type (task_notification
+// occasionally drops, SubagentStop never fires) so tracking them
+// causes the chip to drift upward and never recover. Bash
+// run_in_background remains observable through normal tool output;
+// it just doesn't get a chip slot.
+func TestReadClaudeStream_TaskStartedLocalBashIsIgnored(t *testing.T) {
+	msgs := runStream(t,
+		`{"type":"system","subtype":"task_started","task_id":"bxgqt","tool_use_id":"toolu_1","task_type":"local_bash","description":"Worker 1"}`,
+		`{"type":"system","subtype":"task_notification","task_id":"bxgqt","status":"completed"}`,
+	)
+	for _, m := range msgs {
+		if _, ok := m.(bgTaskStartedMsg); ok {
+			t.Errorf("local_bash task_started must not emit bgTaskStartedMsg; msgs=%#v", msgs)
+		}
+	}
+}
+
+// task_started without a task_type (very old CLIs or non-agent
+// streams) is also ignored — the chip is now scoped to
+// task_type=agent only. We'd rather under-count than drift upward.
+func TestReadClaudeStream_TaskStartedWithoutTaskTypeIsIgnored(t *testing.T) {
+	msgs := runStream(t, `{"type":"system","subtype":"task_started","task_id":"t-3"}`)
+	for _, m := range msgs {
+		if _, ok := m.(bgTaskStartedMsg); ok {
+			t.Errorf("task_started without task_type must not emit bgTaskStartedMsg; msgs=%#v", msgs)
+		}
 	}
 }
 

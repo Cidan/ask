@@ -117,7 +117,7 @@ func TestUpdate_ProviderExitedMsgResetsState(t *testing.T) {
 	m.proc = &providerProc{stderr: &stderrBuf{}}
 	m.streamCh = make(chan tea.Msg, 1)
 	m.busy = true
-	m.bgTasks = map[string]struct{}{"a": {}}
+	m.bgTasks = map[string]string{"a": ""}
 	m.todos = []todoItem{{Content: "x"}}
 	m.worktreeName = "w1"
 	m2, _ := runUpdate(t, m, providerExitedMsg{proc: m.proc})
@@ -276,9 +276,9 @@ func TestUpdate_ProviderCwdMsgNonWorktreeLeavesEmpty(t *testing.T) {
 func TestUpdate_BgTaskStartedAndEnded(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}
-	m2, _ := runUpdate(t, m, bgTaskStartedMsg{taskID: "t1", proc: m.proc})
-	if _, ok := m2.bgTasks["t1"]; !ok {
-		t.Fatal("bgTasks should contain t1")
+	m2, _ := runUpdate(t, m, bgTaskStartedMsg{taskID: "t1", toolUseID: "toolu_1", proc: m.proc})
+	if got, ok := m2.bgTasks["t1"]; !ok || got != "toolu_1" {
+		t.Fatalf("bgTasks[t1]=%q ok=%v want %q true", got, ok, "toolu_1")
 	}
 	m3, _ := runUpdate(t, m2, bgTaskEndedMsg{taskID: "t1", proc: m2.proc})
 	if _, ok := m3.bgTasks["t1"]; ok {
@@ -286,13 +286,12 @@ func TestUpdate_BgTaskStartedAndEnded(t *testing.T) {
 	}
 }
 
-// When the SubagentStop hook fires for an agent_id that matches a
-// stream-tracked background task, the hook reaps it. This is the core
-// "chip is 100% correct" fix: it plugs the case where
+// When the SubagentStop hook's agent_id equals a tracked task_id, the
+// hook reaps that entry directly. Backstop for the case where
 // task_notification was dropped so the counter got stuck.
-func TestUpdate_HookSubagentStopReapsStuckBgTask(t *testing.T) {
+func TestUpdate_HookSubagentStopReapsByTaskID(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
-	m.bgTasks = map[string]struct{}{"task_a": {}, "task_b": {}}
+	m.bgTasks = map[string]string{"task_a": "", "task_b": ""}
 	m2, _ := runUpdate(t, m, hookSubagentStopMsg{
 		tabID: m.id, agentID: "task_a", agentType: "general-purpose",
 	})
@@ -304,12 +303,32 @@ func TestUpdate_HookSubagentStopReapsStuckBgTask(t *testing.T) {
 	}
 }
 
-// A SubagentStop whose agent_id isn't in bgTasks is a harmless no-op —
-// covers both foreground sub-agents and the case where agent_id and
-// task_id are different identifier namespaces.
+// claude's CLI uses different identifier namespaces for the
+// task_started stream event (task_id) and the SubagentStop hook
+// (agent_id). When agent_id matches the spawning Task call's
+// tool_use_id captured at task_started, the reap path must still find
+// and drop the corresponding bgTasks entry. Without this fallback the
+// background-worker chip stacks up and never decrements.
+func TestUpdate_HookSubagentStopReapsByToolUseID(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.bgTasks = map[string]string{"task_a": "toolu_a", "task_b": "toolu_b"}
+	m2, _ := runUpdate(t, m, hookSubagentStopMsg{
+		tabID: m.id, agentID: "toolu_a", agentType: "general-purpose",
+	})
+	if _, ok := m2.bgTasks["task_a"]; ok {
+		t.Errorf("bgTasks should no longer contain task_a (reaped via tool_use_id)")
+	}
+	if _, ok := m2.bgTasks["task_b"]; !ok {
+		t.Errorf("bgTasks should still contain task_b (unrelated)")
+	}
+}
+
+// A SubagentStop whose agent_id matches neither a task_id nor a
+// captured tool_use_id is a harmless no-op — covers foreground
+// sub-agents and id-namespace mismatches we haven't seen yet.
 func TestUpdate_HookSubagentStopUnknownIDIsNoOp(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
-	m.bgTasks = map[string]struct{}{"task_a": {}}
+	m.bgTasks = map[string]string{"task_a": "toolu_a"}
 	m2, _ := runUpdate(t, m, hookSubagentStopMsg{
 		tabID: m.id, agentID: "unrelated_fg_agent",
 	})
@@ -330,11 +349,24 @@ func TestUpdate_HookSubagentStopOnNilMap(t *testing.T) {
 	}
 }
 
+// SubagentStop with an empty agent_id must not nuke an arbitrary
+// bgTasks entry whose toolUseID happens to also be empty (older CLIs
+// that don't include tool_use_id on task_started). reapBgTaskByAgentID
+// short-circuits on agentID=="" to keep the chip honest.
+func TestUpdate_HookSubagentStopEmptyAgentIDIsNoOp(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.bgTasks = map[string]string{"task_a": "", "task_b": ""}
+	m2, _ := runUpdate(t, m, hookSubagentStopMsg{tabID: m.id, agentID: ""})
+	if len(m2.bgTasks) != 2 {
+		t.Errorf("bgTasks should be unchanged, got %d entries", len(m2.bgTasks))
+	}
+}
+
 // SubagentStart is observability-only: it must NOT add to bgTasks,
 // otherwise foreground sub-agents would inflate the chip count.
 func TestUpdate_HookSubagentStartDoesNotMutateBgTasks(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
-	m.bgTasks = map[string]struct{}{"existing": {}}
+	m.bgTasks = map[string]string{"existing": ""}
 	m2, _ := runUpdate(t, m, hookSubagentStartMsg{
 		tabID: m.id, agentID: "new_agent", agentType: "code-reviewer",
 	})

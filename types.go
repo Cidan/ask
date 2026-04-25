@@ -87,7 +87,14 @@ type todoUpdatedMsg struct {
 
 type bgTaskStartedMsg struct {
 	taskID string
-	proc   *providerProc
+	// toolUseID is the assistant message tool_use_id of the Task call
+	// that spawned this background worker, taken from the task_started
+	// stream event. Empty when the CLI didn't include it. Stashed
+	// alongside taskID so the SubagentStop hook can reap stuck entries
+	// even when its agent_id is the tool_use_id rather than the task_id
+	// (claude's CLI uses different identifier namespaces for the two).
+	toolUseID string
+	proc      *providerProc
 }
 
 type bgTaskEndedMsg struct {
@@ -107,11 +114,11 @@ type hookSubagentStartMsg struct {
 }
 
 // hookSubagentStopMsg is delivered when claude's SubagentStop hook
-// fires. We use it as an authoritative cleanup signal: if agent_id
-// matches a key in bgTasks (which is the stream-event task_id), we
-// drop it, plugging the case where task_notification never arrives.
-// For foreground sub-agents the key won't be present and delete is a
-// no-op, which is fine.
+// fires. We use it as an authoritative cleanup signal: agent_id is
+// matched against either the bgTasks key (task_id) or the per-entry
+// tool_use_id captured at task_started, plugging the case where
+// task_notification never arrives. For foreground sub-agents nothing
+// matches and the message is a no-op, which is fine.
 type hookSubagentStopMsg struct {
 	tabID     int
 	agentID   string
@@ -373,7 +380,13 @@ type model struct {
 
 	todos []todoItem
 
-	bgTasks map[string]struct{}
+	// bgTasks tracks live background workers (Agent tool calls launched
+	// with run_in_background=true). Keyed on task_id from the
+	// task_started stream event; the value is the optional tool_use_id
+	// of the Task call that spawned the worker, used as a fallback for
+	// the SubagentStop hook reap path because claude's CLI sometimes
+	// reports agent_id as the tool_use_id rather than the task_id.
+	bgTasks map[string]string
 
 	// usageCache is the parsed ~/.claude/.usage-cache.json snapshot.
 	// Refreshed at startup and after every providerDoneMsg. Nil means

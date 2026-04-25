@@ -388,16 +388,27 @@ func readClaudeStream(stdout io.Reader, proc *providerProc, ch chan tea.Msg) {
 					ch <- providerModelMsg{model: mdl, proc: proc}
 				}
 			case "task_started":
-				// task_type is optional on the wire and only populated for
-				// newer CLIs; task_started itself is only emitted when the
-				// Agent tool is invoked with run_in_background=true, so any
-				// occurrence counts as a live background worker.
-				if id, _ := ev["task_id"].(string); id != "" {
-					debugLog("system task_started id=%s task_type=%q desc=%q",
-						id, ev["task_type"], ev["description"])
-					ch <- bgTaskStartedMsg{taskID: id, proc: proc}
+				// We chip-track Task/Agent background workers only.
+				// claude's CLI also emits task_started for local_bash
+				// (Bash with run_in_background=true), but its hook and
+				// task_notification signals are unreliable for those —
+				// they would just stack up in the chip with no robust
+				// reap path. tool_use_id is the spawning Task call's
+				// id and serves as a fallback key for the SubagentStop
+				// hook reap path.
+				taskType, _ := ev["task_type"].(string)
+				id, _ := ev["task_id"].(string)
+				tuid, _ := ev["tool_use_id"].(string)
+				debugLog("system task_started id=%s tool_use_id=%s task_type=%q desc=%q",
+					id, tuid, taskType, ev["description"])
+				if id != "" && taskType == "agent" {
+					ch <- bgTaskStartedMsg{taskID: id, toolUseID: tuid, proc: proc}
 				}
 			case "task_notification":
+				// We delete by task_id even when task_type isn't carried
+				// here — non-tracked task_ids (local_bash, etc.) are
+				// no-ops because they were never inserted in the first
+				// place.
 				status, _ := ev["status"].(string)
 				id, _ := ev["task_id"].(string)
 				debugLog("system task_notification id=%s status=%q", id, status)
