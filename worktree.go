@@ -116,6 +116,87 @@ func worktreeNameFromCwd(cwd string) string {
 	return rest
 }
 
+// askCwdInvalidErr describes the chat-facing reason ask refuses to
+// start an LLM session in the current cwd. Empty Msg means cwd is OK.
+// WorktreeName is set when cwd is itself an ask-managed worktree, so
+// the error string includes the /resume hint for that worktree.
+type askCwdInvalidErr struct {
+	Msg          string
+	WorktreeName string
+}
+
+// validateAskCwd reports whether ask's own cwd is a valid place to
+// start or resume an LLM session.
+//
+// Rules:
+//   - Empty cwd → OK (caller hasn't initialised yet).
+//   - cwd is inside an ask-managed worktree (.claude/worktrees/<name>)
+//     → REFUSE with the worktree-specific message naming <name>.
+//   - cwd is itself a git/jj checkout root → OK.
+//   - cwd is inside a git/jj checkout but not at its root → REFUSE.
+//   - cwd is outside any checkout → OK.
+func validateAskCwd(cwd string) askCwdInvalidErr {
+	if cwd == "" {
+		return askCwdInvalidErr{}
+	}
+	if name := worktreeNameFromCwd(cwd); name != "" {
+		return askCwdInvalidErr{
+			Msg: "Ask's current working directory can not be a subdirectory of a git checkout and must be the checkout's root.\n\n" +
+				"To resume a worktree session, you must type /resume and pick the session that previously held the worktree " + name + ".",
+			WorktreeName: name,
+		}
+	}
+	if worktreeBackendAt(cwd) != workspaceBackendNone {
+		return askCwdInvalidErr{}
+	}
+	if findEnclosingCheckout(cwd) != "" {
+		return askCwdInvalidErr{
+			Msg: "Ask's current working directory can not be a subdirectory of a git checkout and must be the checkout's root.",
+		}
+	}
+	return askCwdInvalidErr{}
+}
+
+// findEnclosingCheckout walks up from cwd looking for an ancestor
+// that is itself a git or jj checkout root. Returns the first such
+// directory or "" when cwd has no enclosing checkout.
+func findEnclosingCheckout(cwd string) string {
+	cur := cwd
+	for {
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return ""
+		}
+		cur = parent
+		if worktreeBackendAt(cur) != workspaceBackendNone {
+			return cur
+		}
+	}
+}
+
+// validateExecutorCwd is the last-line guard before we hand a cwd to
+// claude/codex. When worktree mode is enabled and the project root is
+// a git/jj checkout, args.Cwd must point inside .claude/worktrees/ —
+// never at the project root or anywhere else outside the worktree
+// tree. Defense-in-depth on top of validateAskCwd so a stray surface
+// that bypasses the chat-facing block can't accidentally fork a
+// provider on the user's project root.
+func validateExecutorCwd(args ProviderSessionArgs, rootCwd string) error {
+	if !args.Worktree {
+		return nil
+	}
+	if rootCwd != "" && worktreeBackendAt(rootCwd) == workspaceBackendNone {
+		return nil
+	}
+	if args.Cwd == "" {
+		return fmt.Errorf("worktree mode requires a working directory")
+	}
+	if worktreeNameFromCwd(args.Cwd) == "" {
+		return fmt.Errorf("worktree mode refuses to start outside .claude/worktrees/, got cwd %q", args.Cwd)
+	}
+	return nil
+}
+
 // pruneWorktrees removes every sibling under `.claude/worktrees/`. Git uses
 // `git worktree remove` plus branch deletion; JJ uses `jj workspace forget`
 // plus directory removal after verifying the workspace has no pending diff. In

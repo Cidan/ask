@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"strings"
 	"testing"
 
@@ -233,8 +232,10 @@ func TestSwitcher_ApplyDoesNotPersistModelInProviderSettings(t *testing.T) {
 
 func TestSwitcher_SameProviderModelDoesNotAffectNewTabs(t *testing.T) {
 	isolateHome(t)
-	cwd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	// newTab reads os.Getwd to seed m.cwd; pin it at a non-checkout
+	// tmp dir so validateAskCwd doesn't refuse Ctrl+B when this
+	// suite happens to run from inside a worktree directory.
+	t.Chdir(t.TempDir())
 
 	p1 := newFakeProvider()
 	p1.id = "claude"

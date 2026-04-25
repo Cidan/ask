@@ -120,6 +120,13 @@ func prepareProviderSessionAt(args ProviderSessionArgs, worktreeName, rootCwd st
 			return args, worktreeName, err
 		}
 	}
+	// Last-line guard: if worktree mode is on, args.Cwd must live
+	// inside .claude/worktrees/ — never the project root. Catches
+	// future regressions where a refactor lets worktree-mode sessions
+	// reach this point with the bare project root cwd.
+	if err := validateExecutorCwd(args, rootCwd); err != nil {
+		return args, worktreeName, err
+	}
 	return args, worktreeName, nil
 }
 
@@ -132,6 +139,11 @@ func (m model) sendToProvider(line string) (tea.Model, tea.Cmd) {
 	debugLog("sendToProvider provider=%s line=%q attachments=%d procNil=%v busy=%v sessionID=%q",
 		m.provider.ID(), line, nAtt, m.proc == nil, m.busy, m.sessionID)
 	m.appendUser(userBarText(line, nAtt))
+	if invalid := validateAskCwd(m.cwd); invalid.Msg != "" {
+		m.pending = nil
+		m.appendHistory(outputStyle.Render(errStyle.Render(invalid.Msg)))
+		return m, nil
+	}
 	turn := providerQueuedTurn{
 		text:        line,
 		attachments: append([]pendingAttachment(nil), m.pending...),

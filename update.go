@@ -13,6 +13,13 @@ import (
 
 func (m model) Init() tea.Cmd {
 	debugLog("Init provider=%s mcpPort=%d", m.provider.ID(), m.mcpPort)
+	// Skip ProbeInit when ask's cwd isn't a valid project root: it
+	// would fork claude/codex inside a subdir or worktree to discover
+	// slash commands. Startup itself stays silent — the user only
+	// sees the chat-facing error when they type their first command.
+	if invalid := validateAskCwd(m.cwd); invalid.Msg != "" {
+		return cursor.Blink
+	}
 	return tea.Batch(m.provider.ProbeInit(m.sessionArgs()), cursor.Blink)
 }
 
@@ -665,6 +672,14 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// be wiped.
 			return m, nil
 		}
+		// Provider switch ends up calling ProbeInit on the new
+		// provider, which forks claude/codex to discover slash
+		// commands. Refuse the same way as a regular send when ask's
+		// cwd isn't a valid checkout root.
+		if invalid := validateAskCwd(m.cwd); invalid.Msg != "" {
+			m.appendHistory(outputStyle.Render(errStyle.Render(invalid.Msg)))
+			return m, nil
+		}
 		return m.openProviderSwitch(), nil
 	}
 	if msg.Mod == 0 && msg.Code == tea.KeyEsc {
@@ -1172,6 +1187,33 @@ func pickSourceProvider(vs *VirtualSession) (Provider, ProviderSessionRef, bool)
 
 func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 	cmd, _, _ := strings.Cut(line, " ")
+	if invalid := validateAskCwd(m.cwd); invalid.Msg != "" {
+		switch cmd {
+		case "/resume", "/new", "/clear", "/model", "/effort", "/config":
+			// Pure UI commands are still safe to run when ask's cwd
+			// is invalid — they don't fork a provider. Blocking them
+			// would also strand the user without a way to fix things
+			// (e.g. /config to flip worktree off). /resume is the
+			// only exception: it pulls a session list scoped to cwd
+			// and the user could pick something that triggers a
+			// resume-and-send sequence we'd then have to refuse
+			// asymmetrically. Easier to just block /resume here.
+			if cmd == "/resume" {
+				m.appendHistory(outputStyle.Render(errStyle.Render(invalid.Msg)))
+				return m, nil
+			}
+		default:
+			// Provider slash commands (or unknown ones) end up
+			// dispatched via sendToProvider → fork a provider, which
+			// we must refuse the same way as a plain user message.
+			// sendToProvider has its own gate, but inserting the
+			// error here keeps the message ordering clean (no leaked
+			// "user typed X" entry for slash dispatches that would
+			// be immediately followed by the error).
+			m.appendHistory(outputStyle.Render(errStyle.Render(invalid.Msg)))
+			return m, nil
+		}
+	}
 	switch cmd {
 	case "/resume":
 		return m, loadSessionsCmd(m.id, m.cwd)

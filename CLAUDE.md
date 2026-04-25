@@ -59,7 +59,7 @@ One `package main`, one file per concern.
 | `commands.go`          | `cd` / `ls` handlers and `ls` formatting.                               |
 | `paths.go`             | Path picker state, tilde expansion, completion.                         |
 | `shell.go`             | Shell-mode execution: `$SHELL -c` fork, stdout/stderr pipe streaming, 100-line cap, cwd capture via `pwd > tmpfile`, pgroup SIGKILL on cancel. |
-| `worktree.go`          | `inGitCheckout()` (cwd contains `.git`) and `ensureWorktreeGitignore()`. When worktree is enabled, the latter appends `.claude/worktrees/` to `./.gitignore` unless an existing rule already covers it. Both no-op outside a cwd-level git checkout — we do not walk upward. Called at startup when worktree is on in config, on the `/config` → Worktree toggle going true, and guarding the `--worktree` flag in `ensureProc`. |
+| `worktree.go`          | `inGitCheckout()` (cwd contains `.git`) and `ensureWorktreeGitignore()`. When worktree is enabled, the latter appends `.claude/worktrees/` to `./.gitignore` unless an existing rule already covers it. Both no-op outside a cwd-level git checkout — we do not walk upward. Called at startup when worktree is on in config, on the `/config` → Worktree toggle going true, and guarding the `--worktree` flag in `ensureProc`. Also exports `validateAskCwd(cwd)` — refuses to start an LLM session when ask is inside `.claude/worktrees/<name>` (with a `/resume` hint naming `<name>`) or in any subdirectory of a git/jj checkout. Plain checkout roots and non-checkout dirs pass. The chat-facing gate fires from `sendToProvider`, `handleCommand` slash dispatch, Ctrl+B, and silently from `Init`. `validateExecutorCwd(args, root)` is the executor-level defense in `prepareProviderSessionAt`: when worktree mode is on at a real checkout, `args.Cwd` must point inside `.claude/worktrees/`. |
 | `clipboard.go`         | `wl-paste` integration, returns raw bytes + re-encoded PNG.             |
 | `kitty.go`             | Kitty graphics protocol: detection, transmit over `/dev/tty`, Unicode placeholder rows. |
 | `kitty_diacritics.go`  | The canonical 297-entry Kitty row/column diacritic table.               |
@@ -93,6 +93,7 @@ exercised by the user; code alone won't catch layout regressions.
 | `claude_stream_test.go`    | `readClaudeStream` stream-json → `tea.Msg` translation.          |
 | `mcp_test.go`              | MCP bridge conversion + permission/approval wire shapes.         |
 | `worktree_test.go`         | `.claude/worktrees/` lifecycle against tmp git repos.            |
+| `cwd_guard_test.go`        | `validateAskCwd` / `validateExecutorCwd` plus the entry-path gates (sendToProvider, /resume, Ctrl+B, Init). |
 | `session_test.go`          | `~/.claude/projects/` parsing + history loading.                 |
 | `config_test.go`           | `loadConfig` / `saveConfig` / ollama validation.                 |
 | `update_test.go`           | `model.Update` dispatcher behavior via `fakeProvider`.           |
