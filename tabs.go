@@ -14,6 +14,14 @@ type app struct {
 	nextID int
 	width  int
 	height int
+
+	// suspending flips on for the single render between Ctrl+Z and the
+	// SIGTSTP that tea.Suspend issues. While true, View renders an
+	// inline (non-altscreen) message that survives in the user's
+	// terminal scrollback once altscreen is exited, so the shell shows
+	// "ask backgrounded — type `fg` …" before the prompt comes back.
+	// tea.ResumeMsg clears it; the next render re-enters altscreen.
+	suspending bool
 }
 
 // newApp wraps the first tab in the app struct. Config is deliberately
@@ -34,15 +42,15 @@ func closeTabCmd(tabID int) tea.Cmd {
 	return func() tea.Msg { return closeTabMsg{tabID: tabID} }
 }
 
-// suspendApp announces the backgrounding on the visible tab and returns
-// tea.Suspend. tea.Suspend SIGTSTPs the whole process group so any
-// claude/codex child pauses with ask; on SIGCONT (the shell's `fg`)
-// bubbletea rearms the terminal and re-emits WindowSizeMsg on its own,
-// which is why there is no ResumeMsg handler.
+// suspendApp flips the suspending flag and returns tea.Suspend. The
+// flag drives a single non-altscreen frame so the user sees the
+// "backgrounded" line in their actual terminal (not buried in ask's
+// history), then SIGTSTP fires and the shell prompt comes back. The
+// process group also pauses any claude/codex child along with ask;
+// SIGCONT (the shell's `fg`) wakes them, ResumeMsg clears the flag,
+// and the next render re-enters altscreen.
 func (a app) suspendApp() (tea.Model, tea.Cmd) {
-	active := a.activeTab()
-	active.appendHistory(outputStyle.Render(dimStyle.Render(
-		"backgrounded — type `fg` to resume")))
+	a.suspending = true
 	return a, tea.Suspend
 }
 
@@ -77,6 +85,10 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case closeTabMsg:
 		return a.closeTab(m.tabID)
+
+	case tea.ResumeMsg:
+		a.suspending = false
+		return a, nil
 
 	case tea.WindowSizeMsg:
 		a.width = m.Width
@@ -131,6 +143,11 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a app) View() tea.View {
+	if a.suspending {
+		// Render inline (no altscreen) so the message survives in the
+		// shell's scrollback after SIGTSTP releases the terminal.
+		return tea.View{Content: "ask backgrounded — type `fg` to bring it back\n"}
+	}
 	v := a.activeTab().View()
 	if len(a.tabs) <= 1 {
 		return v

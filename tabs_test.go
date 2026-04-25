@@ -82,7 +82,7 @@ func TestApp_ProviderInitLoadedStaysOnOwningTab(t *testing.T) {
 	}
 }
 
-func TestApp_CtrlZSuspendsAndAnnouncesBackgroundOnActiveTabOnly(t *testing.T) {
+func TestApp_CtrlZSuspendsAndRendersInlineBackgroundedMessage(t *testing.T) {
 	a := testAppWithTwoTabs(t)
 	a.tabs[0].input.SetValue("inactive draft")
 	a.tabs[1].input.SetValue("active draft")
@@ -99,26 +99,37 @@ func TestApp_CtrlZSuspendsAndAnnouncesBackgroundOnActiveTabOnly(t *testing.T) {
 	if msg := cmd(); msg != (tea.SuspendMsg{}) {
 		t.Errorf("cmd should yield tea.SuspendMsg{}, got %T %+v", msg, msg)
 	}
-
-	active := a2.tabs[a2.active]
-	if len(active.history) != 1 {
-		t.Fatalf("active tab history=%+v want 1 backgrounded entry", active.history)
-	}
-	if !strings.Contains(active.history[0].text, "backgrounded") {
-		t.Errorf("active tab history[0]=%q must mention 'backgrounded'", active.history[0].text)
-	}
-	if !strings.Contains(active.history[0].text, "fg") {
-		t.Errorf("active tab history[0]=%q should hint at `fg` resume", active.history[0].text)
+	if !a2.suspending {
+		t.Error("app.suspending must be true between Ctrl+Z and ResumeMsg")
 	}
 
-	inactive := a2.tabs[1-a2.active]
-	if len(inactive.history) != 0 {
-		t.Errorf("inactive tab history should stay empty; got %+v", inactive.history)
+	// View while suspending must render *inline* (no altscreen), so
+	// the message lands in the user's terminal scrollback once
+	// bubbletea exits altscreen and SIGTSTP fires.
+	view := a2.View()
+	if view.AltScreen {
+		t.Error("suspending View must have AltScreen=false to print to the host terminal")
+	}
+	if !strings.Contains(view.Content, "backgrounded") {
+		t.Errorf("suspending View content=%q must mention 'backgrounded'", view.Content)
+	}
+	if !strings.Contains(view.Content, "fg") {
+		t.Errorf("suspending View content=%q should hint at `fg` resume", view.Content)
+	}
+
+	// Neither tab's history should be touched — the message lives in
+	// the shell, not in ask.
+	for i, tb := range a2.tabs {
+		if len(tb.history) != 0 {
+			t.Errorf("tab %d history must stay empty; got %+v", i, tb.history)
+		}
 	}
 
 	// The keypress must be consumed by the app, not forwarded to the
 	// active tab's textarea — otherwise a stray 'z' would land in the
 	// input on every suspend.
+	active := a2.tabs[a2.active]
+	inactive := a2.tabs[1-a2.active]
 	if got := active.input.Value(); got != "active draft" {
 		t.Errorf("active tab input mutated by Ctrl+Z: got %q want %q", got, "active draft")
 	}
@@ -141,6 +152,30 @@ func TestApp_CtrlZSuspendsRegardlessOfActiveTabMode(t *testing.T) {
 	}
 	if msg := cmd(); msg != (tea.SuspendMsg{}) {
 		t.Errorf("cmd should yield tea.SuspendMsg{}, got %T", msg)
+	}
+}
+
+// ResumeMsg (delivered by bubbletea after SIGCONT) must clear the
+// suspending flag so the next View re-enters altscreen and renders
+// the live TUI instead of the inline backgrounded message.
+func TestApp_ResumeMsgClearsSuspendingAndReturnsToAltScreen(t *testing.T) {
+	a := testAppWithTwoTabs(t)
+	a.suspending = true
+
+	newA, _ := a.Update(tea.ResumeMsg{})
+	a2, ok := newA.(app)
+	if !ok {
+		t.Fatalf("Update returned %T, want app", newA)
+	}
+	if a2.suspending {
+		t.Error("ResumeMsg must clear suspending")
+	}
+	view := a2.View()
+	if !view.AltScreen {
+		t.Error("post-resume View must re-enter altscreen")
+	}
+	if strings.Contains(view.Content, "backgrounded") {
+		t.Errorf("post-resume View should not show backgrounded message; content=%q", view.Content)
 	}
 }
 
