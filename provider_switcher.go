@@ -171,6 +171,7 @@ func (m model) applyProviderSwitch(model string) (tea.Model, tea.Cmd) {
 		// native session file on the new provider from the current
 		// m.history and resume from that.
 		m.sessionID = ""
+		m.sessionMinted = false
 		m.resumeCwd = ""
 		if m.virtualSessionID != "" {
 			historyCmd = m.applyVSProviderSwap(oldProvName, newProv)

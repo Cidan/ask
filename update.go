@@ -1201,6 +1201,7 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 	if ref, ok := vs.ProviderSessions[providerID]; ok && ref.SessionID != "" &&
 		(vs.LastProvider == "" || vs.LastProvider == providerID) {
 		m.sessionID = ref.SessionID
+		m.sessionMinted = false
 		m.resumeCwd = ref.Cwd
 		m.appendHistory(outputStyle.Render(dimStyle.Render(
 			fmt.Sprintf("loading session %s…", short(vs.ID)))))
@@ -1213,6 +1214,7 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 	// turns, then resume that. The mapping for the current provider
 	// is overwritten so the next swap picks up from here.
 	m.sessionID = ""
+	m.sessionMinted = false
 	m.resumeCwd = ""
 	sourceProv, sourceRef, ok := pickSourceProvider(vs)
 	if !ok {
@@ -1303,6 +1305,7 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 	case "/new", "/clear":
 		m.killProc()
 		m.sessionID = ""
+		m.sessionMinted = false
 		m.resumeCwd = ""
 		m.worktreeName = ""
 		m.virtualSessionID = ""

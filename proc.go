@@ -17,8 +17,13 @@ const cancelFallbackTimeout = 10 * time.Second
 
 // sessionArgs bundles the model's current state into the provider-shaped
 // arg struct used by Provider.StartSession / ProbeInit.
+//
+// SessionID and NewSessionID are mutually exclusive: a freshly minted
+// id (sessionMinted=true) routes to NewSessionID so claudeCLIArgs picks
+// the --session-id branch; otherwise the id is treated as a resume
+// target.
 func (m model) sessionArgs() ProviderSessionArgs {
-	return ProviderSessionArgs{
+	args := ProviderSessionArgs{
 		Cwd:                m.cwd,
 		MCPPort:            m.mcpPort,
 		TabID:              m.id,
@@ -28,10 +33,15 @@ func (m model) sessionArgs() ProviderSessionArgs {
 		OllamaModel:        m.ollamaModel,
 		SkipAllPermissions: m.skipAllPermissions,
 		Worktree:           m.worktree,
-		SessionID:          m.sessionID,
 		ResumeCwd:          m.resumeCwd,
 		PluginDir:          usagePluginDir,
 	}
+	if m.sessionMinted {
+		args.NewSessionID = m.sessionID
+	} else {
+		args.SessionID = m.sessionID
+	}
+	return args
 }
 
 // ensureProc lazily starts a provider session on first send in a turn.
@@ -50,11 +60,12 @@ func (m *model) ensureProc() error {
 	if m.proc != nil {
 		return nil
 	}
-	args := m.sessionArgs()
 	rootCwd, err := os.Getwd()
 	if err != nil {
 		return err
 	}
+	m.preMintNativeSessionIfNeeded()
+	args := m.sessionArgs()
 	args, m.worktreeName, err = prepareProviderSessionAt(args, m.worktreeName, rootCwd)
 	if err != nil {
 		return err
@@ -65,7 +76,28 @@ func (m *model) ensureProc() error {
 	}
 	m.proc = proc
 	m.streamCh = ch
+	m.sessionMinted = false
 	return nil
+}
+
+// preMintNativeSessionIfNeeded asks the current provider for a fresh
+// caller-chosen session id, sets m.sessionID + m.sessionMinted, and
+// records the virtual-session row up front. No-op when m.sessionID is
+// already populated (resume or post-first-turn) or when the provider
+// returns "" (codex, fakes that don't pre-mint). Caller is responsible
+// for clearing m.sessionMinted once the fork has dispatched so a later
+// kill+retry takes the --resume branch.
+func (m *model) preMintNativeSessionIfNeeded() {
+	if m.sessionID != "" || m.provider == nil {
+		return
+	}
+	id := m.provider.PreMintSessionID(m.sessionArgs())
+	if id == "" {
+		return
+	}
+	m.sessionID = id
+	m.sessionMinted = true
+	m.recordVirtualSession(id)
 }
 
 func prepareProviderSession(args ProviderSessionArgs, worktreeName string) (ProviderSessionArgs, string, error) {
@@ -168,7 +200,14 @@ func (m model) sendToProvider(line string) (tea.Model, tea.Cmd) {
 		m.pending = nil
 		m.busy = true
 		m.status = "starting " + m.provider.DisplayName() + "..."
+		(&m).preMintNativeSessionIfNeeded()
 		cmd := startAndSendProviderCmd(m.provider, m.sessionArgs(), m.worktreeName, turn, seq)
+		// The dispatched closure has captured args (with NewSessionID
+		// when minted); flip the flag back so any later fork in this
+		// conversation — kill+retry, provider-swap-back, etc. — runs
+		// down the --resume branch since claude has already written
+		// the jsonl under that id.
+		m.sessionMinted = false
 		if wasIdle {
 			return m, tea.Batch(cmd, m.spinner.Tick)
 		}
@@ -347,6 +386,12 @@ func (m *model) killProc() {
 		m.procStartSeq++
 		m.queuedTurns = nil
 	}
+	// Once we kill, any minted-and-not-yet-claimed id is either already
+	// claimed on disk (claude wrote turn-zero metadata) or was never
+	// claimed (spawn failed). Either way, future forks should take the
+	// --resume branch — claude's --session-id refuses an id that maps
+	// to an existing file.
+	m.sessionMinted = false
 	if m.proc == nil {
 		m.busy = false
 		m.status = ""

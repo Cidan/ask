@@ -204,6 +204,180 @@ func TestFirstUserPreview_EmptyWhenNoUserEntries(t *testing.T) {
 	}
 }
 
+func TestPreMintNativeSession_RecordsVSBeforeFork(t *testing.T) {
+	// Provider that pre-mints (claude-style) — preMintNativeSessionIfNeeded
+	// must stamp m.sessionID, flip m.sessionMinted, and persist a VS row
+	// before the subprocess could possibly start.
+	isolateHome(t)
+	p := newFakeProvider()
+	p.id = "claude"
+	p.preMintFn = func(ProviderSessionArgs) string { return "minted-uuid-123" }
+	m := newTestModel(t, p)
+	m.cwd = "/ws"
+	m.history = append(m.history, historyEntry{kind: histUser, text: "first turn"})
+
+	(&m).preMintNativeSessionIfNeeded()
+
+	if m.sessionID != "minted-uuid-123" {
+		t.Errorf("sessionID=%q want minted-uuid-123", m.sessionID)
+	}
+	if !m.sessionMinted {
+		t.Error("sessionMinted should be true after pre-mint")
+	}
+	if m.virtualSessionID == "" {
+		t.Fatal("virtualSessionID must be recorded before fork")
+	}
+	store, err := loadVirtualSessions()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(store.Sessions) != 1 {
+		t.Fatalf("want 1 VS persisted, got %d", len(store.Sessions))
+	}
+	ref, ok := store.Sessions[0].ProviderSessions["claude"]
+	if !ok || ref.SessionID != "minted-uuid-123" {
+		t.Errorf("VS mapping wrong: %+v", store.Sessions[0].ProviderSessions)
+	}
+}
+
+func TestPreMintNativeSession_CodexNoOps(t *testing.T) {
+	// Codex-style provider returns "" — no mint, no VS row.
+	isolateHome(t)
+	p := newFakeProvider()
+	p.preMintFn = func(ProviderSessionArgs) string { return "" }
+	m := newTestModel(t, p)
+	m.history = append(m.history, historyEntry{kind: histUser, text: "x"})
+
+	(&m).preMintNativeSessionIfNeeded()
+
+	if m.sessionID != "" {
+		t.Errorf("sessionID=%q must stay empty when provider doesn't pre-mint", m.sessionID)
+	}
+	if m.sessionMinted {
+		t.Error("sessionMinted must stay false")
+	}
+	store, _ := loadVirtualSessions()
+	if len(store.Sessions) != 0 {
+		t.Errorf("no VS should be recorded for non-pre-minting provider; got %d", len(store.Sessions))
+	}
+}
+
+func TestPreMintNativeSession_SkippedWhenSessionIDAlreadySet(t *testing.T) {
+	// A resumed conversation already has m.sessionID; pre-mint must not
+	// overwrite it (that would orphan the prior session jsonl).
+	isolateHome(t)
+	p := newFakeProvider()
+	p.preMintFn = func(ProviderSessionArgs) string { return "wrong-fresh-uuid" }
+	m := newTestModel(t, p)
+	m.sessionID = "existing-resume-uuid"
+
+	(&m).preMintNativeSessionIfNeeded()
+
+	if m.sessionID != "existing-resume-uuid" {
+		t.Errorf("sessionID overwritten: %q", m.sessionID)
+	}
+	if m.sessionMinted {
+		t.Error("sessionMinted must stay false on resume")
+	}
+}
+
+func TestSessionArgs_RoutesMintedToNewSessionID(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.sessionID = "uuid-fresh"
+	m.sessionMinted = true
+	args := m.sessionArgs()
+	if args.NewSessionID != "uuid-fresh" {
+		t.Errorf("NewSessionID=%q want uuid-fresh", args.NewSessionID)
+	}
+	if args.SessionID != "" {
+		t.Errorf("SessionID should be empty when minted; got %q", args.SessionID)
+	}
+}
+
+func TestSessionArgs_RoutesUnmintedToSessionID(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.sessionID = "uuid-resume"
+	m.sessionMinted = false
+	args := m.sessionArgs()
+	if args.SessionID != "uuid-resume" {
+		t.Errorf("SessionID=%q want uuid-resume", args.SessionID)
+	}
+	if args.NewSessionID != "" {
+		t.Errorf("NewSessionID should be empty when not minted; got %q", args.NewSessionID)
+	}
+}
+
+func TestSendToProvider_PreMintsAndRecordsVSBeforeStart(t *testing.T) {
+	// End-to-end: a fresh tab on a claude-style provider sends the first
+	// turn. After sendToProvider returns synchronously (before the async
+	// start cmd runs), the VS must already exist on disk and m.sessionID
+	// must be populated. This is the cancel-safety guarantee — if the
+	// user hits ESC right now, the worktree is still findable via the
+	// /resume picker.
+	isolateHome(t)
+	p := newFakeProvider()
+	p.id = "claude"
+	p.preMintFn = func(ProviderSessionArgs) string { return "fresh-mint-xyz" }
+	m := newTestModel(t, p)
+	mm, cmd := m.sendToProvider("hello")
+	m2 := mm.(model)
+
+	if m2.sessionID != "fresh-mint-xyz" {
+		t.Errorf("m.sessionID=%q want fresh-mint-xyz", m2.sessionID)
+	}
+	if m2.sessionMinted {
+		t.Error("sessionMinted should be cleared after dispatch so retries take --resume")
+	}
+	if m2.virtualSessionID == "" {
+		t.Error("virtualSessionID should be set before fork")
+	}
+	store, err := loadVirtualSessions()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(store.Sessions) != 1 {
+		t.Fatalf("VS row must exist before async start runs; got %d", len(store.Sessions))
+	}
+	ref := store.Sessions[0].ProviderSessions["claude"]
+	if ref.SessionID != "fresh-mint-xyz" {
+		t.Errorf("VS native id=%q want fresh-mint-xyz", ref.SessionID)
+	}
+	// The dispatched start cmd must have captured args carrying the
+	// minted id in NewSessionID (so claudeCLIArgs picks --session-id).
+	done := runProviderStartCmd(t, cmd)
+	if done.providerID != "claude" {
+		t.Errorf("providerID=%q", done.providerID)
+	}
+	if len(p.startArgs) != 1 {
+		t.Fatalf("StartSession should be called once; got %d", len(p.startArgs))
+	}
+	if p.startArgs[0].NewSessionID != "fresh-mint-xyz" {
+		t.Errorf("StartSession args.NewSessionID=%q want fresh-mint-xyz",
+			p.startArgs[0].NewSessionID)
+	}
+	if p.startArgs[0].SessionID != "" {
+		t.Errorf("StartSession args.SessionID should be empty for fresh mint; got %q",
+			p.startArgs[0].SessionID)
+	}
+}
+
+func TestKillProc_ClearsSessionMinted(t *testing.T) {
+	// killProc fires on ESC-confirm; after it, any later fork in the
+	// same conversation must take --resume because either claude wrote
+	// the jsonl already (the file exists) or didn't (in which case
+	// re-using --session-id with a stale ack would still misbehave).
+	m := newTestModel(t, newFakeProvider())
+	m.sessionID = "uuid"
+	m.sessionMinted = true
+	(&m).killProc()
+	if m.sessionMinted {
+		t.Error("killProc must clear sessionMinted")
+	}
+	if m.sessionID != "uuid" {
+		t.Errorf("killProc must NOT clear sessionID; got %q", m.sessionID)
+	}
+}
+
 func TestRecordVirtualSession_NewSessionCreatesVS(t *testing.T) {
 	isolateHome(t)
 	m := newTestModel(t, newFakeProvider())

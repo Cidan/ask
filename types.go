@@ -293,6 +293,14 @@ type model struct {
 	sessionID string
 	resumeCwd string
 
+	// sessionMinted is set when ask just pre-minted m.sessionID via
+	// Provider.PreMintSessionID and the next fork must announce it as a
+	// new session (claude: --session-id) instead of resuming. Cleared
+	// once the dispatch closure has captured args, so subsequent forks
+	// (after a kill, a retry) take the --resume branch since the
+	// session file now exists on disk.
+	sessionMinted bool
+
 	// virtualSessionID pins the tab to a VirtualSession in
 	// ~/.config/ask/sessions.json so upserts accumulate native session
 	// ids under one id across providers. Set on /resume or first

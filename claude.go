@@ -170,8 +170,17 @@ func claudeCLIArgs(args ProviderSessionArgs, probe bool) []string {
 	if args.Effort != "" {
 		out = append(out, "--effort", args.Effort)
 	}
-	if !probe && args.SessionID != "" {
-		out = append(out, "--resume", args.SessionID)
+	if !probe {
+		switch {
+		case args.NewSessionID != "":
+			// Fresh session: ask pre-minted the UUID and the on-disk
+			// jsonl doesn't exist yet. --session-id lets claude write
+			// under that exact id from turn one, so the VS row ask
+			// recorded before fork pairs with the real session file.
+			out = append(out, "--session-id", args.NewSessionID)
+		case args.SessionID != "":
+			out = append(out, "--resume", args.SessionID)
+		}
 	}
 	// Note: ask manages its own worktree lifecycle now — we never pass
 	// claude's --worktree flag, and instead run the subprocess with
@@ -215,6 +224,14 @@ func (claudeProvider) StartSession(args ProviderSessionArgs) (*providerProc, cha
 // frame, so the app falls back to killProc. Returning handled=false
 // signals that fallback explicitly.
 func (claudeProvider) Interrupt(_ *providerProc) (bool, error) { return false, nil }
+
+// PreMintSessionID returns a fresh UUIDv4 ask passes to claude as
+// --session-id on the first fork of a new conversation. Letting ask
+// choose the id lets it record the virtual-session row before claude
+// runs a single turn, so a first-turn cancel can no longer orphan the
+// worktree (claude wouldn't otherwise reveal the id until it emits the
+// turn's `result` event).
+func (claudeProvider) PreMintSessionID(_ ProviderSessionArgs) string { return newUUIDv4() }
 
 func (claudeProvider) Send(p *providerProc, text string, attachments []pendingAttachment) error {
 	payload := map[string]any{

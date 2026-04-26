@@ -38,6 +38,7 @@ func (m model) doCd(target string) (tea.Model, tea.Cmd) {
 	m.cwd = abs
 	m.killProc()
 	m.sessionID = ""
+	m.sessionMinted = false
 	m.history = nil
 	m.refreshPrompt()
 	m.appendHistory(outputStyle.Render(

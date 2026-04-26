@@ -220,6 +220,69 @@ func TestClaudeCLIArgs_ResumeFlag(t *testing.T) {
 	}
 }
 
+func TestClaudeCLIArgs_NewSessionIDFlag(t *testing.T) {
+	args := claudeCLIArgs(ProviderSessionArgs{NewSessionID: "abc-uuid"}, false)
+	if got := argAfter(args, "--session-id"); got != "abc-uuid" {
+		t.Errorf("--session-id want abc-uuid got %q; argv=%v", got, args)
+	}
+	if containsArg(args, "--resume") {
+		t.Errorf("a freshly minted session must NOT carry --resume: %v", args)
+	}
+}
+
+func TestClaudeCLIArgs_NewSessionIDWinsOverResume(t *testing.T) {
+	// Both fields populated would be a programmer bug; if it ever
+	// happens, --session-id wins because that's the path that pairs
+	// with the up-front VS row.
+	args := claudeCLIArgs(ProviderSessionArgs{
+		NewSessionID: "fresh-uuid", SessionID: "old-uuid",
+	}, false)
+	if got := argAfter(args, "--session-id"); got != "fresh-uuid" {
+		t.Errorf("--session-id should win, got %q; argv=%v", got, args)
+	}
+	if containsArg(args, "--resume") {
+		t.Errorf("--resume must not be passed alongside --session-id: %v", args)
+	}
+}
+
+func TestClaudeCLIArgs_ProbeDropsNewSessionID(t *testing.T) {
+	// Probes are throwaway slash-command discovery runs; they must
+	// never claim a session id, freshly minted or otherwise.
+	probe := claudeCLIArgs(ProviderSessionArgs{NewSessionID: "fresh-uuid"}, true)
+	if containsArg(probe, "--session-id") {
+		t.Errorf("probe args must not include --session-id: %v", probe)
+	}
+}
+
+func TestClaudeProvider_PreMintSessionIDReturnsUUIDv4(t *testing.T) {
+	id := claudeProvider{}.PreMintSessionID(ProviderSessionArgs{})
+	// 8-4-4-4-12 hex form, version-4, RFC 4122 variant.
+	if got := len(id); got != 36 {
+		t.Fatalf("uuid length=%d want 36; id=%q", got, id)
+	}
+	if id[14] != '4' {
+		t.Errorf("uuid version nibble at index 14 should be '4', got %q in %s", id[14], id)
+	}
+	switch id[19] {
+	case '8', '9', 'a', 'b':
+	default:
+		t.Errorf("uuid variant nibble at index 19 should be 8/9/a/b, got %q in %s", id[19], id)
+	}
+	// Two consecutive mints must differ — collisions would be a bug.
+	other := claudeProvider{}.PreMintSessionID(ProviderSessionArgs{})
+	if id == other {
+		t.Errorf("consecutive PreMintSessionID returned the same uuid: %s", id)
+	}
+}
+
+func TestCodexProvider_PreMintSessionIDReturnsEmpty(t *testing.T) {
+	// Codex assigns its threadID at handshake; ask must not pre-mint.
+	got := codexProvider{}.PreMintSessionID(ProviderSessionArgs{})
+	if got != "" {
+		t.Errorf("codexProvider.PreMintSessionID=%q want empty", got)
+	}
+}
+
 func TestClaudeCLIArgs_NeverPassesWorktreeFlag(t *testing.T) {
 	// ask owns worktree lifecycle end-to-end now; claude's own
 	// --worktree machinery must not be triggered regardless of input.

@@ -46,6 +46,15 @@ type Provider interface {
 	// provider has no dynamic discovery.
 	ProbeInit(args ProviderSessionArgs) tea.Cmd
 
+	// PreMintSessionID returns a fresh native session id ask should
+	// pre-bind for this provider before forking, or "" when the
+	// provider can't accept a caller-chosen id. When non-empty, ask
+	// records the virtual-session row up front so a first-turn cancel
+	// cannot orphan the worktree. The returned id is passed back via
+	// args.NewSessionID on the StartSession that uses it (claude:
+	// --session-id <uuid>).
+	PreMintSessionID(args ProviderSessionArgs) string
+
 	// StartSession forks the agent CLI in streaming mode. Returns the
 	// process handle and its event channel on success; err non-nil on
 	// launch failure.
@@ -145,6 +154,12 @@ type ProviderPicker struct {
 
 // ProviderSessionArgs bundles everything a provider may need to spawn a
 // session or run its init probe. Unused fields are ignored.
+//
+// SessionID and NewSessionID are mutually exclusive: SessionID is for
+// resuming a session the provider has already persisted (claude:
+// --resume); NewSessionID carries an id ask pre-minted for a fresh
+// session (claude: --session-id) so the worktree+VS pairing exists
+// before the first turn lands. Setting both is a programmer error.
 type ProviderSessionArgs struct {
 	Cwd                string
 	MCPPort            int
@@ -156,6 +171,7 @@ type ProviderSessionArgs struct {
 	SkipAllPermissions bool
 	Worktree           bool
 	SessionID          string
+	NewSessionID       string
 	ResumeCwd          string
 	// PluginDir is passed to claude as --plugin-dir so the embedded
 	// ask-usage plugin's SessionStart hook fires. Empty when the plugin

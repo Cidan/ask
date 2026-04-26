@@ -118,6 +118,11 @@ func (codexProvider) BaseSlashCommands() []slashCmd {
 // immediately, matching claude's per-launch cache-refresh pattern.
 // Errors are non-fatal: the picker still works with the static
 // BaseSlashCommands list even if discovery failed this round.
+// PreMintSessionID returns "" — codex assigns its own threadID at
+// handshake (recorded on state.threadID) and the app-server protocol
+// has no caller-chosen id slot.
+func (codexProvider) PreMintSessionID(_ ProviderSessionArgs) string { return "" }
+
 func (codexProvider) ProbeInit(args ProviderSessionArgs) tea.Cmd {
 	return func() tea.Msg {
 		skills, err := fetchCodexSkills(args.Cwd)

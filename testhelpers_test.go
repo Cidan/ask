@@ -27,6 +27,7 @@ type fakeProvider struct {
 	baseSlash     []slashCmd
 
 	probeInitFn    func(ProviderSessionArgs) tea.Cmd
+	preMintFn      func(ProviderSessionArgs) string
 	startSessionFn func(ProviderSessionArgs) (*providerProc, chan tea.Msg, error)
 	sendFn         func(*providerProc, string, []pendingAttachment) error
 	interruptFn    func(*providerProc) (bool, error)
@@ -75,6 +76,13 @@ func (f *fakeProvider) ProbeInit(args ProviderSessionArgs) tea.Cmd {
 		return f.probeInitFn(args)
 	}
 	return nil
+}
+
+func (f *fakeProvider) PreMintSessionID(args ProviderSessionArgs) string {
+	if f.preMintFn != nil {
+		return f.preMintFn(args)
+	}
+	return ""
 }
 
 func (f *fakeProvider) StartSession(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
