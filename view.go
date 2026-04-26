@@ -812,12 +812,12 @@ func (m model) statusChipRow() string {
 		if rw+leftMargin > usable {
 			right = m.providerChipFitting(usable)
 			rw = lipgloss.Width(right)
-			return strings.Repeat(" ", usable-rw) + right
+			return strings.Repeat(" ", max(0, usable-rw)) + right
 		}
 		pad = 1
 	}
 	if left == "" {
-		return strings.Repeat(" ", usable-rw) + right
+		return strings.Repeat(" ", max(0, usable-rw)) + right
 	}
 	return strings.Repeat(" ", leftMargin) + left + strings.Repeat(" ", pad) + right
 }

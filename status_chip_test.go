@@ -397,6 +397,36 @@ func TestStatusChipRow_NarrowWidthDropsUsageSegments(t *testing.T) {
 	}
 }
 
+// At very narrow widths the base provider chip is wider than the
+// usable column count. Earlier code computed `strings.Repeat(" ", usable-rw)`
+// without clamping, panicking with "negative Repeat count" when the
+// terminal got squeezed below the chip's minimum size. This guards
+// against the regression — at every width from 1..40 (covering the
+// tiny terminals where the panic was reported), statusChipRow must
+// not panic and must return either "" or a non-empty string.
+func TestStatusChipRow_NarrowWidthDoesNotPanic(t *testing.T) {
+	cases := []struct {
+		name     string
+		worktree string
+	}{
+		{"no_worktree", ""},
+		{"with_worktree", "feat-x"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newFakeProvider()
+			p.id = "claude"
+			m := newTestModel(t, p)
+			m.providerModel = "default"
+			m.worktreeName = tc.worktree
+			for w := 1; w <= 40; w++ {
+				m.width = w
+				_ = m.statusChipRow()
+			}
+		})
+	}
+}
+
 // visibleWidth is a lightweight visible-width count that strips ANSI
 // escape sequences — we can't assert exact bytes because lipgloss adds
 // styling. The string is "content + escape codes", and since tests use
