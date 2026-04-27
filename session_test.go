@@ -67,6 +67,46 @@ func TestClaudeCandidateSessionDirs_MainAndWorktrees(t *testing.T) {
 	}
 }
 
+// When cwd is reachable through a symlink, candidates must include both the
+// literal-cwd encoding (kept first for error reporting) and the
+// EvalSymlinks-resolved encoding so resume finds session files claude wrote
+// from the canonical path via getcwd(2).
+func TestClaudeCandidateSessionDirs_ResolvesSymlinkedCwd(t *testing.T) {
+	home := isolateHome(t)
+	canonical := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(canonical, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	_ = seedClaudeProjects(t, home, canonical, "S-canonical",
+		`{"type":"user","message":{"role":"user","content":"hi"}}`)
+
+	dirs, err := claudeCandidateSessionDirs(link)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(dirs) == 0 {
+		t.Fatal("no dirs returned")
+	}
+	wantLiteral := filepath.Join(home, ".claude", "projects",
+		strings.ReplaceAll(link, "/", "-"))
+	if dirs[0].dir != wantLiteral || dirs[0].cwd != link {
+		t.Errorf("first dir must stay on literal cwd for error reporting; got %+v", dirs[0])
+	}
+	wantCanonical := filepath.Join(home, ".claude", "projects",
+		strings.ReplaceAll(canonical, "/", "-"))
+	var found bool
+	for _, d := range dirs {
+		if d.dir == wantCanonical {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("canonical dir %q missing from candidates: %+v", wantCanonical, dirs)
+	}
+}
+
 func TestClaudeCandidateSessionDirs_EmptyCwdUsesGetwd(t *testing.T) {
 	home := isolateHome(t)
 	tmp := t.TempDir()

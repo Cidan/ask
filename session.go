@@ -48,6 +48,17 @@ func claudeSessionPath(sessionID string, cwd string) (string, error) {
 // `/foo/ask/.claude/worktrees/bar` becomes
 // `-foo-ask--claude-worktrees-bar`. We rely on that literal prefix to
 // find siblings and reconstruct the worktree path from the remainder.
+//
+// Symlinks: claude itself encodes from the canonical cwd (getcwd(2)),
+// while ask's os.Getwd may instead return the unresolved form when
+// $PWD points at a symlinked path that stat-matches "." (e.g. running
+// `ask resume` from `/home/user/Projects` when that is a symlink to
+// `/storage/Projects`). We add the EvalSymlinks-resolved cwd as a
+// second candidate when it differs, deduplicating both main and
+// sibling dirs so non-symlinked cwds get the exact same single-form
+// dir set as before. The literal cwd's main dir stays first so
+// claudeSessionPath's dirs[0] fallback keeps reporting the path the
+// caller passed in.
 func claudeCandidateSessionDirs(cwd string) ([]sessionDir, error) {
 	if cwd == "" {
 		c, err := os.Getwd()
@@ -61,25 +72,38 @@ func claudeCandidateSessionDirs(cwd string) ([]sessionDir, error) {
 		return nil, err
 	}
 	base := filepath.Join(home, ".claude", "projects")
-	mainName := strings.ReplaceAll(cwd, "/", "-")
-	dirs := []sessionDir{{dir: filepath.Join(base, mainName), cwd: cwd}}
-	prefix := mainName + "--claude-worktrees-"
-	entries, err := os.ReadDir(base)
-	if err != nil {
-		return dirs, nil
+	cwds := []string{cwd}
+	if resolved, err := filepath.EvalSymlinks(cwd); err == nil && resolved != cwd {
+		cwds = append(cwds, resolved)
 	}
-	for _, e := range entries {
-		if !e.IsDir() {
+	var dirs []sessionDir
+	seenMain := map[string]bool{}
+	seenSibling := map[string]bool{}
+	for _, c := range cwds {
+		mainName := strings.ReplaceAll(c, "/", "-")
+		if !seenMain[mainName] {
+			dirs = append(dirs, sessionDir{dir: filepath.Join(base, mainName), cwd: c})
+			seenMain[mainName] = true
+		}
+		prefix := mainName + "--claude-worktrees-"
+		entries, err := os.ReadDir(base)
+		if err != nil {
 			continue
 		}
-		if !strings.HasPrefix(e.Name(), prefix) {
-			continue
+		for _, e := range entries {
+			if !e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+				continue
+			}
+			if seenSibling[e.Name()] {
+				continue
+			}
+			seenSibling[e.Name()] = true
+			wtName := strings.TrimPrefix(e.Name(), prefix)
+			dirs = append(dirs, sessionDir{
+				dir: filepath.Join(base, e.Name()),
+				cwd: filepath.Join(c, ".claude", "worktrees", wtName),
+			})
 		}
-		wtName := strings.TrimPrefix(e.Name(), prefix)
-		dirs = append(dirs, sessionDir{
-			dir: filepath.Join(base, e.Name()),
-			cwd: filepath.Join(cwd, ".claude", "worktrees", wtName),
-		})
 	}
 	return dirs, nil
 }
@@ -320,6 +344,12 @@ func writeClaudeSyntheticSession(workspace string, turns []NeutralTurn) (string,
 			return "", "", err
 		}
 		workspace = cwd
+	}
+	// Resolve symlinks so the encoded dir matches where claude itself
+	// will look when it later resumes via getcwd(2). See the
+	// claudeCandidateSessionDirs comment for the read-side mirror.
+	if resolved, err := filepath.EvalSymlinks(workspace); err == nil {
+		workspace = resolved
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

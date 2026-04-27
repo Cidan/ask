@@ -977,6 +977,39 @@ func TestClaudeMaterialize_RoundTripsViaLoadClaudeHistory(t *testing.T) {
 	}
 }
 
+// When the workspace passed in is a symlink, the synthetic file must land
+// under the canonical-encoded dir (matching where claude itself reads via
+// getcwd(2)) and the returned nativeCwd must point at the canonical path
+// so subsequent --resume launches don't drift back to the symlink form.
+func TestClaudeMaterialize_ResolvesSymlinkedWorkspace(t *testing.T) {
+	home := isolateHome(t)
+	canonical := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(canonical, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	turns := []NeutralTurn{{Role: "user", Text: "hi"}}
+	sid, nativeCwd, err := writeClaudeSyntheticSession(link, turns)
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if nativeCwd != canonical {
+		t.Errorf("nativeCwd=%q want canonical %q", nativeCwd, canonical)
+	}
+	encCanon := strings.ReplaceAll(canonical, "/", "-")
+	encCanon = strings.ReplaceAll(encCanon, ".", "-")
+	canonPath := filepath.Join(home, ".claude", "projects", encCanon, sid+".jsonl")
+	if _, err := os.Stat(canonPath); err != nil {
+		t.Fatalf("synthetic file should land under canonical encoding %s: %v", canonPath, err)
+	}
+	encLink := strings.ReplaceAll(link, "/", "-")
+	encLink = strings.ReplaceAll(encLink, ".", "-")
+	linkPath := filepath.Join(home, ".claude", "projects", encLink, sid+".jsonl")
+	if _, err := os.Stat(linkPath); err == nil {
+		t.Errorf("synthetic file should NOT exist under symlink encoding %s", linkPath)
+	}
+}
+
 // ---- US-014: codexProvider.Materialize round-trip ----
 
 func TestCodexMaterialize_RoundTripsViaLoadCodexHistory(t *testing.T) {
