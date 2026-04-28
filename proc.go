@@ -35,6 +35,7 @@ func (m model) sessionArgs() ProviderSessionArgs {
 		Worktree:           m.worktree,
 		ResumeCwd:          m.resumeCwd,
 		PluginDir:          usagePluginDir,
+		AddedDirs:          append([]string(nil), m.addedDirs...),
 	}
 	if m.sessionMinted {
 		args.NewSessionID = m.sessionID

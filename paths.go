@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-var pathPickerPrefixes = []string{"cd ", "ls "}
+var pathPickerPrefixes = []string{"cd ", "ls ", "/add-dir "}
 
 func bareCommand(line string) string {
 	for _, p := range pathPickerPrefixes {

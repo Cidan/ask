@@ -56,6 +56,7 @@ func (claudeProvider) BaseSlashCommands() []slashCmd {
 		{"/clear", "start a new Claude session"},
 		{"/model", "select the Claude model"},
 		{"/effort", "select the Claude reasoning effort"},
+		{"/add-dir", "add a directory the agent may access"},
 	}
 }
 
@@ -180,6 +181,12 @@ func claudeCLIArgs(args ProviderSessionArgs, probe bool) []string {
 			out = append(out, "--session-id", args.NewSessionID)
 		case args.SessionID != "":
 			out = append(out, "--resume", args.SessionID)
+		}
+		// One --add-dir per registered dir. Skipped on probe so the
+		// short-lived discovery handshake doesn't churn claude's
+		// trusted-roots prompt.
+		for _, d := range args.AddedDirs {
+			out = append(out, "--add-dir", d)
 		}
 	}
 	// Note: ask manages its own worktree lifecycle now — we never pass

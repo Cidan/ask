@@ -1185,6 +1185,7 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 	m.virtualSessionID = vs.ID
 	m.mode = modeInput
 	m.history = nil
+	m.addedDirs = append([]string(nil), vs.AddedDirs...)
 
 	providerID := m.provider.ID()
 	opts := HistoryOpts{
@@ -1310,8 +1311,16 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		m.worktreeName = ""
 		m.virtualSessionID = ""
 		m.history = nil
+		m.addedDirs = nil
 		(&m).clearSelection()
 		m.appendHistory(outputStyle.Render(promptStyle.Render("✓ new session")))
+		return m, nil
+	case "/add-dir":
+		// Bare /add-dir from the slash menu (no path). Arg-supplied
+		// runs go through the path picker, which dispatches to doAddDir
+		// before handleCommand sees the line.
+		m.appendHistory(outputStyle.Render(errStyle.Render(
+			"/add-dir: missing directory argument")))
 		return m, nil
 	case "/model":
 		picker := m.provider.ModelPicker()

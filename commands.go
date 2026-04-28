@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +19,8 @@ func (m model) runPathCommand(cmd, target string) (tea.Model, tea.Cmd) {
 		return m.doCd(target)
 	case "ls":
 		return m.doLs(target)
+	case "/add-dir":
+		return m.doAddDir(target)
 	}
 	return m, nil
 }
@@ -43,6 +46,38 @@ func (m model) doCd(target string) (tea.Model, tea.Cmd) {
 	m.refreshPrompt()
 	m.appendHistory(outputStyle.Render(
 		promptStyle.Render("✓ cd "+abs) + "  " + dimStyle.Render("(session cleared)"),
+	))
+	return m, nil
+}
+
+// doAddDir registers an additional directory with the active provider.
+// Kills the running proc so the next user turn relaunches with the
+// new dir in argv (claude --add-dir, codex writable_roots). The
+// session id and worktree are intentionally preserved so the relaunch
+// resumes — not restarts — the conversation.
+func (m model) doAddDir(target string) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(target) == "" {
+		m.appendHistory(outputStyle.Render(errStyle.Render(
+			"/add-dir: missing directory argument")))
+		return m, nil
+	}
+	abs, err := resolveDir(target)
+	if err != nil {
+		m.appendHistory(outputStyle.Render(errStyle.Render(
+			"/add-dir: " + err.Error())))
+		return m, nil
+	}
+	if slices.Contains(m.addedDirs, abs) {
+		m.appendHistory(outputStyle.Render(dimStyle.Render(
+			"/add-dir: " + abs + " already registered")))
+		return m, nil
+	}
+	m.addedDirs = append(m.addedDirs, abs)
+	m.killProc()
+	m.persistAddedDirs()
+	m.appendHistory(outputStyle.Render(
+		promptStyle.Render("✓ /add-dir " + abs) + "  " +
+			dimStyle.Render("(applies on next message)"),
 	))
 	return m, nil
 }

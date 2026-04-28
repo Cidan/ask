@@ -33,6 +33,12 @@ type VirtualSession struct {
 	Preview          string                        `json:"preview,omitempty"`
 	LastProvider     string                        `json:"lastProvider,omitempty"`
 	ProviderSessions map[string]ProviderSessionRef `json:"providerSessions"`
+
+	// AddedDirs are absolute paths the user registered with /add-dir.
+	// Persisted alongside the session so a later /resume rehydrates
+	// m.addedDirs and the relaunched provider runs with --add-dir /
+	// writable_roots wired in from the start.
+	AddedDirs []string `json:"addedDirs,omitempty"`
 }
 
 // ProviderSessionRef points at a provider's native session. Cwd
@@ -317,10 +323,18 @@ func (m *model) recordVirtualSession(nativeID string) {
 	preview := firstUserPreview(m.history)
 	providerID := m.provider.ID()
 	vsID := m.virtualSessionID
+	addedDirs := append([]string(nil), m.addedDirs...)
 	now := time.Now().UTC()
 	var newID string
 	err := mutateVirtualSessions(func(store *virtualSessionStore) error {
 		newID = upsertVirtualSession(store, vsID, workspace, providerID, nativeID, nativeCwd, preview, now)
+		// AddedDirs is recorded out-of-band so the upsert/applyTurn
+		// pair stays focused on turn data and translateVSCmd doesn't
+		// inadvertently wipe a VS's saved dirs by upserting with an
+		// empty source-side list.
+		if vs := store.findByID(newID); vs != nil {
+			vs.AddedDirs = addedDirs
+		}
 		return nil
 	})
 	if err != nil {
@@ -329,6 +343,32 @@ func (m *model) recordVirtualSession(nativeID string) {
 	}
 	if newID != "" {
 		m.virtualSessionID = newID
+	}
+}
+
+// persistAddedDirs writes the current m.addedDirs onto the matching
+// VirtualSession, no-op when this tab hasn't yet been paired with a
+// VS. /add-dir calls this so a quit-before-next-turn doesn't lose
+// the registered paths. We don't bump providerSessions here — those
+// only change on real turn completions via recordVirtualSession.
+func (m *model) persistAddedDirs() {
+	if m.virtualSessionID == "" {
+		return
+	}
+	dirs := append([]string(nil), m.addedDirs...)
+	vsID := m.virtualSessionID
+	now := time.Now().UTC()
+	err := mutateVirtualSessions(func(store *virtualSessionStore) error {
+		vs := store.findByID(vsID)
+		if vs == nil {
+			return nil
+		}
+		vs.AddedDirs = dirs
+		vs.UpdatedAt = now
+		return nil
+	})
+	if err != nil {
+		debugLog("persistAddedDirs: %v", err)
 	}
 }
 

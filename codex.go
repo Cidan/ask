@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -108,6 +110,7 @@ func (codexProvider) BaseSlashCommands() []slashCmd {
 		{"/clear", "start a new Codex session"},
 		{"/model", "select the Codex model"},
 		{"/effort", "select the Codex reasoning effort"},
+		{"/add-dir", "add a directory the agent may access"},
 	}
 }
 
@@ -184,8 +187,22 @@ type codexState struct {
 
 // codexCLIArgs returns the argv passed to the codex binary. Broken out so
 // tests can assert shape without forking a process.
-func codexCLIArgs(_ ProviderSessionArgs) []string {
-	return []string{"app-server", "--listen", "stdio://"}
+//
+// AddedDirs translate to a -c sandbox_workspace_write.writable_roots
+// TOML override (the same config key codex's interactive --add-dir
+// flag writes to). Each path is strconv.Quote'd so spaces or quotes
+// don't break codex's TOML parser.
+func codexCLIArgs(args ProviderSessionArgs) []string {
+	out := []string{"app-server", "--listen", "stdio://"}
+	if len(args.AddedDirs) > 0 {
+		quoted := make([]string, len(args.AddedDirs))
+		for i, d := range args.AddedDirs {
+			quoted[i] = strconv.Quote(d)
+		}
+		out = append(out, "-c",
+			"sandbox_workspace_write.writable_roots=["+strings.Join(quoted, ",")+"]")
+	}
+	return out
 }
 
 // handshake request ids — fixed so the handshake scanner can match by id.

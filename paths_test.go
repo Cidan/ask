@@ -101,6 +101,10 @@ func TestModelPathPickerCmd(t *testing.T) {
 	if got := m.pathPickerCmd(); got != "ls" {
 		t.Errorf("pathPickerCmd=%q want ls", got)
 	}
+	m.input.SetValue("/add-dir foo")
+	if got := m.pathPickerCmd(); got != "/add-dir" {
+		t.Errorf("pathPickerCmd=%q want /add-dir", got)
+	}
 	m.input.SetValue("random")
 	if got := m.pathPickerCmd(); got != "" {
 		t.Errorf("pathPickerCmd=%q want empty", got)
@@ -112,6 +116,10 @@ func TestModelPathQuery(t *testing.T) {
 	m.input.SetValue("cd some/path")
 	if got := m.pathQuery(); got != "some/path" {
 		t.Errorf("pathQuery=%q want some/path", got)
+	}
+	m.input.SetValue("/add-dir some/extra")
+	if got := m.pathQuery(); got != "some/extra" {
+		t.Errorf("pathQuery=%q want some/extra", got)
 	}
 	m.input.SetValue("nope")
 	if got := m.pathQuery(); got != "" {

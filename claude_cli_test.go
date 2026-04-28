@@ -441,3 +441,37 @@ func TestClaudeCLIArgs_PluginDirPassedOnProbe(t *testing.T) {
 		t.Errorf("probe should still pass --plugin-dir; got %q; argv=%v", got, args)
 	}
 }
+
+func TestClaudeCLIArgs_AddedDirsEmitOnePerEntry(t *testing.T) {
+	args := claudeCLIArgs(ProviderSessionArgs{
+		AddedDirs: []string{"/extra/one", "/extra/two"},
+	}, false)
+	// Each entry must produce its own --add-dir <path> pair.
+	var saw []string
+	for i, a := range args {
+		if a == "--add-dir" && i+1 < len(args) {
+			saw = append(saw, args[i+1])
+		}
+	}
+	if len(saw) != 2 || saw[0] != "/extra/one" || saw[1] != "/extra/two" {
+		t.Errorf("--add-dir pairs=%v want [/extra/one /extra/two]; argv=%v", saw, args)
+	}
+}
+
+func TestClaudeCLIArgs_AddedDirsAbsentOnEmpty(t *testing.T) {
+	args := claudeCLIArgs(ProviderSessionArgs{}, false)
+	if containsArg(args, "--add-dir") {
+		t.Errorf("empty AddedDirs should leave --add-dir absent: %v", args)
+	}
+}
+
+func TestClaudeCLIArgs_AddedDirsDroppedOnProbe(t *testing.T) {
+	// Probes are the slash-command discovery handshake; they don't need
+	// (and shouldn't churn) the trusted-roots prompt with --add-dir.
+	probe := claudeCLIArgs(ProviderSessionArgs{
+		AddedDirs: []string{"/extra/one"},
+	}, true)
+	if containsArg(probe, "--add-dir") {
+		t.Errorf("probe args must not include --add-dir: %v", probe)
+	}
+}

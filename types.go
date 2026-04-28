@@ -420,7 +420,16 @@ type model struct {
 	skipAllPermissions bool
 	worktree           bool
 	worktreeName       string
-	turnBuffer         []string
+
+	// addedDirs lists absolute paths the user has registered with
+	// /add-dir for the current tab. Each entry surfaces to the active
+	// provider on the next launch (claude: --add-dir, codex:
+	// sandbox_workspace_write.writable_roots config override). Cleared by
+	// /new and /clear. The /add-dir handler kills the live proc so the
+	// next user turn relaunches with these wired in via --resume.
+	addedDirs []string
+
+	turnBuffer []string
 
 	lastContentFP string
 

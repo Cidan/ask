@@ -177,6 +177,11 @@ type ProviderSessionArgs struct {
 	// ask-usage plugin's SessionStart hook fires. Empty when the plugin
 	// failed to extract at startup.
 	PluginDir string
+	// AddedDirs are absolute paths the user has registered with /add-dir.
+	// Providers translate these into their native equivalents (claude:
+	// --add-dir; codex: sandbox_workspace_write.writable_roots). The
+	// list is deduped and ordered as the user added them.
+	AddedDirs []string
 }
 
 // HistoryOpts narrows what the history replay renders. ToolOutput is
