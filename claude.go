@@ -67,13 +67,27 @@ func (claudeProvider) BaseSlashCommands() []slashCmd {
 const askUserQuestionBlockCommand = `echo 'BLOCKED: the built-in AskUserQuestion tool is disabled here. Use the mcp__ask__ask_user_question MCP tool instead. It supports pick_one, pick_many, and pick_diagram question kinds and lets you bundle multiple questions in a single call; the user sees them as tabs and submits all answers together.' >&2; exit 2`
 
 // claudeHookSettings builds the JSON passed via --settings. It wires
-// three hooks into claude:
+// hooks into claude across two purposes:
+//
+// Existing infrastructure hooks:
 //   - PreToolUse[AskUserQuestion]: redirects to our MCP tool (see above).
 //   - SubagentStart: posts to our MCP bridge so we can correlate
 //     agent_id with the stream's task_id (observability).
 //   - SubagentStop: posts to our MCP bridge as an authoritative "clean
 //     up this background task" signal, plugging the case where
 //     task_notification is never emitted.
+//
+// Memory injection hooks (always wired; the bridge no-ops when the
+// memory service is closed, so a user without memory enabled pays
+// only the trivial loopback round-trip cost):
+//   - SessionStart (startup|resume|clear|compact): coarse project
+//     memory injected into the new session's context.
+//   - UserPromptSubmit: per-prompt semantic recall — the hook with the
+//     biggest practical payoff because it fires on every turn.
+//   - PreToolUse[Read|Edit|Write|MultiEdit|NotebookEdit]: file-pinpoint
+//     recall surfaces prior work on the exact path claude is about to
+//     touch. Has its own matcher entry so it doesn't conflict with the
+//     AskUserQuestion redirect above.
 //
 // The hook command invokes ask itself (ask _hook <event> --port <n>) so
 // there is no external dependency on curl.
@@ -86,15 +100,32 @@ func claudeHookSettings(mcpPort int) string {
 	hookCmd := func(event string) string {
 		return fmt.Sprintf("%s _hook %s --port %d", shellQuote(exe), event, mcpPort)
 	}
+	memoryHook := func(event string) any {
+		return map[string]any{
+			"hooks": []any{map[string]any{
+				"type":    "command",
+				"command": hookCmd(event),
+			}},
+		}
+	}
 	cfg := map[string]any{
 		"hooks": map[string]any{
-			"PreToolUse": []any{map[string]any{
-				"matcher": "AskUserQuestion",
-				"hooks": []any{map[string]any{
-					"type":    "command",
-					"command": askUserQuestionBlockCommand,
-				}},
-			}},
+			"PreToolUse": []any{
+				map[string]any{
+					"matcher": "AskUserQuestion",
+					"hooks": []any{map[string]any{
+						"type":    "command",
+						"command": askUserQuestionBlockCommand,
+					}},
+				},
+				map[string]any{
+					"matcher": "Read|Edit|Write|MultiEdit|NotebookEdit",
+					"hooks": []any{map[string]any{
+						"type":    "command",
+						"command": hookCmd("pre-tool-use"),
+					}},
+				},
+			},
 			"SubagentStart": []any{map[string]any{
 				"hooks": []any{map[string]any{
 					"type":    "command",
@@ -107,6 +138,14 @@ func claudeHookSettings(mcpPort int) string {
 					"command": hookCmd("subagent-stop"),
 				}},
 			}},
+			"SessionStart": []any{map[string]any{
+				"matcher": "startup|resume|clear|compact",
+				"hooks": []any{map[string]any{
+					"type":    "command",
+					"command": hookCmd("session-start"),
+				}},
+			}},
+			"UserPromptSubmit": []any{memoryHook("user-prompt-submit")},
 		},
 	}
 	b, _ := json.Marshal(cfg)

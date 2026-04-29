@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,13 +12,22 @@ import (
 	"github.com/Cidan/memmy"
 )
 
-// memoryEmbedderDim is the dimensionality baked into the on-disk vector
-// index. The fake embedder is used for the first slice — semantically
-// meaningless but deterministic, offline, and zero-config — so this dim
-// is just "any consistent number" until we decide on the real embedder
-// story. Changing it requires deleting (or migrating) the bbolt file
-// because the storage validates dim against the embedder at Open.
-const memoryEmbedderDim = 64
+// memoryGeminiEmbedderDim is the on-disk dim for the production
+// (Gemini) embedder. Keep stable; changing it requires migrating the
+// bbolt file. 768 is a documented Gemini output_dimensionality that
+// trades cost vs the 3072 default while still giving meaningful
+// semantic separation.
+const memoryGeminiEmbedderDim = 768
+
+// memoryFakeEmbedderDim is the on-disk dim for the fake embedder.
+// Tests use this; production never touches it.
+const memoryFakeEmbedderDim = 64
+
+// memoryGeminiEmbedderModel pins the production model so memory built
+// with one model can't be silently joined to a corpus built with
+// another. Bumping this is a corpus-incompatible change and requires
+// blowing away memory.db.
+const memoryGeminiEmbedderModel = "gemini-embedding-001"
 
 // memoryTenantScope is the fixed value of the `scope` tenant key for
 // every Write/Recall ask issues. Pinning it (via Enum on the schema)
@@ -42,19 +52,30 @@ var (
 	memorySchema *memmy.TenantSchema
 )
 
-// memoryDBPath returns the absolute path to the bbolt database file.
+// errMemoryNoKey signals that memory was toggled on but no Gemini key
+// is configured. Surfaced as a toast in the picker; the persisted
+// Enabled flag is left alone so a key paste retries the open.
+var errMemoryNoKey = errors.New("memory: GeminiKey is required (paste one in /config → Memory)")
+
+// memoryDBPath returns the absolute path to the bbolt database file
+// for the active embedder. The path is suffixed with the embedder
+// type so switching embedders cannot collide with a prior corpus's
+// dim — bbolt validates dim at open and would otherwise refuse to
+// reopen a file written by a different embedder.
+//
 // We resolve through $HOME (not XDG_DATA_HOME) because isolateHome in
 // tests pins $HOME at a tmp dir, and we want test runs to land their
-// db there without each test having to also set XDG_DATA_HOME. The
-// fixed-path decision is deliberate (per the integration plan): power
-// users who need a different path can edit ask.json once we add the
-// schema, but the modal does not expose it.
-func memoryDBPath() (string, error) {
+// db there without each test having to also set XDG_DATA_HOME.
+func memoryDBPath(useFake bool) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".local", "share", "ask", "memory.db"), nil
+	name := "memory.db"
+	if useFake {
+		name = "memory-fake.db"
+	}
+	return filepath.Join(home, ".local", "share", "ask", name), nil
 }
 
 // memoryTenantSchema constructs the tuple validator that gates every
@@ -73,16 +94,37 @@ func memoryTenantSchema() (*memmy.TenantSchema, error) {
 	})
 }
 
-// openMemoryService brings the singleton up. Idempotent. Returns the
-// open error verbatim so the caller can surface it (toast / log) — the
-// caller, not us, decides whether to revert the toggle.
-func openMemoryService() error {
+// openMemoryService brings the singleton up using the production
+// (Gemini) embedder, reading the API key from the supplied config.
+// Idempotent. Returns errMemoryNoKey when the key is missing — the
+// caller should report that distinctly from a real open failure so
+// the user can paste a key without seeing a generic crash message.
+func openMemoryService(cfg askConfig) error {
+	if cfg.Memory.GeminiKey == "" {
+		return errMemoryNoKey
+	}
+	emb, err := memmy.NewGeminiEmbedder(context.Background(), memmy.GeminiEmbedderOptions{
+		APIKey: cfg.Memory.GeminiKey,
+		Model:  memoryGeminiEmbedderModel,
+		Dim:    memoryGeminiEmbedderDim,
+	})
+	if err != nil {
+		return fmt.Errorf("memory gemini init: %w", err)
+	}
+	return openMemoryServiceWith(emb, false)
+}
+
+// openMemoryServiceWith is the lower-level open path used by the
+// production constructor and by tests (which pass a fake embedder).
+// useFake selects the per-embedder bbolt path so the production and
+// test corpora stay distinct on disk.
+func openMemoryServiceWith(emb memmy.Embedder, useFake bool) error {
 	memoryMu.Lock()
 	defer memoryMu.Unlock()
 	if memorySvc != nil {
 		return nil
 	}
-	path, err := memoryDBPath()
+	path, err := memoryDBPath(useFake)
 	if err != nil {
 		return fmt.Errorf("memory db path: %w", err)
 	}
@@ -95,7 +137,7 @@ func openMemoryService() error {
 	}
 	svc, closer, err := memmy.Open(memmy.Options{
 		DBPath:       path,
-		Embedder:     memmy.NewFakeEmbedder(memoryEmbedderDim),
+		Embedder:     emb,
 		TenantSchema: schema,
 	})
 	if err != nil {
@@ -154,4 +196,66 @@ func memoryStatsLine() string {
 		return ""
 	}
 	return fmt.Sprintf("%d node(s), %d edge(s)", res.NodeCount, res.MemoryEdgeCount)
+}
+
+// memoryTenant builds the per-tab tenant tuple for memmy ops. The
+// scope is always "ask"; project is the tab's cwd. Returns nil when
+// either field is missing — the schema rejects empty values, and we
+// would rather skip a memory op than feed bad data.
+func memoryTenant(cwd string) map[string]string {
+	if cwd == "" {
+		return nil
+	}
+	return map[string]string{
+		"project": cwd,
+		"scope":   memoryTenantScope,
+	}
+}
+
+// memoryRecall queries the live service and returns hits. Returns
+// (nil, nil) when the service is not open — callers that want
+// fail-soft semantics can ignore both results. ctx is propagated
+// straight to memmy.
+func memoryRecall(ctx context.Context, cwd, query string, k int) ([]memmy.RecallHit, error) {
+	memoryMu.Lock()
+	svc := memorySvc
+	memoryMu.Unlock()
+	if svc == nil {
+		return nil, nil
+	}
+	tenant := memoryTenant(cwd)
+	if tenant == nil {
+		return nil, nil
+	}
+	res, err := svc.Recall(ctx, memmy.RecallRequest{
+		Tenant: tenant,
+		Query:  query,
+		K:      k,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res.Results, nil
+}
+
+// memoryWrite records an observation. Returns nil and skips silently
+// when the service is closed; this lets the hook handlers call
+// memoryWrite unconditionally without first checking whether memory
+// is enabled.
+func memoryWrite(ctx context.Context, cwd, message string) error {
+	memoryMu.Lock()
+	svc := memorySvc
+	memoryMu.Unlock()
+	if svc == nil {
+		return nil
+	}
+	tenant := memoryTenant(cwd)
+	if tenant == nil {
+		return nil
+	}
+	_, err := svc.Write(ctx, memmy.WriteRequest{
+		Tenant:  tenant,
+		Message: message,
+	})
+	return err
 }

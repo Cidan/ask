@@ -122,7 +122,10 @@ func TestClaudeHookSettings_RegistersSubagentHooks(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		t.Fatalf("settings not JSON (%v): %s", err, raw)
 	}
-	for _, ev := range []string{"PreToolUse", "SubagentStart", "SubagentStop"} {
+	for _, ev := range []string{
+		"PreToolUse", "SubagentStart", "SubagentStop",
+		"SessionStart", "UserPromptSubmit",
+	} {
 		if _, ok := parsed.Hooks[ev]; !ok {
 			t.Errorf("settings missing %s hook: %s", ev, raw)
 		}
@@ -133,6 +136,9 @@ func TestClaudeHookSettings_RegistersSubagentHooks(t *testing.T) {
 	for _, want := range []string{
 		"_hook subagent-start",
 		"_hook subagent-stop",
+		"_hook session-start",
+		"_hook user-prompt-submit",
+		"_hook pre-tool-use",
 		"--port 54321",
 	} {
 		if !strings.Contains(raw, want) {
@@ -140,15 +146,33 @@ func TestClaudeHookSettings_RegistersSubagentHooks(t *testing.T) {
 		}
 	}
 	// The PreToolUse block still has to filter on AskUserQuestion — that
-	// redirect is what gives the MCP variant its long timeout.
-	var sawAsk bool
+	// redirect is what gives the MCP variant its long timeout — AND it
+	// has to match the file-touching tools so memory hooks fire there.
+	var sawAsk, sawFile bool
 	for _, entry := range parsed.Hooks["PreToolUse"] {
 		if entry.Matcher == "AskUserQuestion" {
 			sawAsk = true
 		}
+		if strings.Contains(entry.Matcher, "Read") &&
+			strings.Contains(entry.Matcher, "Edit") &&
+			strings.Contains(entry.Matcher, "Write") {
+			sawFile = true
+		}
 	}
 	if !sawAsk {
 		t.Errorf("PreToolUse should still match AskUserQuestion: %s", raw)
+	}
+	if !sawFile {
+		t.Errorf("PreToolUse should match file-touching tools (Read|Edit|Write...): %s", raw)
+	}
+	// SessionStart should run on startup AND on resume / clear /
+	// compact so a fresh context window also gets memory injected.
+	for _, entry := range parsed.Hooks["SessionStart"] {
+		for _, want := range []string{"startup", "resume", "clear", "compact"} {
+			if !strings.Contains(entry.Matcher, want) {
+				t.Errorf("SessionStart matcher missing %q: %q", want, entry.Matcher)
+			}
+		}
 	}
 }
 

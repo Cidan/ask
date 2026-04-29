@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -127,6 +128,11 @@ func newTab(id int, cfg askConfig) (*model, error) {
 	if uc, err := readUsageCache(); err == nil {
 		m.usageCache = uc
 	}
+	// Hook handlers tenant memmy ops on the per-tab cwd. Push the
+	// initial cwd into the bridge here so SessionStart fires (which
+	// happen before any user input could trigger another sync) get
+	// the right project tuple.
+	m.mcpBridge.setCwd(m.cwd)
 	m.refreshPrompt()
 	return m, nil
 }
@@ -220,8 +226,14 @@ func main() {
 	// "on" so a subsequent /config toggle can retry — but we log it so
 	// silent breakage is at least diagnosable via ASK_DEBUG=1.
 	if memoryConfigEnabled(cfg) {
-		if err := openMemoryService(); err != nil {
-			fmt.Fprintln(os.Stderr, "ask: memory:", err)
+		if err := openMemoryService(cfg); err != nil {
+			// errMemoryNoKey is the expected case when the user has
+			// flipped Enabled but not yet pasted a key. Log it but
+			// don't print a noisy stderr line — the picker already
+			// surfaces "off (open failed)" so the user can paste.
+			if !errors.Is(err, errMemoryNoKey) {
+				fmt.Fprintln(os.Stderr, "ask: memory:", err)
+			}
 			debugLog("memory open at startup: %v", err)
 		}
 	}

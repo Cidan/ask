@@ -16,15 +16,24 @@ type askConfig struct {
 	Memory   memoryConfig `json:"memory,omitempty"`
 }
 
-// memoryConfig holds the persistent memory toggle and (eventually)
-// backend selection. First slice ships only Enabled — a *bool so
-// "absent" reads as "user has not opted in yet" and Backend / Local /
-// Remotes can be added without breaking JSON round-trip when remotes
-// land. Memory is intentionally per-machine (not per-project): the
-// integration plan partitions data via the {project: cwd} tenant
+// memoryConfig holds the persistent memory toggle and embedder
+// credentials. Memory is intentionally per-machine (not per-project):
+// the integration plan partitions data via the {project: cwd} tenant
 // tuple instead, so one global toggle is the right granularity.
+//
+// GeminiKey is the API key for Gemini embeddings. When set, the live
+// memory service uses a Gemini embedder; when empty, opening the
+// service surfaces an error in the picker (memory cannot run on the
+// fake embedder in production — its embeddings are deterministic but
+// semantically meaningless). The fake embedder is reserved for tests.
+//
+// The on-disk file already lives at mode 0600 per saveConfig's
+// contract, so the key is no more exposed than any other field. We
+// will revisit env-var indirection / keychain when remote backends
+// land.
 type memoryConfig struct {
-	Enabled *bool `json:"enabled,omitempty"`
+	Enabled   *bool  `json:"enabled,omitempty"`
+	GeminiKey string `json:"geminiKey,omitempty"`
 }
 
 type claudeConfig struct {

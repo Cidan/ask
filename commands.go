@@ -39,6 +39,11 @@ func (m model) doCd(target string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.cwd = abs
+	// Memory hooks tenant against the bridge's cached cwd; sync it
+	// here so a /cd hands SessionStart / UserPromptSubmit injections
+	// the right project tuple immediately, without waiting for the
+	// next newTab.
+	m.mcpBridge.setCwd(abs)
 	m.killProc()
 	m.sessionID = ""
 	m.sessionMinted = false

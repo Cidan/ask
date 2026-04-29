@@ -178,6 +178,10 @@ func (m model) sendToProvider(line string) (tea.Model, tea.Cmd) {
 		m.appendHistory(outputStyle.Render(errStyle.Render(invalid.Msg)))
 		return m, nil
 	}
+	// Open a fresh memory accumulator on every user submission. The
+	// matching flushMemoryTurn fires from the turnCompleteMsg handler
+	// when the provider closes the turn.
+	(&m).resetMemoryTurn(line)
 	turn := providerQueuedTurn{
 		text:        line,
 		attachments: append([]pendingAttachment(nil), m.pending...),

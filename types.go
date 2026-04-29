@@ -403,12 +403,18 @@ type model struct {
 	configProviderBackup       string
 
 	// configMemoryPickerActive toggles the /config → Memory sub-picker.
-	// Cursor is over the submenu rows (currently just "Enabled"); the
-	// submenu intentionally has only one row right now and is structured
-	// as a multi-row picker so future Backend / remote rows can drop in
-	// without reshaping the UI.
+	// Cursor is over the submenu rows ("Enabled" / "Gemini API key");
+	// future Backend / remote-selection rows drop in by appending to
+	// memoryPickerItems without reshaping the picker state machine.
 	configMemoryPickerActive bool
 	configMemoryCursor       int
+
+	// configMemoryKeyEditing toggles the inline text input for the
+	// Gemini API key. While true, key presses and pastes append to
+	// configMemoryKeyDraft instead of moving the picker cursor; Enter
+	// persists the draft to cfg.Memory.GeminiKey and Esc discards it.
+	configMemoryKeyEditing bool
+	configMemoryKeyDraft   string
 
 	// Ctrl+B starts at the provider list (Level 0). Picking a provider
 	// with model options advances to Level 1, which reuses the shared
@@ -496,6 +502,13 @@ type model struct {
 	// hasRateLimits gates the pr/sc chip segments; context fields gate
 	// the ctx segment. Cleared on every provider switch.
 	codexUsage codexUsage
+
+	// currentTurn accumulates the per-turn signal (prompt, tools,
+	// files, response text) that flushMemoryTurn writes to memmy on
+	// turnCompleteMsg. The maps stay nil between turns; resetMemory-
+	// Turn populates them when sendToProvider dispatches a new user
+	// prompt.
+	currentTurn memoryTurn
 }
 
 type askMode int

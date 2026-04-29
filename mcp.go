@@ -135,6 +135,36 @@ type mcpBridge struct {
 	// suspenders path in case claude re-asks anyway.
 	allowMu     sync.Mutex
 	alwaysAllow map[permissionRule]struct{}
+
+	// cwd is the per-tab working directory used to construct memmy
+	// tenant tuples ({project: cwd, scope: "ask"}) for memory hooks.
+	// Stored as an atomic.Pointer[string] so the bridge's HTTP goroutine
+	// can read without locking while the bubbletea goroutine updates
+	// when shell-mode `cd` shifts the tab's cwd. Initialized empty;
+	// memory hooks no-op when empty.
+	cwd atomic.Pointer[string]
+}
+
+// setCwd updates the bridge's tenant cwd. Called from newTab on
+// construction and from the shell-mode cd handler whenever a tab's
+// cwd changes mid-session, so memory ops issued by hook handlers
+// always tenant against the current project.
+func (b *mcpBridge) setCwd(cwd string) {
+	if b == nil {
+		return
+	}
+	v := cwd
+	b.cwd.Store(&v)
+}
+
+func (b *mcpBridge) getCwd() string {
+	if b == nil {
+		return ""
+	}
+	if p := b.cwd.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 func newMCPBridge(tabID int) (*mcpBridge, error) {
@@ -165,6 +195,9 @@ func newMCPBridge(tabID int) (*mcpBridge, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/hooks/subagent-start", b.handleHookSubagentStart)
 	mux.HandleFunc("/hooks/subagent-stop", b.handleHookSubagentStop)
+	mux.HandleFunc("/hooks/session-start", b.handleHookSessionStart)
+	mux.HandleFunc("/hooks/user-prompt-submit", b.handleHookUserPromptSubmit)
+	mux.HandleFunc("/hooks/pre-tool-use", b.handleHookPreToolUse)
 	mux.Handle("/", handler)
 	go func() {
 		_ = http.Serve(b.ln, mux)
