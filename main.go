@@ -213,6 +213,18 @@ func main() {
 		ensureWorktreeGitignore()
 	}
 	pruneWorktrees()
+	// Memory is opt-in. When the user has it persisted as on, bring the
+	// service up before any tab is constructed so consumers (which the
+	// integration plan adds in later slices) see a ready singleton from
+	// turn one. A failure here is non-fatal — the persisted flag stays
+	// "on" so a subsequent /config toggle can retry — but we log it so
+	// silent breakage is at least diagnosable via ASK_DEBUG=1.
+	if memoryConfigEnabled(cfg) {
+		if err := openMemoryService(); err != nil {
+			fmt.Fprintln(os.Stderr, "ask: memory:", err)
+			debugLog("memory open at startup: %v", err)
+		}
+	}
 	if dir, err := extractUsagePlugin(); err != nil {
 		debugLog("usage plugin extract: %v", err)
 	} else {

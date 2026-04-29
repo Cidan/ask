@@ -15,7 +15,8 @@ func TestLoadConfig_MissingReturnsZero(t *testing.T) {
 	}
 	if cfg.Provider != "" || cfg.Claude.Model != "" || cfg.Claude.Effort != "" ||
 		len(cfg.Claude.SlashCommands) != 0 || cfg.Claude.Ollama.Host != "" ||
-		cfg.UI.Theme != "" || cfg.UI.QuietMode != nil {
+		cfg.UI.Theme != "" || cfg.UI.QuietMode != nil ||
+		cfg.Memory.Enabled != nil {
 		t.Errorf("missing file should yield zero askConfig, got %+v", cfg)
 	}
 }
@@ -25,6 +26,7 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	qmTrue := true
 	diffsTrue := true
 	worktreeTrue := true
+	memOn := true
 	want := askConfig{
 		Provider: "claude",
 		Claude: claudeConfig{
@@ -42,6 +44,7 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 			Worktree:    &worktreeTrue,
 			Theme:       "catppuccin-mocha",
 		},
+		Memory: memoryConfig{Enabled: &memOn},
 	}
 	if err := saveConfig(want); err != nil {
 		t.Fatalf("saveConfig: %v", err)
@@ -70,6 +73,9 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	}
 	if got.UI.Theme != "catppuccin-mocha" {
 		t.Errorf("theme lost: %q", got.UI.Theme)
+	}
+	if got.Memory.Enabled == nil || *got.Memory.Enabled != true {
+		t.Errorf("memory.enabled lost in roundtrip: %+v", got.Memory.Enabled)
 	}
 
 	// Permissions 0600 per saveConfig contract.

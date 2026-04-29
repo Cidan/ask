@@ -13,6 +13,18 @@ type askConfig struct {
 	Claude   claudeConfig `json:"claude"`
 	Codex    codexConfig  `json:"codex,omitempty"`
 	UI       uiConfig     `json:"ui,omitempty"`
+	Memory   memoryConfig `json:"memory,omitempty"`
+}
+
+// memoryConfig holds the persistent memory toggle and (eventually)
+// backend selection. First slice ships only Enabled — a *bool so
+// "absent" reads as "user has not opted in yet" and Backend / Local /
+// Remotes can be added without breaking JSON round-trip when remotes
+// land. Memory is intentionally per-machine (not per-project): the
+// integration plan partitions data via the {project: cwd} tenant
+// tuple instead, so one global toggle is the right granularity.
+type memoryConfig struct {
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 type claudeConfig struct {

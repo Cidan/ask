@@ -402,6 +402,14 @@ type model struct {
 	configProviderCursor       int
 	configProviderBackup       string
 
+	// configMemoryPickerActive toggles the /config → Memory sub-picker.
+	// Cursor is over the submenu rows (currently just "Enabled"); the
+	// submenu intentionally has only one row right now and is structured
+	// as a multi-row picker so future Backend / remote rows can drop in
+	// without reshaping the UI.
+	configMemoryPickerActive bool
+	configMemoryCursor       int
+
 	// Ctrl+B starts at the provider list (Level 0). Picking a provider
 	// with model options advances to Level 1, which reuses the shared
 	// ask/model modal rather than a separate switcher-specific editor.
@@ -442,8 +450,8 @@ type model struct {
 	// the actual visible columns).
 	rendererWidth int
 
-	mcpPort       int
-	providerModel string
+	mcpPort           int
+	providerModel     string
 	providerEffort    string
 	ollamaHost        string
 	ollamaModel       string

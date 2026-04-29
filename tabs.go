@@ -389,6 +389,13 @@ func (a app) shutdown() {
 			t.mcpBridge.stop()
 		}
 	}
+	// closeMemoryService is idempotent and safe to call when memory was
+	// never enabled this run, so we don't gate it on cfg.Memory.Enabled.
+	// This releases the bbolt file lock so a subsequent ask invocation
+	// can open the same DB without timing out.
+	if err := closeMemoryService(); err != nil {
+		debugLog("memory close at shutdown: %v", err)
+	}
 }
 
 func (a app) renderTabBar() string {

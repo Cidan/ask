@@ -45,6 +45,17 @@ func (m model) configItemsAll() []configItem {
 	if p := providerByID(cfg.Provider); p != nil {
 		provName = p.DisplayName()
 	}
+	// Memory summary tracks the live singleton, not just the persisted
+	// config flag. They are nearly always in sync, but if startup-open
+	// failed (lock contention, disk full) the persisted flag will say
+	// "on" while the service is actually closed; surfacing the live
+	// truth keeps the row honest.
+	mem := "off"
+	if memoryServiceOpen() {
+		mem = "on"
+	} else if memoryConfigEnabled(cfg) {
+		mem = "off (open failed)"
+	}
 	return []configItem{
 		{"Quiet Mode", quiet, "quiet"},
 		{"Cursor Blink", blink, "cursorBlink"},
@@ -54,6 +65,7 @@ func (m model) configItemsAll() []configItem {
 		{"Worktree", worktree, "worktree"},
 		{"Theme", m.themeName, "theme"},
 		{"Default Provider", provName, "provider"},
+		{"Memory...", mem, "memory"},
 	}
 }
 
@@ -108,6 +120,9 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.configProviderPickerActive {
 		return m.updateConfigProviderPicker(msg)
+	}
+	if m.configMemoryPickerActive {
+		return m.updateConfigMemoryPicker(msg)
 	}
 	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
 		return m.clearConfigModal(), nil
@@ -201,6 +216,9 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "provider":
 				m = m.openConfigProviderPicker()
+				return m, nil
+			case "memory":
+				m = m.openConfigMemoryPicker()
 				return m, nil
 			}
 		}
