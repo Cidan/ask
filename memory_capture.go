@@ -23,11 +23,16 @@ const memoryCaptureOutcomeChars = 200
 // (which sets tools / files maps). flushMemoryTurn checks for the
 // nil-map case to detect "no turn in flight" — capture is best-
 // effort and must not panic when something fires out of order.
+//
+// response is held by pointer because model.Update is a value receiver:
+// each call copies the model (and therefore memoryTurn) to a new address,
+// which would trip strings.Builder.copyCheck on the second write. The
+// pointer stays valid across copies.
 type memoryTurn struct {
 	prompt   string
 	tools    map[string]struct{}
 	files    map[string]struct{}
-	response strings.Builder
+	response *strings.Builder
 }
 
 // resetMemoryTurn starts a fresh accumulation window for the supplied
@@ -35,9 +40,10 @@ type memoryTurn struct {
 // its own scope.
 func (m *model) resetMemoryTurn(prompt string) {
 	m.currentTurn = memoryTurn{
-		prompt: prompt,
-		tools:  map[string]struct{}{},
-		files:  map[string]struct{}{},
+		prompt:   prompt,
+		tools:    map[string]struct{}{},
+		files:    map[string]struct{}{},
+		response: &strings.Builder{},
 	}
 }
 

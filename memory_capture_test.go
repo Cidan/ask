@@ -225,6 +225,24 @@ func TestRecordAssistantText_AppendsToBuilder(t *testing.T) {
 	}
 }
 
+// model.Update is a value receiver, so each Update returns a copy
+// of model that the runtime stores at a new address. If memoryTurn
+// embedded strings.Builder by value, the second WriteString on the
+// copied model would panic with "illegal use of non-zero Builder
+// copied by value". This test reproduces that scenario by writing,
+// copying the model, and writing again; it must not panic and the
+// final value must contain both writes.
+func TestRecordAssistantText_SurvivesValueCopy(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	(&m).resetMemoryTurn("test")
+	(&m).recordAssistantText("hello ")
+	copied := m
+	(&copied).recordAssistantText("world")
+	if got := copied.currentTurn.response.String(); got != "hello world" {
+		t.Errorf("response builder after value copy=%q want 'hello world'", got)
+	}
+}
+
 func TestRecordToolCall_BeforeReset_IsNoop(t *testing.T) {
 	// Tool calls that arrive before sendToProvider runs (e.g. an
 	// in-flight earlier turn whose ack lands late) must not panic and
