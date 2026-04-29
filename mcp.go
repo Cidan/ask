@@ -149,11 +149,17 @@ type mcpBridge struct {
 // construction and from the shell-mode cd handler whenever a tab's
 // cwd changes mid-session, so memory ops issued by hook handlers
 // always tenant against the current project.
+//
+// The stored value is canonicalized via memoryProjectRoot before
+// landing in the atomic so memmy tenants by the repo's main root
+// regardless of which symlink alias the user typed or which git
+// worktree of the repo they happen to be in. Empty input is stored
+// as empty (callers treat it as "skip the op").
 func (b *mcpBridge) setCwd(cwd string) {
 	if b == nil {
 		return
 	}
-	v := cwd
+	v := memoryProjectRoot(cwd)
 	b.cwd.Store(&v)
 }
 
