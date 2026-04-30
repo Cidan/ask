@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/table"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 // issue is the in-memory representation of a single tracked issue.
@@ -17,11 +19,33 @@ import (
 // per-backend extras kept in a separate sidecar struct so the list view
 // stays homogeneous. For the mock UI it's just hardcoded data.
 type issue struct {
-	number     int
-	title      string
-	assignee   string
-	status     string
-	createdAt  time.Time
+	number    int
+	title     string
+	assignee  string
+	status    string
+	createdAt time.Time
+
+	// description is the issue body in markdown. Rendered through the
+	// project glamour renderer in the detail sub-view. Keep it as raw
+	// markdown so the renderer's width-aware wrap can re-flow it on
+	// resize without us having to remember the previous width.
+	description string
+
+	// comments is the comment thread, oldest-first. Each entry is
+	// rendered as a small header line (author · date) plus a markdown
+	// body, also through glamour. Order is preserved as-is — sorting
+	// belongs to the detail view, not the data, so we don't smear "the
+	// canonical thread order" across read sites.
+	comments []issueComment
+}
+
+// issueComment is one comment in an issue's thread. Provider-neutral
+// like issue itself: GitHub / ClickUp / Linear all map onto these
+// three fields cleanly.
+type issueComment struct {
+	author    string
+	createdAt time.Time
+	body      string
 }
 
 // issueSort is the comparator strategy for the active list view.
@@ -43,6 +67,34 @@ type issuesState struct {
 	sort issueSort
 
 	view issueView
+
+	// Selection state mirrors the chat-side fields (selDragging /
+	// selActive / selAnchor / selFocus) but lives here so it doesn't
+	// leak into ask-screen behaviour. Anchor/focus are in the active
+	// sub-view's *content* coordinates: detail's selectionYOffset is
+	// applied at click time so a scroll keeps the highlight tracked
+	// against absolute content rows; list's selectionYOffset is 0 so
+	// rows are screen-relative and the screen handler clears the
+	// selection on cursor moves to keep it from drifting.
+	selDragging bool
+	selActive   bool
+	selAnchor   cellPos
+	selFocus    cellPos
+
+	// scrollbarDragging is true while the user is mid-drag on the
+	// scrollbar thumb. Mouse motion translates the cursor's Y back to
+	// the active sub-view's setYOffset.
+	scrollbarDragging bool
+
+	// bodyTopRow / bodyContentH / bodyLeftCol record where the body
+	// area lives on screen during the most recent view() pass. Mouse
+	// handlers consult these to know whether a click landed inside
+	// the body area, on the scrollbar column, or in chrome above /
+	// below it.
+	bodyTopRow   int
+	bodyContentH int
+	bodyLeftCol  int
+	scrollbarCol int
 }
 
 // issueView is a sub-view inside the issues screen. The list view is
@@ -62,6 +114,43 @@ type issueView interface {
 	// view returns the rendered body for the sub-view, sized to the
 	// width/height previously passed to resize.
 	view(s *issuesState) string
+	// header is the screen-chrome title line. Sub-views own this so the
+	// detail view can show "Issue #15 · title" while the list shows
+	// "Issues (10) — list view" without the screen handler having to
+	// branch on view type.
+	header(s *issuesState) string
+	// hint is the screen-chrome footer line. Same reason as header:
+	// the list and detail views advertise different keybindings, and
+	// this is where each declares its own.
+	hint() string
+	// scroll returns the current scroll position triple — yOffset,
+	// total scrollable lines, and viewport height — so the screen
+	// can render a scrollbar without each sub-view having to know
+	// how to draw one. The values are sub-view-defined: list returns
+	// (cursor, len(rows), table.Height); detail returns
+	// (vp.YOffset, lipgloss.Height(rendered), vp.Height).
+	scroll() (yOffset, total, viewH int)
+	// setYOffset is invoked by the scrollbar drag handler with a row
+	// index in [0, total). Sub-views are free to clamp.
+	setYOffset(int)
+	// wheel applies a mouse-wheel delta (+down, -up). Sub-views own
+	// the per-view scroll semantics — the list moves the table cursor,
+	// detail scrolls the viewport.
+	wheel(delta int)
+	// selectableBody returns the *full* rendered content the
+	// selection layer should treat as the source of truth — for
+	// detail this is the entire glamour-rendered body even past the
+	// viewport bottom, so a selection that scrolls off-screen still
+	// has the right line to slice when copied. For list this is just
+	// table.View() (header + visible rows), since list selection is
+	// transient (cleared on cursor move).
+	selectableBody() string
+	// selectionYOffset is the row offset between selection content
+	// rows and the visible body. Detail returns vp.YOffset so a
+	// click at screenY → contentRow includes the scrolled-past lines;
+	// list returns 0 because its selection is screen-relative and
+	// clears on navigation anyway.
+	selectionYOffset() int
 }
 
 // newIssuesState seeds the screen with mock data and the default list
@@ -166,6 +255,24 @@ func (v *listIssueView) resize(width, height int) {
 }
 
 func (v *listIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueView, tea.Cmd, bool) {
+	// Enter opens the highlighted issue in the detail sub-view.
+	// Returning the new view here lets issuesScreen.updateKey
+	// swap it in via setView; the list view itself is preserved
+	// (parent reference) so Esc/Backspace from detail snaps the
+	// cursor back to the same row.
+	if msg.Mod == 0 && msg.Code == tea.KeyEnter {
+		cur := v.tbl.Cursor()
+		if cur < 0 || cur >= len(s.all) {
+			return v, nil, true
+		}
+		return newIssueDetailView(v, s.all[cur], v.width, v.height), nil, true
+	}
+	// Any non-Enter key on the list is potential navigation. The list
+	// stores selection in screen-relative rows, so a cursor move
+	// would visually slide the highlight to the wrong rows. Drop the
+	// selection so the highlight clears at the same time the visible
+	// rows shift.
+	s.clearSelection()
 	// Bubbles' table.Update only consumes events when focused; we
 	// always focus on entry, so passing through is enough to get
 	// j/k/up/down/g/G/pgup/pgdn navigation for free.
@@ -184,11 +291,83 @@ func (v *listIssueView) view(s *issuesState) string {
 	return v.tbl.View()
 }
 
+func (v *listIssueView) header(s *issuesState) string {
+	return promptStyle.Render("Issues") +
+		dimStyle.Render(fmt.Sprintf("  (%d) — list view", len(s.all)))
+}
+
+func (v *listIssueView) hint() string {
+	return dimStyle.Render(
+		"↑/↓ navigate · enter open · g/G top/bottom · ctrl+o back to ask",
+	)
+}
+
+// scroll for the list reports the table cursor as the scroll position.
+// Bubbles' table doesn't expose its internal viewport offset directly,
+// but cursor position tracks 1:1 with what the user perceives as
+// "where am I in the list", which is exactly what the scrollbar wants
+// to show.
+func (v *listIssueView) scroll() (int, int, int) {
+	return v.tbl.Cursor(), len(v.tbl.Rows()), v.tbl.Height()
+}
+
+func (v *listIssueView) setYOffset(n int) {
+	v.tbl.SetCursor(n)
+}
+
+// wheel translates raw wheel ticks to cursor movement. Bubbles' table
+// has no native mouse-wheel handling, so we paddle MoveUp/MoveDown
+// manually here.
+func (v *listIssueView) wheel(delta int) {
+	switch {
+	case delta > 0:
+		v.tbl.MoveDown(delta)
+	case delta < 0:
+		v.tbl.MoveUp(-delta)
+	}
+}
+
+func (v *listIssueView) selectableBody() string {
+	return v.tbl.View()
+}
+
+// selectionYOffset is 0 for the list because table.View() returns
+// only the visible window — selection is screen-relative and the
+// screen handler clears it on cursor moves so a stale offset can't
+// outlive the layout it was anchored against.
+func (v *listIssueView) selectionYOffset() int { return 0 }
+
 // issueScreenChrome is the row budget the screen reserves around the
 // active sub-view (header line + spacer above, hint line below). Used
 // by listIssueView.resize to compute the table height; bumping it here
 // keeps the calculation in one place when chrome changes.
 const issueScreenChrome = 4
+
+// issueScreenIndent is the left margin every line on the issues screen
+// shares — matching the chat side's outputStyle (MarginLeft(5)) so the
+// list and detail bodies don't sit flush against the terminal edge.
+// Sub-views are sized for `width - issueScreenIndent` and rendered
+// flush-left; the screen handler prefixes the whole composed body with
+// spaces so the indent applies uniformly to header, body, and hint.
+const issueScreenIndent = 5
+
+// indentLines prefixes every line of s with n spaces. Used by the
+// issues screen to apply a single, consistent left margin across the
+// whole composed body (table/viewport included) without each sub-view
+// having to bake the indent into its own widgets — keeps the bubbles
+// table and viewport thinking they own the full width they were sized
+// for.
+func indentLines(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	pad := strings.Repeat(" ", n)
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		lines[i] = pad + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}
 
 // rowsFromIssues converts the in-memory issues into the bubbles/table
 // row shape. Field order MUST match listIssueView.columns().
@@ -206,6 +385,192 @@ func rowsFromIssues(issues []issue) []table.Row {
 	return rows
 }
 
+// clearSelection drops both an in-flight drag and any finalized
+// selection. Called from screen handlers (Esc, screen swap, navigation
+// in list view) and from the right-click copy path so the highlight
+// disappears the instant copy completes.
+func (s *issuesState) clearSelection() {
+	s.selDragging = false
+	s.selActive = false
+	s.selAnchor = cellPos{}
+	s.selFocus = cellPos{}
+}
+
+// selectionRange returns the normalized inclusive bounds of the live
+// or finalized selection. ok=false means there's nothing to render or
+// copy. Mirrors the chat-side selectionRange but reads from
+// issuesState fields so selection state stays per-screen.
+func (s *issuesState) selectionRange() (selectionBounds, bool) {
+	if !s.selDragging && !s.selActive {
+		return selectionBounds{}, false
+	}
+	if s.selAnchor == s.selFocus {
+		return selectionBounds{}, false
+	}
+	a, b := s.selAnchor, s.selFocus
+	if a.row > b.row || (a.row == b.row && a.col > b.col) {
+		a, b = b, a
+	}
+	return selectionBounds{
+		minRow: a.row, minCol: a.col,
+		maxRow: b.row, maxCol: b.col,
+	}, true
+}
+
+// selectionMask returns the inclusive-start / exclusive-end column
+// range to paint with the selection background on a given content
+// row. Block-selection semantics: first row from minCol, last row up
+// to maxCol, middle rows full width. Unlike the chat-side mask there
+// is no left-margin clamp here — the issues body has no decorative
+// gutter, the screen-level indent is applied after this mask runs.
+func (s *issuesState) selectionMask(contentRow, lineWidth int) (start, end int, ok bool) {
+	b, hasRange := s.selectionRange()
+	if !hasRange {
+		return 0, 0, false
+	}
+	if contentRow < b.minRow || contentRow > b.maxRow {
+		return 0, 0, false
+	}
+	switch {
+	case b.minRow == b.maxRow:
+		start = b.minCol
+		end = b.maxCol + 1
+	case contentRow == b.minRow:
+		start = b.minCol
+		end = lineWidth
+	case contentRow == b.maxRow:
+		start = 0
+		end = b.maxCol + 1
+	default:
+		start = 0
+		end = lineWidth
+	}
+	end = min(end, lineWidth)
+	if start < 0 {
+		start = 0
+	}
+	if end <= start {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+// buildCopyText assembles the clipboard payload for the current
+// selection by walking selectableBody() row-by-row and slicing each
+// line to the column range selectionMask returns. ANSI is stripped so
+// the user gets the displayed glyphs, not styled bytes. Rows past the
+// end of the body slice copy as empty lines so the height of the
+// payload matches the selection rectangle.
+func (s *issuesState) buildCopyText() string {
+	b, ok := s.selectionRange()
+	if !ok {
+		return ""
+	}
+	body := strings.Split(s.view.selectableBody(), "\n")
+	rows := make([]string, 0, b.maxRow-b.minRow+1)
+	for r := b.minRow; r <= b.maxRow; r++ {
+		if r < 0 || r >= len(body) {
+			rows = append(rows, "")
+			continue
+		}
+		line := body[r]
+		lineW := lipgloss.Width(line)
+		start, end, ok := s.selectionMask(r, lineW)
+		if !ok {
+			rows = append(rows, "")
+			continue
+		}
+		rows = append(rows, xansi.Strip(xansi.Cut(line, start, end)))
+	}
+	return strings.Join(rows, "\n")
+}
+
+// applyIssuesSelectionHighlight paints the selection background over
+// the visible body slice. Each visible line at index i corresponds to
+// content row i + selectionYOffset, so a scrolled detail view's
+// selection highlight tracks the correct rows under the user's cursor.
+func applyIssuesSelectionHighlight(s *issuesState, lines []string) []string {
+	if !s.selDragging && !s.selActive {
+		return lines
+	}
+	yOff := s.view.selectionYOffset()
+	style := selectionStyle()
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		contentRow := i + yOff
+		lineW := lipgloss.Width(line)
+		start, end, ok := s.selectionMask(contentRow, lineW)
+		if !ok {
+			out[i] = line
+			continue
+		}
+		out[i] = lipgloss.StyleRanges(line, lipgloss.NewRange(start, end, style))
+	}
+	return out
+}
+
+// issuesScreenToContent converts a screen-space mouse coordinate to
+// the active sub-view's content cell. selectionYOffset is added so
+// detail's content-row anchoring works automatically; for list it's
+// 0 (selection is screen-relative, cleared on cursor move).
+func issuesScreenToContent(s *issuesState, screenX, screenY int) cellPos {
+	bodyRow := max(0, screenY-s.bodyTopRow)
+	bodyCol := max(0, screenX-s.bodyLeftCol)
+	return cellPos{row: bodyRow + s.view.selectionYOffset(), col: bodyCol}
+}
+
+// renderIssuesScrollbar produces a per-row character slice of the
+// scrollbar column. Mirrors view.go's scrollbarChars but parameterised
+// on raw scroll triple instead of a chatView so it works with both the
+// list and detail sub-views.
+func renderIssuesScrollbar(viewportH, total, yOffset int) []string {
+	if viewportH <= 0 {
+		return nil
+	}
+	visible := min(total-yOffset, viewportH)
+	if visible < 0 {
+		visible = 0
+	}
+	thumbSize := 1
+	thumbStart := 0
+	if total > visible && visible > 0 {
+		thumbSize = viewportH * visible / total
+		if thumbSize < 1 {
+			thumbSize = 1
+		}
+		if thumbSize > viewportH {
+			thumbSize = viewportH
+		}
+		var pct float64
+		maxYOff := total - viewportH
+		if maxYOff > 0 {
+			pct = float64(yOffset) / float64(maxYOff)
+		}
+		if pct < 0 {
+			pct = 0
+		}
+		if pct > 1 {
+			pct = 1
+		}
+		thumbStart = int(float64(viewportH-thumbSize) * pct)
+		if thumbStart < 0 {
+			thumbStart = 0
+		}
+		if thumbStart+thumbSize > viewportH {
+			thumbStart = viewportH - thumbSize
+		}
+	}
+	out := make([]string, viewportH)
+	for i := 0; i < viewportH; i++ {
+		if i >= thumbStart && i < thumbStart+thumbSize {
+			out[i] = scrollThumbStyle.Render("█")
+		} else {
+			out[i] = scrollTrackStyle.Render("│")
+		}
+	}
+	return out
+}
+
 // issueTableStyles maps bubbles/table's default styles onto ask's
 // active theme so the issues screen reads as part of the rest of the
 // UI rather than the bubbles/table out-of-the-box pink.
@@ -218,9 +583,13 @@ func issueTableStyles() table.Styles {
 	s.Cell = lipgloss.NewStyle().
 		Padding(0, 1).
 		Foreground(activeTheme.foreground)
+	// No padding on Selected: bubbles applies the cell padding *inside*
+	// each cell (per-column), so the joined row already includes the
+	// padding columns. Adding more here on top of the joined row would
+	// shift the whole highlight one column to the right, which read as
+	// a visible re-indent on the active row.
 	s.Selected = lipgloss.NewStyle().
 		Bold(true).
-		Padding(0, 1).
 		Foreground(activeTheme.inverseFG).
 		Background(activeTheme.accent)
 	return s
@@ -264,22 +633,341 @@ func (issuesScreen) view(m model) string {
 	if height <= 0 {
 		height = 24
 	}
-	m.issues.view.resize(width, height)
+	// Reserve one column on the right for the scrollbar — fixed
+	// allocation, even when there's no overflow, so selection /
+	// click-routing math stays stable as content grows or shrinks.
+	contentW := max(20, width-issueScreenIndent-1)
+	m.issues.view.resize(contentW, height)
 
-	header := promptStyle.Render("Issues") +
-		dimStyle.Render(fmt.Sprintf("  (%d) — list view", len(m.issues.all)))
-	hint := dimStyle.Render(
-		"↑/↓ navigate · g/G top/bottom · ctrl+o back to ask",
-	)
+	bodyView := m.issues.view.view(m.issues)
+	bodyLines := strings.Split(bodyView, "\n")
+
+	// Track the screen footprint of the body so mouse handlers can
+	// translate clicks back to (sub-view content row, column). Header
+	// is one line, then a blank, so body starts at screen Y == 2.
+	const bodyTopRow = 2
+	s := m.issues
+	s.bodyTopRow = bodyTopRow
+	s.bodyContentH = len(bodyLines)
+	s.bodyLeftCol = issueScreenIndent
+	s.scrollbarCol = width - 1
+
+	bodyLines = applyIssuesSelectionHighlight(s, bodyLines)
+
+	yOff, total, viewH := m.issues.view.scroll()
+	if total > viewH {
+		bar := renderIssuesScrollbar(viewH, total, yOff)
+		for i := range bodyLines {
+			if i < len(bar) {
+				bodyLines[i] += bar[i]
+			}
+		}
+	}
 
 	var b strings.Builder
-	b.WriteString(outputStyle.Render(header))
+	b.WriteString(m.issues.view.header(m.issues))
 	b.WriteString("\n\n")
-	b.WriteString(m.issues.view.view(m.issues))
+	b.WriteString(strings.Join(bodyLines, "\n"))
 	b.WriteString("\n")
-	b.WriteString(outputStyle.Render(hint))
+	b.WriteString(m.issues.view.hint())
+	// Single, uniform left indent applied at the screen level so the
+	// table widget, viewport content, header, and hint all sit at the
+	// same column. Doing it per-piece (outputStyle on each fragment)
+	// produced inconsistent margins where bubbles' table/viewport
+	// rendered flush-left while the header lines were indented.
+	return indentLines(b.String(), issueScreenIndent)
+}
+
+// issuesHandleMouse is the entry point for every mouse event when the
+// issues screen is active. update.go routes here once it's confirmed
+// the event came from a non-modal state and m.screen == screenIssues.
+// Returning the model and a tea.Cmd matches the rest of the Update
+// dispatch shape so the routing in update.go is uniform across screens.
+func (m model) issuesHandleMouse(msg tea.Msg) (model, tea.Cmd) {
+	if m.issues == nil {
+		return m, nil
+	}
+	s := m.issues
+	switch ev := msg.(type) {
+	case tea.MouseWheelMsg:
+		switch ev.Button {
+		case tea.MouseWheelDown:
+			s.view.wheel(3)
+		case tea.MouseWheelUp:
+			s.view.wheel(-3)
+		}
+		// Wheel scrolling invalidates whatever the user had highlighted —
+		// for list it remaps the visible window, for detail it shifts
+		// content rows under the highlight in a way that's confusing if
+		// the drag was still in flight. Drop and start fresh.
+		s.clearSelection()
+		return m, nil
+
+	case tea.MouseClickMsg:
+		inBodyRows := ev.Y >= s.bodyTopRow && ev.Y < s.bodyTopRow+s.bodyContentH
+		_, total, viewH := s.view.scroll()
+		hasOverflow := total > viewH
+		onScrollbar := inBodyRows && hasOverflow && ev.X == s.scrollbarCol
+		switch ev.Button {
+		case tea.MouseLeft:
+			if onScrollbar {
+				s.scrollbarDragging = true
+				issuesScrollByMouse(s, ev.Y)
+				return m, nil
+			}
+			if inBodyRows && ev.X >= s.bodyLeftCol && ev.X < s.scrollbarCol {
+				s.clearSelection()
+				cell := issuesScreenToContent(s, ev.X, ev.Y)
+				s.selAnchor = cell
+				s.selFocus = cell
+				s.selDragging = true
+				return m, nil
+			}
+		case tea.MouseRight:
+			if s.selActive {
+				return m.issuesCopySelectionAndClear()
+			}
+		}
+		return m, nil
+
+	case tea.MouseMotionMsg:
+		if s.scrollbarDragging {
+			issuesScrollByMouse(s, ev.Y)
+			return m, nil
+		}
+		if s.selDragging {
+			x := max(s.bodyLeftCol, min(s.scrollbarCol-1, ev.X))
+			y := max(s.bodyTopRow, min(s.bodyTopRow+s.bodyContentH-1, ev.Y))
+			s.selFocus = issuesScreenToContent(s, x, y)
+			return m, nil
+		}
+		return m, nil
+
+	case tea.MouseReleaseMsg:
+		if s.scrollbarDragging {
+			s.scrollbarDragging = false
+		}
+		if s.selDragging {
+			s.selDragging = false
+			if s.selAnchor == s.selFocus {
+				s.clearSelection()
+			} else {
+				s.selActive = true
+			}
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+// issuesCopySelectionAndClear is the right-click handler entry: builds
+// the clipboard payload off the current selection, clears the
+// highlight, and dispatches the async clipboard write + toast through
+// the same copyTextCmd the chat side uses.
+func (m model) issuesCopySelectionAndClear() (model, tea.Cmd) {
+	if m.issues == nil {
+		return m, nil
+	}
+	text := m.issues.buildCopyText()
+	m.issues.clearSelection()
+	if text == "" {
+		return m, nil
+	}
+	return m, copyTextCmd(m.toast, text)
+}
+
+// issuesScrollByMouse maps a screen Y inside the body strip to a
+// scroll target on the active sub-view, then setYOffsets it. The mid-
+// thumb conversion mirrors the chat side: pct = relY / (bodyH-1),
+// target = pct * (total - viewH).
+func issuesScrollByMouse(s *issuesState, screenY int) {
+	if s.bodyContentH <= 1 {
+		return
+	}
+	rel := screenY - s.bodyTopRow
+	if rel < 0 {
+		rel = 0
+	}
+	if rel > s.bodyContentH-1 {
+		rel = s.bodyContentH - 1
+	}
+	_, total, viewH := s.view.scroll()
+	if total <= viewH {
+		return
+	}
+	pct := float64(rel) / float64(s.bodyContentH-1)
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 1 {
+		pct = 1
+	}
+	target := int(pct * float64(total-viewH))
+	s.view.setYOffset(target)
+}
+
+// issueDetailView is the read-mode detail surface for a single issue:
+// glamour-rendered markdown description on top, then a separator and
+// the comment thread (each comment header + glamour-rendered body)
+// below. Both flow into a single bubbles viewport so the user can
+// scroll the whole thing as one document — j/k/up/down/pgup/pgdn/g/G
+// all "just work" because viewport's keymap covers them.
+//
+// parent points back at the listIssueView the user opened from, so
+// Esc / Backspace can swap it back in *with cursor preserved* —
+// reinstantiating a fresh list view here would lose the highlight on
+// the originating row.
+type issueDetailView struct {
+	parent *listIssueView
+	issue  issue
+
+	vp viewport.Model
+
+	// width/height mirror the last resize call. rendered + renderedFor
+	// cache the glamour output keyed on width so a window resize
+	// re-flows once and a steady-state scroll doesn't re-render every
+	// frame.
+	width  int
+	height int
+
+	rendered    string
+	renderedFor int
+}
+
+func newIssueDetailView(parent *listIssueView, it issue, width, height int) *issueDetailView {
+	v := &issueDetailView{
+		parent: parent,
+		issue:  it,
+		vp:     viewport.New(),
+	}
+	v.resize(width, height)
+	return v
+}
+
+func (v *issueDetailView) name() string { return "detail" }
+
+func (v *issueDetailView) resize(width, height int) {
+	width = max(20, width)
+	contentH := max(4, height-issueScreenChrome)
+	v.width = width
+	v.height = height
+	v.vp.SetWidth(width)
+	v.vp.SetHeight(contentH)
+	if v.renderedFor != width || v.rendered == "" {
+		v.rendered = v.renderBody(width)
+		v.renderedFor = width
+		v.vp.SetContent(v.rendered)
+	}
+}
+
+// renderBody composes the description and comments into one
+// glamour-rendered string sized to width. Falls back to the raw text
+// when glamour returns an error so the user always sees content even
+// if the markdown is malformed.
+func (v *issueDetailView) renderBody(width int) string {
+	r := newRenderer(width)
+	desc := strings.TrimSpace(v.issue.description)
+	if desc == "" {
+		desc = "_(no description)_"
+	}
+	body, err := r.Render(desc)
+	if err != nil {
+		body = desc
+	}
+
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(body, "\n"))
+	b.WriteString("\n")
+
+	if len(v.issue.comments) == 0 {
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("(no comments)"))
+		return b.String()
+	}
+
+	// All chrome inside the body sits at column 0 and inherits the
+	// screen-level indent. The separator's width matches the body
+	// width so it spans the indented column up to the right edge.
+	sepW := max(8, width-2)
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render(strings.Repeat("─", sepW)))
+	b.WriteString("\n\n")
+	b.WriteString(promptStyle.Render(
+		fmt.Sprintf("Comments (%d)", len(v.issue.comments))))
+	b.WriteString("\n\n")
+
+	for i, c := range v.issue.comments {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		head := fmt.Sprintf("%s · %s",
+			c.author, c.createdAt.Format("2006-01-02"))
+		b.WriteString(dimStyle.Render(head))
+		b.WriteString("\n")
+		body, err := r.Render(strings.TrimSpace(c.body))
+		if err != nil {
+			body = c.body
+		}
+		b.WriteString(strings.TrimRight(body, "\n"))
+		b.WriteString("\n")
+	}
 	return b.String()
 }
+
+func (v *issueDetailView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueView, tea.Cmd, bool) {
+	// Esc / Backspace return to the list view we came from; parent
+	// is the same listIssueView instance so its cursor and table
+	// scroll position are preserved across the round trip.
+	if msg.Mod == 0 && (msg.Code == tea.KeyEsc || msg.Code == tea.KeyBackspace) {
+		if v.parent != nil {
+			return v.parent, nil, true
+		}
+		return newListIssueView(s), nil, true
+	}
+	vp, cmd := v.vp.Update(msg)
+	v.vp = vp
+	return v, cmd, true
+}
+
+func (v *issueDetailView) view(s *issuesState) string {
+	return v.vp.View()
+}
+
+func (v *issueDetailView) header(s *issuesState) string {
+	return promptStyle.Render(fmt.Sprintf("Issue #%d", v.issue.number)) +
+		dimStyle.Render("  · ") +
+		v.issue.title
+}
+
+func (v *issueDetailView) hint() string {
+	return dimStyle.Render(
+		"↑/↓ scroll · pgup/pgdn page · esc/backspace back · ctrl+o back to ask",
+	)
+}
+
+func (v *issueDetailView) scroll() (int, int, int) {
+	return v.vp.YOffset(), lipgloss.Height(v.rendered), v.vp.Height()
+}
+
+func (v *issueDetailView) setYOffset(n int) {
+	v.vp.SetYOffset(n)
+}
+
+func (v *issueDetailView) wheel(delta int) {
+	switch {
+	case delta > 0:
+		v.vp.ScrollDown(delta)
+	case delta < 0:
+		v.vp.ScrollUp(-delta)
+	}
+}
+
+// selectableBody is the *full* glamour-rendered body, not just the
+// visible slice. Selection content rows are absolute, so the copy
+// path needs the full string to slice past v.vp.YOffset() correctly.
+func (v *issueDetailView) selectableBody() string { return v.rendered }
+
+func (v *issueDetailView) selectionYOffset() int { return v.vp.YOffset() }
 
 // mockIssues is the seed data for the issues screen until real
 // backends are wired. Numbers are deliberately non-contiguous so the
@@ -287,15 +975,268 @@ func (issuesScreen) view(m model) string {
 func mockIssues() []issue {
 	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
 	return []issue{
-		{number: 12, title: "Wire ask to GitHub Issues backend", assignee: "antonio", status: "open", createdAt: now.AddDate(0, 0, -14)},
-		{number: 7, title: "Pick palette for issue status badges", assignee: "antonio", status: "planned", createdAt: now.AddDate(0, 0, -21)},
-		{number: 23, title: "Kanban view skeleton (collapsible columns)", assignee: "unassigned", status: "planned", createdAt: now.AddDate(0, 0, -3)},
-		{number: 4, title: "Add ClickUp provider", assignee: "fritz", status: "open", createdAt: now.AddDate(0, -1, -2)},
-		{number: 31, title: "Sort by status, then number, in flat list", assignee: "antonio", status: "in-progress", createdAt: now.AddDate(0, 0, -1)},
-		{number: 18, title: "Render assignee avatars (kitty graphics)", assignee: "fritz", status: "blocked", createdAt: now.AddDate(0, 0, -8)},
-		{number: 2, title: "Spec out provider-neutral issue model", assignee: "antonio", status: "done", createdAt: now.AddDate(0, -2, -5)},
-		{number: 9, title: "Background poll with cooperative cancel", assignee: "unassigned", status: "open", createdAt: now.AddDate(0, 0, -19)},
-		{number: 27, title: "Inline issue search (/) like fzf", assignee: "fritz", status: "planned", createdAt: now.AddDate(0, 0, -2)},
-		{number: 15, title: "Per-issue detail screen on enter", assignee: "antonio", status: "open", createdAt: now.AddDate(0, 0, -10)},
+		{
+			number: 12, title: "Wire ask to GitHub Issues backend",
+			assignee: "antonio", status: "open",
+			createdAt: now.AddDate(0, 0, -14),
+			description: `# GitHub Issues backend
+
+We want ` + "`ask`" + ` to talk to GitHub Issues for real, not just the mock list.
+
+## Surface
+
+- ` + "`ask issues`" + ` should pull from the active repo's GitHub project.
+- Authenticate with the user's existing ` + "`gh`" + ` CLI token when present.
+- Cache issue snapshots to ` + "`~/.config/ask/issues/<repo>.json`" + ` so a cold start has *something* to render before the network round-trip lands.
+
+## Open questions
+
+1. Multi-repo support (` + "`/add-repo`" + `?) — out of scope for v1.
+2. Pagination — every repo I checked has < 500 open issues; cursor-based seems safe.
+`,
+			comments: []issueComment{
+				{author: "fritz", createdAt: now.AddDate(0, 0, -10),
+					body: "Hot take: do we need OAuth, or are we fine piggybacking on `gh`'s token? The latter is way less scope."},
+				{author: "antonio", createdAt: now.AddDate(0, 0, -9),
+					body: "Piggyback for v1, full OAuth when we add ClickUp / Linear. Same path."},
+				{author: "fritz", createdAt: now.AddDate(0, 0, -2),
+					body: "+1. I'll prototype the read path against my own repo this week."},
+			},
+		},
+		{
+			number: 7, title: "Pick palette for issue status badges",
+			assignee: "antonio", status: "planned",
+			createdAt: now.AddDate(0, 0, -21),
+			description: `Status badges (open / in-progress / blocked / done / planned) need consistent colours that play with **all** themes, not just the default dark one.
+
+Proposed mapping:
+
+- ` + "`open`" + ` → accent
+- ` + "`in-progress`" + ` → warn
+- ` + "`blocked`" + ` → error
+- ` + "`done`" + ` → success
+- ` + "`planned`" + ` → dim
+
+We probably want a small ` + "`statusStyles`" + ` table keyed on status string so theme swaps just work.
+`,
+			comments: []issueComment{
+				{author: "antonio", createdAt: now.AddDate(0, 0, -19),
+					body: "Going with theme tokens (accent/warn/error/etc.) so high-contrast themes don't look broken."},
+			},
+		},
+		{
+			number: 23, title: "Kanban view skeleton (collapsible columns)",
+			assignee: "unassigned", status: "planned",
+			createdAt: now.AddDate(0, 0, -3),
+			description: `## Goal
+
+A second sub-view inside the Issues screen that lays issues out in vertical columns by status.
+
+## Mechanics
+
+- Same ` + "`issueView`" + ` interface as the list — drop-in.
+- Each column is collapsible (chevron + count when collapsed).
+- Tab cycles focus between columns; arrow keys move within a column.
+
+The architecture in ` + "`screens.go`" + ` is already shaped for this; the heavy lift is layout math, not state.
+`,
+		},
+		{
+			number: 4, title: "Add ClickUp provider",
+			assignee: "fritz", status: "open",
+			createdAt: now.AddDate(0, -1, -2),
+			description: `ClickUp is the second target backend after GitHub. The provider-neutral ` + "`issue`" + ` shape covers most of what ClickUp returns; the gaps:
+
+- **Custom fields** — ClickUp tasks have arbitrary user-defined fields. Stash them in a sidecar map (` + "`extras map[string]any`" + `) keyed by field id; the list view ignores them, the detail view shows them under a "Custom fields" section.
+- **Subtasks** — model later. For v1, flatten and treat each subtask as its own issue.
+`,
+			comments: []issueComment{
+				{author: "fritz", createdAt: now.AddDate(0, 0, -28),
+					body: "I have an API token and a sandbox space. Will draft the read-only shape this week."},
+			},
+		},
+		{
+			number: 31, title: "Sort by status, then number, in flat list",
+			assignee: "antonio", status: "in-progress",
+			createdAt: now.AddDate(0, 0, -1),
+			description: `Right now the list is sorted ascending by issue number, full stop. That's fine for triage, but day-to-day I want **status grouping** first (open at top, done at bottom) with number as the tie-breaker inside each status.
+
+Wire it as a new ` + "`issueSort`" + ` constant; ` + "`applySort`" + ` already has the switch.
+`,
+		},
+		{
+			number: 18, title: "Render assignee avatars (kitty graphics)",
+			assignee: "fritz", status: "blocked",
+			createdAt: now.AddDate(0, 0, -8),
+			description: `Bring up GitHub avatars in the assignee column using the Kitty graphics protocol we already use for clipboard image previews.
+
+Blocked on a perf concern: a 50-row list would emit 50 image transmits per resize, which Kitty handles fine in steady state but hammers the terminal during typing-fast resize sequences.
+
+Fix idea: transmit each unique avatar **once** at startup, then reference by image id from list rows. Kitty's placeholder protocol already supports this (we use it for clipboard).
+`,
+			comments: []issueComment{
+				{author: "antonio", createdAt: now.AddDate(0, 0, -6),
+					body: "If we cache by login (most assignees repeat across issues) the unique-image count is tiny."},
+				{author: "fritz", createdAt: now.AddDate(0, 0, -5),
+					body: "Right. I'll wire a `map[login]imageID` and only transmit on cache miss."},
+			},
+		},
+		{
+			number: 2, title: "Spec out provider-neutral issue model",
+			assignee: "antonio", status: "done",
+			createdAt: now.AddDate(0, -2, -5),
+			description: `# Provider-neutral issue model
+
+The goal: one ` + "`issue`" + ` shape that GitHub, ClickUp, Linear, and
+GitLab can all map onto cleanly, with backend-specific extras held in
+a sidecar so the list view doesn't grow per-provider knowledge.
+
+## Required fields
+
+| Field        | Type        | Notes                                    |
+|--------------|-------------|------------------------------------------|
+| ` + "`number`" + `     | ` + "`int`" + `       | Provider's canonical id (or sequence).   |
+| ` + "`title`" + `      | ` + "`string`" + `    | Short summary; one line in the list.     |
+| ` + "`assignee`" + `   | ` + "`string`" + `    | Login or display name; ` + "`unassigned`" + ` allowed. |
+| ` + "`status`" + `     | ` + "`string`" + `    | Lowercase token: ` + "`open`/`done`/`blocked`" + `…   |
+| ` + "`createdAt`" + `  | ` + "`time.Time`" + ` | UTC; the list renders ` + "`YYYY-MM-DD`" + `.        |
+
+## Detail-only fields
+
+` + "`description`" + ` and ` + "`comments`" + ` ride along on every
+issue but are only consumed by the **detail** sub-view. Both are raw
+markdown — the renderer wraps to the live width.
+
+## Go struct (current shape)
+
+` + "```go" + `
+type issue struct {
+    number      int
+    title       string
+    assignee    string
+    status      string
+    createdAt   time.Time
+    description string
+    comments    []issueComment
+}
+
+type issueComment struct {
+    author    string
+    createdAt time.Time
+    body      string
+}
+` + "```" + `
+
+## Sidecar for backend extras
+
+ClickUp's custom fields and GitHub's labels don't fit the neutral
+shape. They live in a separate ` + "`extras`" + ` map keyed by field
+id, attached at fetch time:
+
+` + "```go" + `
+type providerExtras struct {
+    backend string         // "github" | "clickup" | "linear"
+    labels  []string       // GitHub-style flat label list
+    fields  map[string]any // ClickUp custom fields keyed by id
+}
+` + "```" + `
+
+## Status taxonomy
+
+- ` + "`open`" + ` — needs triage or work
+- ` + "`planned`" + ` — committed, not yet started
+- ` + "`in-progress`" + ` — actively being worked
+- ` + "`blocked`" + ` — waiting on something external
+- ` + "`done`" + ` — closed, merged, shipped
+
+> The taxonomy is **provider-neutral on input**. Backends with
+> different vocabularies (GitHub: open/closed; ClickUp: 8 default
+> states) translate via a per-backend mapping table at fetch time.
+
+## Sort order (default)
+
+Ascending by ` + "`number`" + `. Other comparators (status, createdAt
+desc) plug in via ` + "`issueSort`" + `; see issue #31.
+
+` + "```bash" + `
+# quick sanity check from the repo
+$ grep -nE 'type issue|type issueComment' issues.go
+20:type issue struct {
+40:type issueComment struct {
+` + "```" + `
+
+## See also
+
+- Issue #4 — ClickUp provider (validates the sidecar shape).
+- Issue #12 — GitHub backend (first real consumer of this struct).
+- Issue #31 — sort-by-status (exercises ` + "`applySort`" + `).
+`,
+			comments: []issueComment{
+				{author: "antonio", createdAt: now.AddDate(0, -1, -28),
+					body: `Closing — see issues #4, #12 for the integration work that depends on this.
+
+The ` + "`extras`" + ` sidecar is the only thing I'm still unsure about; if it grows
+beyond a flat map we'll want a typed wrapper per backend.`},
+				{author: "fritz", createdAt: now.AddDate(0, -1, -25),
+					body: `+1 on closing. One follow-up: should ` + "`status`" + ` be a typed
+` + "`enum`" + ` instead of a free-form string?
+
+` + "```go" + `
+type issueStatus int
+const (
+    statusOpen issueStatus = iota
+    statusPlanned
+    statusInProgress
+    statusBlocked
+    statusDone
+)
+` + "```" + `
+
+Trade-off: typed enum catches typos at compile time but loses the
+provider-side label (e.g. ClickUp's "needs review"). Probably defer
+until we hit a concrete pain point.`},
+			},
+		},
+		{
+			number: 9, title: "Background poll with cooperative cancel",
+			assignee: "unassigned", status: "open",
+			createdAt: now.AddDate(0, 0, -19),
+			description: `When the user is on the issues screen, a background goroutine should refresh the cache every N minutes (default 5). The refresh **must** be cooperative-cancellable so:
+
+1. Closing the tab kills the goroutine cleanly.
+2. ` + "`Ctrl+B`" + ` (provider switch) doesn't leak workers.
+3. The next refresh after a successful one resets the timer; we never stack two refreshes.
+
+` + "`context.Context`" + ` from the bridge is the obvious answer.
+`,
+		},
+		{
+			number: 27, title: "Inline issue search (/) like fzf",
+			assignee: "fritz", status: "planned",
+			createdAt: now.AddDate(0, 0, -2),
+			description: `Press ` + "`/`" + ` from the list to open a fuzzy filter input pinned to the bottom of the screen. Match against title + assignee + status. Esc dismisses; Enter confirms the filter (it stays applied until Esc or empty input).
+
+Should reuse the ` + "`bubbles/textinput`" + ` widget for input, and a small fuzzy match library — leaning toward ` + "`charmbracelet/x/exp/strings`" + ` since we already pull other ` + "`x/`" + ` utils.
+`,
+		},
+		{
+			number: 15, title: "Per-issue detail screen on enter",
+			assignee: "antonio", status: "open",
+			createdAt: now.AddDate(0, 0, -10),
+			description: `Hitting Enter on a list row should open a **detail view** for that issue showing:
+
+1. Glamour-rendered markdown body.
+2. The comment thread below it, oldest-first, each rendered through glamour too.
+3. ` + "`Esc`" + ` / ` + "`Backspace`" + ` returns to the list with the cursor preserved.
+
+Live in the same ` + "`issueView`" + ` interface so the list ↔ detail swap is one line in ` + "`updateKey`" + `.
+`,
+			comments: []issueComment{
+				{author: "antonio", createdAt: now.AddDate(0, 0, -10),
+					body: "Self-assigning. This is the next thing after the architecture ships."},
+				{author: "fritz", createdAt: now.AddDate(0, 0, -9),
+					body: "Make sure scrollback works for long issue bodies — `bubbles/viewport` with j/k/pgup/pgdn is plenty."},
+			},
+		},
 	}
 }

@@ -549,20 +549,28 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case tea.MouseWheelMsg:
-		// Mouse scroll only acts on the chat viewport; it has no
-		// meaning on the issues screen (the table eats keyboard nav,
-		// not wheel events) and would just clobber the chat scroll
-		// state across screen switches.
-		if m.mode == modeInput && m.screen == screenAsk {
+		if m.mode != modeInput {
+			return m, nil
+		}
+		switch m.screen {
+		case screenAsk:
 			var cmd tea.Cmd
 			m.chat, cmd = m.chat.Update(msg)
 			m.lastContentFP = ""
 			return m, cmd
+		case screenIssues:
+			return m.issuesHandleMouse(msg)
 		}
 		return m, nil
 
 	case tea.MouseClickMsg:
-		if m.mode != modeInput || m.screen != screenAsk {
+		if m.mode != modeInput {
+			return m, nil
+		}
+		if m.screen == screenIssues {
+			return m.issuesHandleMouse(msg)
+		}
+		if m.screen != screenAsk {
 			return m, nil
 		}
 		vpH := m.chat.Height()
@@ -592,6 +600,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMotionMsg:
+		if m.screen == screenIssues {
+			return m.issuesHandleMouse(msg)
+		}
 		if m.scrollbarDragging {
 			m.scrollViewportTo(msg.Y)
 			return m, nil
@@ -606,6 +617,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case tea.MouseReleaseMsg:
+		if m.screen == screenIssues {
+			return m.issuesHandleMouse(msg)
+		}
 		if m.scrollbarDragging {
 			m.scrollbarDragging = false
 		}
