@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -591,6 +592,242 @@ func TestIssues_ScrollbarDragMovesScrollPosition(t *testing.T) {
 		t.Errorf("scrollbar drag flag should be set")
 	}
 }
+
+func TestKanban_CtrlIFromListSwapsToKanban(t *testing.T) {
+	m := enterIssuesScreen(t)
+	if m.issues.view.name() != "list" {
+		t.Fatalf("setup: expected list view, got %q", m.issues.view.name())
+	}
+	m, _ = runUpdate(t, m, ctrlKey('i'))
+	if m.issues.view.name() != "kanban" {
+		t.Errorf("Ctrl+I from list should swap to kanban; got %q", m.issues.view.name())
+	}
+}
+
+func TestKanban_CtrlICyclesBackToList(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m, _ = runUpdate(t, m, ctrlKey('i'))
+	if m.issues.view.name() != "kanban" {
+		t.Fatalf("setup: expected kanban view")
+	}
+	m, _ = runUpdate(t, m, ctrlKey('i'))
+	if m.issues.view.name() != "list" {
+		t.Errorf("Ctrl+I from kanban should cycle to list; got %q", m.issues.view.name())
+	}
+}
+
+func TestKanban_CtrlIFromDetailIsNoOp(t *testing.T) {
+	// Detail view is not in the cycle, so Ctrl+I from detail must
+	// not move us off it (otherwise the user loses their reading
+	// position to a swap they didn't ask for).
+	m := enterIssuesScreen(t)
+	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.issues.view.name() != "detail" {
+		t.Fatalf("setup: expected detail view")
+	}
+	m, _ = runUpdate(t, m, ctrlKey('i'))
+	if m.issues.view.name() != "detail" {
+		t.Errorf("Ctrl+I from detail should be a no-op; got %q", m.issues.view.name())
+	}
+}
+
+func TestKanban_ColumnsDerivedFromData(t *testing.T) {
+	// Status taxonomy is derived from the live collection — there's
+	// no fixed enum. Build a kanban view directly from issuesState
+	// and assert one column per distinct status value, in
+	// first-seen order against the sorted-ascending data.
+	s := newIssuesState()
+	v := newKanbanIssueView(s)
+	statuses := map[string]bool{}
+	for _, it := range s.all {
+		statuses[it.status] = true
+	}
+	if len(v.columns) != len(statuses) {
+		t.Errorf("kanban columns=%d want %d distinct statuses", len(v.columns), len(statuses))
+	}
+	for _, col := range v.columns {
+		if !statuses[col.status] {
+			t.Errorf("kanban produced unknown status column %q", col.status)
+		}
+	}
+}
+
+func TestKanban_HandlesArbitraryStatusTaxonomy(t *testing.T) {
+	// Synthetic statuses (simulating a backend with custom labels).
+	// Kanban must produce a column for every distinct value rather
+	// than mapping into a fixed enum.
+	s := &issuesState{
+		all: []issue{
+			{number: 1, status: "Inbox", title: "a"},
+			{number: 2, status: "Quarantine", title: "b"},
+			{number: 3, status: "🔥 hotfix", title: "c"},
+			{number: 4, status: "Inbox", title: "d"},
+		},
+	}
+	v := newKanbanIssueView(s)
+	gotStatuses := make([]string, 0, len(v.columns))
+	for _, c := range v.columns {
+		gotStatuses = append(gotStatuses, c.status)
+	}
+	want := []string{"Inbox", "Quarantine", "🔥 hotfix"}
+	if len(gotStatuses) != 3 {
+		t.Fatalf("expected 3 columns, got %d: %v", len(gotStatuses), gotStatuses)
+	}
+	for i, w := range want {
+		if gotStatuses[i] != w {
+			t.Errorf("column %d=%q want %q", i, gotStatuses[i], w)
+		}
+	}
+}
+
+func TestKanban_HeaderAdvertisesKanbanView(t *testing.T) {
+	// Single render path now (the wide side-by-side layout was
+	// removed in favour of the column-picker / focused-column UI),
+	// so the header just needs to call out the kanban view at every
+	// width.
+	m := enterIssuesScreen(t)
+	m, _ = runUpdate(t, m, ctrlKey('i'))
+	v := m.issues.view.(*kanbanIssueView)
+	for _, w := range []int{50, 100, 200} {
+		v.resize(w, 20)
+		if got := stripAnsi(v.header(m.issues)); !strings.Contains(got, "kanban view") {
+			t.Errorf("width=%d header missing 'kanban view': %q", w, got)
+		}
+	}
+}
+
+func TestKanban_RightArrowMovesColumns(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m, _ = runUpdate(t, m, ctrlKey('i'))
+	v := m.issues.view.(*kanbanIssueView)
+	if v.selColIdx != 0 {
+		t.Fatalf("setup: cursor should start in column 0, got %d", v.selColIdx)
+	}
+	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyRight})
+	v = m.issues.view.(*kanbanIssueView)
+	if v.selColIdx != 1 {
+		t.Errorf("after Right cursor col=%d want 1", v.selColIdx)
+	}
+}
+
+func TestKanban_DownArrowMovesWithinColumn(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m, _ = runUpdate(t, m, ctrlKey('i'))
+	v := m.issues.view.(*kanbanIssueView)
+	if len(v.columns[0].issues) < 2 {
+		t.Skip("first column has only one issue; can't test row navigation")
+	}
+	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	v = m.issues.view.(*kanbanIssueView)
+	if v.selRowIdx != 1 {
+		t.Errorf("after Down row=%d want 1", v.selRowIdx)
+	}
+}
+
+func TestKanban_TabCyclesColumns(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m, _ = runUpdate(t, m, ctrlKey('i'))
+	v := m.issues.view.(*kanbanIssueView)
+	for i := 0; i < len(v.columns); i++ {
+		want := (i + 1) % len(v.columns)
+		m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+		v = m.issues.view.(*kanbanIssueView)
+		if v.selColIdx != want {
+			t.Errorf("after Tab #%d col=%d want %d", i+1, v.selColIdx, want)
+		}
+	}
+}
+
+func TestKanban_EnterOpensDetailWithKanbanAsParent(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m, _ = runUpdate(t, m, ctrlKey('i'))
+	v := m.issues.view.(*kanbanIssueView)
+	col := v.columns[v.selColIdx]
+	if len(col.issues) == 0 {
+		t.Skip("first column is empty in mock data")
+	}
+	wantNum := col.issues[v.selRowIdx].number
+	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.issues.view.name() != "detail" {
+		t.Fatalf("Enter on kanban should open detail; got %q", m.issues.view.name())
+	}
+	d := m.issues.view.(*issueDetailView)
+	if d.issue.number != wantNum {
+		t.Errorf("detail showing #%d want #%d", d.issue.number, wantNum)
+	}
+	if d.parent == nil || d.parent.name() != "kanban" {
+		t.Errorf("detail parent should be the kanban view, got %v",
+			d.parent)
+	}
+	// Esc returns to the same kanban instance, not list.
+	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.issues.view.name() != "kanban" {
+		t.Errorf("Esc from detail-of-kanban should return to kanban; got %q",
+			m.issues.view.name())
+	}
+}
+
+func TestKanban_BodyContainsAllStatuses(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m, _ = runUpdate(t, m, ctrlKey('i'))
+	body := stripAnsi(m.activeScreen().view(m))
+	for _, it := range m.issues.all {
+		if !strings.Contains(body, it.status) {
+			t.Errorf("kanban body missing status %q", it.status)
+		}
+	}
+}
+
+func TestKanban_BodyShowsFocusedColumnAndHidesOthers(t *testing.T) {
+	// Single render path: the body shows the focused column's
+	// issues full-width and excludes other columns' issue numbers.
+	// Other-column status names DO appear (in the tab strip), so
+	// the assertion specifically targets the issue number prefix
+	// "#NN" — that only renders in the body, not the tab strip.
+	s := newIssuesState()
+	v := newKanbanIssueView(s)
+	v.resize(80, 30)
+	body := stripAnsi(v.view(s))
+	for _, it := range v.columns[v.selColIdx].issues {
+		want := "#" + itoaIssue(it.number)
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing focused-column issue %q:\n%s", want, body)
+		}
+	}
+	for i, col := range v.columns {
+		if i == v.selColIdx {
+			continue
+		}
+		for _, it := range col.issues {
+			want := "#" + itoaIssue(it.number)
+			if strings.Contains(body, want) {
+				t.Errorf("body should not show non-focused issue %q (col=%q)",
+					want, col.status)
+			}
+		}
+	}
+}
+
+func TestKanban_MouseWheelMovesRowSelection(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m, _ = runUpdate(t, m, ctrlKey('i'))
+	v := m.issues.view.(*kanbanIssueView)
+	if len(v.columns[v.selColIdx].issues) < 2 {
+		t.Skip("first column has fewer than 2 issues; can't test wheel")
+	}
+	// Re-render to populate body bounds (mouse routing needs them).
+	_ = m.activeScreen().view(m)
+	m, _ = runUpdate(t, m, tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: 50, Y: 5})
+	v = m.issues.view.(*kanbanIssueView)
+	if v.selRowIdx == 0 {
+		t.Errorf("wheel-down should advance selRowIdx; still 0")
+	}
+}
+
+// itoaIssue formats an issue number for substring-based body
+// assertions. Inlined as `strconv.Itoa` would also work but adds
+// another import; this stays readable in the test file.
+func itoaIssue(n int) string { return fmt.Sprintf("%d", n) }
 
 func TestIssues_MockDataAllHaveDescription(t *testing.T) {
 	for _, it := range mockIssues() {

@@ -739,7 +739,20 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		// keeps streaming into the active tab regardless of which screen
 		// the user is looking at — message routing is by message type at
 		// the model layer, not by screen focus.
+		//
+		// Ctrl+I has overloaded semantics: from any other screen it
+		// enters the issues screen, but once already on issues it
+		// cycles through the layer views (list → kanban → … → list).
+		// Cycling is a no-op on views that aren't in the cycle (e.g.
+		// the detail view returned by Enter), which keeps Ctrl+I from
+		// surprising a user mid-read.
 		if msg.Mod == tea.ModCtrl && msg.Code == 'i' && !m.modalOpen() {
+			if m.screen == screenIssues {
+				if m.issues != nil {
+					m.issues.cycleView()
+				}
+				return m, nil
+			}
 			return m.switchScreen(screenIssues), nil
 		}
 		if msg.Mod == tea.ModCtrl && msg.Code == 'o' && !m.modalOpen() {

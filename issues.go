@@ -62,6 +62,23 @@ const (
 // (list today, kanban later). The screen interface lookup is in
 // screens.go; this struct holds only data + the sub-view dispatcher
 // so adding kanban is one new file plus a setView call.
+// viewLayer is one entry in the Ctrl+I cycle. The cycle is the set of
+// "primary" sub-views the user can flip between (list, kanban, future
+// per-assignee swimlanes, …). Detail view is not in this list — it's
+// reached via Enter and exited via Esc, not via cycling.
+type viewLayer struct {
+	name    string
+	builder func(*issuesState) issueView
+}
+
+// issueViewLayers is the canonical cycle order. Adding a new
+// top-level view type is appending here. Order matters: it's the
+// order Ctrl+I walks through.
+var issueViewLayers = []viewLayer{
+	{name: "list", builder: func(s *issuesState) issueView { return newListIssueView(s) }},
+	{name: "kanban", builder: func(s *issuesState) issueView { return newKanbanIssueView(s) }},
+}
+
 type issuesState struct {
 	all  []issue
 	sort issueSort
@@ -163,8 +180,36 @@ func newIssuesState() *issuesState {
 		sort: issueSortByNumber,
 	}
 	s.applySort()
-	s.view = newListIssueView(s)
+	s.view = issueViewLayers[0].builder(s)
 	return s
+}
+
+// cycleView advances the active view to the next entry in
+// issueViewLayers. Returns true when the cycle moved (current view
+// participates in the layer cycle), false when it didn't (e.g. the
+// user is on the detail view, which is reached via Enter and is not
+// part of the cycle). Selection is dropped on swap so a stale
+// highlight against the previous layer's body can't leak into the
+// new layer.
+func (s *issuesState) cycleView() bool {
+	if s.view == nil || len(issueViewLayers) == 0 {
+		return false
+	}
+	cur := s.view.name()
+	idx := -1
+	for i, l := range issueViewLayers {
+		if l.name == cur {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return false
+	}
+	s.clearSelection()
+	next := issueViewLayers[(idx+1)%len(issueViewLayers)]
+	s.view = next.builder(s)
+	return true
 }
 
 // applySort reorders s.all according to s.sort. Stable so secondary
@@ -813,12 +858,13 @@ func issuesScrollByMouse(s *issuesState, screenY int) {
 // scroll the whole thing as one document — j/k/up/down/pgup/pgdn/g/G
 // all "just work" because viewport's keymap covers them.
 //
-// parent points back at the listIssueView the user opened from, so
-// Esc / Backspace can swap it back in *with cursor preserved* —
-// reinstantiating a fresh list view here would lose the highlight on
-// the originating row.
+// parent is the layer view the user opened from (list or kanban)
+// preserved as an interface so Esc / Backspace can drop the user
+// back into whatever surface they were looking at — and with state
+// (cursor, selected card) intact, since we hand the same instance
+// back rather than a fresh one.
 type issueDetailView struct {
-	parent *listIssueView
+	parent issueView
 	issue  issue
 
 	vp viewport.Model
@@ -834,7 +880,7 @@ type issueDetailView struct {
 	renderedFor int
 }
 
-func newIssueDetailView(parent *listIssueView, it issue, width, height int) *issueDetailView {
+func newIssueDetailView(parent issueView, it issue, width, height int) *issueDetailView {
 	v := &issueDetailView{
 		parent: parent,
 		issue:  it,
@@ -968,6 +1014,347 @@ func (v *issueDetailView) wheel(delta int) {
 func (v *issueDetailView) selectableBody() string { return v.rendered }
 
 func (v *issueDetailView) selectionYOffset() int { return v.vp.YOffset() }
+
+// kanbanIssueView lays issues out as a tab strip across the top
+// (one tab per status, the focused one highlighted) with the focused
+// column's cards rendered full-width below. Status taxonomy is
+// derived from the live issue collection — there is no fixed enum
+// here, because real backends (GitHub labels, ClickUp custom
+// statuses, Linear states, …) all define their own and a new
+// "needs-review" status arriving from the backend should appear as
+// a new tab without code changes.
+//
+// (We tried a side-by-side wide layout first; the column picker
+// turned out to read better at every terminal width because each
+// card gets the full body width instead of being squeezed into
+// 18-30 cols. Dropped the wide path entirely — one render mode is
+// simpler to reason about and resize-handles trivially.)
+type kanbanIssueView struct {
+	parent issueView // for back-nav from detail (kept for future use)
+
+	width, height int
+
+	columns []kanbanColumn
+
+	// Selection cursor in column/row coordinates. Clamped to the
+	// live columns by clampSelection on rebuild and on every nav
+	// event so columns disappearing (data refresh) can't strand the
+	// cursor in an invalid position.
+	selColIdx int
+	selRowIdx int
+
+	// lastRendered caches the most recent body so the screen-level
+	// drag-select / right-click-copy stack has something to slice.
+	// Selection on kanban isn't hugely useful (cards are short and
+	// already styled), but participating in the same machinery as
+	// the other views keeps mouse semantics uniform.
+	lastRendered string
+}
+
+// kanbanColumn is one status group. issues are sorted by number
+// ascending so the layout is stable across renders.
+type kanbanColumn struct {
+	status string
+	issues []issue
+}
+
+func newKanbanIssueView(s *issuesState) *kanbanIssueView {
+	v := &kanbanIssueView{}
+	v.rebuildColumns(s.all)
+	v.resize(80, 20)
+	return v
+}
+
+func (v *kanbanIssueView) name() string { return "kanban" }
+
+// rebuildColumns derives the column ordering from the *first
+// occurrence* of each status in the collection. Stable across
+// renders because applySort runs ascending by number — the first
+// issue with status "open" lands the open column at index 0,
+// "planned" lands second, and so on.
+//
+// CONTRACT (replace when real backends land): column order today
+// is "first-occurrence in number-sorted data". GitHub project
+// boards, ClickUp, and Linear all surface their own canonical
+// status order; the integration layer must supply that order
+// instead of leaning on the implicit ordering here, otherwise the
+// kanban will look reordered to anyone who has memorised their
+// backend's board layout.
+//
+// PERF: this runs from view() on every render frame today —
+// trivial for the 10-issue mock, O(n log n) per frame for real
+// data. Add a fingerprint check (issue count + last-modified) or
+// an explicit dirty flag once a real backend is wired so steady-
+// state renders stop re-sorting.
+func (v *kanbanIssueView) rebuildColumns(issues []issue) {
+	cols := []kanbanColumn{}
+	seen := map[string]int{}
+	for _, it := range issues {
+		idx, ok := seen[it.status]
+		if !ok {
+			idx = len(cols)
+			seen[it.status] = idx
+			cols = append(cols, kanbanColumn{status: it.status})
+		}
+		cols[idx].issues = append(cols[idx].issues, it)
+	}
+	for i := range cols {
+		sort.SliceStable(cols[i].issues, func(a, b int) bool {
+			return cols[i].issues[a].number < cols[i].issues[b].number
+		})
+	}
+	v.columns = cols
+	v.clampSelection()
+}
+
+// clampSelection pulls col/row back into bounds after a column
+// disappears or a column's issue count shrinks. Called from
+// rebuildColumns and from any nav handler that could leave the
+// cursor stranded.
+func (v *kanbanIssueView) clampSelection() {
+	if len(v.columns) == 0 {
+		v.selColIdx, v.selRowIdx = 0, 0
+		return
+	}
+	if v.selColIdx >= len(v.columns) {
+		v.selColIdx = len(v.columns) - 1
+	}
+	if v.selColIdx < 0 {
+		v.selColIdx = 0
+	}
+	col := v.columns[v.selColIdx]
+	if v.selRowIdx >= len(col.issues) {
+		v.selRowIdx = max(0, len(col.issues)-1)
+	}
+	if v.selRowIdx < 0 {
+		v.selRowIdx = 0
+	}
+}
+
+func (v *kanbanIssueView) resize(width, height int) {
+	width = max(20, width)
+	contentH := max(4, height-issueScreenChrome)
+	v.width = width
+	v.height = contentH
+}
+
+func (v *kanbanIssueView) header(s *issuesState) string {
+	return promptStyle.Render("Issues") +
+		dimStyle.Render(fmt.Sprintf("  (%d) — kanban view", len(s.all)))
+}
+
+func (v *kanbanIssueView) hint() string {
+	return dimStyle.Render(
+		"↑/↓ row · ←/→ column · enter open · ctrl+i list view · ctrl+o back to ask",
+	)
+}
+
+func (v *kanbanIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueView, tea.Cmd, bool) {
+	if msg.Mod != 0 {
+		return v, nil, false
+	}
+	// Selection is screen-relative on kanban; any nav key drops the
+	// drag-select highlight so the new layout doesn't keep painting
+	// the old rectangle.
+	if isKanbanNav(msg) {
+		s.clearSelection()
+	}
+	switch msg.Code {
+	case tea.KeyEnter:
+		if v.selColIdx >= len(v.columns) {
+			return v, nil, true
+		}
+		col := v.columns[v.selColIdx]
+		if v.selRowIdx >= len(col.issues) {
+			return v, nil, true
+		}
+		return newIssueDetailView(v, col.issues[v.selRowIdx], v.width, v.height), nil, true
+	case tea.KeyUp, 'k':
+		if v.selRowIdx > 0 {
+			v.selRowIdx--
+		}
+		return v, nil, true
+	case tea.KeyDown, 'j':
+		if v.selColIdx < len(v.columns) {
+			col := v.columns[v.selColIdx]
+			if v.selRowIdx+1 < len(col.issues) {
+				v.selRowIdx++
+			}
+		}
+		return v, nil, true
+	case tea.KeyLeft, 'h':
+		if v.selColIdx > 0 {
+			v.selColIdx--
+			v.clampSelection()
+		}
+		return v, nil, true
+	case tea.KeyRight, 'l':
+		if v.selColIdx+1 < len(v.columns) {
+			v.selColIdx++
+			v.clampSelection()
+		}
+		return v, nil, true
+	case tea.KeyTab:
+		if len(v.columns) > 0 {
+			v.selColIdx = (v.selColIdx + 1) % len(v.columns)
+			v.clampSelection()
+		}
+		return v, nil, true
+	case 'g':
+		v.selRowIdx = 0
+		return v, nil, true
+	case 'G':
+		if v.selColIdx < len(v.columns) {
+			v.selRowIdx = max(0, len(v.columns[v.selColIdx].issues)-1)
+		}
+		return v, nil, true
+	}
+	return v, nil, true
+}
+
+// isKanbanNav reports whether the keypress is going to move the
+// kanban cursor (so the screen handler can drop a stale selection
+// highlight). Enter opens detail, which also voids the highlight.
+func isKanbanNav(msg tea.KeyPressMsg) bool {
+	switch msg.Code {
+	case tea.KeyUp, tea.KeyDown, tea.KeyLeft, tea.KeyRight,
+		tea.KeyTab, tea.KeyEnter, 'h', 'j', 'k', 'l', 'g', 'G':
+		return true
+	}
+	return false
+}
+
+func (v *kanbanIssueView) view(s *issuesState) string {
+	v.rebuildColumns(s.all)
+	if len(v.columns) == 0 {
+		v.lastRendered = dimStyle.Render("(no issues)")
+		return v.lastRendered
+	}
+	v.lastRendered = v.renderBody()
+	return v.lastRendered
+}
+
+// renderBody draws a tab strip across the top with the focused
+// column highlighted, then that column's cards full-width below.
+// The strip is truncated if its joined width exceeds the screen so
+// very narrow terminals don't break the layout — the focused tab is
+// always visible because it's rendered first in the slice.
+func (v *kanbanIssueView) renderBody() string {
+	if v.selColIdx >= len(v.columns) {
+		return ""
+	}
+	tabs := v.renderNarrowTabs()
+	col := v.columns[v.selColIdx]
+	cellStyle := lipgloss.NewStyle().
+		Foreground(activeTheme.foreground).
+		Width(v.width)
+	selStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(activeTheme.inverseFG).
+		Background(activeTheme.accent).
+		Width(v.width)
+
+	lines := []string{
+		tabs,
+		dimStyle.Render(strings.Repeat("─", v.width)),
+	}
+	for i, it := range col.issues {
+		card := fmt.Sprintf("#%d  %s", it.number, it.title)
+		card = xansi.Truncate(card, v.width, "…")
+		if i == v.selRowIdx {
+			lines = append(lines, selStyle.Render(card))
+		} else {
+			lines = append(lines, cellStyle.Render(card))
+		}
+	}
+	for len(lines) < v.height {
+		lines = append(lines, strings.Repeat(" ", v.width))
+	}
+	if len(lines) > v.height {
+		lines = lines[:v.height]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// renderNarrowTabs builds the tab strip. The active tab is
+// highlighted; if the joined width overflows the screen, later tabs
+// are dropped (with a trailing "…" marker) so the active one is
+// always visible.
+func (v *kanbanIssueView) renderNarrowTabs() string {
+	activeStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(activeTheme.inverseFG).
+		Background(activeTheme.accent).
+		Padding(0, 1)
+	idleStyle := lipgloss.NewStyle().
+		Foreground(activeTheme.dim).
+		Padding(0, 1)
+
+	tabs := make([]string, 0, len(v.columns))
+	for i, c := range v.columns {
+		label := fmt.Sprintf("%s (%d)", c.status, len(c.issues))
+		if i == v.selColIdx {
+			tabs = append(tabs, activeStyle.Render(label))
+		} else {
+			tabs = append(tabs, idleStyle.Render(label))
+		}
+	}
+	joined := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
+	if lipgloss.Width(joined) <= v.width {
+		return lipgloss.NewStyle().Width(v.width).Render(joined)
+	}
+	// Overflow: keep dropping tail tabs until it fits, ending with
+	// an ellipsis indicator so the user knows there's more.
+	ellipsis := dimStyle.Render(" …")
+	for len(tabs) > 1 {
+		tabs = tabs[:len(tabs)-1]
+		candidate := lipgloss.JoinHorizontal(lipgloss.Top, tabs...) + ellipsis
+		if lipgloss.Width(candidate) <= v.width {
+			return lipgloss.NewStyle().Width(v.width).Render(candidate)
+		}
+	}
+	return lipgloss.NewStyle().Width(v.width).Render(joined)
+}
+
+// scroll on kanban: no global vertical scroll, so report 0/0/0 and
+// the screen-level scrollbar stays hidden. Per-column scrolling for
+// dense backlogs is a follow-up — for the mock no column has more
+// rows than fit.
+func (v *kanbanIssueView) scroll() (int, int, int) { return 0, 0, v.height }
+
+func (v *kanbanIssueView) setYOffset(int) {}
+
+// wheel on kanban moves the selected card row inside the focused
+// column. List-style scroll-by-row feels right because the rows are
+// the unit of navigation, not pixel-style continuous scroll.
+func (v *kanbanIssueView) wheel(delta int) {
+	if v.selColIdx >= len(v.columns) {
+		return
+	}
+	col := v.columns[v.selColIdx]
+	switch {
+	case delta > 0:
+		if v.selRowIdx+1 < len(col.issues) {
+			v.selRowIdx++
+		}
+	case delta < 0:
+		if v.selRowIdx > 0 {
+			v.selRowIdx--
+		}
+	}
+}
+
+func (v *kanbanIssueView) selectableBody() string { return v.lastRendered }
+
+// selectionYOffset returns 0 because kanban has no global vertical
+// scroll today — selection coordinates are screen-relative. If
+// per-column scroll lands later (each column gets its own yOffset),
+// this needs to switch to whichever offset the focused column has,
+// AND selectableBody must return the *full* rendered body (not just
+// the visible slice) so the copy path can slice past scrolled-off
+// rows. selectionYOffset and selectableBody are coupled by that
+// invariant — change them together.
+func (v *kanbanIssueView) selectionYOffset() int { return 0 }
 
 // mockIssues is the seed data for the issues screen until real
 // backends are wired. Numbers are deliberately non-contiguous so the
