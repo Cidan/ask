@@ -808,6 +808,62 @@ func TestKanban_BodyShowsFocusedColumnAndHidesOthers(t *testing.T) {
 	}
 }
 
+func TestIssues_FirstCtrlCArmsExit(t *testing.T) {
+	m := enterIssuesScreen(t)
+	if m.exitArmed {
+		t.Fatalf("setup: exitArmed should start false")
+	}
+	m, cmd := runUpdate(t, m, ctrlKey('c'))
+	if !m.exitArmed {
+		t.Errorf("first Ctrl+C on issues should arm exit")
+	}
+	if cmd != nil {
+		t.Errorf("first Ctrl+C should not produce a command yet")
+	}
+}
+
+func TestIssues_SecondCtrlCQuitsTab(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m, _ = runUpdate(t, m, ctrlKey('c'))
+	if !m.exitArmed {
+		t.Fatalf("setup: first Ctrl+C should arm")
+	}
+	_, cmd := runUpdate(t, m, ctrlKey('c'))
+	if cmd == nil {
+		t.Fatalf("second Ctrl+C should produce closeTabCmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(closeTabMsg); !ok {
+		t.Errorf("second Ctrl+C cmd produced %T, want closeTabMsg", msg)
+	}
+}
+
+func TestIssues_OtherKeyDisarmsExit(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m, _ = runUpdate(t, m, ctrlKey('c'))
+	if !m.exitArmed {
+		t.Fatalf("setup: first Ctrl+C should arm")
+	}
+	// Down arrow — any non-Ctrl+C key should disarm.
+	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if m.exitArmed {
+		t.Errorf("non-Ctrl+C keypress should disarm exit")
+	}
+}
+
+func TestIssues_ExitPromptShownWhenArmed(t *testing.T) {
+	m := enterIssuesScreen(t)
+	body := stripAnsi(m.activeScreen().view(m))
+	if strings.Contains(body, "Press ctrl+c again to exit") {
+		t.Fatalf("setup: prompt should not appear before arm")
+	}
+	m, _ = runUpdate(t, m, ctrlKey('c'))
+	body = stripAnsi(m.activeScreen().view(m))
+	if !strings.Contains(body, "Press ctrl+c again to exit") {
+		t.Errorf("exit-arm prompt missing from body:\n%s", body)
+	}
+}
+
 func TestKanban_MouseWheelMovesRowSelection(t *testing.T) {
 	m := enterIssuesScreen(t)
 	m, _ = runUpdate(t, m, ctrlKey('i'))

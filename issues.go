@@ -656,6 +656,20 @@ func (issuesScreen) updateKey(m model, msg tea.KeyPressMsg) (model, tea.Cmd, boo
 	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
 		return m, closeTabCmd(m.id), true
 	}
+	// Double-Ctrl+C exit, matching ask. The first press arms
+	// m.exitArmed (a tab-level field shared with ask, which is fine
+	// — Ctrl+C semantics are tab-scoped). The hint line swaps to
+	// "Press ctrl+c again to exit" while armed (see view()), and
+	// any non-Ctrl+C key disarms below.
+	isCtrlC := msg.Mod == tea.ModCtrl && msg.Code == 'c'
+	if isCtrlC {
+		if m.exitArmed {
+			return m, closeTabCmd(m.id), true
+		}
+		m.exitArmed = true
+		return m, nil, true
+	}
+	m.exitArmed = false
 	v, cmd, handled := m.issues.view.updateKey(m.issues, msg)
 	if handled {
 		m.issues.setView(v)
@@ -709,12 +723,22 @@ func (issuesScreen) view(m model) string {
 		}
 	}
 
+	hint := m.issues.view.hint()
+	if m.exitArmed {
+		// Mirror ask's "press ctrl+c again to exit" affordance, but
+		// swap the hint line in place since the issues screen has no
+		// chat history to append a transient message to. The next
+		// keypress disarms (handled in updateKey) and the hint
+		// switches back automatically on the following render.
+		hint = dimStyle.Render("Press ctrl+c again to exit")
+	}
+
 	var b strings.Builder
 	b.WriteString(m.issues.view.header(m.issues))
 	b.WriteString("\n\n")
 	b.WriteString(strings.Join(bodyLines, "\n"))
 	b.WriteString("\n")
-	b.WriteString(m.issues.view.hint())
+	b.WriteString(hint)
 	// Single, uniform left indent applied at the screen level so the
 	// table widget, viewport content, header, and hint all sit at the
 	// same column. Doing it per-piece (outputStyle on each fragment)
