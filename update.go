@@ -549,7 +549,11 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case tea.MouseWheelMsg:
-		if m.mode == modeInput {
+		// Mouse scroll only acts on the chat viewport; it has no
+		// meaning on the issues screen (the table eats keyboard nav,
+		// not wheel events) and would just clobber the chat scroll
+		// state across screen switches.
+		if m.mode == modeInput && m.screen == screenAsk {
 			var cmd tea.Cmd
 			m.chat, cmd = m.chat.Update(msg)
 			m.lastContentFP = ""
@@ -558,7 +562,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case tea.MouseClickMsg:
-		if m.mode != modeInput {
+		if m.mode != modeInput || m.screen != screenAsk {
 			return m, nil
 		}
 		vpH := m.chat.Height()
@@ -698,6 +702,10 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		// them as real modifiers would silently break `Mod == 0` gates on
 		// arrow keys, Esc, Enter, etc., so strip them before dispatch.
 		msg.Mod &^= tea.ModCapsLock | tea.ModNumLock | tea.ModScrollLock
+		// Modal/picker dispatch comes first: anything modal-shaped owns
+		// the keyboard until it dismisses, regardless of which screen is
+		// underneath. Screen-switching is gated against the same
+		// modalOpen() check below so this ordering is consistent.
 		switch m.mode {
 		case modeSessionPicker:
 			return m.updatePicker(msg)
@@ -709,9 +717,22 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m.updateConfigModal(msg)
 		case modeProviderSwitch:
 			return m.updateProviderSwitch(msg)
-		default:
-			return m.updateInput(msg)
 		}
+		// Screen-switching keys (Ctrl+I → issues, Ctrl+O → ask) are
+		// global within a tab but blocked while a modal/confirm overlay
+		// is up. They must run before the active screen's updateKey so a
+		// screen handler can't shadow them by accident. Background work
+		// keeps streaming into the active tab regardless of which screen
+		// the user is looking at — message routing is by message type at
+		// the model layer, not by screen focus.
+		if msg.Mod == tea.ModCtrl && msg.Code == 'i' && !m.modalOpen() {
+			return m.switchScreen(screenIssues), nil
+		}
+		if msg.Mod == tea.ModCtrl && msg.Code == 'o' && !m.modalOpen() {
+			return m.switchScreen(screenAsk), nil
+		}
+		newM, cmd, _ := m.activeScreen().updateKey(m, msg)
+		return newM, cmd
 
 	default:
 		var cmd tea.Cmd

@@ -156,7 +156,17 @@ func (m *model) contentFingerprint() string {
 	if m.shellOutIdx >= 0 && m.shellOutIdx < len(m.history) {
 		shellLen = len(m.history[m.shellOutIdx].text)
 	}
-	return fmt.Sprintf("%d|%d|%d", len(m.history), m.width, shellLen)
+	// Mix the active screen + the issues cursor in. The issues body is
+	// driven by m.issues.view (a bubbles/table cursor), so without
+	// these terms a j/k stroke in the list view would hit a stale
+	// vbWithBar cache and never repaint the highlight.
+	issueCursor := -1
+	if m.issues != nil {
+		if v, ok := m.issues.view.(*listIssueView); ok {
+			issueCursor = v.tbl.Cursor()
+		}
+	}
+	return fmt.Sprintf("%d|%d|%d|%d|%d", len(m.history), m.width, shellLen, int(m.screen), issueCursor)
 }
 
 // estimateEntryLines returns the wrapped line count of entry idx
@@ -540,7 +550,12 @@ func (m model) View() tea.View {
 	}
 
 	var box string
-	if m.mode == modeInput && !m.busy && !m.shellMode {
+	// The slash / path-picker overlay anchors to the input cursor and
+	// is only meaningful on the ask screen, where the input is drawn.
+	// Without the screen check, a dirty input value carried into the
+	// issues screen (user typed "/res" then hit Ctrl+I) would float a
+	// menu over the table with no anchor and no way to interact.
+	if m.mode == modeInput && !m.busy && !m.shellMode && m.screen == screenAsk {
 		switch {
 		case m.pathPickerActive():
 			box = m.renderPathBox()
@@ -799,7 +814,10 @@ func (m model) View() tea.View {
 		v.Content = m.toast.Render(v.Content)
 	}
 
-	if m.mode == modeInput {
+	// Only the ask screen has a text-input cursor; on issues we'd be
+	// pointing the cursor at coordinates inside the table body, which
+	// the terminal renders as a stray block in the middle of a column.
+	if m.mode == modeInput && m.screen == screenAsk {
 		if c := m.input.Cursor(); c != nil {
 			v.Cursor = c
 		}
@@ -977,10 +995,23 @@ func (m model) cachedViewportView() string {
 	return m.fc.vpView
 }
 
+// viewBody picks the screen-specific body. Modal pickers (the legacy
+// session picker is currently the only one to fully replace the body)
+// are handled here so they apply to whichever screen is active —
+// keeping mode/screen orthogonality so an MCP modal can pop over
+// issues just as cleanly as it does over chat.
 func (m model) viewBody() string {
 	if m.mode == modeSessionPicker {
 		return m.viewPicker()
 	}
+	return m.activeScreen().view(m)
+}
+
+// viewAskBody is the chat-screen body — the layout that existed before
+// screens were a concept. Kept as a method on model so the askScreen
+// handler can call it without reaching into m's private rendering
+// helpers from another package.
+func (m model) viewAskBody() string {
 	var b strings.Builder
 	vs := time.Now()
 	b.WriteString(m.viewportWithScrollbar())

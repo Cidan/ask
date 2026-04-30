@@ -317,6 +317,19 @@ type model struct {
 	sessions  []sessionEntry
 	pickerIdx int
 
+	// screen names which top-level surface the tab is currently
+	// showing (chat vs issues vs future surfaces). Defaults to
+	// screenAsk; switchScreen flips it. Distinct from mode, which
+	// gates modal/picker overlays *within* a screen — both can be
+	// non-default at the same time (e.g. an MCP modal popping while
+	// the user is browsing issues will draw over the issues body).
+	screen screenID
+	// issues holds the per-tab state for the issues screen. Lazily
+	// instantiated by newTab/newTestModel; the screen handler also
+	// defends against nil so tests that bypass construction still
+	// render correctly.
+	issues *issuesState
+
 	pathMatches []string
 	pathIdx     int
 
