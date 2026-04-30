@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 
 	"github.com/Cidan/memmy"
+	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 )
 
 // memoryGeminiEmbedderDim is the on-disk dim for the production
@@ -120,14 +122,29 @@ func openMemoryServiceWith(emb memmy.Embedder, n4j neo4jConfig, dim int) error {
 	n4jOpts := neo4jOptionsFromConfig(n4j)
 	ctx := context.Background()
 	// Migrate is idempotent: re-running against an up-to-date DB is a
-	// no-op. Running it on every Open keeps a fresh Neo4j (or a freshly
-	// re-created test database) auto-bootstrapped without a separate
-	// "first run" code path.
-	if err := memmy.Migrate(ctx, memmy.MigrationOptions{
+	// no-op. Running it on every Open keeps a fresh Neo4j auto-
+	// bootstrapped without a separate "first run" code path.
+	migrateErr := memmy.Migrate(ctx, memmy.MigrationOptions{
 		Neo4j: n4jOpts,
 		Dim:   dim,
-	}); err != nil {
-		return fmt.Errorf("memory migrate: %w", err)
+	})
+	if migrateErr != nil && isNeo4jDatabaseNotFound(migrateErr) {
+		// User pointed at a database that doesn't exist yet. memmy
+		// can't create it (CREATE DATABASE only runs against `system`,
+		// which memmy doesn't touch), so we bridge that gap with the
+		// neo4j driver. Best-effort: a server that doesn't allow it
+		// (Community Edition) bubbles the original DatabaseNotFound up
+		// after the retry, which is the right error for the user to see.
+		if createErr := createNeo4jDatabase(ctx, n4jOpts); createErr != nil {
+			return fmt.Errorf("memory create database %q: %w", n4jOpts.Database, createErr)
+		}
+		migrateErr = memmy.Migrate(ctx, memmy.MigrationOptions{
+			Neo4j: n4jOpts,
+			Dim:   dim,
+		})
+	}
+	if migrateErr != nil {
+		return fmt.Errorf("memory migrate: %w", migrateErr)
 	}
 	svc, closer, err := memmy.Open(ctx, memmy.Options{
 		Neo4j:        n4jOpts,
@@ -251,5 +268,39 @@ func memoryWrite(ctx context.Context, cwd, message string) error {
 		Tenant:  tenant,
 		Message: message,
 	})
+	return err
+}
+
+// isNeo4jDatabaseNotFound reports whether err is the "graph not found"
+// error memmy.Migrate surfaces when the configured database doesn't
+// exist yet. We string-match because the typed error escapes from
+// inside memmy's internal driver wrapper as a plain neo4j.Error and
+// the driver doesn't export a sentinel for this case.
+func isNeo4jDatabaseNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "Neo.ClientError.Database.DatabaseNotFound") ||
+		strings.Contains(s, "DatabaseNotFoundError")
+}
+
+// createNeo4jDatabase issues `CREATE DATABASE name IF NOT EXISTS WAIT`
+// against the `system` database using the same credentials we use for
+// the live service. Idempotent. Returns a typed error when the server
+// rejects the command (Community Edition / insufficient privileges)
+// so the caller can surface it instead of retrying Migrate forever.
+func createNeo4jDatabase(ctx context.Context, opts memmy.Neo4jOptions) error {
+	driver, err := neo4j.NewDriverWithContext(opts.URI, neo4j.BasicAuth(opts.User, opts.Password, ""))
+	if err != nil {
+		return fmt.Errorf("driver init: %w", err)
+	}
+	defer driver.Close(ctx)
+	if err := driver.VerifyConnectivity(ctx); err != nil {
+		return fmt.Errorf("connectivity: %w", err)
+	}
+	sys := driver.NewSession(ctx, neo4j.SessionConfig{DatabaseName: "system"})
+	defer sys.Close(ctx)
+	_, err = sys.Run(ctx, "CREATE DATABASE $name IF NOT EXISTS WAIT", map[string]any{"name": opts.Database})
 	return err
 }

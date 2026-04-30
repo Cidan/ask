@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -43,18 +44,16 @@ func resetMemoryService(t *testing.T) {
 }
 
 // ensureNeo4jTestDatabase makes sure a usable test database exists and
-// is empty before a memory integration test starts. It tries the
-// dedicated ask_tests database first (Enterprise / Aura / Desktop
-// support CREATE DATABASE) and falls back to the default `neo4j`
-// database when the server is Community Edition. The returned config
-// reflects whichever database actually got prepared so callers don't
-// have to know which path was taken.
+// is empty before a memory integration test starts. The production
+// open path (openMemoryServiceWith) already handles `CREATE DATABASE
+// IF NOT EXISTS` on Migrate's DatabaseNotFound, so this helper only
+// has to (a) verify Neo4j is reachable, (b) pick a working database
+// name (ask_tests on Enterprise, default `neo4j` on Community), and
+// (c) wipe any leftover data so each test starts on a clean corpus.
 //
 // Skips the test when Neo4j is unreachable or when the credentials
 // don't work — those are CI/environment artifacts, not ask
-// regressions. The wipe is intentional: each integration test must
-// start on a clean corpus so Recall hits aren't polluted by leftovers
-// from a prior run.
+// regressions.
 func ensureNeo4jTestDatabase(t *testing.T) neo4jConfig {
 	t.Helper()
 	cfg := neo4jTestConfig()
@@ -69,18 +68,18 @@ func ensureNeo4jTestDatabase(t *testing.T) neo4jConfig {
 		t.Skipf("neo4j connectivity: %v (is a local Neo4j reachable on %s with creds %s/****?)", err, neo4jBoltURI(cfg), cfg.User)
 	}
 
-	// Try CREATE DATABASE on `system`. memmy.Migrate cannot create the
-	// db itself because CREATE DATABASE only runs against `system`,
-	// which memmy doesn't touch. We bridge that gap here.
+	// Probe Enterprise vs Community so we know which database to wipe.
+	// We rely on the production code path to actually create ask_tests
+	// when it's missing — this only decides which name we'll use.
 	sys := driver.NewSession(ctx, neo4j.SessionConfig{DatabaseName: "system"})
 	_, createErr := sys.Run(ctx, "CREATE DATABASE $name IF NOT EXISTS WAIT", map[string]any{"name": cfg.Database})
 	_ = sys.Close(ctx)
 	if createErr != nil && strings.Contains(createErr.Error(), "UnsupportedAdministrationCommand") {
 		// Community Edition: only `neo4j` and `system` exist. Fall
-		// back so tests can run anyway. We wipe nodes below, so this
-		// trashes any pre-existing data in the developer's local
-		// `neo4j` db — that's an explicit accept on a dev machine
-		// where the suite is the only writer.
+		// back so tests can run anyway. The wipe below trashes any
+		// pre-existing data in the developer's local `neo4j` db —
+		// explicit accept on a dev machine where the suite is the
+		// only writer.
 		cfg.Database = "neo4j"
 	} else if createErr != nil {
 		t.Skipf("create database %q: %v", cfg.Database, createErr)
@@ -92,6 +91,32 @@ func ensureNeo4jTestDatabase(t *testing.T) neo4jConfig {
 		t.Skipf("reset %q: %v", cfg.Database, err)
 	}
 	return cfg
+}
+
+// dropNeo4jDatabase removes a database (Enterprise only). Used by the
+// auto-create regression test — drop, open, expect openMemoryServiceWith
+// to recreate it via memmy's DatabaseNotFound retry path. Returns false
+// when the server doesn't support DROP DATABASE so the test can skip
+// rather than fail.
+func dropNeo4jDatabase(t *testing.T, cfg neo4jConfig) bool {
+	t.Helper()
+	driver, err := neo4j.NewDriverWithContext(neo4jBoltURI(cfg), neo4j.BasicAuth(cfg.User, cfg.Password, ""))
+	if err != nil {
+		return false
+	}
+	defer driver.Close(context.Background())
+	ctx := context.Background()
+	sys := driver.NewSession(ctx, neo4j.SessionConfig{DatabaseName: "system"})
+	defer sys.Close(ctx)
+	_, err = sys.Run(ctx, "DROP DATABASE $name IF EXISTS WAIT", map[string]any{"name": cfg.Database})
+	if err != nil && strings.Contains(err.Error(), "UnsupportedAdministrationCommand") {
+		return false
+	}
+	if err != nil {
+		t.Logf("drop database %q: %v", cfg.Database, err)
+		return false
+	}
+	return true
 }
 
 // openFakeMemoryService is the test entry point: opens the singleton
@@ -917,6 +942,62 @@ func TestMemoryFieldInput_ClearingPersistedKeyClosesService(t *testing.T) {
 	cfg, _ := loadConfig()
 	if cfg.Memory.GeminiKey != "" {
 		t.Errorf("expected empty key persisted, got %q", cfg.Memory.GeminiKey)
+	}
+}
+
+func TestIsNeo4jDatabaseNotFound(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"unrelated", errors.New("connection refused"), false},
+		{"neo4j code", errors.New("Neo4jError: Neo.ClientError.Database.DatabaseNotFound (Graph not found: x)"), true},
+		{"go-driver name", errors.New("DatabaseNotFoundError: db missing"), true},
+	}
+	for _, c := range cases {
+		if got := isNeo4jDatabaseNotFound(c.err); got != c.want {
+			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestOpenMemoryServiceWith_AutoCreatesMissingDatabase(t *testing.T) {
+	// User picks a database name that doesn't exist yet. The open
+	// path must auto-create it (CREATE DATABASE IF NOT EXISTS against
+	// `system`) and then succeed. Drop the test db, open, expect
+	// success — without the retry path this would fail with
+	// DatabaseNotFound.
+	//
+	// Requires Enterprise/Aura/Desktop because Community can't host
+	// arbitrary databases at all; we skip via dropNeo4jDatabase
+	// returning false.
+	isolateHome(t)
+	resetMemoryService(t)
+
+	cfg := neo4jTestConfig()
+	if !dropNeo4jDatabase(t, cfg) {
+		t.Skipf("auto-create test requires multi-database support (Enterprise/Aura/Desktop)")
+	}
+	t.Cleanup(func() { _ = closeMemoryService() })
+
+	if err := openMemoryServiceWith(memmy.NewFakeEmbedder(memoryFakeEmbedderDim), cfg, memoryFakeEmbedderDim); err != nil {
+		t.Fatalf("open against missing db should auto-create, got %v", err)
+	}
+	if !memoryServiceOpen() {
+		t.Fatalf("service should be open after auto-create")
+	}
+	// Round-trip a Write to confirm the fresh database is functional.
+	_, err := memorySvc.Write(context.Background(), memmy.WriteRequest{
+		Tenant: map[string]string{
+			"project": "/tmp/auto-create",
+			"scope":   memoryTenantScope,
+		},
+		Message: "auto-created db smoke",
+	})
+	if err != nil {
+		t.Fatalf("Write against auto-created db: %v", err)
 	}
 }
 
