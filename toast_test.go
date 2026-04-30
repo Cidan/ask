@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	uvansi "github.com/charmbracelet/x/ansi"
 )
 
 func TestToastRender_NoActiveAlertReturnsInputUnchanged(t *testing.T) {
@@ -102,6 +104,70 @@ func TestToast_TickWithoutActiveIsHarmless(t *testing.T) {
 	}
 	if cmd != nil {
 		t.Errorf("tick on dormant toast should not re-arm")
+	}
+}
+
+func TestToastRender_LongMessageWrapsAcrossLines(t *testing.T) {
+	// A wide error message should render across multiple body rows
+	// instead of being single-line-truncated. We feed a long message
+	// at maxWidth=80 (= innerMax 76) and assert the chip grew taller
+	// than 3 rows (top border + 1 body row + bottom border = the
+	// truncated baseline).
+	tm := NewToastModel(80, time.Second)
+	tm.active = true
+	tm.text = "memory: create database \"ask_tests\": connectivity: " +
+		"could not reach bolt://localhost:7687 within 10s — verify the " +
+		"server is running and the credentials are correct"
+	tm.expires = time.Now().Add(time.Second)
+
+	chip := tm.renderChip()
+	rows := strings.Count(chip, "\n") + 1
+	if rows < 4 {
+		t.Errorf("expected wrapped chip to span >=4 rows, got %d:\n%s", rows, chip)
+	}
+	// Every body row must fit within the inner width (80 - 4 = 76)
+	// so the chip's bordered box stays at most 80 cells wide.
+	for _, line := range strings.Split(chip, "\n") {
+		if w := uvansi.StringWidth(line); w > 80 {
+			t.Errorf("chip row exceeded maxWidth: width=%d line=%q", w, line)
+		}
+	}
+}
+
+func TestToastRender_BodyHeightCapsWithEllipsis(t *testing.T) {
+	// Force a body that wraps past maxHeight rows. The visible last
+	// line should end with "…" so the reader sees there is more.
+	tm := NewToastModel(20, time.Second)
+	tm.maxHeight = 3
+	tm.active = true
+	// 200 'x' chars at innerMax=16 wraps to 13 rows; we cap to 3.
+	tm.text = strings.Repeat("x", 200)
+	tm.expires = time.Now().Add(time.Second)
+
+	chip := tm.renderChip()
+	bodyLines := strings.Split(chip, "\n")
+	// rendered chip = top border + body + bottom border. With
+	// maxHeight=3 we expect 3 body rows + 2 borders = 5 rows total.
+	if got := len(bodyLines); got != 5 {
+		t.Fatalf("expected 5 chip rows (border+body+border), got %d:\n%s", got, chip)
+	}
+	if !strings.Contains(chip, "…") {
+		t.Errorf("body height cap should leave an ellipsis marker, got:\n%s", chip)
+	}
+}
+
+func TestToastRender_ShortMessageStaysSingleLine(t *testing.T) {
+	// A message that fits inside innerMax must not gain any wrapping
+	// rows; the bordered chip should remain 3 rows tall (top + body +
+	// bottom).
+	tm := NewToastModel(40, time.Second)
+	tm.active = true
+	tm.text = "memory off"
+	tm.expires = time.Now().Add(time.Second)
+
+	chip := tm.renderChip()
+	if got := strings.Count(chip, "\n") + 1; got != 3 {
+		t.Errorf("short message should keep 3-row chip, got %d:\n%s", got, chip)
 	}
 }
 

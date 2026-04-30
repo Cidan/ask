@@ -123,7 +123,12 @@ func newTab(id int, cfg askConfig) (*model, error) {
 		shellHistoryIdx:    -1,
 		fc:                 &frameCache{},
 	}
-	m.toast = NewToastModel(40, 3*time.Second)
+	// 80 cells gives a Neo4j error (e.g. "create database 'ask_tests':
+	// connectivity: ...") room to wrap across a few lines instead of
+	// being truncated with an ellipsis the user can't expand. The
+	// toast still tail-truncates past defaultToastMaxHeight rows so a
+	// runaway message can't take over the chat viewport.
+	m.toast = NewToastModel(80, 3*time.Second)
 	m.toast.applyTheme(activeTheme)
 	if uc, err := readUsageCache(); err == nil {
 		m.usageCache = uc

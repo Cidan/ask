@@ -21,12 +21,20 @@ type toastShowMsg struct {
 
 type toastTickMsg struct{}
 
+// defaultToastMaxHeight caps how many wrapped body lines a single
+// toast can occupy before the tail gets truncated with an ellipsis.
+// Tuned for our typical error payload (Neo4j errors with a code +
+// short sentence) — long enough to read a real message, short enough
+// that a runaway error doesn't take over the chat viewport.
+const defaultToastMaxHeight = 8
+
 // toastModel is a tiny notifier that overlays a single bordered toast in
 // the top-right of the screen. Only one toast at a time; firing a new
 // one replaces the active one and resets its lifetime.
 type toastModel struct {
-	maxWidth int
-	duration time.Duration
+	maxWidth  int
+	maxHeight int
+	duration  time.Duration
 
 	active   bool
 	text     string
@@ -37,15 +45,19 @@ type toastModel struct {
 }
 
 // NewToastModel returns a configured toast model. maxWidth caps the
-// bordered chip's outer width (in cells); duration is how long an alert
-// stays on screen before auto-dismiss. Theme-applied styling lives on
-// the returned struct so swap-on-theme is just a re-call.
+// bordered chip's outer width (in cells) and the body wraps inside
+// that cap; duration is how long an alert stays on screen before
+// auto-dismiss. maxHeight defaults to defaultToastMaxHeight — callers
+// that need a different cap can set it directly on the returned
+// struct. Theme-applied styling lives on the returned struct so
+// swap-on-theme is just a re-call.
 func NewToastModel(maxWidth int, duration time.Duration) *toastModel {
 	return &toastModel{
-		maxWidth: maxWidth,
-		duration: duration,
-		clock:    time.Now,
-		prefix:   "✓",
+		maxWidth:  maxWidth,
+		maxHeight: defaultToastMaxHeight,
+		duration:  duration,
+		clock:     time.Now,
+		prefix:    "✓",
 		style: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			Padding(0, 1),
@@ -134,10 +146,28 @@ func (t *toastModel) renderChip() string {
 		body = t.prefix + " " + body
 	}
 	innerMax := max(1, t.maxWidth-4) // border (2) + padding (2)
-	if uvansi.StringWidth(body) > innerMax {
-		body = uvansi.Truncate(body, innerMax, "…")
+	// Wrap rather than truncate so multi-clause error messages (Neo4j
+	// errors in particular) actually display end-to-end. ansi.Wrap
+	// splits on word boundaries first and falls back to a hard break,
+	// which matters for code-laden messages with no spaces.
+	wrapped := uvansi.Wrap(body, innerMax, "")
+	lines := strings.Split(wrapped, "\n")
+	maxH := t.maxHeight
+	if maxH < 1 {
+		maxH = 1
 	}
-	return t.style.Render(body)
+	if len(lines) > maxH {
+		// Tail-truncate the last visible line with an ellipsis so the
+		// reader knows there is more they're not seeing.
+		last := lines[maxH-1]
+		if uvansi.StringWidth(last) >= innerMax {
+			last = uvansi.Truncate(last, max(1, innerMax-1), "…")
+		} else {
+			last = last + "…"
+		}
+		lines = append(lines[:maxH-1], last)
+	}
+	return t.style.Render(strings.Join(lines, "\n"))
 }
 
 // hasActive reports whether a toast is currently being displayed.
