@@ -625,7 +625,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, cmd
 
 	case tea.PasteMsg:
-		if m.mode == modeConfig && m.configMemoryPickerActive && m.configMemoryKeyEditing {
+		if m.mode == modeConfig && m.configMemoryPickerActive && m.configMemoryFieldEditing != "" {
 			return m.applyConfigMemoryPaste(msg.Content)
 		}
 		if m.mode == modeInput && !m.busy {

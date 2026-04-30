@@ -5,17 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/Cidan/memmy"
 )
 
 // memoryGeminiEmbedderDim is the on-disk dim for the production
-// (Gemini) embedder. Keep stable; changing it requires migrating the
-// bbolt file. 768 is a documented Gemini output_dimensionality that
-// trades cost vs the 3072 default while still giving meaningful
+// (Gemini) embedder. Keep stable; changing it requires re-creating the
+// Neo4j vector index. 768 is a documented Gemini output_dimensionality
+// that trades cost vs the 3072 default while still giving meaningful
 // semantic separation.
 const memoryGeminiEmbedderDim = 768
 
@@ -25,8 +23,7 @@ const memoryFakeEmbedderDim = 64
 
 // memoryGeminiEmbedderModel pins the production model so memory built
 // with one model can't be silently joined to a corpus built with
-// another. Bumping this is a corpus-incompatible change and requires
-// blowing away memory.db.
+// another. Bumping this is a corpus-incompatible change.
 const memoryGeminiEmbedderModel = "gemini-embedding-001"
 
 // memoryTenantScope is the fixed value of the `scope` tenant key for
@@ -35,8 +32,7 @@ const memoryGeminiEmbedderModel = "gemini-embedding-001"
 // later without colliding with ask-owned data.
 const memoryTenantScope = "ask"
 
-// memoryService is the process-wide lazy singleton (DESIGN.md §0:
-// "transport adapters wrap a single MemoryService"). The /config →
+// memoryService is the process-wide lazy singleton. The /config →
 // Memory toggle is per-machine, so one Service per ask process is the
 // right granularity. Tabs share it; per-tab tenancy is enforced via
 // the `project: <cwd>` tenant tuple at call time.
@@ -57,27 +53,6 @@ var (
 // Enabled flag is left alone so a key paste retries the open.
 var errMemoryNoKey = errors.New("memory: GeminiKey is required (paste one in /config → Memory)")
 
-// memoryDBPath returns the absolute path to the bbolt database file
-// for the active embedder. The path is suffixed with the embedder
-// type so switching embedders cannot collide with a prior corpus's
-// dim — bbolt validates dim at open and would otherwise refuse to
-// reopen a file written by a different embedder.
-//
-// We resolve through $HOME (not XDG_DATA_HOME) because isolateHome in
-// tests pins $HOME at a tmp dir, and we want test runs to land their
-// db there without each test having to also set XDG_DATA_HOME.
-func memoryDBPath(useFake bool) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	name := "memory.db"
-	if useFake {
-		name = "memory-fake.db"
-	}
-	return filepath.Join(home, ".local", "share", "ask", name), nil
-}
-
 // memoryTenantSchema constructs the tuple validator that gates every
 // Write / Recall. `project` carries the absolute cwd so per-project
 // memory partitions cleanly even with one machine-wide toggle, and
@@ -94,11 +69,24 @@ func memoryTenantSchema() (*memmy.TenantSchema, error) {
 	})
 }
 
+// neo4jOptionsFromConfig folds the persisted neo4jConfig into the
+// shape memmy.Open / memmy.Migrate expects. Defaults are applied here
+// so neither the picker nor the live service has to reason about
+// blank fields.
+func neo4jOptionsFromConfig(c neo4jConfig) memmy.Neo4jOptions {
+	return memmy.Neo4jOptions{
+		URI:      neo4jBoltURI(c),
+		User:     c.User,
+		Password: c.Password,
+		Database: neo4jDatabaseOrDefault(c),
+	}
+}
+
 // openMemoryService brings the singleton up using the production
 // (Gemini) embedder, reading the API key from the supplied config.
-// Idempotent. Returns errMemoryNoKey when the key is missing — the
-// caller should report that distinctly from a real open failure so
-// the user can paste a key without seeing a generic crash message.
+// Idempotent. Returns errMemoryNoKey when the Gemini key is missing —
+// the caller should report that distinctly from a real open failure
+// so the user can paste a key without seeing a generic crash message.
 func openMemoryService(cfg askConfig) error {
 	if cfg.Memory.GeminiKey == "" {
 		return errMemoryNoKey
@@ -111,32 +99,38 @@ func openMemoryService(cfg askConfig) error {
 	if err != nil {
 		return fmt.Errorf("memory gemini init: %w", err)
 	}
-	return openMemoryServiceWith(emb, false)
+	return openMemoryServiceWith(emb, cfg.Memory.Neo4j, memoryGeminiEmbedderDim)
 }
 
 // openMemoryServiceWith is the lower-level open path used by the
-// production constructor and by tests (which pass a fake embedder).
-// useFake selects the per-embedder bbolt path so the production and
-// test corpora stay distinct on disk.
-func openMemoryServiceWith(emb memmy.Embedder, useFake bool) error {
+// production constructor and by tests (which pass a fake embedder
+// and a test-Neo4j config). dim must match the embedder so the
+// Neo4j vector index is created with the right dimensionality on
+// first migration.
+func openMemoryServiceWith(emb memmy.Embedder, n4j neo4jConfig, dim int) error {
 	memoryMu.Lock()
 	defer memoryMu.Unlock()
 	if memorySvc != nil {
 		return nil
 	}
-	path, err := memoryDBPath(useFake)
-	if err != nil {
-		return fmt.Errorf("memory db path: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("memory mkdir %s: %w", filepath.Dir(path), err)
-	}
 	schema, err := memoryTenantSchema()
 	if err != nil {
 		return fmt.Errorf("memory tenant schema: %w", err)
 	}
-	svc, closer, err := memmy.Open(memmy.Options{
-		DBPath:       path,
+	n4jOpts := neo4jOptionsFromConfig(n4j)
+	ctx := context.Background()
+	// Migrate is idempotent: re-running against an up-to-date DB is a
+	// no-op. Running it on every Open keeps a fresh Neo4j (or a freshly
+	// re-created test database) auto-bootstrapped without a separate
+	// "first run" code path.
+	if err := memmy.Migrate(ctx, memmy.MigrationOptions{
+		Neo4j: n4jOpts,
+		Dim:   dim,
+	}); err != nil {
+		return fmt.Errorf("memory migrate: %w", err)
+	}
+	svc, closer, err := memmy.Open(ctx, memmy.Options{
+		Neo4j:        n4jOpts,
 		Embedder:     emb,
 		TenantSchema: schema,
 	})

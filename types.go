@@ -403,18 +403,21 @@ type model struct {
 	configProviderBackup       string
 
 	// configMemoryPickerActive toggles the /config → Memory sub-picker.
-	// Cursor is over the submenu rows ("Enabled" / "Gemini API key");
-	// future Backend / remote-selection rows drop in by appending to
-	// memoryPickerItems without reshaping the picker state machine.
+	// Cursor is over the submenu rows (Enabled, Gemini API key, Neo4j
+	// host/port/user/password/database); future rows drop in by
+	// appending to memoryPickerItems without reshaping the picker state
+	// machine.
 	configMemoryPickerActive bool
 	configMemoryCursor       int
 
-	// configMemoryKeyEditing toggles the inline text input for the
-	// Gemini API key. While true, key presses and pastes append to
-	// configMemoryKeyDraft instead of moving the picker cursor; Enter
-	// persists the draft to cfg.Memory.GeminiKey and Esc discards it.
-	configMemoryKeyEditing bool
-	configMemoryKeyDraft   string
+	// configMemoryFieldEditing names the row whose inline editor is
+	// currently active (e.g. "geminiKey", "neo4jHost", "neo4jPassword").
+	// Empty string means the editor is closed and the cursor is moving
+	// over rows. While non-empty, key presses and pastes append to
+	// configMemoryFieldDraft and Enter persists the draft to the
+	// matching cfg.Memory.* field.
+	configMemoryFieldEditing string
+	configMemoryFieldDraft   string
 
 	// Ctrl+B starts at the provider list (Level 0). Picking a provider
 	// with model options advances to Level 1, which reuses the shared

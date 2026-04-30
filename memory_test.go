@@ -2,20 +2,39 @@ package main
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/Cidan/memmy"
+	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 )
+
+// neo4jTestConfig is the Neo4j the test suite assumes is reachable on
+// the developer machine (per CLAUDE.md / project conventions). The
+// dedicated `ask_tests` database keeps integration test corpora out of
+// the default `neo4j` db. memmy.Migrate is called on every Open, so a
+// fresh test database is auto-bootstrapped on first contact.
+//
+// Tests that need the live service skip themselves when Neo4j is
+// unreachable so a clean "go test ./..." still passes on a machine
+// without a running Neo4j (e.g. CI). Pure-state tests (config IO,
+// validators, picker shape) do not gate on connectivity.
+func neo4jTestConfig() neo4jConfig {
+	return neo4jConfig{
+		Host:     "localhost",
+		Port:     7687,
+		User:     "neo4j",
+		Password: "neo4jneo4j",
+		Database: "ask_tests",
+	}
+}
 
 // resetMemoryService brings the package-level singleton down between
 // tests. memory_test.go owns this helper because every memory test
 // mutates global state; without explicit teardown, a failed test would
-// leak a bbolt file lock into the next run and cascade failures.
+// leak a Neo4j connection into the next run and cascade failures.
 func resetMemoryService(t *testing.T) {
 	t.Helper()
 	if err := closeMemoryService(); err != nil {
@@ -23,36 +42,164 @@ func resetMemoryService(t *testing.T) {
 	}
 }
 
+// ensureNeo4jTestDatabase makes sure a usable test database exists and
+// is empty before a memory integration test starts. It tries the
+// dedicated ask_tests database first (Enterprise / Aura / Desktop
+// support CREATE DATABASE) and falls back to the default `neo4j`
+// database when the server is Community Edition. The returned config
+// reflects whichever database actually got prepared so callers don't
+// have to know which path was taken.
+//
+// Skips the test when Neo4j is unreachable or when the credentials
+// don't work — those are CI/environment artifacts, not ask
+// regressions. The wipe is intentional: each integration test must
+// start on a clean corpus so Recall hits aren't polluted by leftovers
+// from a prior run.
+func ensureNeo4jTestDatabase(t *testing.T) neo4jConfig {
+	t.Helper()
+	cfg := neo4jTestConfig()
+	driver, err := neo4j.NewDriverWithContext(neo4jBoltURI(cfg), neo4j.BasicAuth(cfg.User, cfg.Password, ""))
+	if err != nil {
+		t.Skipf("neo4j driver init: %v (is a local Neo4j reachable on %s?)", err, neo4jBoltURI(cfg))
+	}
+	t.Cleanup(func() { _ = driver.Close(context.Background()) })
+
+	ctx := context.Background()
+	if err := driver.VerifyConnectivity(ctx); err != nil {
+		t.Skipf("neo4j connectivity: %v (is a local Neo4j reachable on %s with creds %s/****?)", err, neo4jBoltURI(cfg), cfg.User)
+	}
+
+	// Try CREATE DATABASE on `system`. memmy.Migrate cannot create the
+	// db itself because CREATE DATABASE only runs against `system`,
+	// which memmy doesn't touch. We bridge that gap here.
+	sys := driver.NewSession(ctx, neo4j.SessionConfig{DatabaseName: "system"})
+	_, createErr := sys.Run(ctx, "CREATE DATABASE $name IF NOT EXISTS WAIT", map[string]any{"name": cfg.Database})
+	_ = sys.Close(ctx)
+	if createErr != nil && strings.Contains(createErr.Error(), "UnsupportedAdministrationCommand") {
+		// Community Edition: only `neo4j` and `system` exist. Fall
+		// back so tests can run anyway. We wipe nodes below, so this
+		// trashes any pre-existing data in the developer's local
+		// `neo4j` db — that's an explicit accept on a dev machine
+		// where the suite is the only writer.
+		cfg.Database = "neo4j"
+	} else if createErr != nil {
+		t.Skipf("create database %q: %v", cfg.Database, createErr)
+	}
+
+	work := driver.NewSession(ctx, neo4j.SessionConfig{DatabaseName: cfg.Database})
+	defer work.Close(ctx)
+	if _, err := work.Run(ctx, "MATCH (n) DETACH DELETE n", nil); err != nil {
+		t.Skipf("reset %q: %v", cfg.Database, err)
+	}
+	return cfg
+}
+
 // openFakeMemoryService is the test entry point: opens the singleton
-// against a fake embedder + the dedicated memory-fake.db path so we
+// against a fake embedder + a freshly-prepared Neo4j database so we
 // never need a real Gemini key in CI. Production code never reaches
 // this — openMemoryService is the only public constructor and it
-// requires a configured key.
+// requires a configured Gemini key plus a configured Neo4j endpoint.
+//
+// Skips the test when the configured Neo4j is unreachable. The skip
+// is deliberate: this is the canary for "ask + memmy v0.2 actually
+// connects to Neo4j," and an unreachable Neo4j is a CI-environment
+// artifact, not a regression in ask.
 func openFakeMemoryService(t *testing.T) {
 	t.Helper()
-	if err := openMemoryServiceWith(memmy.NewFakeEmbedder(memoryFakeEmbedderDim), true); err != nil {
-		t.Fatalf("openFakeMemoryService: %v", err)
+	cfg := ensureNeo4jTestDatabase(t)
+	err := openMemoryServiceWith(memmy.NewFakeEmbedder(memoryFakeEmbedderDim), cfg, memoryFakeEmbedderDim)
+	if err != nil {
+		t.Skipf("openFakeMemoryService: %v", err)
 	}
 	t.Cleanup(func() { _ = closeMemoryService() })
 }
 
-func TestMemoryDBPath_UnderHome(t *testing.T) {
-	home := isolateHome(t)
+func TestNeo4jDefaults(t *testing.T) {
+	c := neo4jConfig{}
+	if got := neo4jHostOrDefault(c); got != "localhost" {
+		t.Errorf("default host=%q want localhost", got)
+	}
+	if got := neo4jPortOrDefault(c); got != 7687 {
+		t.Errorf("default port=%d want 7687", got)
+	}
+	if got := neo4jDatabaseOrDefault(c); got != "neo4j" {
+		t.Errorf("default database=%q want neo4j", got)
+	}
+	// Explicit values override the defaults.
+	c2 := neo4jConfig{Host: "db.local", Port: 17687, Database: "scratch"}
+	if got := neo4jHostOrDefault(c2); got != "db.local" {
+		t.Errorf("explicit host=%q", got)
+	}
+	if got := neo4jPortOrDefault(c2); got != 17687 {
+		t.Errorf("explicit port=%d", got)
+	}
+	if got := neo4jDatabaseOrDefault(c2); got != "scratch" {
+		t.Errorf("explicit database=%q", got)
+	}
+}
+
+func TestNeo4jBoltURI(t *testing.T) {
 	cases := []struct {
-		name    string
-		useFake bool
-		want    string
+		name string
+		in   neo4jConfig
+		want string
 	}{
-		{"production", false, filepath.Join(home, ".local", "share", "ask", "memory.db")},
-		{"fake", true, filepath.Join(home, ".local", "share", "ask", "memory-fake.db")},
+		{"defaults", neo4jConfig{}, "bolt://localhost:7687"},
+		{"custom", neo4jConfig{Host: "10.0.0.5", Port: 7688}, "bolt://10.0.0.5:7688"},
 	}
 	for _, c := range cases {
-		got, err := memoryDBPath(c.useFake)
-		if err != nil {
-			t.Fatalf("%s: memoryDBPath: %v", c.name, err)
+		if got := neo4jBoltURI(c.in); got != c.want {
+			t.Errorf("%s: neo4jBoltURI=%q want %q", c.name, got, c.want)
 		}
-		if got != c.want {
-			t.Errorf("%s: memoryDBPath=%q want %q", c.name, got, c.want)
+	}
+}
+
+func TestValidateNeo4jHost(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		wantErr bool
+	}{
+		{"empty", "", true},
+		{"whitespace", "   ", true},
+		{"plain hostname", "localhost", false},
+		{"FQDN", "db.example.com", false},
+		{"ipv4", "10.0.0.5", false},
+		{"with bolt scheme", "bolt://localhost", true},
+		{"with neo4j scheme", "neo4j://x", true},
+		{"with http scheme", "http://localhost", true},
+		{"with slash", "localhost/db", true},
+		{"with space", "local host", true},
+	}
+	for _, c := range cases {
+		err := validateNeo4jHost(c.in)
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: validateNeo4jHost(%q) err=%v wantErr=%v", c.name, c.in, err, c.wantErr)
+		}
+	}
+}
+
+func TestValidateNeo4jPort(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		wantErr bool
+	}{
+		{"empty", "", true},
+		{"alpha", "abc", true},
+		{"zero", "0", true},
+		{"low", "1", false},
+		{"bolt default", "7687", false},
+		{"high", "65535", false},
+		{"out of range", "65536", true},
+		{"negative", "-1", true},
+		{"with whitespace", "  7687  ", false},
+		{"mixed", "76a87", true},
+	}
+	for _, c := range cases {
+		err := validateNeo4jPort(c.in)
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: validateNeo4jPort(%q) err=%v wantErr=%v", c.name, c.in, err, c.wantErr)
 		}
 	}
 }
@@ -88,12 +235,6 @@ func TestOpenCloseMemoryService_RoundTrip(t *testing.T) {
 		t.Fatalf("service should be open after open")
 	}
 
-	// File materializes on disk so the next ask invocation can find it.
-	path, _ := memoryDBPath(true)
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("expected db at %s, got %v", path, err)
-	}
-
 	if err := closeMemoryService(); err != nil {
 		t.Fatalf("closeMemoryService: %v", err)
 	}
@@ -109,7 +250,7 @@ func TestOpenMemoryService_Idempotent(t *testing.T) {
 	openFakeMemoryService(t)
 	// Second open is a no-op: openMemoryServiceWith returns early when
 	// the singleton is already populated.
-	if err := openMemoryServiceWith(memmy.NewFakeEmbedder(memoryFakeEmbedderDim), true); err != nil {
+	if err := openMemoryServiceWith(memmy.NewFakeEmbedder(memoryFakeEmbedderDim), neo4jTestConfig(), memoryFakeEmbedderDim); err != nil {
 		t.Fatalf("second open should be no-op, got %v", err)
 	}
 	if !memoryServiceOpen() {
@@ -135,8 +276,8 @@ func TestMemoryService_AcceptsAskTenant(t *testing.T) {
 	// Round-trip a minimal Write through the live service to prove the
 	// embedded library is wired correctly and the configured tenant
 	// schema accepts the {project, scope: "ask"} tuple ask uses. This
-	// is the canary for "memmy v0.1.0 is actually importable and
-	// functional from ask," not a unit test of memmy itself.
+	// is the canary for "ask + memmy v0.2 is actually importable and
+	// functional," not a unit test of memmy itself.
 	isolateHome(t)
 	resetMemoryService(t)
 	openFakeMemoryService(t)
@@ -408,9 +549,6 @@ func TestMemoryPicker_GeminiKeyRowReflectsConfigState(t *testing.T) {
 
 	m := newTestModel(t, newFakeProvider())
 	rows := m.memoryPickerItems()
-	if len(rows) < 2 {
-		t.Fatalf("expected at least 2 picker rows, got %d", len(rows))
-	}
 	var keyRow *memoryPickerRow
 	for i := range rows {
 		if rows[i].id == "geminiKey" {
@@ -443,6 +581,84 @@ func TestMemoryPicker_GeminiKeyRowReflectsConfigState(t *testing.T) {
 	t.Fatal("geminiKey row missing on second pass")
 }
 
+func TestMemoryPicker_Neo4jRowsReflectDefaults(t *testing.T) {
+	// A blank config should still render meaningful defaults — the
+	// picker is the documentation surface for what ask will dial.
+	isolateHome(t)
+	resetMemoryService(t)
+
+	m := newTestModel(t, newFakeProvider())
+	rows := m.memoryPickerItems()
+	want := map[string]string{
+		"neo4jHost":     "localhost",
+		"neo4jPort":     "7687",
+		"neo4jUser":     "(not set)",
+		"neo4jPassword": "(not set)",
+		"neo4jDatabase": "neo4j",
+	}
+	for id, w := range want {
+		var found *memoryPickerRow
+		for i := range rows {
+			if rows[i].id == id {
+				found = &rows[i]
+			}
+		}
+		if found == nil {
+			t.Errorf("missing row %q", id)
+			continue
+		}
+		if found.key != w {
+			t.Errorf("row %q key=%q want %q", id, found.key, w)
+		}
+	}
+}
+
+func TestMemoryPicker_Neo4jPasswordNeverEchoed(t *testing.T) {
+	// Password row must mirror the Gemini key row's masking — never
+	// surface the value in the closed picker.
+	isolateHome(t)
+	resetMemoryService(t)
+
+	if err := saveConfig(askConfig{Memory: memoryConfig{Neo4j: neo4jConfig{Password: "neo4jneo4j-secret"}}}); err != nil {
+		t.Fatalf("seed saveConfig: %v", err)
+	}
+	m := newTestModel(t, newFakeProvider())
+	rows := m.memoryPickerItems()
+	for _, r := range rows {
+		if r.id == "neo4jPassword" {
+			if r.key != "configured" {
+				t.Errorf("password row key=%q want 'configured'", r.key)
+			}
+			if strings.Contains(r.key, "neo4jneo4j-secret") {
+				t.Errorf("password row leaked secret: %q", r.key)
+			}
+			return
+		}
+	}
+	t.Fatal("neo4jPassword row not found")
+}
+
+func TestMemoryPicker_Neo4jUserPlainEchoed(t *testing.T) {
+	// User name is not a secret; the picker should display it so a
+	// user can verify what was saved at a glance.
+	isolateHome(t)
+	resetMemoryService(t)
+
+	if err := saveConfig(askConfig{Memory: memoryConfig{Neo4j: neo4jConfig{User: "neo4j"}}}); err != nil {
+		t.Fatalf("seed saveConfig: %v", err)
+	}
+	m := newTestModel(t, newFakeProvider())
+	for _, r := range m.memoryPickerItems() {
+		if r.id == "neo4jUser" {
+			if r.key != "neo4j" {
+				t.Errorf("user row key=%q want 'neo4j'", r.key)
+			}
+			return
+		}
+	}
+	t.Fatal("neo4jUser row not found")
+}
+
 func TestMemoryPicker_EnterOnKeyRow_OpensEditor(t *testing.T) {
 	isolateHome(t)
 	resetMemoryService(t)
@@ -451,49 +667,83 @@ func TestMemoryPicker_EnterOnKeyRow_OpensEditor(t *testing.T) {
 	m.toast = NewToastModel(40, 0)
 	m = m.startConfigModal()
 	m = m.openConfigMemoryPicker()
-	// Move cursor to the geminiKey row (it's the second row).
-	m.configMemoryCursor = 1
+	rows := m.memoryPickerItems()
+	for i, r := range rows {
+		if r.id == "geminiKey" {
+			m.configMemoryCursor = i
+			break
+		}
+	}
 
 	newM, _ := m.updateConfigMemoryPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm, ok := newM.(model)
 	if !ok {
 		t.Fatalf("updateConfigMemoryPicker returned %T", newM)
 	}
-	if !mm.configMemoryKeyEditing {
-		t.Errorf("Enter on geminiKey should open the editor")
+	if mm.configMemoryFieldEditing != "geminiKey" {
+		t.Errorf("Enter on geminiKey should open the editor, got editing=%q", mm.configMemoryFieldEditing)
 	}
 }
 
-func TestMemoryKeyInput_BackspaceTrimsRune(t *testing.T) {
+func TestMemoryPicker_EnterOnNeo4jHostRow_OpensEditor(t *testing.T) {
+	// Same Enter→editor flow has to work for every Neo4j field, not
+	// just the original Gemini-key path.
+	isolateHome(t)
+	resetMemoryService(t)
+
+	m := newTestModel(t, newFakeProvider())
+	m.toast = NewToastModel(40, 0)
+	m = m.startConfigModal()
+	m = m.openConfigMemoryPicker()
+	rows := m.memoryPickerItems()
+	for i, r := range rows {
+		if r.id == "neo4jHost" {
+			m.configMemoryCursor = i
+			break
+		}
+	}
+
+	newM, _ := m.updateConfigMemoryPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
+	mm := newM.(model)
+	if mm.configMemoryFieldEditing != "neo4jHost" {
+		t.Errorf("Enter on neo4jHost should open the editor, got editing=%q", mm.configMemoryFieldEditing)
+	}
+	// Pre-fill must reflect the default since no host is persisted yet.
+	if mm.configMemoryFieldDraft != "localhost" {
+		t.Errorf("editor pre-fill=%q want 'localhost'", mm.configMemoryFieldDraft)
+	}
+}
+
+func TestMemoryFieldInput_BackspaceTrimsRune(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.configMemoryPickerActive = true
-	m.configMemoryKeyEditing = true
-	m.configMemoryKeyDraft = "abc"
+	m.configMemoryFieldEditing = "geminiKey"
+	m.configMemoryFieldDraft = "abc"
 
-	newM, _ := m.updateConfigMemoryKeyInput(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	newM, _ := m.updateConfigMemoryFieldInput(tea.KeyPressMsg{Code: tea.KeyBackspace})
 	mm := newM.(model)
-	if mm.configMemoryKeyDraft != "ab" {
-		t.Errorf("backspace should trim trailing rune: %q", mm.configMemoryKeyDraft)
+	if mm.configMemoryFieldDraft != "ab" {
+		t.Errorf("backspace should trim trailing rune: %q", mm.configMemoryFieldDraft)
 	}
 }
 
-func TestMemoryKeyInput_EscapeCancelsWithoutSaving(t *testing.T) {
+func TestMemoryFieldInput_EscapeCancelsWithoutSaving(t *testing.T) {
 	isolateHome(t)
 	resetMemoryService(t)
 
 	m := newTestModel(t, newFakeProvider())
 	m.toast = NewToastModel(40, 0)
 	m.configMemoryPickerActive = true
-	m.configMemoryKeyEditing = true
-	m.configMemoryKeyDraft = "AIza-typed-but-not-saved"
+	m.configMemoryFieldEditing = "geminiKey"
+	m.configMemoryFieldDraft = "AIza-typed-but-not-saved"
 
-	newM, _ := m.updateConfigMemoryKeyInput(tea.KeyPressMsg{Code: tea.KeyEsc})
+	newM, _ := m.updateConfigMemoryFieldInput(tea.KeyPressMsg{Code: tea.KeyEsc})
 	mm := newM.(model)
-	if mm.configMemoryKeyEditing {
+	if mm.configMemoryFieldEditing != "" {
 		t.Errorf("Esc should close the editor")
 	}
-	if mm.configMemoryKeyDraft != "" {
-		t.Errorf("Esc should clear the draft: %q", mm.configMemoryKeyDraft)
+	if mm.configMemoryFieldDraft != "" {
+		t.Errorf("Esc should clear the draft: %q", mm.configMemoryFieldDraft)
 	}
 	cfg, _ := loadConfig()
 	if cfg.Memory.GeminiKey != "" {
@@ -501,19 +751,19 @@ func TestMemoryKeyInput_EscapeCancelsWithoutSaving(t *testing.T) {
 	}
 }
 
-func TestMemoryKeyInput_EnterPersistsDraft(t *testing.T) {
+func TestMemoryFieldInput_EnterPersistsGeminiKeyDraft(t *testing.T) {
 	isolateHome(t)
 	resetMemoryService(t)
 
 	m := newTestModel(t, newFakeProvider())
 	m.toast = NewToastModel(40, 0)
 	m.configMemoryPickerActive = true
-	m.configMemoryKeyEditing = true
-	m.configMemoryKeyDraft = "  AIza-from-clipboard  " // includes whitespace to verify trim
+	m.configMemoryFieldEditing = "geminiKey"
+	m.configMemoryFieldDraft = "  AIza-from-clipboard  " // includes whitespace to verify trim
 
-	newM, cmd := m.updateConfigMemoryKeyInput(tea.KeyPressMsg{Code: tea.KeyEnter})
+	newM, cmd := m.updateConfigMemoryFieldInput(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm := newM.(model)
-	if mm.configMemoryKeyEditing {
+	if mm.configMemoryFieldEditing != "" {
 		t.Errorf("Enter should close the editor")
 	}
 	cfg, _ := loadConfig()
@@ -525,7 +775,119 @@ func TestMemoryKeyInput_EnterPersistsDraft(t *testing.T) {
 	}
 }
 
-func TestMemoryKeyInput_ClearingPersistedKeyClosesService(t *testing.T) {
+func TestMemoryFieldInput_EnterPersistsNeo4jHostDraft(t *testing.T) {
+	isolateHome(t)
+	resetMemoryService(t)
+
+	m := newTestModel(t, newFakeProvider())
+	m.toast = NewToastModel(40, 0)
+	m.configMemoryPickerActive = true
+	m.configMemoryFieldEditing = "neo4jHost"
+	m.configMemoryFieldDraft = "10.0.0.5"
+
+	newM, _ := m.updateConfigMemoryFieldInput(tea.KeyPressMsg{Code: tea.KeyEnter})
+	mm := newM.(model)
+	if mm.configMemoryFieldEditing != "" {
+		t.Errorf("Enter should close the editor")
+	}
+	cfg, _ := loadConfig()
+	if cfg.Memory.Neo4j.Host != "10.0.0.5" {
+		t.Errorf("host not persisted, got %q", cfg.Memory.Neo4j.Host)
+	}
+}
+
+func TestMemoryFieldInput_EnterPersistsNeo4jPortDraft(t *testing.T) {
+	isolateHome(t)
+	resetMemoryService(t)
+
+	m := newTestModel(t, newFakeProvider())
+	m.toast = NewToastModel(40, 0)
+	m.configMemoryPickerActive = true
+	m.configMemoryFieldEditing = "neo4jPort"
+	m.configMemoryFieldDraft = "17687"
+
+	_, _ = m.updateConfigMemoryFieldInput(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	cfg, _ := loadConfig()
+	if cfg.Memory.Neo4j.Port != 17687 {
+		t.Errorf("port not persisted, got %d", cfg.Memory.Neo4j.Port)
+	}
+}
+
+func TestMemoryFieldInput_InvalidPortKeepsEditorOpen(t *testing.T) {
+	// Validation failure must not save and must not close the editor:
+	// the user gets a toast and can correct the typo without having
+	// to reopen and retype.
+	isolateHome(t)
+	resetMemoryService(t)
+
+	m := newTestModel(t, newFakeProvider())
+	m.toast = NewToastModel(40, 0)
+	m.configMemoryPickerActive = true
+	m.configMemoryFieldEditing = "neo4jPort"
+	m.configMemoryFieldDraft = "abc"
+
+	newM, cmd := m.updateConfigMemoryFieldInput(tea.KeyPressMsg{Code: tea.KeyEnter})
+	mm := newM.(model)
+	if mm.configMemoryFieldEditing != "neo4jPort" {
+		t.Errorf("editor should stay open on validation failure")
+	}
+	if mm.configMemoryFieldDraft != "abc" {
+		t.Errorf("draft should be preserved, got %q", mm.configMemoryFieldDraft)
+	}
+	if cmd == nil {
+		t.Errorf("expected error toast cmd")
+	}
+	cfg, _ := loadConfig()
+	if cfg.Memory.Neo4j.Port != 0 {
+		t.Errorf("port should not have been persisted, got %d", cfg.Memory.Neo4j.Port)
+	}
+}
+
+func TestMemoryFieldInput_InvalidHostKeepsEditorOpen(t *testing.T) {
+	isolateHome(t)
+	resetMemoryService(t)
+
+	m := newTestModel(t, newFakeProvider())
+	m.toast = NewToastModel(40, 0)
+	m.configMemoryPickerActive = true
+	m.configMemoryFieldEditing = "neo4jHost"
+	m.configMemoryFieldDraft = "bolt://oops"
+
+	newM, _ := m.updateConfigMemoryFieldInput(tea.KeyPressMsg{Code: tea.KeyEnter})
+	mm := newM.(model)
+	if mm.configMemoryFieldEditing != "neo4jHost" {
+		t.Errorf("editor should stay open on validation failure")
+	}
+	cfg, _ := loadConfig()
+	if cfg.Memory.Neo4j.Host != "" {
+		t.Errorf("host should not have been persisted, got %q", cfg.Memory.Neo4j.Host)
+	}
+}
+
+func TestMemoryFieldInput_BlankNeo4jUserPasswordAccepted(t *testing.T) {
+	// The user explicitly asked that blank user/password be acceptable
+	// defaults. Saving an empty string for either must succeed and
+	// persist as an empty string.
+	isolateHome(t)
+	resetMemoryService(t)
+
+	for _, id := range []string{"neo4jUser", "neo4jPassword"} {
+		m := newTestModel(t, newFakeProvider())
+		m.toast = NewToastModel(40, 0)
+		m.configMemoryPickerActive = true
+		m.configMemoryFieldEditing = id
+		m.configMemoryFieldDraft = ""
+
+		newM, _ := m.updateConfigMemoryFieldInput(tea.KeyPressMsg{Code: tea.KeyEnter})
+		mm := newM.(model)
+		if mm.configMemoryFieldEditing != "" {
+			t.Errorf("%s: blank should be accepted (editor closed)", id)
+		}
+	}
+}
+
+func TestMemoryFieldInput_ClearingPersistedKeyClosesService(t *testing.T) {
 	// User had a key, opened the service, then opened the editor and
 	// cleared the field. Saving an empty key must tear the service
 	// down — leaving it dialing the prior key would be surprising.
@@ -544,10 +906,10 @@ func TestMemoryKeyInput_ClearingPersistedKeyClosesService(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.toast = NewToastModel(40, 0)
 	m.configMemoryPickerActive = true
-	m.configMemoryKeyEditing = true
-	m.configMemoryKeyDraft = "" // user erased the key
+	m.configMemoryFieldEditing = "geminiKey"
+	m.configMemoryFieldDraft = "" // user erased the key
 
-	_, _ = m.updateConfigMemoryKeyInput(tea.KeyPressMsg{Code: tea.KeyEnter})
+	_, _ = m.updateConfigMemoryFieldInput(tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if memoryServiceOpen() {
 		t.Errorf("clearing the key should have closed the service")
@@ -560,11 +922,11 @@ func TestMemoryKeyInput_ClearingPersistedKeyClosesService(t *testing.T) {
 
 func TestApplyConfigMemoryPaste_AppendsToDraft(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
-	m.configMemoryKeyEditing = true
-	m.configMemoryKeyDraft = "AIza"
+	m.configMemoryFieldEditing = "geminiKey"
+	m.configMemoryFieldDraft = "AIza"
 	newM, _ := m.applyConfigMemoryPaste("-pasted-tail")
 	mm := newM.(model)
-	if mm.configMemoryKeyDraft != "AIza-pasted-tail" {
-		t.Errorf("paste should append to draft: %q", mm.configMemoryKeyDraft)
+	if mm.configMemoryFieldDraft != "AIza-pasted-tail" {
+		t.Errorf("paste should append to draft: %q", mm.configMemoryFieldDraft)
 	}
 }

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -8,14 +10,106 @@ import (
 )
 
 // memoryPickerRow describes a single row in the /config → Memory
-// submenu. The submenu currently has two rows (Enabled, Gemini API
-// key) but is modeled as a list so future rows (Backend, remote
-// selection, DB path display) can drop in by appending here without
-// restructuring the picker state machine.
+// submenu. The submenu carries the on/off toggle, the Gemini key, and
+// the Neo4j connection fields. Each editable row has an `id` that the
+// inline editor uses to route the save back to the right cfg field.
 type memoryPickerRow struct {
 	name string
 	key  string
 	id   string
+}
+
+// memoryFieldSpec captures everything the generic editor needs to know
+// to render and persist one field. Centralising these means the input
+// handler / view / save path don't carry one switch per field.
+type memoryFieldSpec struct {
+	id       string
+	title    string
+	helpHint string
+	// password rows never echo their value on the closed picker; the
+	// summary shows "(set)" / "(not set)" instead. The editor itself
+	// still shows the typed/pasted text so the user can see what they
+	// are entering.
+	masked bool
+	// validate is run on the trimmed draft when the user hits Enter.
+	// nil means "always accept".
+	validate func(string) error
+	// load reads the persisted value to pre-fill the draft when the
+	// editor opens. Empty string is fine.
+	load func(askConfig) string
+	// save mutates cfg with the (already validated, already trimmed)
+	// draft. The picker writes cfg back to disk after save returns.
+	save func(*askConfig, string)
+	// reopenOnSave: when true, a successful save triggers a service
+	// re-open (close + open) when memory is currently enabled. Used by
+	// the Neo4j connection fields and the Gemini key — anything that
+	// changes how memmy dials its dependencies.
+	reopenOnSave bool
+}
+
+// memoryFieldSpecs is the registry. Order doesn't matter here; the row
+// order in the picker comes from memoryPickerItems.
+var memoryFieldSpecs = map[string]memoryFieldSpec{
+	"geminiKey": {
+		id:           "geminiKey",
+		title:        "Gemini API key",
+		helpHint:     "paste or type the key, then enter to save",
+		masked:       true,
+		load:         func(c askConfig) string { return c.Memory.GeminiKey },
+		save:         func(c *askConfig, v string) { c.Memory.GeminiKey = v },
+		reopenOnSave: true,
+	},
+	"neo4jHost": {
+		id:           "neo4jHost",
+		title:        "Neo4j host",
+		helpHint:     "hostname or IP (no scheme); enter to save",
+		validate:     validateNeo4jHost,
+		load:         func(c askConfig) string { return neo4jHostOrDefault(c.Memory.Neo4j) },
+		save:         func(c *askConfig, v string) { c.Memory.Neo4j.Host = v },
+		reopenOnSave: true,
+	},
+	"neo4jPort": {
+		id:           "neo4jPort",
+		title:        "Neo4j port",
+		helpHint:     "1..65535; enter to save",
+		validate:     validateNeo4jPort,
+		load:         func(c askConfig) string { return strconv.Itoa(neo4jPortOrDefault(c.Memory.Neo4j)) },
+		save: func(c *askConfig, v string) {
+			n, _ := strconv.Atoi(v)
+			c.Memory.Neo4j.Port = n
+		},
+		reopenOnSave: true,
+	},
+	"neo4jUser": {
+		id:           "neo4jUser",
+		title:        "Neo4j user",
+		helpHint:     "blank is allowed; enter to save",
+		load:         func(c askConfig) string { return c.Memory.Neo4j.User },
+		save:         func(c *askConfig, v string) { c.Memory.Neo4j.User = v },
+		reopenOnSave: true,
+	},
+	"neo4jPassword": {
+		id:           "neo4jPassword",
+		title:        "Neo4j password",
+		helpHint:     "blank is allowed; enter to save",
+		masked:       true,
+		load:         func(c askConfig) string { return c.Memory.Neo4j.Password },
+		save:         func(c *askConfig, v string) { c.Memory.Neo4j.Password = v },
+		reopenOnSave: true,
+	},
+	"neo4jDatabase": {
+		id:       "neo4jDatabase",
+		title:    "Neo4j database",
+		helpHint: "blank uses memmy's default (\"neo4j\"); enter to save",
+		load: func(c askConfig) string {
+			// Show the raw stored value here, not the default-filled
+			// one — a blank means "use default" and the user should
+			// see that as blank in the editor too.
+			return c.Memory.Neo4j.Database
+		},
+		save:         func(c *askConfig, v string) { c.Memory.Neo4j.Database = v },
+		reopenOnSave: true,
+	},
 }
 
 func (m model) memoryPickerItems() []memoryPickerRow {
@@ -25,22 +119,40 @@ func (m model) memoryPickerItems() []memoryPickerRow {
 	case memoryServiceOpen():
 		enabled = "on"
 	case memoryConfigEnabled(cfg):
-		// Persisted-on but not actually open: startup-open failed (lock
-		// contention, disk full, no Gemini key, etc.). Surface that to
-		// the user so the row is honest about the live state.
+		// Persisted-on but not actually open: startup-open failed (no
+		// Gemini key, Neo4j unreachable, bad creds, etc.). Surface
+		// that to the user so the row is honest about live state.
 		enabled = "off (open failed)"
 	}
-	keyState := "(not set)"
-	if cfg.Memory.GeminiKey != "" {
-		// Display only "configured" — never echo the key. Plain-text
-		// storage at 0600 is one thing; surfacing it to a TUI someone
-		// might be screen-sharing is another.
-		keyState = "configured"
-	}
-	return []memoryPickerRow{
+	rows := []memoryPickerRow{
 		{"Enabled", enabled, "enabled"},
-		{"Gemini API key", keyState, "geminiKey"},
+		{"Gemini API key", maskedSummary(cfg.Memory.GeminiKey), "geminiKey"},
+		{"Neo4j host", neo4jHostOrDefault(cfg.Memory.Neo4j), "neo4jHost"},
+		{"Neo4j port", strconv.Itoa(neo4jPortOrDefault(cfg.Memory.Neo4j)), "neo4jPort"},
+		{"Neo4j user", plainSummary(cfg.Memory.Neo4j.User), "neo4jUser"},
+		{"Neo4j password", maskedSummary(cfg.Memory.Neo4j.Password), "neo4jPassword"},
+		{"Neo4j database", neo4jDatabaseOrDefault(cfg.Memory.Neo4j), "neo4jDatabase"},
 	}
+	return rows
+}
+
+// maskedSummary describes a never-echoed field. Display only "set" /
+// "not set" — never the actual value, even on a 0600 config file: the
+// picker sits inside a TUI and someone might be screen-sharing.
+func maskedSummary(v string) string {
+	if v == "" {
+		return "(not set)"
+	}
+	return "configured"
+}
+
+// plainSummary describes an echoed field. Empty becomes "(not set)" so
+// the row visibly distinguishes "no value" from "empty string".
+func plainSummary(v string) string {
+	if v == "" {
+		return "(not set)"
+	}
+	return v
 }
 
 // openConfigMemoryPicker shows the Memory submenu. The cursor lands on
@@ -56,34 +168,37 @@ func (m model) openConfigMemoryPicker() model {
 func (m model) closeConfigMemoryPicker() model {
 	m.configMemoryPickerActive = false
 	m.configMemoryCursor = 0
-	m.configMemoryKeyEditing = false
-	m.configMemoryKeyDraft = ""
+	m.configMemoryFieldEditing = ""
+	m.configMemoryFieldDraft = ""
 	return m
 }
 
-// openConfigMemoryKeyEditor enters the inline text input for the
-// Gemini API key. Pre-fills the draft from the on-disk key so a
-// user editing an existing entry sees the current value (which they
-// can clear with backspace) rather than a blank line.
-func (m model) openConfigMemoryKeyEditor() model {
+// openConfigMemoryFieldEditor enters the inline text input for the
+// named field. Pre-fills the draft from the on-disk value so a user
+// editing an existing entry sees the current text (which they can
+// clear with backspace) rather than a blank line.
+func (m model) openConfigMemoryFieldEditor(id string) model {
+	if _, ok := memoryFieldSpecs[id]; !ok {
+		return m
+	}
 	cfg, _ := loadConfig()
-	m.configMemoryKeyEditing = true
-	m.configMemoryKeyDraft = cfg.Memory.GeminiKey
+	m.configMemoryFieldEditing = id
+	m.configMemoryFieldDraft = memoryFieldSpecs[id].load(cfg)
 	return m
 }
 
-func (m model) closeConfigMemoryKeyEditor() model {
-	m.configMemoryKeyEditing = false
-	m.configMemoryKeyDraft = ""
+func (m model) closeConfigMemoryFieldEditor() model {
+	m.configMemoryFieldEditing = ""
+	m.configMemoryFieldDraft = ""
 	return m
 }
 
 // updateConfigMemoryPicker handles key presses while the Memory submenu
-// is active. Routes to the key editor when active; otherwise drives
+// is active. Routes to the inline editor when active; otherwise drives
 // the row cursor.
 func (m model) updateConfigMemoryPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if m.configMemoryKeyEditing {
-		return m.updateConfigMemoryKeyInput(msg)
+	if m.configMemoryFieldEditing != "" {
+		return m.updateConfigMemoryFieldInput(msg)
 	}
 	rows := m.memoryPickerItems()
 	switch {
@@ -104,11 +219,12 @@ func (m model) updateConfigMemoryPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd
 		if m.configMemoryCursor < 0 || m.configMemoryCursor >= len(rows) {
 			return m, nil
 		}
-		switch rows[m.configMemoryCursor].id {
-		case "enabled":
+		id := rows[m.configMemoryCursor].id
+		if id == "enabled" {
 			return m.toggleMemoryEnabled()
-		case "geminiKey":
-			m = m.openConfigMemoryKeyEditor()
+		}
+		if _, ok := memoryFieldSpecs[id]; ok {
+			m = m.openConfigMemoryFieldEditor(id)
 			return m, nil
 		}
 		return m, nil
@@ -116,73 +232,91 @@ func (m model) updateConfigMemoryPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd
 	return m, nil
 }
 
-// updateConfigMemoryKeyInput accumulates keystrokes into the draft.
-// Enter saves and re-opens the service if memory is enabled (so a
-// previously-failing open immediately retries). Esc discards.
-func (m model) updateConfigMemoryKeyInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+// updateConfigMemoryFieldInput accumulates keystrokes into the draft.
+// Enter saves and (when applicable) re-opens the service so a
+// previously-failing open immediately retries against the new value.
+// Esc discards.
+func (m model) updateConfigMemoryFieldInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
-		m = m.closeConfigMemoryKeyEditor()
+		m = m.closeConfigMemoryFieldEditor()
 		return m, nil
 	case msg.Code == tea.KeyEnter:
-		return m.commitConfigMemoryKey()
+		return m.commitConfigMemoryField()
 	case msg.Code == tea.KeyBackspace:
-		if r := []rune(m.configMemoryKeyDraft); len(r) > 0 {
-			m.configMemoryKeyDraft = string(r[:len(r)-1])
+		if r := []rune(m.configMemoryFieldDraft); len(r) > 0 {
+			m.configMemoryFieldDraft = string(r[:len(r)-1])
 		}
 		return m, nil
 	}
 	if msg.Text != "" && msg.Mod&^tea.ModShift == 0 {
-		m.configMemoryKeyDraft += msg.Text
+		m.configMemoryFieldDraft += msg.Text
 		return m, nil
 	}
 	return m, nil
 }
 
-// applyConfigMemoryPaste appends pasted text to the key draft. Called
-// from the top-level update.go PasteMsg dispatcher when the editor is
-// the active focus.
+// applyConfigMemoryPaste appends pasted text to the field draft.
+// Called from the top-level update.go PasteMsg dispatcher when an
+// editor is the active focus.
 func (m model) applyConfigMemoryPaste(text string) (tea.Model, tea.Cmd) {
-	m.configMemoryKeyDraft += text
+	m.configMemoryFieldDraft += text
 	return m, nil
 }
 
-// commitConfigMemoryKey persists the draft and re-opens the service
-// when memory is currently flagged enabled. Re-opening here means a
-// user who toggled Enabled before having a key, saw "off (open
-// failed)", then pasted a key, gets the service to actually start —
-// no second toggle needed.
-func (m model) commitConfigMemoryKey() (tea.Model, tea.Cmd) {
-	cfg, _ := loadConfig()
-	cfg.Memory.GeminiKey = strings.TrimSpace(m.configMemoryKeyDraft)
-	if err := saveConfig(cfg); err != nil {
-		debugLog("memory key saveConfig: %v", err)
-		m = m.closeConfigMemoryKeyEditor()
-		return m, m.toast.show("memory: save key: " + err.Error())
+// commitConfigMemoryField validates, persists, and (when applicable)
+// re-opens the service for the currently-edited field.
+func (m model) commitConfigMemoryField() (tea.Model, tea.Cmd) {
+	id := m.configMemoryFieldEditing
+	spec, ok := memoryFieldSpecs[id]
+	if !ok {
+		m = m.closeConfigMemoryFieldEditor()
+		return m, nil
 	}
-	m = m.closeConfigMemoryKeyEditor()
+	draft := strings.TrimSpace(m.configMemoryFieldDraft)
+	if spec.validate != nil {
+		if err := spec.validate(draft); err != nil {
+			// Keep the editor open so the user can correct without
+			// retyping. Toast carries the reason.
+			return m, m.toast.show("memory: " + spec.title + ": " + err.Error())
+		}
+	}
+	cfg, _ := loadConfig()
+	prevEnabled := memoryConfigEnabled(cfg)
+	prevValue := spec.load(cfg)
+	spec.save(&cfg, draft)
+	if err := saveConfig(cfg); err != nil {
+		debugLog("memory %s saveConfig: %v", id, err)
+		m = m.closeConfigMemoryFieldEditor()
+		return m, m.toast.show("memory: save: " + err.Error())
+	}
+	m = m.closeConfigMemoryFieldEditor()
 
-	// Toast wording mirrors what the user just did — saved a key, or
-	// cleared one.
-	if cfg.Memory.GeminiKey == "" {
-		// If the service was open with the prior key, close it: the
-		// user has just removed their credential and the live service
-		// is no longer authorized to talk to Gemini.
+	// Special case: clearing the Gemini key should also bring the
+	// service down — leaving it dialing the prior key would be
+	// surprising. Same for clearing all of host/port/user/password,
+	// but the closer is uniform: any reopenOnSave field with a now-
+	// empty Gemini key tears down.
+	if cfg.Memory.GeminiKey == "" && id == "geminiKey" {
 		_ = closeMemoryService()
 		return m, m.toast.show("memory: gemini key cleared")
 	}
 
-	if !memoryConfigEnabled(cfg) {
-		return m, m.toast.show("memory: gemini key saved (toggle Enabled to use it)")
+	if !spec.reopenOnSave {
+		return m, m.toast.show("memory: " + spec.title + " saved")
 	}
-	// Force-reopen against the new key. closeMemoryService is
-	// idempotent; openMemoryService(cfg) builds a fresh embedder.
+	if !prevEnabled {
+		return m, m.toast.show("memory: " + spec.title + " saved (toggle Enabled to use it)")
+	}
+	// Force-reopen against the new value. closeMemoryService is
+	// idempotent; openMemoryService(cfg) builds a fresh embedder and
+	// dials Neo4j at the new endpoint.
 	_ = closeMemoryService()
 	if err := openMemoryService(cfg); err != nil {
-		debugLog("memory reopen after key save: %v", err)
+		debugLog("memory reopen after %s save (prev=%q): %v", id, prevValue, err)
 		return m, m.toast.show("memory: " + err.Error())
 	}
-	summary := "memory on (key applied)"
+	summary := "memory on (" + spec.title + " applied)"
 	if line := memoryStatsLine(); line != "" {
 		summary = "memory on — " + line
 	}
@@ -191,9 +325,9 @@ func (m model) commitConfigMemoryKey() (tea.Model, tea.Cmd) {
 
 // toggleMemoryEnabled flips cfg.Memory.Enabled, persists it, and brings
 // the live singleton in line. The persisted Enabled flag always
-// reflects user intent — open failures (no Gemini key, lock
-// contention) surface as toasts but never revert the flag, so a
-// follow-up key paste can retry the open.
+// reflects user intent — open failures (no Gemini key, Neo4j down)
+// surface as toasts but never revert the flag, so a follow-up edit
+// can retry the open.
 func (m model) toggleMemoryEnabled() (tea.Model, tea.Cmd) {
 	cfg, _ := loadConfig()
 	curr := memoryConfigEnabled(cfg)
@@ -223,12 +357,12 @@ func (m model) toggleMemoryEnabled() (tea.Model, tea.Cmd) {
 }
 
 // viewConfigMemoryPicker renders the Memory submenu using the same
-// outer chrome as the theme / provider pickers. When the key editor
+// outer chrome as the theme / provider pickers. When a field editor
 // is active, the body is replaced with a single text-input prompt;
 // otherwise the body is the row list.
 func (m model) viewConfigMemoryPicker() string {
-	if m.configMemoryKeyEditing {
-		return m.viewConfigMemoryKeyInput()
+	if m.configMemoryFieldEditing != "" {
+		return m.viewConfigMemoryFieldInput()
 	}
 	rows := m.memoryPickerItems()
 	innerW := 0
@@ -239,8 +373,9 @@ func (m model) viewConfigMemoryPicker() string {
 			innerW = w
 		}
 	}
-	dbPath, _ := memoryDBPath(false)
-	if w := lipgloss.Width("DB: " + dbPath); w > innerW {
+	cfg, _ := loadConfig()
+	endpoint := fmt.Sprintf("URI: %s/%s", neo4jBoltURI(cfg.Memory.Neo4j), neo4jDatabaseOrDefault(cfg.Memory.Neo4j))
+	if w := lipgloss.Width(endpoint); w > innerW {
 		innerW = w
 	}
 	if innerW < 30 {
@@ -256,7 +391,7 @@ func (m model) viewConfigMemoryPicker() string {
 	}
 	body = append(body,
 		"",
-		configHelpStyle.Render("DB: "+dbPath),
+		configHelpStyle.Render(endpoint),
 		"",
 		themePickerHelpStyle.Render("↑↓ navigate · enter open/toggle · esc close"),
 	)
@@ -264,27 +399,30 @@ func (m model) viewConfigMemoryPicker() string {
 	return themePickerBoxStyle.Render(strings.Join(body, "\n"))
 }
 
-// viewConfigMemoryKeyInput renders the inline editor used for pasting
-// or typing a Gemini API key. Echoes the draft verbatim — masking is
-// not the threat model here (the file is 0600), but we deliberately
-// do not show the saved key on the closed picker view.
-func (m model) viewConfigMemoryKeyInput() string {
+// viewConfigMemoryFieldInput renders the inline editor used for the
+// active field. Echoes the draft verbatim — masking is not the threat
+// model here (the file is 0600, and the user often pastes into this),
+// but we deliberately do not show stored secrets on the closed picker.
+func (m model) viewConfigMemoryFieldInput() string {
+	spec, ok := memoryFieldSpecs[m.configMemoryFieldEditing]
+	if !ok {
+		return ""
+	}
 	innerW := 60
-	title := themePickerTitleStyle.Render("Gemini API key")
+	title := themePickerTitleStyle.Render(spec.title)
 	body := []string{
 		title,
 		"",
-		configHelpStyle.Render("paste or type the key, then enter to save"),
+		configHelpStyle.Render(spec.helpHint),
 		"",
-		configPromptStyle.Render("> ") + m.configMemoryKeyDraft + configCaretStyle.Render("▏"),
+		configPromptStyle.Render("> ") + m.configMemoryFieldDraft + configCaretStyle.Render("▏"),
 		"",
 		themePickerHelpStyle.Render("enter save · esc cancel"),
 	}
-	for i, line := range body {
+	for _, line := range body {
 		if w := lipgloss.Width(line); w > innerW {
 			innerW = w
 		}
-		_ = i
 	}
 	return themePickerBoxStyle.Render(strings.Join(body, "\n"))
 }
