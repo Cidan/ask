@@ -132,11 +132,15 @@ func openMemoryServiceWith(emb memmy.Embedder, n4j neo4jConfig, dim int) error {
 		// User pointed at a database that doesn't exist yet. memmy
 		// can't create it (CREATE DATABASE only runs against `system`,
 		// which memmy doesn't touch), so we bridge that gap with the
-		// neo4j driver. Best-effort: a server that doesn't allow it
-		// (Community Edition) bubbles the original DatabaseNotFound up
-		// after the retry, which is the right error for the user to see.
+		// neo4j driver.
 		if createErr := createNeo4jDatabase(ctx, n4jOpts); createErr != nil {
-			return fmt.Errorf("memory create database %q: %w", n4jOpts.Database, createErr)
+			if isNeo4jUnsupportedAdminCommand(createErr) {
+				// Community Edition can't host arbitrary databases. The
+				// raw error is opaque ("UnsupportedAdministrationCommand")
+				// — turn it into a sentence the user can act on.
+				return fmt.Errorf("Neo4j Community Edition only supports the default database; change /config → Memory → Neo4j database to %q, or upgrade to Neo4j Enterprise/Aura/Desktop", neo4jDefaultDatabase)
+			}
+			return fmt.Errorf("create database %q: %w", n4jOpts.Database, createErr)
 		}
 		migrateErr = memmy.Migrate(ctx, memmy.MigrationOptions{
 			Neo4j: n4jOpts,
@@ -283,6 +287,18 @@ func isNeo4jDatabaseNotFound(err error) bool {
 	s := err.Error()
 	return strings.Contains(s, "Neo.ClientError.Database.DatabaseNotFound") ||
 		strings.Contains(s, "DatabaseNotFoundError")
+}
+
+// isNeo4jUnsupportedAdminCommand reports whether err is the rejection
+// Neo4j Community Edition returns for CREATE DATABASE (and other
+// admin commands that require Enterprise/Aura/Desktop). The caller
+// uses this to swap the opaque server message for a sentence that
+// tells the user how to recover.
+func isNeo4jUnsupportedAdminCommand(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "Neo.ClientError.Statement.UnsupportedAdministrationCommand")
 }
 
 // createNeo4jDatabase issues `CREATE DATABASE name IF NOT EXISTS WAIT`

@@ -945,6 +945,67 @@ func TestMemoryFieldInput_ClearingPersistedKeyClosesService(t *testing.T) {
 	}
 }
 
+func TestIsNeo4jUnsupportedAdminCommand(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"unrelated", errors.New("connection refused"), false},
+		{"community edition", errors.New("Neo4jError: Neo.ClientError.Statement.UnsupportedAdministrationCommand (Unsupported administration command: CREATE DATABASE $name IF NOT EXISTS WAIT)"), true},
+	}
+	for _, c := range cases {
+		if got := isNeo4jUnsupportedAdminCommand(c.err); got != c.want {
+			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestOpenMemoryServiceWith_CommunityEditionFriendlyError(t *testing.T) {
+	// On Community Edition, attempting to use a non-default database
+	// must produce a sentence that tells the user how to recover —
+	// not the raw "UnsupportedAdministrationCommand" payload.
+	isolateHome(t)
+	resetMemoryService(t)
+
+	// Probe whether this server is Community. If it isn't, skip —
+	// the friendly-error path doesn't fire on Enterprise.
+	cfg := neo4jTestConfig()
+	cfg.Database = "ask_friendly_err_probe"
+	driver, err := neo4j.NewDriverWithContext(neo4jBoltURI(cfg), neo4j.BasicAuth(cfg.User, cfg.Password, ""))
+	if err != nil {
+		t.Skipf("neo4j driver init: %v", err)
+	}
+	defer driver.Close(context.Background())
+	if err := driver.VerifyConnectivity(context.Background()); err != nil {
+		t.Skipf("neo4j connectivity: %v", err)
+	}
+	sys := driver.NewSession(context.Background(), neo4j.SessionConfig{DatabaseName: "system"})
+	_, probeErr := sys.Run(context.Background(), "CREATE DATABASE $name IF NOT EXISTS WAIT", map[string]any{"name": cfg.Database})
+	_ = sys.Close(context.Background())
+	if probeErr == nil || !isNeo4jUnsupportedAdminCommand(probeErr) {
+		// Best-effort cleanup: drop what the probe just created.
+		_ = dropNeo4jDatabase(t, cfg)
+		t.Skipf("server allows CREATE DATABASE; friendly-error path doesn't apply here")
+	}
+
+	openErr := openMemoryServiceWith(memmy.NewFakeEmbedder(memoryFakeEmbedderDim), cfg, memoryFakeEmbedderDim)
+	if openErr == nil {
+		t.Fatalf("expected open to fail on Community Edition with non-default database")
+	}
+	msg := openErr.Error()
+	if !strings.Contains(msg, "Community Edition") {
+		t.Errorf("error should call out Community Edition, got %q", msg)
+	}
+	if !strings.Contains(msg, neo4jDefaultDatabase) {
+		t.Errorf("error should suggest the default database name (%q), got %q", neo4jDefaultDatabase, msg)
+	}
+	if strings.Contains(msg, "UnsupportedAdministrationCommand") {
+		t.Errorf("friendly error should not leak the raw Neo4j code, got %q", msg)
+	}
+}
+
 func TestIsNeo4jDatabaseNotFound(t *testing.T) {
 	cases := []struct {
 		name string
