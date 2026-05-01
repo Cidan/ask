@@ -36,10 +36,22 @@ func leadingSpaces(s string) int {
 	return n
 }
 
-func TestIssues_NewStateSeedsMockData(t *testing.T) {
+// seedMockIssues fills s with the canonical mock dataset and
+// rebuilds the view so kanban / list cache to the populated state.
+// Centralised so the per-test boilerplate stays one line.
+func seedMockIssues(s *issuesState) {
+	s.all = mockIssues()
+	s.applySort()
+	s.view = issueViewLayers[0].builder(s)
+}
+
+func TestIssues_NewStateStartsEmpty(t *testing.T) {
+	// Issues now begin empty; the screen is expected to populate
+	// itself by dispatching a provider load on entry. The sub-view
+	// is still installed so render paths don't have to nil-check.
 	s := newIssuesState()
-	if len(s.all) == 0 {
-		t.Fatalf("mock data should be non-empty")
+	if len(s.all) != 0 {
+		t.Errorf("fresh state should have no issues, got %d", len(s.all))
 	}
 	if s.view == nil {
 		t.Fatalf("default sub-view should be installed")
@@ -51,6 +63,7 @@ func TestIssues_NewStateSeedsMockData(t *testing.T) {
 
 func TestIssues_DefaultSortIsByNumberAscending(t *testing.T) {
 	s := newIssuesState()
+	seedMockIssues(s)
 	nums := make([]int, len(s.all))
 	for i, it := range s.all {
 		nums[i] = it.number
@@ -62,6 +75,7 @@ func TestIssues_DefaultSortIsByNumberAscending(t *testing.T) {
 
 func TestIssues_RowsIncludeAllRequiredColumns(t *testing.T) {
 	s := newIssuesState()
+	seedMockIssues(s)
 	rows := rowsFromIssues(s.all)
 	if len(rows) != len(s.all) {
 		t.Fatalf("rows=%d want %d (1:1 with issues)", len(rows), len(s.all))
@@ -85,8 +99,7 @@ func TestIssues_RowsIncludeAllRequiredColumns(t *testing.T) {
 }
 
 func TestIssues_DownArrowMovesCursor(t *testing.T) {
-	m := newTestModel(t, newFakeProvider())
-	m, _ = runUpdate(t, m, ctrlKey('i'))
+	m := enterIssuesScreen(t)
 	if m.issues == nil {
 		t.Fatalf("issues state should be initialised")
 	}
@@ -105,8 +118,7 @@ func TestIssues_DownArrowMovesCursor(t *testing.T) {
 }
 
 func TestIssues_GotoTopAndBottom(t *testing.T) {
-	m := newTestModel(t, newFakeProvider())
-	m, _ = runUpdate(t, m, ctrlKey('i'))
+	m := enterIssuesScreen(t)
 	// G → bottom
 	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: 'G'})
 	v := m.issues.view.(*listIssueView)
@@ -129,6 +141,7 @@ func TestIssues_ViewContainsAllStatuses(t *testing.T) {
 	// also the assertion that catches a stale row binding (e.g. if
 	// SetRows isn't being called on each render).
 	s := newIssuesState()
+	seedMockIssues(s)
 	body := s.view.view(s)
 	for _, it := range s.all {
 		if !strings.Contains(body, it.status) {
@@ -185,8 +198,7 @@ func TestIssues_SelectedRowDoesNotShiftIndent(t *testing.T) {
 }
 
 func TestIssues_EnterOpensDetailView(t *testing.T) {
-	m := newTestModel(t, newFakeProvider())
-	m, _ = runUpdate(t, m, ctrlKey('i'))
+	m := enterIssuesScreen(t)
 	if m.issues == nil {
 		t.Fatalf("issues state should be initialised")
 	}
@@ -207,8 +219,7 @@ func TestIssues_EnterOpensDetailView(t *testing.T) {
 }
 
 func TestIssues_EscFromDetailReturnsToListPreservingCursor(t *testing.T) {
-	m := newTestModel(t, newFakeProvider())
-	m, _ = runUpdate(t, m, ctrlKey('i'))
+	m := enterIssuesScreen(t)
 	// Walk the cursor down a couple of rows so we can verify the
 	// list view we land back on still has its cursor there.
 	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
@@ -237,8 +248,7 @@ func TestIssues_EscFromDetailReturnsToListPreservingCursor(t *testing.T) {
 }
 
 func TestIssues_BackspaceAlsoReturnsToList(t *testing.T) {
-	m := newTestModel(t, newFakeProvider())
-	m, _ = runUpdate(t, m, ctrlKey('i'))
+	m := enterIssuesScreen(t)
 	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.issues.view.name() != "detail" {
 		t.Fatalf("setup: not on detail")
@@ -253,6 +263,7 @@ func TestIssues_DetailRendersDescriptionAndComments(t *testing.T) {
 	// Pick the issue we know has both a description with a markdown
 	// header and a comment thread (issue #12).
 	s := newIssuesState()
+	seedMockIssues(s)
 	var target issue
 	for _, it := range s.all {
 		if it.number == 12 {
@@ -310,10 +321,7 @@ func TestIssues_ScreenBodyIndentMatchesAskSide(t *testing.T) {
 	// outputStyle while the bubbles table sat flush-left, which
 	// looked broken — the fix is a single indent applied at the
 	// screen level.
-	m := newTestModel(t, newFakeProvider())
-	m.width = 100
-	m.height = 30
-	m, _ = runUpdate(t, m, ctrlKey('i'))
+	m := enterIssuesScreen(t)
 	body := stripAnsi(m.activeScreen().view(m))
 	lines := strings.Split(body, "\n")
 	if len(lines) < 6 {
@@ -335,8 +343,7 @@ func TestIssues_ScreenBodyIndentMatchesAskSide(t *testing.T) {
 }
 
 func TestIssues_HintChangesBetweenListAndDetail(t *testing.T) {
-	m := newTestModel(t, newFakeProvider())
-	m, _ = runUpdate(t, m, ctrlKey('i'))
+	m := enterIssuesScreen(t)
 	listBody := m.activeScreen().view(m)
 	if !strings.Contains(listBody, "enter open") {
 		t.Errorf("list hint should advertise Enter to open: %q", listBody)
@@ -348,19 +355,26 @@ func TestIssues_HintChangesBetweenListAndDetail(t *testing.T) {
 	}
 }
 
-// enterIssuesScreen flips the test model to the issues screen, fixes
-// the dimensions, and triggers one render so the screen captures
-// bodyTopRow / bodyContentH / scrollbarCol — all of which mouse-event
-// tests need to compute valid click coordinates. m.toast is wired up
-// because the right-click copy path bails out with a nil command when
-// the toast model is missing.
+// enterIssuesScreen flips the test model directly to the issues
+// screen and seeds it with the canonical mock dataset. It bypasses
+// the live Ctrl+I gate (which now refuses to enter without a
+// configured provider) — the gate is exercised by its own focused
+// tests; everything else just wants a populated screen to assert
+// behaviour against.
+//
+// m.toast is wired up because the right-click copy path bails with
+// a nil command when the toast model is missing.
 func enterIssuesScreen(t *testing.T) model {
 	t.Helper()
 	m := newTestModel(t, newFakeProvider())
 	m.width = 100
 	m.height = 30
 	m.toast = NewToastModel(40, time.Second)
-	m, _ = runUpdate(t, m, ctrlKey('i'))
+	m.screen = screenIssues
+	m.issues = newIssuesState()
+	m.issues.all = mockIssues()
+	m.issues.applySort()
+	m.issues.view = issueViewLayers[0].builder(m.issues)
 	_ = m.activeScreen().view(m) // populates body bounds
 	return m
 }
@@ -637,6 +651,7 @@ func TestKanban_ColumnsDerivedFromData(t *testing.T) {
 	// and assert one column per distinct status value, in
 	// first-seen order against the sorted-ascending data.
 	s := newIssuesState()
+	seedMockIssues(s)
 	v := newKanbanIssueView(s)
 	statuses := map[string]bool{}
 	for _, it := range s.all {
@@ -785,6 +800,7 @@ func TestKanban_BodyShowsFocusedColumnAndHidesOthers(t *testing.T) {
 	// the assertion specifically targets the issue number prefix
 	// "#NN" — that only renders in the body, not the tab strip.
 	s := newIssuesState()
+	seedMockIssues(s)
 	v := newKanbanIssueView(s)
 	v.resize(80, 30)
 	body := stripAnsi(v.view(s))
@@ -894,8 +910,7 @@ func TestIssues_MockDataAllHaveDescription(t *testing.T) {
 }
 
 func TestIssues_HeaderAndHintInScreenView(t *testing.T) {
-	m := newTestModel(t, newFakeProvider())
-	m, _ = runUpdate(t, m, ctrlKey('i'))
+	m := enterIssuesScreen(t)
 	body := m.activeScreen().view(m)
 	if !strings.Contains(body, "Issues") {
 		t.Errorf("issues screen missing header: %q", body)

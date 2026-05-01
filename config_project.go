@@ -234,71 +234,133 @@ func (m model) commitConfigProjectField() (tea.Model, tea.Cmd) {
 	return m, m.toast.show(spec.title + " saved")
 }
 
-// viewConfigProjectPicker renders the Project Options submenu.
-// Same outer chrome as the memory / theme / provider pickers so
-// the user reads it as the same family of dialogs.
+// viewConfigProjectPicker renders the Project Options submenu in
+// the same full-modal layout viewConfigGlobalPicker uses, so
+// switching between the two reads as a peer-level swap rather
+// than a "you went deeper" jump. Box dimensions, padding, and
+// chrome match the Global submenu exactly.
 func (m model) viewConfigProjectPicker() string {
 	if m.configProjectFieldEditing != "" {
 		return m.viewConfigProjectFieldInput()
 	}
-	rows := m.projectPickerItems()
-	innerW := 0
-	for _, r := range rows {
-		w := lipgloss.Width(r.name) + lipgloss.Width(r.key) + 4
-		if w > innerW {
-			innerW = w
-		}
+	boxW := 72
+	if boxW > m.width-4 {
+		boxW = m.width - 4
 	}
+	if boxW < 44 {
+		boxW = 44
+	}
+	innerW := boxW - 4
 	if innerW < 40 {
 		innerW = 40
 	}
+	boxH := 22
+	if boxH > m.height-4 {
+		boxH = m.height - 4
+	}
+	if boxH < 14 {
+		boxH = 14
+	}
 
-	title := themePickerTitleStyle.Render("Project Options")
+	title := configTitleStyle.Render("Project Options")
+
+	rows := m.projectPickerItems()
+	// Reserve four lines for chrome (title + spacer above, project
+	// path + spacer + help below); the rest goes to the row list.
+	listH := boxH - 6
+	if listH < 1 {
+		listH = 1
+	}
+	cursor := m.configProjectCursor
+	if cursor >= len(rows) {
+		cursor = len(rows) - 1
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	start := 0
+	if cursor >= listH {
+		start = cursor - listH + 1
+	}
+	end := start + listH
+	if end > len(rows) {
+		end = len(rows)
+	}
+
+	rendered := make([]string, 0, listH)
+	for i := start; i < end; i++ {
+		rendered = append(rendered, renderProjectPickerRow(rows[i], innerW, i == cursor))
+	}
+	for len(rendered) < listH {
+		rendered = append(rendered, strings.Repeat(" ", innerW))
+	}
 
 	footer := configHelpStyle.Render("project: " + shortCwdOf(m.cwd))
-
-	body := make([]string, 0, len(rows)+5)
-	body = append(body, title, "")
-	for i, r := range rows {
-		body = append(body, renderProjectPickerRow(r, innerW, i == m.configProjectCursor))
-	}
-	body = append(body,
+	help := configHelpStyle.Render("↑/↓ choose · enter open/cycle · esc back")
+	body := strings.Join([]string{
+		title,
+		"",
+		strings.Join(rendered, "\n"),
 		"",
 		footer,
-		"",
-		themePickerHelpStyle.Render("↑↓ navigate · enter open/cycle · esc close"),
-	)
-	return themePickerBoxStyle.Render(strings.Join(body, "\n"))
+		help,
+	}, "\n")
+	return configBoxStyle.Render(body)
 }
 
-// viewConfigProjectFieldInput renders the inline editor for an
-// editable field on the Project Options submenu (endpoint / PAT).
+// viewConfigProjectFieldInput renders the inline editor in the
+// same full-modal layout. When the editor is open, the row list
+// is hidden — the box content is just the prompt + draft + help.
 func (m model) viewConfigProjectFieldInput() string {
 	spec, ok := projectFieldSpecs[m.configProjectFieldEditing]
 	if !ok {
 		return ""
 	}
-	innerW := 60
-	title := themePickerTitleStyle.Render(spec.title)
+	boxW := 72
+	if boxW > m.width-4 {
+		boxW = m.width - 4
+	}
+	if boxW < 44 {
+		boxW = 44
+	}
+	innerW := boxW - 4
+	if innerW < 40 {
+		innerW = 40
+	}
+	boxH := 22
+	if boxH > m.height-4 {
+		boxH = m.height - 4
+	}
+	if boxH < 14 {
+		boxH = 14
+	}
+
 	display := m.configProjectFieldDraft
 	if spec.masked && display != "" {
 		display = strings.Repeat("•", len([]rune(display)))
 	}
-	body := []string{
+	title := configTitleStyle.Render(spec.title)
+	help := configHelpStyle.Render(spec.helpHint)
+	prompt := configPromptStyle.Render("> ") + display + configCaretStyle.Render("▏")
+	footer := configHelpStyle.Render("enter save · esc cancel")
+	// Pad vertical space so the box renders at the same height as
+	// the row-list view (no resize flicker when entering / leaving
+	// the editor).
+	bodyH := boxH - 8
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	pad := strings.Repeat("\n"+strings.Repeat(" ", innerW), bodyH)
+	body := strings.Join([]string{
 		title,
 		"",
-		configHelpStyle.Render(spec.helpHint),
+		help,
 		"",
-		configPromptStyle.Render("> ") + display + configCaretStyle.Render("▏"),
-		"",
-		themePickerHelpStyle.Render("enter save · esc cancel"),
-	}
-	for _, line := range body {
-		if w := lipgloss.Width(line); w > innerW {
-			innerW = w
-		}
-	}
-	return themePickerBoxStyle.Render(strings.Join(body, "\n"))
+		prompt,
+		pad,
+		footer,
+	}, "\n")
+	return configBoxStyle.Render(body)
 }
 
 func renderProjectPickerRow(r projectPickerRow, width int, selected bool) string {

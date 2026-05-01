@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -105,6 +107,56 @@ func TestProjectKey_NormalizesTrailingSlash(t *testing.T) {
 func TestProjectKey_EmptyReturnsEmpty(t *testing.T) {
 	if got := projectKey(""); got != "" {
 		t.Errorf("empty cwd → %q want empty", got)
+	}
+}
+
+func TestProjectRoot_FindsGitDirectory(t *testing.T) {
+	// Stand up a fake repo: TempDir with a .git directory inside.
+	// Walking up from a subdir should land us back at the .git
+	// parent — the canonical "project root".
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "cmd", "x"), 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if got := projectRoot(filepath.Join(root, "cmd", "x")); got != root {
+		t.Errorf("from subdir: got %q want %q", got, root)
+	}
+	if got := projectRoot(root); got != root {
+		t.Errorf("from root itself: got %q want %q", got, root)
+	}
+}
+
+func TestProjectRoot_WorktreeResolvesToMainRepo(t *testing.T) {
+	// The ask-managed worktree case: main repo at <root>, with a
+	// worktree dir under <root>/.claude/worktrees/foo. The
+	// worktree's .git is a *file*, not a directory, so projectRoot
+	// keeps walking up until it finds the main repo's .git
+	// directory and returns the main root — both worktree and
+	// main map to the same project key.
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir main .git: %v", err)
+	}
+	wt := filepath.Join(root, ".claude", "worktrees", "foo")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, ".git"),
+		[]byte("gitdir: "+root+"/.git/worktrees/foo\n"), 0o644); err != nil {
+		t.Fatalf("write worktree .git file: %v", err)
+	}
+	if got := projectRoot(wt); got != root {
+		t.Errorf("worktree should resolve to main root: got %q want %q", got, root)
+	}
+}
+
+func TestProjectRoot_FallsBackToCwdWhenNoGit(t *testing.T) {
+	tmp := t.TempDir()
+	if got := projectRoot(tmp); got != tmp {
+		t.Errorf("no .git anywhere should fall back to cwd: got %q want %q", got, tmp)
 	}
 }
 

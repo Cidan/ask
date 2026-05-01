@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -18,23 +19,39 @@ func TestScreens_DefaultsToAsk(t *testing.T) {
 	}
 }
 
-func TestScreens_CtrlIFlipsToIssues(t *testing.T) {
+// onIssuesDirect parks the model on the issues screen without going
+// through the configured-provider gate. Most screen-behaviour tests
+// don't care about the gate (it has its own focused tests below) and
+// just want a populated issues state to assert against.
+func onIssuesDirect(m model) model {
+	m.screen = screenIssues
+	m.issues = newIssuesState()
+	return m
+}
+
+func TestScreens_CtrlIBlockedWhenUnconfigured(t *testing.T) {
+	// Without a configured issue provider, Ctrl+I must NOT switch to
+	// the issues screen — landing on a screen with no data and no
+	// way forward is worse UX than staying put. The toast tells the
+	// user why.
+	isolateHome(t)
 	m := newTestModel(t, newFakeProvider())
-	m2, _ := runUpdate(t, m, ctrlKey('i'))
-	if m2.screen != screenIssues {
-		t.Fatalf("after Ctrl+I screen=%v want screenIssues", m2.screen)
+	m.toast = NewToastModel(40, time.Second)
+	m2, cmd := runUpdate(t, m, ctrlKey('i'))
+	if m2.screen != screenAsk {
+		t.Errorf("Ctrl+I unconfigured should leave us on ask, got %v", m2.screen)
 	}
-	if m2.issues == nil {
-		t.Fatalf("issues state should be lazily seeded by issues screen handler")
+	if cmd == nil {
+		t.Errorf("Ctrl+I unconfigured should produce a toast command")
 	}
 }
 
 func TestScreens_CtrlOFlipsBackToAsk(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
-	m2, _ := runUpdate(t, m, ctrlKey('i'))
-	m3, _ := runUpdate(t, m2, ctrlKey('o'))
-	if m3.screen != screenAsk {
-		t.Fatalf("after Ctrl+O screen=%v want screenAsk", m3.screen)
+	m = onIssuesDirect(m)
+	m, _ = runUpdate(t, m, ctrlKey('o'))
+	if m.screen != screenAsk {
+		t.Fatalf("after Ctrl+O screen=%v want screenAsk", m.screen)
 	}
 }
 
@@ -72,7 +89,7 @@ func TestScreens_BackgroundWorkContinuesWhileOnIssues(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}
 	m.quietMode = false
-	m, _ = runUpdate(t, m, ctrlKey('i'))
+	m = onIssuesDirect(m)
 	if m.screen != screenIssues {
 		t.Fatalf("setup: expected screenIssues, got %v", m.screen)
 	}
@@ -97,18 +114,22 @@ func TestScreens_IdempotentSwitchIsNoop(t *testing.T) {
 	if m2.screen != screenAsk {
 		t.Fatalf("Ctrl+O on ask screen=%v want screenAsk", m2.screen)
 	}
-	// Ctrl+I twice — second one is a no-op.
-	m, _ = runUpdate(t, m, ctrlKey('i'))
+	// Once on issues (bypassing the configured-provider gate), a
+	// second flip-to-issues attempt via switchScreen should be a
+	// no-op against the existing pointer.
+	m = onIssuesDirect(m)
 	first := m.issues
-	m, _ = runUpdate(t, m, ctrlKey('i'))
+	m = m.switchScreen(screenIssues)
 	if m.issues != first {
-		t.Errorf("second Ctrl+I rebuilt issues state; should be a no-op")
+		t.Errorf("second switchScreen(screenIssues) rebuilt issues state; should be a no-op")
 	}
 }
 
 func TestScreens_ViewBodyDispatchesToActiveScreen(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
-	m, _ = runUpdate(t, m, ctrlKey('i'))
+	m = onIssuesDirect(m)
+	m.width = 100
+	m.height = 30
 	body := m.viewBody()
 	if !strings.Contains(body, "Issues") {
 		t.Errorf("viewBody on issues screen missing header: %q", body)
@@ -140,14 +161,13 @@ func TestScreens_DirtyInputDoesNotLeakSlashOverlayIntoIssues(t *testing.T) {
 	// drawn on issues). The View() guard for the popup must include
 	// `m.screen == screenAsk`.
 	m := newTestModel(t, newFakeProvider())
+	m.width = 100
+	m.height = 30
 	// /co matches /config (an app builtin) so filterSlashCmds returns
 	// a non-empty list — the precondition that *would* trigger the
 	// overlay if the gate is wrong.
 	m.input.SetValue("/co")
-	m, _ = runUpdate(t, m, ctrlKey('i'))
-	if m.screen != screenIssues {
-		t.Fatalf("setup: expected screenIssues, got %v", m.screen)
-	}
+	m = onIssuesDirect(m)
 	if items := m.filterSlashCmds(); len(items) == 0 {
 		t.Fatalf("setup: expected /co to match the slash menu so the popup *would* render")
 	}

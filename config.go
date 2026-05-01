@@ -90,10 +90,39 @@ func githubEndpointOrDefault(c githubIssuesConfig) string {
 }
 
 // projectKey is the canonical key for projectConfig lookups —
-// filepath.Clean of the absolute cwd path. Centralises the
-// normalisation so two callers with the same logical project never
-// collide on `/home/me/proj` vs `/home/me/proj/` vs `~/proj`.
+// the resolved git repo root for cwd, or filepath.Clean(abs(cwd))
+// when cwd isn't inside a git checkout. Resolving up to the repo
+// root means a worktree (~/.claude/worktrees/<name>) and the main
+// repo checkout (~/repo) both map to the same project entry, so
+// the user only configures GitHub once per repo no matter which
+// worktree they happen to be sitting in.
 func projectKey(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	return projectRoot(cwd)
+}
+
+// projectRoot walks up from cwd looking for a `.git` directory
+// (NOT a file). The directory variant identifies the *main* repo
+// checkout; a `.git` file lives in a worktree (and points at the
+// main repo's `.git/worktrees/<name>` subdirectory). Returning the
+// first directory we hit gives us:
+//
+//   - main checkout `~/repo`            → `~/repo`
+//   - worktree under
+//     `~/repo/.claude/worktrees/foo`    → `~/repo` (walks past the
+//                                          worktree's .git file
+//                                          since the file isn't a
+//                                          directory, then up two
+//                                          more levels)
+//   - subdir of `~/repo/cmd/x`          → `~/repo`
+//   - non-checkout dir `/tmp/scratch`   → `/tmp/scratch`
+//
+// Falling back to the original abs cwd when no .git is found
+// keeps the function total — every caller gets a valid key, even
+// when there's no repo around.
+func projectRoot(cwd string) string {
 	if cwd == "" {
 		return ""
 	}
@@ -101,7 +130,19 @@ func projectKey(cwd string) string {
 	if err != nil {
 		return filepath.Clean(cwd)
 	}
-	return filepath.Clean(abs)
+	abs = filepath.Clean(abs)
+	dir := abs
+	for {
+		gitPath := filepath.Join(dir, ".git")
+		if info, err := os.Stat(gitPath); err == nil && info.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return abs
+		}
+		dir = parent
+	}
 }
 
 // loadProjectConfig returns the saved projectConfig for cwd, or the

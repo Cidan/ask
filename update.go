@@ -777,13 +777,19 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 				}
 				return m, nil
 			}
-			m = m.switchScreen(screenIssues)
+			// Hard-gate the screen-switch on a configured provider:
+			// if the project has no provider (or the configured one
+			// can't dispatch), refuse the transition entirely and
+			// surface the toast. Letting the user land on issues with
+			// nothing to look at would be a worse UX than staying put
+			// and seeing why.
 			cfg, _ := loadConfig()
 			provider, pc := activeIssueProvider(cfg, m.cwd)
 			if !provider.Configured(pc, m.cwd) {
 				return m, m.toast.show(
-					"Issues not configured for this project: " + shortCwdOf(m.cwd))
+					"Issues not configured for this project: " + shortCwdOf(projectKey(m.cwd)))
 			}
+			m = m.switchScreen(screenIssues)
 			return m, loadIssuesCmd(m.id, provider, pc, m.cwd)
 		}
 		if msg.Mod == tea.ModCtrl && msg.Code == 'o' && !m.modalOpen() {

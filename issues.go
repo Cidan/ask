@@ -203,10 +203,8 @@ type issueView interface {
 // from the view's perspective.
 func newIssuesState() *issuesState {
 	s := &issuesState{
-		all:  mockIssues(),
 		sort: issueSortByNumber,
 	}
-	s.applySort()
 	s.view = issueViewLayers[0].builder(s)
 	return s
 }
