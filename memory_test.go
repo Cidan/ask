@@ -528,7 +528,7 @@ func TestConfigItemsAll_IncludesMemoryRow(t *testing.T) {
 	resetMemoryService(t)
 
 	m := newTestModel(t, newFakeProvider())
-	items := m.configItemsAll()
+	items := m.globalConfigItems()
 
 	var found *configItem
 	for i := range items {
@@ -538,7 +538,7 @@ func TestConfigItemsAll_IncludesMemoryRow(t *testing.T) {
 		}
 	}
 	if found == nil {
-		t.Fatalf("configItemsAll missing memory row, got %+v", items)
+		t.Fatalf("globalConfigItems missing memory row, got %+v", items)
 	}
 	if found.name != "Memory..." {
 		t.Errorf("memory row name=%q want Memory...", found.name)
@@ -554,7 +554,7 @@ func TestConfigItemsAll_MemoryRowReflectsOpenState(t *testing.T) {
 	openFakeMemoryService(t)
 
 	m := newTestModel(t, newFakeProvider())
-	for _, it := range m.configItemsAll() {
+	for _, it := range m.globalConfigItems() {
 		if it.id == "memory" {
 			if it.key != "on" {
 				t.Errorf("memory row summary=%q want 'on' when service open", it.key)

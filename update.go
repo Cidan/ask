@@ -53,6 +53,27 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 	}()
 	switch msg := msg.(type) {
+	case issuesLoadedMsg:
+		if msg.tabID != m.id {
+			return m, nil
+		}
+		if msg.err != nil {
+			return m, m.toast.show("issues: " + msg.err.Error())
+		}
+		if m.issues == nil {
+			m.issues = newIssuesState()
+		}
+		m.issues.all = msg.issues
+		m.issues.applySort()
+		// Rebuild the active sub-view so its column-grouped /
+		// table-bound state reflects the freshly-loaded data. The
+		// list view re-binds rows lazily inside view(), but the
+		// kanban view caches columns from rebuildColumns and the
+		// detail view holds an issue snapshot — both need a fresh
+		// instance to be safe.
+		m.issues.view = issueViewLayers[0].builder(m.issues)
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -646,6 +667,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.mode == modeConfig && m.configMemoryPickerActive && m.configMemoryFieldEditing != "" {
 			return m.applyConfigMemoryPaste(msg.Content)
 		}
+		if m.mode == modeConfig && m.configProjectPickerActive && m.configProjectFieldEditing != "" {
+			return m.applyConfigProjectPaste(msg.Content)
+		}
 		if m.mode == modeInput && !m.busy {
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
@@ -753,7 +777,14 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 				}
 				return m, nil
 			}
-			return m.switchScreen(screenIssues), nil
+			m = m.switchScreen(screenIssues)
+			cfg, _ := loadConfig()
+			provider, pc := activeIssueProvider(cfg, m.cwd)
+			if !provider.Configured(pc, m.cwd) {
+				return m, m.toast.show(
+					"Issues not configured for this project: " + shortCwdOf(m.cwd))
+			}
+			return m, loadIssuesCmd(m.id, provider, pc, m.cwd)
 		}
 		if msg.Mod == tea.ModCtrl && msg.Code == 'o' && !m.modalOpen() {
 			return m.switchScreen(screenAsk), nil

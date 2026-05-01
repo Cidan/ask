@@ -14,7 +14,26 @@ type configItem struct {
 	id   string
 }
 
+// configItemsAll is the *top-level* /config row list. The screen
+// is layered into Global Options (existing knobs lifted into a
+// submenu) and Project Options (per-cwd issue provider) so adding
+// per-project surfaces doesn't pollute the global namespace. The
+// Global / Project openers are themselves selectable rows; Enter
+// drops the user into the matching sub-picker.
 func (m model) configItemsAll() []configItem {
+	return []configItem{
+		{"Global Options", "", "global"},
+		{"Project Options", "", "project"},
+	}
+}
+
+// globalConfigItems is what previously lived directly on the
+// top-level /config row list. Now it's the body of the Global
+// Options submenu — same content, just one layer deeper. Returning
+// these rows here (rather than inlining inside the global picker
+// view) keeps the filter / cursor logic usable across both the
+// view and the Enter dispatcher.
+func (m model) globalConfigItems() []configItem {
 	quiet := "off"
 	if m.quietMode {
 		quiet = "on"
@@ -124,10 +143,19 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.configMemoryPickerActive {
 		return m.updateConfigMemoryPicker(msg)
 	}
+	// New layered sub-pickers: global (the existing flat list, now
+	// one layer deeper) and project (per-cwd issues config). Both
+	// hide their parent and own the keyboard until they're closed.
+	if m.configProjectPickerActive {
+		return m.updateConfigProjectPicker(msg)
+	}
+	if m.configGlobalPickerActive {
+		return m.updateConfigGlobalPicker(msg)
+	}
 	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
 		return m.clearConfigModal(), nil
 	}
-	items := m.filteredConfigItems()
+	items := m.configItemsAll()
 	switch msg.Code {
 	case tea.KeyEsc:
 		return m.clearConfigModal(), nil
@@ -142,101 +170,192 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyEnter:
-		if m.configCursor >= 0 && m.configCursor < len(items) {
-			switch items[m.configCursor].id {
-			case "quiet":
-				m.quietMode = !m.quietMode
-				v := m.quietMode
-				cfg, _ := loadConfig()
-				cfg.UI.QuietMode = &v
-				if err := saveConfig(cfg); err != nil {
-					debugLog("saveConfig err: %v", err)
-				}
-				return m, m.refreshHistoryCmd()
-			case "cursorBlink":
-				m.cursorBlink = !m.cursorBlink
-				applyCursorBlink(&m.input, m.cursorBlink)
-				v := m.cursorBlink
-				cfg, _ := loadConfig()
-				cfg.UI.CursorBlink = &v
-				if err := saveConfig(cfg); err != nil {
-					debugLog("saveConfig err: %v", err)
-				}
-				if m.cursorBlink {
-					return m, cursor.Blink
-				}
-				return m, nil
-			case "renderDiffs":
-				m.renderDiffs = !m.renderDiffs
-				v := m.renderDiffs
-				cfg, _ := loadConfig()
-				cfg.UI.RenderDiffs = &v
-				if err := saveConfig(cfg); err != nil {
-					debugLog("saveConfig err: %v", err)
-				}
-				return m, m.refreshHistoryCmd()
-			case "toolOutput":
-				m.toolOutputMode = nextToolOutputMode(m.toolOutputMode)
-				cfg, _ := loadConfig()
-				cfg.UI.ToolOutput = string(m.toolOutputMode)
-				if err := saveConfig(cfg); err != nil {
-					debugLog("saveConfig err: %v", err)
-				}
-				return m, m.refreshHistoryCmd()
-			case "skipAllPermissions":
-				m.skipAllPermissions = !m.skipAllPermissions
-				v := m.skipAllPermissions
-				cfg, _ := loadConfig()
-				cfg.UI.SkipAllPermissions = &v
-				if err := saveConfig(cfg); err != nil {
-					debugLog("saveConfig err: %v", err)
-				}
-				m.killProc()
-				return m, nil
-			case "worktree":
-				m.worktree = !m.worktree
-				v := m.worktree
-				cfg, _ := loadConfig()
-				cfg.UI.Worktree = &v
-				if err := saveConfig(cfg); err != nil {
-					debugLog("saveConfig err: %v", err)
-				}
-				if m.worktree {
-					ensureWorktreeGitignore()
-				} else {
-					// Detaching from the active worktree: forget it so
-					// the next turn runs in the project root. The on-disk
-					// directory survives until prune reaps it.
-					m.worktreeName = ""
-				}
-				m.killProc()
-				return m, nil
-			case "theme":
-				m = m.openThemePicker()
-				return m, nil
-			case "provider":
-				m = m.openConfigProviderPicker()
-				return m, nil
-			case "memory":
-				m = m.openConfigMemoryPicker()
-				return m, nil
-			}
+		if m.configCursor < 0 || m.configCursor >= len(items) {
+			return m.clearConfigModal(), nil
+		}
+		switch items[m.configCursor].id {
+		case "global":
+			m = m.openConfigGlobalPicker()
+			return m, nil
+		case "project":
+			m = m.openConfigProjectPicker()
+			return m, nil
 		}
 		return m.clearConfigModal(), nil
+	}
+	return m, nil
+}
+
+// openConfigGlobalPicker opens the Global Options submenu — the
+// items that lived directly on the /config row list before the
+// layering. Cursor + filter reset on entry so the user lands on
+// the first row.
+//
+// NOTE: configFilter is currently a single field shared with the
+// (now empty) top-level filter. It's reset on open and on close
+// here so the layers don't see each other's strings, but the next
+// submenu that wants its own filter should split this into
+// per-picker fields rather than reusing the shared slot.
+func (m model) openConfigGlobalPicker() model {
+	m.configGlobalPickerActive = true
+	m.configGlobalCursor = 0
+	m.configFilter = ""
+	return m
+}
+
+func (m model) closeConfigGlobalPicker() model {
+	m.configGlobalPickerActive = false
+	m.configGlobalCursor = 0
+	m.configFilter = ""
+	return m
+}
+
+// updateConfigGlobalPicker drives the row cursor and dispatches
+// Enter into the per-row toggle/picker handlers. The dispatcher
+// (handleGlobalConfigEnter) is factored out so the body stays
+// readable; the actual mutation logic per row hasn't changed from
+// the pre-layering version.
+func (m model) updateConfigGlobalPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
+		m = m.closeConfigGlobalPicker()
+		return m, nil
+	}
+	items := m.filteredGlobalConfigItems()
+	switch msg.Code {
+	case tea.KeyEsc:
+		m = m.closeConfigGlobalPicker()
+		return m, nil
+	case tea.KeyUp:
+		if m.configGlobalCursor > 0 {
+			m.configGlobalCursor--
+		}
+		return m, nil
+	case tea.KeyDown:
+		if m.configGlobalCursor < len(items)-1 {
+			m.configGlobalCursor++
+		}
+		return m, nil
+	case tea.KeyEnter:
+		if m.configGlobalCursor < 0 || m.configGlobalCursor >= len(items) {
+			return m, nil
+		}
+		return m.handleGlobalConfigEnter(items[m.configGlobalCursor].id)
 	case tea.KeyBackspace:
 		if m.configFilter != "" {
 			r := []rune(m.configFilter)
 			m.configFilter = string(r[:len(r)-1])
-			m.configCursor = 0
+			m.configGlobalCursor = 0
 		}
 		return m, nil
 	}
 	if msg.Text != "" && msg.Mod&^tea.ModShift == 0 {
 		m.configFilter += msg.Text
-		m.configCursor = 0
+		m.configGlobalCursor = 0
 		return m, nil
 	}
 	return m, nil
+}
+
+// handleGlobalConfigEnter is the dispatcher for the Global Options
+// submenu rows. Each case is the same mutation that lived inline
+// in updateConfigModal pre-layering — extracted unchanged so the
+// behaviour of every existing knob is preserved bit-for-bit.
+func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
+	switch itemID {
+	case "quiet":
+		m.quietMode = !m.quietMode
+		v := m.quietMode
+		cfg, _ := loadConfig()
+		cfg.UI.QuietMode = &v
+		if err := saveConfig(cfg); err != nil {
+			debugLog("saveConfig err: %v", err)
+		}
+		return m, m.refreshHistoryCmd()
+	case "cursorBlink":
+		m.cursorBlink = !m.cursorBlink
+		applyCursorBlink(&m.input, m.cursorBlink)
+		v := m.cursorBlink
+		cfg, _ := loadConfig()
+		cfg.UI.CursorBlink = &v
+		if err := saveConfig(cfg); err != nil {
+			debugLog("saveConfig err: %v", err)
+		}
+		if m.cursorBlink {
+			return m, cursor.Blink
+		}
+		return m, nil
+	case "renderDiffs":
+		m.renderDiffs = !m.renderDiffs
+		v := m.renderDiffs
+		cfg, _ := loadConfig()
+		cfg.UI.RenderDiffs = &v
+		if err := saveConfig(cfg); err != nil {
+			debugLog("saveConfig err: %v", err)
+		}
+		return m, m.refreshHistoryCmd()
+	case "toolOutput":
+		m.toolOutputMode = nextToolOutputMode(m.toolOutputMode)
+		cfg, _ := loadConfig()
+		cfg.UI.ToolOutput = string(m.toolOutputMode)
+		if err := saveConfig(cfg); err != nil {
+			debugLog("saveConfig err: %v", err)
+		}
+		return m, m.refreshHistoryCmd()
+	case "skipAllPermissions":
+		m.skipAllPermissions = !m.skipAllPermissions
+		v := m.skipAllPermissions
+		cfg, _ := loadConfig()
+		cfg.UI.SkipAllPermissions = &v
+		if err := saveConfig(cfg); err != nil {
+			debugLog("saveConfig err: %v", err)
+		}
+		m.killProc()
+		return m, nil
+	case "worktree":
+		m.worktree = !m.worktree
+		v := m.worktree
+		cfg, _ := loadConfig()
+		cfg.UI.Worktree = &v
+		if err := saveConfig(cfg); err != nil {
+			debugLog("saveConfig err: %v", err)
+		}
+		if m.worktree {
+			ensureWorktreeGitignore()
+		} else {
+			m.worktreeName = ""
+		}
+		m.killProc()
+		return m, nil
+	case "theme":
+		m = m.openThemePicker()
+		return m, nil
+	case "provider":
+		m = m.openConfigProviderPicker()
+		return m, nil
+	case "memory":
+		m = m.openConfigMemoryPicker()
+		return m, nil
+	}
+	return m, nil
+}
+
+// filteredGlobalConfigItems applies the Global Options filter
+// query to the lifted item list. Behaves exactly like the old
+// filteredConfigItems did against the flat top-level — same
+// substring match, same case folding.
+func (m model) filteredGlobalConfigItems() []configItem {
+	all := m.globalConfigItems()
+	if m.configFilter == "" {
+		return all
+	}
+	q := strings.ToLower(m.configFilter)
+	out := make([]configItem, 0, len(all))
+	for _, it := range all {
+		if strings.Contains(strings.ToLower(it.name), q) {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 func (m model) viewConfigModal() string {
@@ -311,6 +430,74 @@ func (m model) viewConfigModal() string {
 		help,
 	}, "\n")
 
+	return configBoxStyle.Render(body)
+}
+
+// viewConfigGlobalPicker renders the Global Options submenu. Same
+// chrome as viewConfigModal — the lifted rows just live one layer
+// deeper now.
+func (m model) viewConfigGlobalPicker() string {
+	boxW := 72
+	if boxW > m.width-4 {
+		boxW = m.width - 4
+	}
+	if boxW < 44 {
+		boxW = 44
+	}
+	innerW := boxW - 4
+	if innerW < 40 {
+		innerW = 40
+	}
+
+	boxH := 22
+	if boxH > m.height-4 {
+		boxH = m.height - 4
+	}
+	if boxH < 14 {
+		boxH = 14
+	}
+
+	title := configTitleStyle.Render("Global Options")
+
+	var filterBody string
+	if m.configFilter == "" {
+		filterBody = configCaretStyle.Render("▏") + configPlaceholderStyle.Render("Type to filter")
+	} else {
+		filterBody = m.configFilter + configCaretStyle.Render("▏")
+	}
+	filterLine := configPromptStyle.Render("> ") + filterBody
+
+	items := m.filteredGlobalConfigItems()
+	listH := boxH - 6
+	if listH < 1 {
+		listH = 1
+	}
+	cursor := m.configGlobalCursor
+	if cursor >= len(items) {
+		cursor = len(items) - 1
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	start := 0
+	if cursor >= listH {
+		start = cursor - listH + 1
+	}
+	end := start + listH
+	if end > len(items) {
+		end = len(items)
+	}
+
+	rows := make([]string, 0, listH)
+	for i := start; i < end; i++ {
+		rows = append(rows, renderConfigRow(items[i], innerW, i == cursor))
+	}
+	for len(rows) < listH {
+		rows = append(rows, strings.Repeat(" ", innerW))
+	}
+
+	help := configHelpStyle.Render("↑/↓ choose · enter confirm · esc back")
+	body := strings.Join([]string{title, "", filterLine, "", strings.Join(rows, "\n"), "", help}, "\n")
 	return configBoxStyle.Render(body)
 }
 

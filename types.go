@@ -432,6 +432,21 @@ type model struct {
 	configMemoryFieldEditing string
 	configMemoryFieldDraft   string
 
+	// /config now layers into Global Options (existing knobs) vs
+	// Project Options (per-cwd issue provider). configGlobalPicker-
+	// Active is the gate for the Global submenu — it carries the
+	// rows that lived directly on the top-level /config row list
+	// before the layering. configProjectPickerActive opens the
+	// per-cwd surface; its inline editor uses the same pattern as
+	// the memory picker (configProjectFieldEditing/Draft).
+	configGlobalPickerActive bool
+	configGlobalCursor       int
+
+	configProjectPickerActive bool
+	configProjectCursor       int
+	configProjectFieldEditing string
+	configProjectFieldDraft   string
+
 	// Ctrl+B starts at the provider list (Level 0). Picking a provider
 	// with model options advances to Level 1, which reuses the shared
 	// ask/model modal rather than a separate switcher-specific editor.

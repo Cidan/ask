@@ -28,7 +28,7 @@ func configProviderFixture(t *testing.T) model {
 func TestConfigItems_IncludesProviderRow(t *testing.T) {
 	m := configProviderFixture(t)
 	var found bool
-	for _, it := range m.configItemsAll() {
+	for _, it := range m.globalConfigItems() {
 		if it.id == "provider" {
 			found = true
 			// With no cfg on disk, the row falls back to the first
@@ -40,7 +40,7 @@ func TestConfigItems_IncludesProviderRow(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("configItemsAll must include a 'provider' row")
+		t.Fatal("globalConfigItems must include a 'provider' row")
 	}
 }
 
@@ -54,7 +54,7 @@ func TestConfigItems_ProviderRow_ReadsFromDisk(t *testing.T) {
 	if err := saveConfig(askConfig{Provider: "codex"}); err != nil {
 		t.Fatalf("saveConfig: %v", err)
 	}
-	for _, it := range m.configItemsAll() {
+	for _, it := range m.globalConfigItems() {
 		if it.id == "provider" {
 			if it.key != "Codex" {
 				t.Errorf("provider row key=%q want Codex (saved default) — must read cfg.Provider, not m.provider", it.key)
@@ -62,7 +62,7 @@ func TestConfigItems_ProviderRow_ReadsFromDisk(t *testing.T) {
 			return
 		}
 	}
-	t.Fatal("configItemsAll must include a 'provider' row")
+	t.Fatal("globalConfigItems must include a 'provider' row")
 }
 
 // TestOpenConfigProviderPicker_SeedsCursorFromDisk makes sure that
@@ -95,7 +95,7 @@ func TestConfigProviderPicker_RoundTrip_UpdatesDisplay(t *testing.T) {
 
 	// Reopen /config: the Default Provider row must now show Codex.
 	m = m.startConfigModal()
-	for _, it := range m.configItemsAll() {
+	for _, it := range m.globalConfigItems() {
 		if it.id == "provider" {
 			if it.key != "Codex" {
 				t.Errorf("after save+reopen, row key=%q want Codex", it.key)
@@ -103,7 +103,7 @@ func TestConfigProviderPicker_RoundTrip_UpdatesDisplay(t *testing.T) {
 			return
 		}
 	}
-	t.Fatal("configItemsAll must include a 'provider' row after reopen")
+	t.Fatal("globalConfigItems must include a 'provider' row after reopen")
 }
 
 func TestOpenConfigProviderPicker_CursorsOnCurrent(t *testing.T) {

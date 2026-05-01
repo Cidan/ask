@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -77,6 +78,32 @@ type viewLayer struct {
 var issueViewLayers = []viewLayer{
 	{name: "list", builder: func(s *issuesState) issueView { return newListIssueView(s) }},
 	{name: "kanban", builder: func(s *issuesState) issueView { return newKanbanIssueView(s) }},
+}
+
+// issuesLoadedMsg carries the result of an asynchronous provider
+// list-issues call. tabID identifies which tab the load was for so
+// the message routes through dispatchByTabID without leaking into
+// other tabs. err is non-nil for transport / auth / parse failures
+// — the screen translates it into a toast and leaves the existing
+// data in place.
+type issuesLoadedMsg struct {
+	tabID  int
+	issues []issue
+	err    error
+}
+
+// loadIssuesCmd issues the provider call off the main loop and
+// emits an issuesLoadedMsg when it returns. The 30s timeout lines
+// up with the per-call MCP timeout — we'd rather surface a clean
+// "request timed out" toast than have the Bubble Tea Update goroutine
+// blocked indefinitely if the network stalls.
+func loadIssuesCmd(tabID int, p IssueProvider, pc projectConfig, cwd string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		out, err := p.ListIssues(ctx, pc, cwd)
+		return issuesLoadedMsg{tabID: tabID, issues: out, err: err}
+	}
 }
 
 type issuesState struct {

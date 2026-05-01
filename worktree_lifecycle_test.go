@@ -333,6 +333,30 @@ func TestHandleCommand_SlashClearAlsoClearsWorktree(t *testing.T) {
 // TestConfigToggleWorktreeOff_ClearsWorktreeName proves that flipping
 // Worktree off in /config detaches the current tab from its worktree
 // so the next turn runs in the project root.
+// toggleGlobalConfigRow navigates the new layered /config: it
+// opens the modal, drills into Global Options, finds the row by id,
+// dispatches Enter, and returns the resulting model. Centralised so
+// each per-row toggle test doesn't repeat the navigation prologue
+// after the layering refactor.
+func toggleGlobalConfigRow(t *testing.T, m model, rowID string) model {
+	t.Helper()
+	m = m.openConfigGlobalPicker()
+	items := m.filteredGlobalConfigItems()
+	cursor := -1
+	for i, it := range items {
+		if it.id == rowID {
+			cursor = i
+			break
+		}
+	}
+	if cursor < 0 {
+		t.Fatalf("global config row %q not found in %+v", rowID, items)
+	}
+	m.configGlobalCursor = cursor
+	mi, _ := m.updateConfigGlobalPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
+	return mi.(model)
+}
+
 func TestConfigToggleWorktreeOff_ClearsWorktreeName(t *testing.T) {
 	isolateHome(t)
 	p := newFakeProvider()
@@ -341,18 +365,7 @@ func TestConfigToggleWorktreeOff_ClearsWorktreeName(t *testing.T) {
 	m = m.startConfigModal()
 	m.worktree = true
 	m.worktreeName = "ask-claude-activedetach"
-
-	// Find the worktree row cursor.
-	var cursor int
-	for i, it := range m.filteredConfigItems() {
-		if it.id == "worktree" {
-			cursor = i
-			break
-		}
-	}
-	m.configCursor = cursor
-	mi, _ := m.updateConfigModal(tea.KeyPressMsg{Code: tea.KeyEnter})
-	mm := mi.(model)
+	mm := toggleGlobalConfigRow(t, m, "worktree")
 	if mm.worktree {
 		t.Fatal("toggle should have flipped Worktree to false")
 	}
@@ -371,17 +384,7 @@ func TestConfigToggleWorktreeOn_LeavesWorktreeNameForFreshStart(t *testing.T) {
 	m = m.startConfigModal()
 	m.worktree = false
 	m.worktreeName = "" // nothing to reuse
-
-	var cursor int
-	for i, it := range m.filteredConfigItems() {
-		if it.id == "worktree" {
-			cursor = i
-			break
-		}
-	}
-	m.configCursor = cursor
-	mi, _ := m.updateConfigModal(tea.KeyPressMsg{Code: tea.KeyEnter})
-	mm := mi.(model)
+	mm := toggleGlobalConfigRow(t, m, "worktree")
 	if !mm.worktree {
 		t.Fatal("toggle should have flipped Worktree to true")
 	}

@@ -26,6 +26,116 @@ type askConfig struct {
 	Codex    codexConfig  `json:"codex,omitempty"`
 	UI       uiConfig     `json:"ui,omitempty"`
 	Memory   memoryConfig `json:"memory,omitempty"`
+
+	// Projects holds per-project settings keyed by the canonical
+	// absolute path of the project root. Issue-tracking is the first
+	// per-project surface; future per-project knobs (custom slash
+	// commands, tab-default cwd, project labels, etc.) plug in here
+	// without growing the top-level struct.
+	//
+	// Lives in the user-global config file rather than a per-checkout
+	// file because the most security-sensitive field — a GitHub PAT —
+	// must NOT be committed. Putting it in ~/.config/ask/ask.json
+	// (mode 0600) keeps tokens out of git, out of dotfile-sync repos,
+	// and in one place per user.
+	Projects map[string]projectConfig `json:"projects,omitempty"`
+}
+
+// projectConfig is the per-cwd settings bag. Empty struct = defaults
+// (no issue provider configured, etc.). Map zero values are fine —
+// loadProjectConfig returns the zero value when the project key is
+// absent, so callers don't have to nil-check.
+type projectConfig struct {
+	Issues issuesConfig `json:"issues,omitempty"`
+}
+
+// issuesConfig is the per-project issue-tracking configuration.
+// Provider names which IssueProvider implementation to dispatch to;
+// the rest of the fields are provider-specific and only consulted
+// when the matching Provider is selected. This shape lets us add a
+// ClickUp / Linear / GitLab block as siblings to GitHub without
+// migrating the existing on-disk config.
+type issuesConfig struct {
+	// Provider is the IssueProvider id ("github", "clickup", …) or
+	// "" for "issues not configured for this project". The default
+	// is the empty string, which surfaces the "Issues not
+	// configured for this project" toast when the user opens the
+	// issues screen.
+	Provider string `json:"provider,omitempty"`
+
+	GitHub githubIssuesConfig `json:"github,omitempty"`
+}
+
+// githubIssuesConfig wires the GitHub MCP server. Endpoint defaults
+// to the official Copilot MCP host when blank; Token is the user's
+// PAT. Token is held in 0600 config — the user explicitly rejected
+// env-var indirection ("just config file for that specific project
+// setting"), so it lives here.
+type githubIssuesConfig struct {
+	Endpoint string `json:"endpoint,omitempty"`
+	Token    string `json:"token,omitempty"`
+}
+
+// githubIssuesDefaultEndpoint is the official GitHub Copilot-hosted
+// MCP server. Used when githubIssuesConfig.Endpoint is empty.
+const githubIssuesDefaultEndpoint = "https://api.githubcopilot.com/mcp"
+
+// githubEndpointOrDefault applies the documented fallback so callers
+// don't have to remember the constant.
+func githubEndpointOrDefault(c githubIssuesConfig) string {
+	if c.Endpoint == "" {
+		return githubIssuesDefaultEndpoint
+	}
+	return c.Endpoint
+}
+
+// projectKey is the canonical key for projectConfig lookups —
+// filepath.Clean of the absolute cwd path. Centralises the
+// normalisation so two callers with the same logical project never
+// collide on `/home/me/proj` vs `/home/me/proj/` vs `~/proj`.
+func projectKey(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return filepath.Clean(cwd)
+	}
+	return filepath.Clean(abs)
+}
+
+// loadProjectConfig returns the saved projectConfig for cwd, or the
+// zero value when no entry exists. Pure read — does not mutate the
+// underlying map. Empty cwd returns the zero value too.
+func loadProjectConfig(cfg askConfig, cwd string) projectConfig {
+	key := projectKey(cwd)
+	if key == "" {
+		return projectConfig{}
+	}
+	return cfg.Projects[key]
+}
+
+// upsertProjectConfig writes pc into cfg.Projects under cwd's key,
+// creating the map if necessary. Returns the modified askConfig (the
+// caller saves it). When pc is the zero value, the entry is dropped
+// instead of stored so the on-disk file stays minimal.
+func upsertProjectConfig(cfg askConfig, cwd string, pc projectConfig) askConfig {
+	key := projectKey(cwd)
+	if key == "" {
+		return cfg
+	}
+	if (pc == projectConfig{}) {
+		delete(cfg.Projects, key)
+		if len(cfg.Projects) == 0 {
+			cfg.Projects = nil
+		}
+		return cfg
+	}
+	if cfg.Projects == nil {
+		cfg.Projects = make(map[string]projectConfig)
+	}
+	cfg.Projects[key] = pc
+	return cfg
 }
 
 // memoryConfig holds the persistent memory toggle and embedder
