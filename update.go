@@ -57,12 +57,23 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if msg.tabID != m.id {
 			return m, nil
 		}
-		if msg.err != nil {
-			return m, m.toast.show("issues: " + msg.err.Error())
-		}
 		if m.issues == nil {
 			m.issues = newIssuesState()
 		}
+		// Loading is over either way — clear the spinner-modal flag so
+		// the screen stops covering the body with the rotating "Loading
+		// issues…" overlay.
+		m.issues.loading = false
+		if msg.err != nil {
+			// Surface the failure in the centered error modal instead of
+			// a transient toast: the screen-spanning modal is harder to
+			// miss and stays put until the user dismisses it (Enter/Esc),
+			// which the issue picker UX requires so a network glitch
+			// doesn't strand the user staring at an empty list.
+			m.issues.loadErr = msg.err
+			return m, nil
+		}
+		m.issues.loadErr = nil
 		m.issues.all = msg.issues
 		m.issues.applySort()
 		// Rebuild the active sub-view so its column-grouped /
@@ -790,6 +801,17 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 					"Issues not configured for this project: " + shortCwdOf(projectKey(m.cwd)))
 			}
 			m = m.switchScreen(screenIssues)
+			// Flip the loading flag and pick a fun message before
+			// dispatching the provider call. The screen renders a
+			// centered modal whenever loading is true, so the user
+			// sees activity instead of a blank list during the
+			// network round-trip. Any prior loadErr is cleared so
+			// the new attempt starts fresh.
+			if m.issues != nil {
+				m.issues.loading = true
+				m.issues.loadingMessage = pickLoadingMessage()
+				m.issues.loadErr = nil
+			}
 			return m, loadIssuesCmd(m.id, provider, pc, m.cwd)
 		}
 		if msg.Mod == tea.ModCtrl && msg.Code == 'o' && !m.modalOpen() {

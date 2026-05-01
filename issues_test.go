@@ -925,3 +925,186 @@ func TestIssues_HeaderAndHintInScreenView(t *testing.T) {
 		}
 	}
 }
+
+// pickLoadingMessage returns one of a stable pool of fun messages.
+// The test asserts the pool has the documented minimum spread so the
+// "rotating message" UX promise doesn't quietly degrade to a single
+// string when someone trims the list.
+func TestIssues_LoadingMessagePoolHasVariety(t *testing.T) {
+	if len(issueLoadingMessages) < 5 {
+		t.Errorf("expected at least 5 loading messages, got %d", len(issueLoadingMessages))
+	}
+	// Sanity: pickLoadingMessage returns something from the pool.
+	got := pickLoadingMessage()
+	found := false
+	for _, m := range issueLoadingMessages {
+		if m == got {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("pickLoadingMessage returned %q which is not in the pool", got)
+	}
+}
+
+func TestIssues_NewStateStartsNotLoading(t *testing.T) {
+	s := newIssuesState()
+	if s.loading {
+		t.Errorf("fresh state should not be loading")
+	}
+	if s.loadErr != nil {
+		t.Errorf("fresh state should have nil loadErr, got %v", s.loadErr)
+	}
+}
+
+func TestIssues_LoadingStateRendersCenteredModal(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m.issues.loading = true
+	m.issues.loadingMessage = "Reticulating splines..."
+	body := stripAnsi(m.activeScreen().view(m))
+	if !strings.Contains(body, "Reticulating splines...") {
+		t.Errorf("loading modal missing the picked message: %q", body)
+	}
+	// The list view's column headers must be suppressed while the
+	// modal is up — otherwise the user sees a half-rendered table
+	// peeking through the load.
+	for _, col := range []string{"ID", "Title", "Assigned", "Created"} {
+		if strings.Contains(body, col) {
+			t.Errorf("loading modal should suppress list column %q, but body=%q", col, body)
+		}
+	}
+}
+
+func TestIssues_LoadingMessageDefaultsWhenEmpty(t *testing.T) {
+	// If the dispatch path forgets to populate loadingMessage, the
+	// modal should still show a sensible string — never an empty box.
+	m := enterIssuesScreen(t)
+	m.issues.loading = true
+	m.issues.loadingMessage = ""
+	body := stripAnsi(m.activeScreen().view(m))
+	if !strings.Contains(body, "Loading issues") {
+		t.Errorf("empty loadingMessage should fall back to default, body=%q", body)
+	}
+}
+
+func TestIssues_ErrorStateRendersPersistentModal(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m.issues.loadErr = fmt.Errorf("github: connection refused")
+	body := stripAnsi(m.activeScreen().view(m))
+	if !strings.Contains(body, "Failed to load issues") {
+		t.Errorf("error modal missing title: %q", body)
+	}
+	if !strings.Contains(body, "github: connection refused") {
+		t.Errorf("error modal missing the underlying error text: %q", body)
+	}
+	if !strings.Contains(body, "press enter to go back") {
+		t.Errorf("error modal missing dismissal hint: %q", body)
+	}
+}
+
+func TestIssues_EnterDismissesErrorAndReturnsToAsk(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m.issues.loadErr = fmt.Errorf("github: connection refused")
+	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.screen != screenAsk {
+		t.Errorf("Enter on error modal should switch to screenAsk; got %v", m.screen)
+	}
+	if m.issues.loadErr != nil {
+		t.Errorf("Enter should clear loadErr; got %v", m.issues.loadErr)
+	}
+}
+
+func TestIssues_EscDismissesErrorAndReturnsToAsk(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m.issues.loadErr = fmt.Errorf("network down")
+	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.screen != screenAsk {
+		t.Errorf("Esc on error modal should switch to screenAsk; got %v", m.screen)
+	}
+	if m.issues.loadErr != nil {
+		t.Errorf("Esc should clear loadErr; got %v", m.issues.loadErr)
+	}
+}
+
+func TestIssues_OtherKeysDoNotDismissError(t *testing.T) {
+	m := enterIssuesScreen(t)
+	originalErr := fmt.Errorf("auth failed")
+	m.issues.loadErr = originalErr
+	// Bash through every nav-ish key; none should dismiss.
+	for _, key := range []tea.KeyPressMsg{
+		{Code: tea.KeyDown},
+		{Code: tea.KeyUp},
+		{Code: 'j'},
+		{Code: 'k'},
+		{Code: tea.KeyTab},
+		{Code: tea.KeyEnd},
+	} {
+		m, _ = runUpdate(t, m, key)
+		if m.screen != screenIssues {
+			t.Errorf("key %+v dismissed the error modal; should only Enter/Esc dismiss", key)
+		}
+		if m.issues.loadErr == nil {
+			t.Errorf("key %+v cleared loadErr; should only Enter/Esc clear", key)
+		}
+	}
+}
+
+func TestIssues_LoadedMsgWithErrorPopulatesLoadErr(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m.issues.loading = true
+	loadErr := fmt.Errorf("503 service unavailable")
+	m, _ = runUpdate(t, m, issuesLoadedMsg{tabID: m.id, err: loadErr})
+	if m.issues.loading {
+		t.Errorf("loading should be cleared after issuesLoadedMsg with error")
+	}
+	if m.issues.loadErr == nil || !strings.Contains(m.issues.loadErr.Error(), "503") {
+		t.Errorf("loadErr should reflect the failure; got %v", m.issues.loadErr)
+	}
+}
+
+func TestIssues_LoadedMsgWithSuccessClearsBothFlags(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m.issues.loading = true
+	m.issues.loadErr = fmt.Errorf("stale")
+	m, _ = runUpdate(t, m, issuesLoadedMsg{tabID: m.id, issues: mockIssues()})
+	if m.issues.loading {
+		t.Errorf("loading should clear on successful load")
+	}
+	if m.issues.loadErr != nil {
+		t.Errorf("loadErr should clear on successful load; got %v", m.issues.loadErr)
+	}
+	if len(m.issues.all) == 0 {
+		t.Errorf("issues should be populated after success")
+	}
+}
+
+func TestIssues_MouseDuringLoadingDoesNotStartSelection(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m.issues.loading = true
+	// Re-render so body bounds are populated under the modal path.
+	_ = m.activeScreen().view(m)
+	m, _ = runUpdate(t, m, tea.MouseClickMsg{
+		Button: tea.MouseLeft,
+		X:      m.issues.bodyLeftCol + 4,
+		Y:      m.issues.bodyTopRow + 1,
+	})
+	if m.issues.selDragging || m.issues.selActive {
+		t.Errorf("mouse click during loading should not start selection: drag=%v active=%v",
+			m.issues.selDragging, m.issues.selActive)
+	}
+}
+
+func TestIssues_WheelDuringErrorIsNoOp(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m.issues.loadErr = fmt.Errorf("boom")
+	// Cursor starts at 0; if wheel were honoured it would advance.
+	m, _ = runUpdate(t, m, tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: 50, Y: 5})
+	v, ok := m.issues.view.(*listIssueView)
+	if !ok {
+		t.Fatalf("setup: not on list view")
+	}
+	if v.tbl.Cursor() != 0 {
+		t.Errorf("wheel-down during error should not advance cursor; got %d", v.tbl.Cursor())
+	}
+}

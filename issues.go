@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +14,26 @@ import (
 	lipgloss "charm.land/lipgloss/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 )
+
+// issueLoadingMessages is the rotation pool for the loading modal.
+// Callers pick once at dispatch time and stash on issuesState so the
+// message stays stable across renders instead of flickering.
+var issueLoadingMessages = []string{
+	"Loading issues...",
+	"Getting bugs...",
+	"Reticulating splines...",
+	"Herding gophers...",
+	"Polishing tickets...",
+	"Untangling backlog...",
+	"Counting open PRs...",
+	"Sweeping the project board...",
+	"Brewing fresh issues...",
+	"Asking GitHub nicely...",
+}
+
+func pickLoadingMessage() string {
+	return issueLoadingMessages[rand.Intn(len(issueLoadingMessages))]
+}
 
 // issue is the in-memory representation of a single tracked issue.
 // Fields are deliberately provider-neutral: the eventual GitHub /
@@ -129,6 +150,22 @@ type issuesState struct {
 	// scrollbar thumb. Mouse motion translates the cursor's Y back to
 	// the active sub-view's setYOffset.
 	scrollbarDragging bool
+
+	// loading flips true when a provider call is in flight. The screen
+	// renders a centered modal in place of the (still-empty) list/kanban
+	// body so the user sees activity instead of a blank table.
+	// loadingMessage is picked once per dispatch and held stable for the
+	// duration of the load so it doesn't flicker through the pool on
+	// every render frame.
+	loading        bool
+	loadingMessage string
+
+	// loadErr is non-nil when the most recent provider call failed.
+	// Holds the error verbatim so the modal can show the underlying
+	// network/auth/parse failure to the user instead of a generic
+	// "something went wrong". Cleared when the modal is dismissed
+	// (Enter/Esc returns to ask) or when a new load is dispatched.
+	loadErr error
 
 	// bodyTopRow / bodyContentH / bodyLeftCol record where the body
 	// area lives on screen during the most recent view() pass. Mouse
@@ -695,6 +732,22 @@ func (issuesScreen) updateKey(m model, msg tea.KeyPressMsg) (model, tea.Cmd, boo
 		return m, nil, true
 	}
 	m.exitArmed = false
+	// Loading and error states own the screen until they resolve. While
+	// loading, every key (other than the global ones above) is consumed
+	// silently so an early keypress can't fall through and mutate the
+	// (still-empty) list. While in error state, only Enter/Esc dismiss
+	// — every other key is consumed so a stray press can't whisk the
+	// user past the failure without acknowledgment.
+	if m.issues.loading {
+		return m, nil, true
+	}
+	if m.issues.loadErr != nil {
+		if msg.Mod == 0 && (msg.Code == tea.KeyEnter || msg.Code == tea.KeyEsc) {
+			m.issues.loadErr = nil
+			return m.switchScreen(screenAsk), nil, true
+		}
+		return m, nil, true
+	}
 	v, cmd, handled := m.issues.view.updateKey(m.issues, msg)
 	if handled {
 		m.issues.setView(v)
@@ -716,6 +769,13 @@ func (issuesScreen) view(m model) string {
 	}
 	if height <= 0 {
 		height = 24
+	}
+	// Loading or error: replace the whole body area with a centered
+	// modal. The chrome (header + hint) is suppressed too — there is
+	// nothing meaningful to advertise above an unpopulated list, and
+	// the modal carries its own dismissal hint when in error state.
+	if m.issues.loading || m.issues.loadErr != nil {
+		return renderIssuesOverlay(m.issues, width, height)
 	}
 	// Reserve one column on the right for the scrollbar — fixed
 	// allocation, even when there's no overflow, so selection /
@@ -772,6 +832,33 @@ func (issuesScreen) view(m model) string {
 	return indentLines(b.String(), issueScreenIndent)
 }
 
+// renderIssuesOverlay draws a centered loading-or-error modal in
+// place of the list/kanban body. The error variant uses an
+// errorFG-tinted border and carries a dismissal hint so a network
+// glitch can't strand the user on a screen with no obvious exit.
+func renderIssuesOverlay(s *issuesState, width, height int) string {
+	width = max(width, 20)
+	height = max(height, 5)
+	border := lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
+
+	var box string
+	if s.loadErr != nil {
+		wrapW := max(width-10, 16)
+		title := errStyle.Bold(true).Render("Failed to load issues")
+		wrapped := lipgloss.NewStyle().Width(wrapW).Render(s.loadErr.Error())
+		hint := dimStyle.Render("press enter to go back · esc dismiss")
+		body := lipgloss.JoinVertical(lipgloss.Left, title, "", wrapped, "", hint)
+		box = border.BorderForeground(activeTheme.errorFG).Padding(1, 3).Render(body)
+	} else {
+		msg := s.loadingMessage
+		if msg == "" {
+			msg = "Loading issues..."
+		}
+		box = border.BorderForeground(activeTheme.accent).Padding(1, 4).Render(promptStyle.Render(msg))
+	}
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
+}
+
 // issuesHandleMouse is the entry point for every mouse event when the
 // issues screen is active. update.go routes here once it's confirmed
 // the event came from a non-modal state and m.screen == screenIssues.
@@ -782,6 +869,13 @@ func (m model) issuesHandleMouse(msg tea.Msg) (model, tea.Cmd) {
 		return m, nil
 	}
 	s := m.issues
+	// Loading and error states cover the body; mouse events targeting
+	// the (suppressed) list/kanban underneath should be no-ops so the
+	// user can't drag-select against an empty surface or wheel-scroll
+	// a list that isn't there.
+	if s.loading || s.loadErr != nil {
+		return m, nil
+	}
 	switch ev := msg.(type) {
 	case tea.MouseWheelMsg:
 		switch ev.Button {
