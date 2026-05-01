@@ -53,36 +53,72 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 	}()
 	switch msg := msg.(type) {
-	case issuesLoadedMsg:
+	case issuePageLoadedMsg:
 		if msg.tabID != m.id {
 			return m, nil
 		}
 		if m.issues == nil {
 			m.issues = newIssuesState()
 		}
-		// Loading is over either way — clear the spinner-modal flag so
-		// the screen stops covering the body with the rotating "Loading
-		// issues…" overlay.
-		m.issues.loading = false
-		if msg.err != nil {
-			// Surface the failure in the centered error modal instead of
-			// a transient toast: the screen-spanning modal is harder to
-			// miss and stays put until the user dismisses it (Enter/Esc),
-			// which the issue picker UX requires so a network glitch
-			// doesn't strand the user staring at an empty list.
-			m.issues.loadErr = msg.err
+		// Stale-gen drop: the user changed the query while this fetch
+		// was in flight. Silently discard so the new query's data
+		// can't be polluted by the old one.
+		if msg.gen != m.issues.queryGen {
 			return m, nil
 		}
-		m.issues.loadErr = nil
-		m.issues.all = msg.issues
-		m.issues.applySort()
-		// Rebuild the active sub-view so its column-grouped /
-		// table-bound state reflects the freshly-loaded data. The
-		// list view re-binds rows lazily inside view(), but the
-		// kanban view caches columns from rebuildColumns and the
-		// detail view holds an issue snapshot — both need a fresh
-		// instance to be safe.
-		m.issues.view = issueViewLayers[0].builder(m.issues)
+		s := m.issues
+		// requestedCursor=="" is the first-chunk sentinel; reading
+		// it (not msg.page) means error paths still clear loading.
+		isFirstChunk := msg.requestedCursor == ""
+		if isFirstChunk {
+			s.loading = false
+		}
+		if msg.err != nil {
+			// First-chunk error shows the modal; subsequent-chunk
+			// errors are best-effort and just clear the fetching
+			// marker so a retry can happen on the next scroll trigger
+			// (or via Ctrl+R for a clean restart).
+			if isFirstChunk {
+				s.loadErr = msg.err
+			}
+			// Clear any pending markers so retries can fire. List
+			// view's single-flight guard now lives on state so it
+			// survives a view rebuild; kanban still tracks its
+			// column-local fetching flag.
+			if _, ok := s.view.(*listIssueView); ok {
+				s.currentPendingFetch = false
+			}
+			if kv, ok := s.view.(*kanbanIssueView); ok {
+				if idx := kv.columnByQueryFingerprint(s, s.queryFingerprint(msg.query)); idx >= 0 {
+					kv.columns[idx].fetching = false
+				}
+			}
+			return m, nil
+		}
+		s.loadErr = nil
+		issues := append([]issue(nil), msg.page.Issues...)
+		s.applySort(issues)
+		chunk := issuePageChunk{
+			cursor:     msg.requestedCursor,
+			nextCursor: msg.page.NextCursor,
+			hasMore:    msg.page.HasMore,
+			issues:     issues,
+		}
+		s.applyListChunk(msg.query, chunk)
+		// Kanban path stays as-is — that view still owns col.loaded
+		// / col.nextCursor / col.fetching as per-column local state
+		// (a future v4 refactor will lift these onto issuesState).
+		if kv, ok := s.view.(*kanbanIssueView); ok {
+			fp := s.queryFingerprint(msg.query)
+			idx := kv.columnByQueryFingerprint(s, fp)
+			if idx >= 0 {
+				col := &kv.columns[idx]
+				col.loaded = append(col.loaded, issues...)
+				col.nextCursor = msg.page.NextCursor
+				col.hasMore = msg.page.HasMore
+				col.fetching = false
+			}
+		}
 		return m, nil
 
 	case tea.WindowSizeMsg:
@@ -785,6 +821,14 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			if m.screen == screenIssues {
 				if m.issues != nil {
 					m.issues.cycleView()
+					// Landing on kanban kicks off N parallel column
+					// loads if columns are empty. The same call is a
+					// no-op when columns are already loaded (returning
+					// to kanban after a previous fetch shows the
+					// cached data immediately).
+					if kv, ok := m.issues.view.(*kanbanIssueView); ok {
+						return m, kv.initialLoad(m.issues)
+					}
 				}
 				return m, nil
 			}
@@ -807,14 +851,39 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			// sees activity instead of a blank list during the
 			// network round-trip. Any prior loadErr is cleared so
 			// the new attempt starts fresh.
-			if m.issues != nil {
+			if m.issues == nil {
+				m.issues = newIssuesState()
+			}
+			// Install the resolved provider so query fingerprinting
+			// and kanban column lookups operate against the right
+			// backend. Resetting the active sub-view rebuilds it
+			// against the freshly-installed provider (which the
+			// kanban view needs to construct columns).
+			m.issues.provider = provider
+			m.issues.projectCfg = pc
+			m.issues.cwd = m.cwd
+			m.issues.tabID = m.id
+			m.issues.view = issueViewLayers[0].builder(m.issues)
+			// First-page-of-query: only show the modal when the
+			// cache has nothing for the current query yet.
+			if !m.issues.hasAnyCachedPage(m.issues.currentQuery) {
 				m.issues.loading = true
 				m.issues.loadingMessage = pickLoadingMessage()
 				m.issues.loadErr = nil
 			}
-			return m, loadIssuesCmd(m.id, provider, pc, m.cwd)
+			ctx := m.issues.beginLoad()
+			return m, loadIssuesPageCmd(
+				ctx, m.id, provider, pc, m.cwd,
+				nil, IssuePagination{Cursor: "", PerPage: githubDefaultPerPage},
+				m.issues.queryGen,
+			)
 		}
 		if msg.Mod == tea.ModCtrl && msg.Code == 'o' && !m.modalOpen() {
+			// Leaving issues: drop cache + cancel in-flight so re-entry
+			// doesn't stack duplicate chunks onto the chain.
+			if m.screen == screenIssues && m.issues != nil {
+				m.issues.discardOnLeave()
+			}
 			return m.switchScreen(screenAsk), nil
 		}
 		newM, cmd, _ := m.activeScreen().updateKey(m, msg)

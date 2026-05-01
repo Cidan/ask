@@ -123,6 +123,18 @@ exercised by the user; code alone won't catch layout regressions.
 
 Glamour rendering is cached per `historyEntry` in `entry.rendered`. `viewportContent()` fills it lazily on first render; `WindowSizeMsg` invalidates every response entry so wrap recomputes at the new width. Don't re-render in `renderEntry` — that path runs on every spinner tick and every keystroke.
 
+### State + view: reactive flow (data-bearing screens)
+
+Worked example: the issues screen's list view (`issuesState` + `listIssueView` in `issues.go`).
+
+- **One source of truth.** Cache lives on the screen-state struct (`issuesState.pageCache`). Everything else is derived. View structs hold ONLY view-local state: cursor position the widget needs, layout dimensions, widget refs (`tbl table.Model`, `width`, `height`, `perPage`).
+- **`View()` is a pure projection.** Every render reads cache + state and projects them onto the bubbles widget. No hidden side state; two consecutive `view(s)` calls with no state mutation MUST return the same body. The list view's `view(s)` calls `concatRows(s.cachedChunks(s.currentQuery))`, then `tbl.SetRows(...)` + `tbl.SetCursor(s.localCursor(...))` — the table widget is just a renderer over cache-derived data.
+- **One-way mutation.** `keypress / msg → handler → state → next render derives the view`. The handler MAY adjust state fields that affect rendering (e.g. `currentRowsBefore` after eviction); the view picks them up on the next render. Don't add a "view-local sync" method.
+- **Single-flight guards live on state, not view.** `currentPendingFetch` survives view rebuilds (Tab cycle, search-box close). Putting it on the view caused a real bug — the next-chunk fetch double-fired after a Tab cycle because the rebuilt view's `pendingFetch` reset to false.
+- **View constructors derive their initial state from the cache.** `newListIssueView(s)` reads `s.cachedChunks(s.currentQuery)` and `s.localCursor(...)` to seed the table. That's why a Tab cycle list→kanban→list lands on the same row instead of jumping to 0.
+- **Anti-pattern: dual state.** If your view has `chunks []X` or `rows []Y` fields that mirror the cache, you have two sources of truth. The handler mutates the cache, the view mutates its copy, and they drift. Symptoms in the issue tracker were duplicate-on-re-entry rows (the chunk-splice path forgot one of the two stores), error-Esc duplicates (re-entry stacked a fresh chunk onto a never-cleared view-local slice), and the pendingFetch-reset bug above. Pick one source — and it should be the cache.
+- **Kanban is NOT yet on this discipline.** `kanbanIssueView.columns` still holds per-column `loaded`/`nextCursor`/`hasMore`/`fetching` mirroring the cache, plus its own selection cursor. Earmarked as a follow-up refactor — don't read this section and assume kanban already follows the rule.
+
 ## Claude subprocess
 
 - Always `-p --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions`.

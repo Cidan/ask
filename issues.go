@@ -101,37 +101,121 @@ var issueViewLayers = []viewLayer{
 	{name: "kanban", builder: func(s *issuesState) issueView { return newKanbanIssueView(s) }},
 }
 
-// issuesLoadedMsg carries the result of an asynchronous provider
-// list-issues call. tabID identifies which tab the load was for so
-// the message routes through dispatchByTabID without leaking into
-// other tabs. err is non-nil for transport / auth / parse failures
-// — the screen translates it into a toast and leaves the existing
-// data in place.
-type issuesLoadedMsg struct {
-	tabID  int
-	issues []issue
-	err    error
+// viewIndexForName returns the layer index whose builder
+// produces a view of the given name. Returns 0 (list) when no
+// match — the cycle layers are guaranteed to contain "list".
+func viewIndexForName(name string) int {
+	for i, l := range issueViewLayers {
+		if l.name == name {
+			return i
+		}
+	}
+	return 0
 }
 
-// loadIssuesCmd issues the provider call off the main loop and
-// emits an issuesLoadedMsg when it returns. The 30s timeout lines
-// up with the per-call MCP timeout — we'd rather surface a clean
-// "request timed out" toast than have the Bubble Tea Update goroutine
-// blocked indefinitely if the network stalls.
-func loadIssuesCmd(tabID int, p IssueProvider, pc projectConfig, cwd string) tea.Cmd {
+// issuePageLoadedMsg is the cursor-based load result. The
+// handler drops the message when gen != s.queryGen (stale
+// supersede) and reads requestedCursor (not page.NextCursor)
+// to identify first-chunk-of-query, since page is zero-valued
+// on error paths.
+type issuePageLoadedMsg struct {
+	tabID           int
+	gen             int
+	query           IssueQuery
+	requestedCursor string
+	page            IssueListPage
+	err             error
+}
+
+// loadIssuesPageCmd dispatches a cursor-based provider call off
+// the main loop. The 30s timeout lines up with the per-call MCP
+// timeout — we'd rather surface a clean "request timed out"
+// toast than have the Bubble Tea Update goroutine blocked
+// indefinitely if the network stalls.
+//
+// ctx allows the screen to cancel an in-flight request when a
+// new query supersedes it. Pass context.Background() for one-off
+// loads where cancellation isn't needed.
+func loadIssuesPageCmd(ctx context.Context, tabID int, p IssueProvider, pc projectConfig, cwd string, query IssueQuery, pagination IssuePagination, gen int) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		out, err := p.ListIssues(ctx, pc, cwd)
-		return issuesLoadedMsg{tabID: tabID, issues: out, err: err}
+		page, err := p.ListIssues(cctx, pc, cwd, query, pagination)
+		return issuePageLoadedMsg{
+			tabID:           tabID,
+			gen:             gen,
+			query:           query,
+			requestedCursor: pagination.Cursor,
+			page:            page,
+			err:             err,
+		}
 	}
 }
 
 type issuesState struct {
-	all  []issue
 	sort issueSort
 
 	view issueView
+
+	// provider is the active IssueProvider for this tab/cwd.
+	// Captured on screen entry so query fingerprinting and
+	// kanban column lookups don't have to re-resolve through
+	// activeIssueProvider on every render.
+	provider IssueProvider
+
+	// pageCache holds the loaded chunks of every query the user
+	// has touched in this session. Outer key is the query
+	// fingerprint (FormatQuery on the IssueQuery, with nil →
+	// empty string); the inner slice is the chunk chain in
+	// fetch order, where chunks[i].nextCursor == chunks[i+1].cursor
+	// links the chain. Cursor-based pagination has no stable page
+	// numbers so we key strictly on chain ordinal; Ctrl+R wipes
+	// the entry for the active query without disturbing other
+	// queries' caches. The cache stays valid across screen swaps
+	// so Esc-back-to-list doesn't have to re-fetch.
+	pageCache map[string][]issuePageChunk
+
+	// queryGen is the monotonically-increasing generation
+	// counter. Each Enter from the search box bumps it; in-flight
+	// loads tag their dispatch with the gen they saw and the
+	// receiver drops messages whose gen doesn't match.
+	queryGen int
+
+	// loadCtx + cancelLoad scope every dispatched ListIssues call
+	// for the active query. beginLoad replaces this pair, so a new
+	// query (search-box submit) or screen re-entry cancels every
+	// in-flight fetch — list-view next-page, kanban initialLoad,
+	// kanban per-column scroll — in one shot. Stale-gen drop on
+	// the receive side is the secondary correctness mechanism;
+	// this one cuts the network round-trip short.
+	loadCtx    context.Context
+	cancelLoad context.CancelFunc
+
+	// currentQuery is the IssueQuery for the active filter. nil
+	// means "default" (whatever the provider hands back for a
+	// nil query — for GitHub that's state=all under list view,
+	// the per-column filters under kanban).
+	currentQuery IssueQuery
+
+	// projectCfg + cwd + tabID are the dispatch context the views
+	// need to fire follow-up loads (next-page on scroll, refresh
+	// on search-box submit). Stashed on the state at screen-entry
+	// time so the views don't have to thread these through every
+	// updateKey signature.
+	projectCfg projectConfig
+	cwd        string
+	tabID      int
+
+	// search is the optional inline search overlay. Non-nil when
+	// the user has hit "/" — Esc closes it.
+	search *issueSearchBox
+
+	// Reactive list-view state — single source of truth for the
+	// list view's cursor + single-flight bookkeeping. See CLAUDE.md
+	// "State + view: reactive flow" for the discipline.
+	currentRowsBefore     int
+	currentAbsoluteCursor int
+	currentPendingFetch   bool
 
 	// Selection state mirrors the chat-side fields (selDragging /
 	// selActive / selAnchor / selFocus) but lives here so it doesn't
@@ -234,16 +318,238 @@ type issueView interface {
 	selectionYOffset() int
 }
 
-// newIssuesState seeds the screen with mock data and the default list
-// sub-view. Real backends will replace mockIssues with a
-// fetch-on-mount and a refresh-on-poll, but the surface is identical
-// from the view's perspective.
+// newIssuesState builds an empty issues state. The provider is
+// installed by the screen-entry path (Ctrl+I in update.go) once
+// it's resolved which provider the project uses; tests can
+// install a fake provider directly.
 func newIssuesState() *issuesState {
 	s := &issuesState{
-		sort: issueSortByNumber,
+		sort:      issueSortByNumber,
+		pageCache: map[string][]issuePageChunk{},
+		provider:  noneIssueProvider{},
+		loadCtx:   context.Background(),
 	}
 	s.view = issueViewLayers[0].builder(s)
 	return s
+}
+
+// issuePageChunk is one chunk in a query's fetched chain.
+// hasMore is tracked separately from nextCursor so end-of-data
+// is captured even on backends that return an empty cursor mid-
+// chain.
+type issuePageChunk struct {
+	cursor     string
+	nextCursor string
+	hasMore    bool
+	issues     []issue
+}
+
+// queryFingerprint maps an IssueQuery (opaque interface{}) to a
+// stable string key by delegating to provider.FormatQuery. nil
+// query → empty string, which matches noneIssueProvider's
+// FormatQuery output. Different providers will fingerprint the
+// same logical query differently — that's fine, the fingerprint
+// only has to be stable within one tab's lifetime.
+func (s *issuesState) queryFingerprint(q IssueQuery) string {
+	if s.provider == nil {
+		return ""
+	}
+	return s.provider.FormatQuery(q)
+}
+
+func (s *issuesState) cachedChunks(q IssueQuery) []issuePageChunk {
+	if s.pageCache == nil {
+		return nil
+	}
+	return s.pageCache[s.queryFingerprint(q)]
+}
+
+func (s *issuesState) appendChunk(q IssueQuery, chunk issuePageChunk) {
+	if s.pageCache == nil {
+		s.pageCache = map[string][]issuePageChunk{}
+	}
+	fp := s.queryFingerprint(q)
+	s.pageCache[fp] = append(s.pageCache[fp], chunk)
+}
+
+// clearQueryCache wipes the chunk chain for q without touching
+// any other query's cache. Used by Ctrl+R reload so a
+// re-dispatch starts a fresh chain instead of reusing stale
+// cursors that the backend may have invalidated.
+func (s *issuesState) clearQueryCache(q IssueQuery) {
+	if s.pageCache == nil {
+		return
+	}
+	delete(s.pageCache, s.queryFingerprint(q))
+}
+
+func (s *issuesState) hasAnyCachedPage(q IssueQuery) bool {
+	return len(s.cachedChunks(q)) > 0
+}
+
+func concatRows(chunks []issuePageChunk) []issue {
+	if len(chunks) == 0 {
+		return nil
+	}
+	total := 0
+	for _, c := range chunks {
+		total += len(c.issues)
+	}
+	out := make([]issue, 0, total)
+	for _, c := range chunks {
+		out = append(out, c.issues...)
+	}
+	return out
+}
+
+// localCursor projects s.currentAbsoluteCursor onto a window-
+// relative table cursor — eviction-driven shifts come for free
+// from the next render rather than from a handler→view reach-in.
+func (s *issuesState) localCursor(totalRows int) int {
+	if totalRows <= 0 {
+		return 0
+	}
+	rel := s.currentAbsoluteCursor - s.currentRowsBefore
+	if rel < 0 {
+		return 0
+	}
+	if rel >= totalRows {
+		return totalRows - 1
+	}
+	return rel
+}
+
+func (s *issuesState) recordCursor(localCursor int) {
+	s.currentAbsoluteCursor = s.currentRowsBefore + localCursor
+}
+
+// resetReactiveListCursor zeroes the list view's reactive
+// bookkeeping. Called from every "fresh start" path
+// (resetForNewQuery, discardOnLeave, reloadCurrentQuery).
+func (s *issuesState) resetReactiveListCursor() {
+	s.currentAbsoluteCursor = 0
+	s.currentRowsBefore = 0
+	s.currentPendingFetch = false
+}
+
+// applyListChunk is the canonical chunk-receipt path for the list
+// view: append to the cache, evict the head if the chain exceeds
+// listWindowMaxChunks (shifting currentRowsBefore so the absolute
+// cursor stays anchored), and clear the single-flight guard. Both
+// the issuePageLoadedMsg handler and the test eviction driver
+// route through this so the policy lives in exactly one place.
+// No-op for messages targeting a non-active query (cached for
+// later view rebuilds; eviction only matters for the visible
+// chain).
+func (s *issuesState) applyListChunk(q IssueQuery, chunk issuePageChunk) {
+	s.appendChunk(q, chunk)
+	if s.queryFingerprint(q) != s.queryFingerprint(s.currentQuery) {
+		return
+	}
+	fp := s.queryFingerprint(q)
+	chain := s.pageCache[fp]
+	for len(chain) > listWindowMaxChunks {
+		evicted := chain[0]
+		s.pageCache[fp] = chain[1:]
+		chain = s.pageCache[fp]
+		s.currentRowsBefore += len(evicted.issues)
+	}
+	s.currentPendingFetch = false
+}
+
+// beginLoad cancels any in-flight load and installs a fresh
+// cancellable context as s.loadCtx. Returns the new context
+// so the caller can hand it straight to loadIssuesPageCmd.
+// Used by every dispatch path that establishes a "new wave" of
+// fetches (screen entry, kanban-on-cycle, search submit).
+func (s *issuesState) beginLoad() context.Context {
+	if s.cancelLoad != nil {
+		s.cancelLoad()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.loadCtx = ctx
+	s.cancelLoad = cancel
+	return ctx
+}
+
+// resetForNewQuery is beginLoad + bumps the gen counter and
+// stages currentQuery for a fresh dispatch. The chunk cache for
+// OTHER queries is preserved so the user can flip back without
+// re-fetching.
+func (s *issuesState) resetForNewQuery(q IssueQuery) context.Context {
+	ctx := s.beginLoad()
+	s.queryGen++
+	s.currentQuery = q
+	s.resetReactiveListCursor()
+	return ctx
+}
+
+// discardOnLeave is invoked when the user navigates away from the
+// issues screen (Ctrl+O). It cancels any in-flight load, drops
+// every cached chunk, bumps queryGen so late responses can't
+// pollute the next entry, and clears all UI flags. The next Ctrl+I
+// entry sees an empty cache and dispatches fresh — appendChunk
+// otherwise stacks into the chain and the user sees duplicates.
+func (s *issuesState) discardOnLeave() {
+	if s.cancelLoad != nil {
+		s.cancelLoad()
+		s.cancelLoad = nil
+	}
+	s.loadCtx = context.Background()
+	s.pageCache = nil
+	s.queryGen++
+	s.loading = false
+	s.loadingMessage = ""
+	s.loadErr = nil
+	s.search = nil
+	s.resetReactiveListCursor()
+}
+
+// reloadCurrentQuery is the Ctrl+R entry point. It clears ONLY
+// the active query's chunk cache (other queries stay intact),
+// cancels any in-flight fetch via beginLoad, bumps queryGen so
+// any responses already on the wire drop on the receive side,
+// raises the loading modal, and rebuilds the active sub-view
+// against the now-empty cache (so the body is blank under the
+// modal). Returns the dispatch tea.Cmd: one fetch for list view,
+// or N parallel fetches (one per column) for kanban.
+//
+// The return is exactly one round-trip per visible surface — list
+// re-fetches the first chunk only; kanban re-fires its initialLoad
+// batch. The view will threshold-fetch additional chunks lazily
+// as the user scrolls, the same way it does after the first
+// successful entry. Eager-walking the chain on reload would be a
+// regression on huge repos.
+func (s *issuesState) reloadCurrentQuery() tea.Cmd {
+	ctx := s.beginLoad()
+	s.queryGen++
+	s.loading = true
+	s.loadingMessage = pickLoadingMessage()
+	s.loadErr = nil
+	switch s.view.(type) {
+	case *listIssueView:
+		s.clearQueryCache(s.currentQuery)
+		s.resetReactiveListCursor()
+		nv := newListIssueView(s)
+		s.view = nv
+		return loadIssuesPageCmd(
+			ctx, s.tabID, s.provider, s.projectCfg, s.cwd,
+			s.currentQuery, IssuePagination{Cursor: "", PerPage: nv.perPage},
+			s.queryGen,
+		)
+	case *kanbanIssueView:
+		// Kanban's "current query" is the union of column queries
+		// — wipe each so the rebuilt view's initialLoad refetches
+		// every column. Other queries stay cached.
+		s.clearQueryCache(s.currentQuery)
+		for _, spec := range s.provider.KanbanColumns() {
+			s.clearQueryCache(spec.Query)
+		}
+		nv := newKanbanIssueView(s)
+		s.view = nv
+		return nv.initialLoad(s)
+	}
+	return nil
 }
 
 // cycleView advances the active view to the next entry in
@@ -274,14 +580,15 @@ func (s *issuesState) cycleView() bool {
 	return true
 }
 
-// applySort reorders s.all according to s.sort. Stable so secondary
-// columns aren't reshuffled when a tie breaks; cheap enough that
-// callers can re-invoke any time the comparator or collection changes.
-func (s *issuesState) applySort() {
+// applySort reorders the supplied issues slice in place according
+// to s.sort. Stable so secondary columns aren't reshuffled when a
+// tie breaks; cheap enough that callers can re-invoke any time the
+// comparator or collection changes.
+func (s *issuesState) applySort(issues []issue) {
 	switch s.sort {
 	case issueSortByNumber:
-		sort.SliceStable(s.all, func(i, j int) bool {
-			return s.all[i].number < s.all[j].number
+		sort.SliceStable(issues, func(i, j int) bool {
+			return issues[i].number < issues[j].number
 		})
 	}
 }
@@ -296,6 +603,16 @@ func (s *issuesState) setView(v issueView) {
 // listIssueView renders the flat issue list. Wraps bubbles/table for
 // column layout, cursor, and scrolling so column-header math, soft
 // truncation, and viewport bookkeeping are all already correct.
+//
+// Reactive shape: the view holds NO data of its own. Every render
+// reads s.pageCache + s.currentRowsBefore + s.currentAbsoluteCursor
+// and projects them onto the bubbles/table widget. The eviction
+// window (up to listWindowMaxChunks live chunks under
+// pageCache[currentQuery]) is enforced by the issuePageLoadedMsg
+// handler in update.go — the view never mutates the cache or
+// state. updateKey writes the cursor back to state via
+// recordCursor so a view rebuild (Tab cycle, Ctrl+R) lands at
+// the same virtual row.
 type listIssueView struct {
 	tbl table.Model
 
@@ -304,19 +621,43 @@ type listIssueView struct {
 	// what size it last drew at when re-rendering after a state change.
 	width  int
 	height int
+
+	// perPage is the chunk size we requested. Stashed here so the
+	// initial dispatch path can read it back without reaching into
+	// the kanban view. View-local because it's a layout/widget
+	// preference, not data.
+	perPage int
 }
 
+// listWindowMaxChunks bounds the size of the live cache slice for
+// the active query. The issuePageLoadedMsg handler trims the head
+// of pageCache[currentQuery] when the chain grows past this and
+// shifts s.currentRowsBefore so the absolute cursor stays stable.
+const listWindowMaxChunks = 3
+
 func newListIssueView(s *issuesState) *listIssueView {
-	v := &listIssueView{}
+	v := &listIssueView{
+		perPage: githubDefaultPerPage,
+	}
 	v.tbl = table.New(
 		table.WithColumns(v.columns(80)),
-		table.WithRows(rowsFromIssues(s.all)),
+		table.WithRows(rowsFromIssues(nil)),
 		table.WithFocused(true),
 		table.WithStyles(issueTableStyles()),
 	)
 	v.resize(80, 20)
+	// Seed the table contents from the cache so re-entry / Tab
+	// cycle doesn't blank out the data we already have. The cursor
+	// is restored from s.currentAbsoluteCursor so the user lands
+	// where they left off.
+	rows := concatRows(s.cachedChunks(s.currentQuery))
+	if len(rows) > 0 {
+		v.tbl.SetRows(rowsFromIssues(rows))
+		v.tbl.SetCursor(s.localCursor(len(rows)))
+	}
 	return v
 }
+
 
 func (v *listIssueView) name() string { return "list" }
 
@@ -362,17 +703,16 @@ func (v *listIssueView) resize(width, height int) {
 }
 
 func (v *listIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueView, tea.Cmd, bool) {
-	// Enter opens the highlighted issue in the detail sub-view.
-	// Returning the new view here lets issuesScreen.updateKey
-	// swap it in via setView; the list view itself is preserved
-	// (parent reference) so Esc/Backspace from detail snaps the
-	// cursor back to the same row.
 	if msg.Mod == 0 && msg.Code == tea.KeyEnter {
+		// Enter opens detail. The list view instance is preserved
+		// as the detail's parent so Esc/Backspace returns the user
+		// to the same row.
+		rows := concatRows(s.cachedChunks(s.currentQuery))
 		cur := v.tbl.Cursor()
-		if cur < 0 || cur >= len(s.all) {
+		if cur < 0 || cur >= len(rows) {
 			return v, nil, true
 		}
-		return newIssueDetailView(v, s.all[cur], v.width, v.height), nil, true
+		return newIssueDetailView(v, rows[cur], v.width, v.height), nil, true
 	}
 	// Any non-Enter key on the list is potential navigation. The list
 	// stores selection in screen-relative rows, so a cursor move
@@ -385,27 +725,96 @@ func (v *listIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueVie
 	// j/k/up/down/g/G/pgup/pgdn navigation for free.
 	tbl, cmd := v.tbl.Update(msg)
 	v.tbl = tbl
+	// One-way write: record the user's new cursor in absolute
+	// (virtual list) coordinates so a view rebuild can derive the
+	// local position without losing context.
+	s.recordCursor(v.tbl.Cursor())
+	if fetchCmd := v.maybeFetchNextChunk(s); fetchCmd != nil {
+		if cmd == nil {
+			cmd = fetchCmd
+		} else {
+			cmd = tea.Batch(cmd, fetchCmd)
+		}
+	}
 	return v, cmd, true
 }
 
+// maybeFetchNextChunk dispatches the next-chunk load when the
+// cursor crosses 50% of the loaded window. Records
+// s.currentPendingFetch so the threshold doesn't refire while
+// the request is in flight; the pending guard lives on state so
+// it survives a view rebuild (Tab cycle, search-box close).
+func (v *listIssueView) maybeFetchNextChunk(s *issuesState) tea.Cmd {
+	if s.currentPendingFetch {
+		return nil
+	}
+	chunks := s.cachedChunks(s.currentQuery)
+	if len(chunks) == 0 {
+		return nil
+	}
+	last := chunks[len(chunks)-1]
+	if !last.hasMore || last.nextCursor == "" {
+		return nil
+	}
+	rows := concatRows(chunks)
+	if len(rows) == 0 {
+		return nil
+	}
+	if v.tbl.Cursor() < len(rows)/2 {
+		return nil
+	}
+	s.currentPendingFetch = true
+	return loadIssuesPageCmd(
+		s.loadCtx, s.tabID, s.provider, s.projectCfg, s.cwd,
+		s.currentQuery, IssuePagination{Cursor: last.nextCursor, PerPage: v.perPage},
+		s.queryGen,
+	)
+}
+
 func (v *listIssueView) view(s *issuesState) string {
-	if len(s.all) == 0 {
+	rows := concatRows(s.cachedChunks(s.currentQuery))
+	if len(rows) == 0 {
 		return outputStyle.Render(dimStyle.Render("(no issues)"))
 	}
-	// Re-bind rows each render so a future refresh (sort change, mock
-	// reload, real backend update) lands without extra plumbing.
-	v.tbl.SetRows(rowsFromIssues(s.all))
+	// Re-bind rows each render so a refresh (sort change, paged
+	// chunk arrival, search submit) lands without extra plumbing.
+	// Cursor target is derived from absolute → local each render
+	// so eviction-driven cursor shifts come for free without a
+	// handler→view reach-in.
+	v.tbl.SetRows(rowsFromIssues(rows))
+	v.tbl.SetCursor(s.localCursor(len(rows)))
 	return v.tbl.View()
 }
 
 func (v *listIssueView) header(s *issuesState) string {
+	chunks := s.cachedChunks(s.currentQuery)
+	rows := concatRows(chunks)
+	abs := s.currentAbsoluteCursor + 1
+	q := ""
+	if s.provider != nil {
+		q = s.provider.FormatQuery(s.currentQuery)
+	}
+	parts := fmt.Sprintf("  · #%d", abs)
+	if q != "" {
+		parts += " · " + q
+	}
+	hasMore := false
+	if n := len(chunks); n > 0 {
+		hasMore = chunks[n-1].hasMore
+	}
+	if hasMore {
+		parts += " · ↓ for more"
+	} else if len(chunks) > 0 {
+		parts += " · end"
+	}
 	return promptStyle.Render("Issues") +
-		dimStyle.Render(fmt.Sprintf("  (%d) — list view", len(s.all)))
+		dimStyle.Render(fmt.Sprintf("  (%d) — list view", len(rows))) +
+		dimStyle.Render(parts)
 }
 
 func (v *listIssueView) hint() string {
 	return dimStyle.Render(
-		"↑/↓ navigate · enter open · g/G top/bottom · ctrl+o back to ask",
+		"↑/↓ navigate · enter open · / search · r reload · g/G top/bottom · ctrl+o back to ask",
 	)
 }
 
@@ -733,20 +1142,84 @@ func (issuesScreen) updateKey(m model, msg tea.KeyPressMsg) (model, tea.Cmd, boo
 	}
 	m.exitArmed = false
 	// Loading and error states own the screen until they resolve. While
-	// loading, every key (other than the global ones above) is consumed
-	// silently so an early keypress can't fall through and mutate the
-	// (still-empty) list. While in error state, only Enter/Esc dismiss
-	// — every other key is consumed so a stray press can't whisk the
-	// user past the failure without acknowledgment.
+	// loading, Ctrl+R is honoured (cancels the in-flight + dispatches a
+	// fresh load); every other key is consumed silently so an early
+	// keypress can't fall through and mutate the (still-empty) list.
+	// While in error state, Enter/Esc dismiss back to ask, Ctrl+R is
+	// the retry affordance (clears the error + dispatches a fresh
+	// load), and every other key is consumed so a stray press can't
+	// whisk the user past the failure without acknowledgment.
+	isCtrlR := msg.Mod == tea.ModCtrl && msg.Code == 'r'
 	if m.issues.loading {
+		if isCtrlR {
+			return m, m.issues.reloadCurrentQuery(), true
+		}
 		return m, nil, true
 	}
 	if m.issues.loadErr != nil {
 		if msg.Mod == 0 && (msg.Code == tea.KeyEnter || msg.Code == tea.KeyEsc) {
-			m.issues.loadErr = nil
+			// Same hygiene as the Ctrl+O path: drop the cache + cancel
+			// in-flight on screen-leave so re-entry doesn't stack
+			// duplicate chunks onto the chain.
+			m.issues.discardOnLeave()
 			return m.switchScreen(screenAsk), nil, true
 		}
+		if isCtrlR {
+			// Reload from error: clear the error first so
+			// reloadCurrentQuery's loading-modal swap is the active
+			// overlay, not the persistent error modal.
+			m.issues.loadErr = nil
+			return m, m.issues.reloadCurrentQuery(), true
+		}
 		return m, nil, true
+	}
+	// Search box has top-level priority when open: it owns every
+	// keypress until Esc / empty-backspace closes it. Routes the
+	// dispatched search via cmd back through Update.
+	if m.issues.search != nil {
+		closed, cmd := m.issues.search.updateKey(m.issues, msg)
+		if closed {
+			m.issues.search = nil
+			// First-page-of-this-query → modal. Subsequent
+			// re-fetches of an already-cached query stay inline.
+			if cmd != nil && !m.issues.hasAnyCachedPage(m.issues.currentQuery) {
+				m.issues.loading = true
+				m.issues.loadingMessage = pickLoadingMessage()
+				m.issues.loadErr = nil
+			}
+			// Rebuild the active view against the new query so
+			// list pages re-stitch from cache (if any) and kanban
+			// columns pick up the new spec query targets.
+			m.issues.view = issueViewLayers[viewIndexForName(m.issues.view.name())].builder(m.issues)
+		}
+		return m, cmd, true
+	}
+	// Ctrl+R reloads the active query on list / kanban (not
+	// detail). The search-box branch above already short-circuits
+	// when /-mode is open, so the textinput consumes Ctrl+R as a
+	// normal key when the user is typing — design choice
+	// (search-box wins) so the user can keep editing without the
+	// reload yanking the screen out from under them.
+	if isCtrlR {
+		switch m.issues.view.(type) {
+		case *listIssueView, *kanbanIssueView:
+			return m, m.issues.reloadCurrentQuery(), true
+		}
+	}
+	// "/" opens the search overlay from list or kanban (not
+	// detail, not while loading or in error state). Consume the
+	// keystroke so the typed "/" doesn't bleed into the table /
+	// kanban layer behind the box.
+	if msg.Mod == 0 && msg.Code == '/' {
+		switch m.issues.view.(type) {
+		case *listIssueView, *kanbanIssueView:
+			help := ""
+			if m.issues.provider != nil {
+				help = m.issues.provider.QuerySyntaxHelp()
+			}
+			m.issues.search = newIssueSearchBox(help)
+			return m, nil, true
+		}
 	}
 	v, cmd, handled := m.issues.view.updateKey(m.issues, msg)
 	if handled {
@@ -821,6 +1294,11 @@ func (issuesScreen) view(m model) string {
 	var b strings.Builder
 	b.WriteString(m.issues.view.header(m.issues))
 	b.WriteString("\n\n")
+	if m.issues.search != nil {
+		m.issues.search.resize(width - issueScreenIndent)
+		b.WriteString(m.issues.search.view())
+		b.WriteString("\n")
+	}
 	b.WriteString(strings.Join(bodyLines, "\n"))
 	b.WriteString("\n")
 	b.WriteString(hint)
@@ -889,6 +1367,12 @@ func (m model) issuesHandleMouse(msg tea.Msg) (model, tea.Cmd) {
 		// content rows under the highlight in a way that's confusing if
 		// the drag was still in flight. Drop and start fresh.
 		s.clearSelection()
+		// One-way write: list-view scroll is the user moving the
+		// cursor, so record the new local cursor back into absolute
+		// coords so a view rebuild keeps the user where they are.
+		if lv, ok := s.view.(*listIssueView); ok {
+			s.recordCursor(lv.tbl.Cursor())
+		}
 		return m, nil
 
 	case tea.MouseClickMsg:
@@ -992,6 +1476,12 @@ func issuesScrollByMouse(s *issuesState, screenY int) {
 	}
 	target := int(pct * float64(total-viewH))
 	s.view.setYOffset(target)
+	// Same one-way write as the wheel handler: list-view scroll
+	// position IS the cursor, so propagate it back to absolute
+	// coords for a view-rebuild-safe re-render.
+	if lv, ok := s.view.(*listIssueView); ok {
+		s.recordCursor(lv.tbl.Cursor())
+	}
 }
 
 // issueDetailView is the read-mode detail surface for a single issue:
@@ -1159,13 +1649,19 @@ func (v *issueDetailView) selectableBody() string { return v.rendered }
 func (v *issueDetailView) selectionYOffset() int { return v.vp.YOffset() }
 
 // kanbanIssueView lays issues out as a tab strip across the top
-// (one tab per status, the focused one highlighted) with the focused
-// column's cards rendered full-width below. Status taxonomy is
-// derived from the live issue collection — there is no fixed enum
-// here, because real backends (GitHub labels, ClickUp custom
-// statuses, Linear states, …) all define their own and a new
-// "needs-review" status arriving from the backend should appear as
-// a new tab without code changes.
+// (one tab per provider-defined column, the focused one
+// highlighted) with the focused column's cards rendered
+// full-width below. Column taxonomy is supplied by
+// provider.KanbanColumns() — never inferred from data — so
+// columns the user expects (Open / Closed: completed / Closed:
+// not planned / Closed: duplicate for GitHub) appear even when
+// they're empty.
+//
+// Each column carries its own page state (page, hasMore,
+// fetching) and dispatches loadIssuesPageCmd independently. All
+// columns share the same queryGen so a search-box query applied
+// while on kanban supersedes every column's in-flight load
+// cleanly.
 //
 // (We tried a side-by-side wide layout first; the column picker
 // turned out to read better at every terminal width because each
@@ -1173,8 +1669,6 @@ func (v *issueDetailView) selectionYOffset() int { return v.vp.YOffset() }
 // 18-30 cols. Dropped the wide path entirely — one render mode is
 // simpler to reason about and resize-handles trivially.)
 type kanbanIssueView struct {
-	parent issueView // for back-nav from detail (kept for future use)
-
 	width, height int
 
 	columns []kanbanColumn
@@ -1194,66 +1688,67 @@ type kanbanIssueView struct {
 	lastRendered string
 }
 
-// kanbanColumn is one status group. issues are sorted by number
-// ascending so the layout is stable across renders.
+// kanbanColumn is one provider-defined column. spec carries the
+// label + query; loaded is the running flat list of issues
+// fetched so far across chunks. nextCursor is the cursor to feed
+// to the next ListIssues call (empty string both for "first
+// chunk not yet fetched" and for "end of data" — disambiguate
+// with hasMore + len(loaded)). hasMore reflects the latest
+// fetch; fetching guards against double-dispatch while a load
+// is in flight.
 type kanbanColumn struct {
-	status string
-	issues []issue
+	spec       KanbanColumnSpec
+	loaded     []issue
+	nextCursor string
+	hasMore    bool
+	fetching   bool
 }
 
 func newKanbanIssueView(s *issuesState) *kanbanIssueView {
 	v := &kanbanIssueView{}
-	v.rebuildColumns(s.all)
+	v.rebuildColumnsFromSpecs(s)
 	v.resize(80, 20)
 	return v
 }
 
-func (v *kanbanIssueView) name() string { return "kanban" }
-
-// rebuildColumns derives the column ordering from the *first
-// occurrence* of each status in the collection. Stable across
-// renders because applySort runs ascending by number — the first
-// issue with status "open" lands the open column at index 0,
-// "planned" lands second, and so on.
-//
-// CONTRACT (replace when real backends land): column order today
-// is "first-occurrence in number-sorted data". GitHub project
-// boards, ClickUp, and Linear all surface their own canonical
-// status order; the integration layer must supply that order
-// instead of leaning on the implicit ordering here, otherwise the
-// kanban will look reordered to anyone who has memorised their
-// backend's board layout.
-//
-// PERF: this runs from view() on every render frame today —
-// trivial for the 10-issue mock, O(n log n) per frame for real
-// data. Add a fingerprint check (issue count + last-modified) or
-// an explicit dirty flag once a real backend is wired so steady-
-// state renders stop re-sorting.
-func (v *kanbanIssueView) rebuildColumns(issues []issue) {
-	cols := []kanbanColumn{}
-	seen := map[string]int{}
-	for _, it := range issues {
-		idx, ok := seen[it.status]
-		if !ok {
-			idx = len(cols)
-			seen[it.status] = idx
-			cols = append(cols, kanbanColumn{status: it.status})
-		}
-		cols[idx].issues = append(cols[idx].issues, it)
+// rebuildColumnsFromSpecs builds the column slice from the
+// provider's KanbanColumns() and seeds each column's `loaded`
+// from any cached chunks. Called on construction and whenever
+// the provider's column list might have changed (e.g. swap to
+// a different provider mid-session).
+func (v *kanbanIssueView) rebuildColumnsFromSpecs(s *issuesState) {
+	specs := []KanbanColumnSpec{}
+	if s.provider != nil {
+		specs = s.provider.KanbanColumns()
 	}
-	for i := range cols {
-		sort.SliceStable(cols[i].issues, func(a, b int) bool {
-			return cols[i].issues[a].number < cols[i].issues[b].number
-		})
+	cols := make([]kanbanColumn, 0, len(specs))
+	for _, spec := range specs {
+		col := kanbanColumn{spec: spec}
+		// Stitch any cached chunks into loaded so re-entering the
+		// kanban view doesn't blank columns we've already fetched.
+		// nextCursor + hasMore come from the *last* cached chunk so
+		// the threshold check can decide to dispatch the next chunk
+		// without re-fetching anything we already have.
+		if chain := s.cachedChunks(spec.Query); len(chain) > 0 {
+			for _, c := range chain {
+				col.loaded = append(col.loaded, c.issues...)
+			}
+			last := chain[len(chain)-1]
+			col.nextCursor = last.nextCursor
+			col.hasMore = last.hasMore
+		}
+		cols = append(cols, col)
 	}
 	v.columns = cols
 	v.clampSelection()
 }
 
+func (v *kanbanIssueView) name() string { return "kanban" }
+
 // clampSelection pulls col/row back into bounds after a column
 // disappears or a column's issue count shrinks. Called from
-// rebuildColumns and from any nav handler that could leave the
-// cursor stranded.
+// rebuildColumnsFromSpecs and from any nav handler that could
+// leave the cursor stranded.
 func (v *kanbanIssueView) clampSelection() {
 	if len(v.columns) == 0 {
 		v.selColIdx, v.selRowIdx = 0, 0
@@ -1266,12 +1761,96 @@ func (v *kanbanIssueView) clampSelection() {
 		v.selColIdx = 0
 	}
 	col := v.columns[v.selColIdx]
-	if v.selRowIdx >= len(col.issues) {
-		v.selRowIdx = max(0, len(col.issues)-1)
+	if v.selRowIdx >= len(col.loaded) {
+		v.selRowIdx = max(0, len(col.loaded)-1)
 	}
 	if v.selRowIdx < 0 {
 		v.selRowIdx = 0
 	}
+}
+
+// columnByQueryFingerprint returns the column whose spec.Query
+// matches fp, or -1 when no column matches. Used by the
+// page-loaded message router so a fetch result lands in the
+// right column even if the user has tabbed since dispatch.
+func (v *kanbanIssueView) columnByQueryFingerprint(s *issuesState, fp string) int {
+	for i, c := range v.columns {
+		if s.queryFingerprint(c.spec.Query) == fp {
+			return i
+		}
+	}
+	return -1
+}
+
+// initialLoad fires one loadIssuesPageCmd per column whose
+// `loaded` slice is empty and which isn't already fetching, in
+// parallel via tea.Batch. All commands share s.queryGen so a
+// search-box query lands consistently across columns. Each
+// dispatched column flips fetching=true so a re-render or
+// re-cycle to kanban can't double-fire. The first chunk request
+// is always cursor="" — providers treat the empty cursor as
+// "give me the first chunk". Returns nil when every column is
+// already loaded or in flight.
+func (v *kanbanIssueView) initialLoad(s *issuesState) tea.Cmd {
+	cmds := make([]tea.Cmd, 0, len(v.columns))
+	for i := range v.columns {
+		col := &v.columns[i]
+		if col.fetching || len(col.loaded) > 0 {
+			continue
+		}
+		col.fetching = true
+		cmds = append(cmds, loadIssuesPageCmd(
+			s.loadCtx, s.tabID, s.provider, s.projectCfg, s.cwd,
+			col.spec.Query, IssuePagination{Cursor: "", PerPage: githubDefaultPerPage},
+			s.queryGen,
+		))
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
+}
+
+// maybeFetchNextPage returns a tea.Cmd that fetches the next
+// chunk of the focused column when the threshold has been
+// crossed. Returns nil when no fetch is needed. Marks the
+// column's fetching=true so the threshold doesn't refire while
+// the network round-trip is in flight.
+func (v *kanbanIssueView) maybeFetchNextPage(s *issuesState) tea.Cmd {
+	idx := v.selColIdx
+	if !v.shouldFetchNextPageForColumn(idx) {
+		return nil
+	}
+	col := &v.columns[idx]
+	cursor := col.nextCursor
+	col.fetching = true
+	return loadIssuesPageCmd(
+		s.loadCtx, s.tabID, s.provider, s.projectCfg, s.cwd,
+		col.spec.Query, IssuePagination{Cursor: cursor, PerPage: githubDefaultPerPage},
+		s.queryGen,
+	)
+}
+
+// shouldFetchNextPageForColumn reports whether the focused column
+// should dispatch a next-chunk fetch: cursor crossed 50% of the
+// loaded rows AND HasMore is true AND nextCursor is non-empty
+// (we never round-trip an empty cursor mid-chain — that's the
+// "first chunk" sentinel) AND no fetch is in flight.
+func (v *kanbanIssueView) shouldFetchNextPageForColumn(idx int) bool {
+	if idx < 0 || idx >= len(v.columns) {
+		return false
+	}
+	col := v.columns[idx]
+	if !col.hasMore || col.fetching || len(col.loaded) == 0 {
+		return false
+	}
+	if col.nextCursor == "" {
+		return false
+	}
+	if v.selRowIdx < len(col.loaded)/2 {
+		return false
+	}
+	return true
 }
 
 func (v *kanbanIssueView) resize(width, height int) {
@@ -1282,13 +1861,17 @@ func (v *kanbanIssueView) resize(width, height int) {
 }
 
 func (v *kanbanIssueView) header(s *issuesState) string {
+	total := 0
+	for _, c := range v.columns {
+		total += len(c.loaded)
+	}
 	return promptStyle.Render("Issues") +
-		dimStyle.Render(fmt.Sprintf("  (%d) — kanban view", len(s.all)))
+		dimStyle.Render(fmt.Sprintf("  (%d) — kanban view", total))
 }
 
 func (v *kanbanIssueView) hint() string {
 	return dimStyle.Render(
-		"↑/↓ row · ←/→ column · enter open · ctrl+i list view · ctrl+o back to ask",
+		"↑/↓ row · ←/→ column · enter open · / search · r reload · ctrl+i list view · ctrl+o back to ask",
 	)
 }
 
@@ -1308,10 +1891,10 @@ func (v *kanbanIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueV
 			return v, nil, true
 		}
 		col := v.columns[v.selColIdx]
-		if v.selRowIdx >= len(col.issues) {
+		if v.selRowIdx >= len(col.loaded) {
 			return v, nil, true
 		}
-		return newIssueDetailView(v, col.issues[v.selRowIdx], v.width, v.height), nil, true
+		return newIssueDetailView(v, col.loaded[v.selRowIdx], v.width, v.height), nil, true
 	case tea.KeyUp, 'k':
 		if v.selRowIdx > 0 {
 			v.selRowIdx--
@@ -1320,11 +1903,13 @@ func (v *kanbanIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueV
 	case tea.KeyDown, 'j':
 		if v.selColIdx < len(v.columns) {
 			col := v.columns[v.selColIdx]
-			if v.selRowIdx+1 < len(col.issues) {
+			if v.selRowIdx+1 < len(col.loaded) {
 				v.selRowIdx++
 			}
 		}
-		return v, nil, true
+		// Threshold check: dispatch the next-page cmd for this
+		// column when the cursor crosses 50%.
+		return v, v.maybeFetchNextPage(s), true
 	case tea.KeyLeft, 'h':
 		if v.selColIdx > 0 {
 			v.selColIdx--
@@ -1348,7 +1933,7 @@ func (v *kanbanIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueV
 		return v, nil, true
 	case 'G':
 		if v.selColIdx < len(v.columns) {
-			v.selRowIdx = max(0, len(v.columns[v.selColIdx].issues)-1)
+			v.selRowIdx = max(0, len(v.columns[v.selColIdx].loaded)-1)
 		}
 		return v, nil, true
 	}
@@ -1368,7 +1953,6 @@ func isKanbanNav(msg tea.KeyPressMsg) bool {
 }
 
 func (v *kanbanIssueView) view(s *issuesState) string {
-	v.rebuildColumns(s.all)
 	if len(v.columns) == 0 {
 		v.lastRendered = dimStyle.Render("(no issues)")
 		return v.lastRendered
@@ -1401,7 +1985,7 @@ func (v *kanbanIssueView) renderBody() string {
 		tabs,
 		dimStyle.Render(strings.Repeat("─", v.width)),
 	}
-	for i, it := range col.issues {
+	for i, it := range col.loaded {
 		card := fmt.Sprintf("#%d  %s", it.number, it.title)
 		card = xansi.Truncate(card, v.width, "…")
 		if i == v.selRowIdx {
@@ -1435,7 +2019,7 @@ func (v *kanbanIssueView) renderNarrowTabs() string {
 
 	tabs := make([]string, 0, len(v.columns))
 	for i, c := range v.columns {
-		label := fmt.Sprintf("%s (%d)", c.status, len(c.issues))
+		label := fmt.Sprintf("%s (%d)", c.spec.Label, len(c.loaded))
 		if i == v.selColIdx {
 			tabs = append(tabs, activeStyle.Render(label))
 		} else {
@@ -1477,7 +2061,7 @@ func (v *kanbanIssueView) wheel(delta int) {
 	col := v.columns[v.selColIdx]
 	switch {
 	case delta > 0:
-		if v.selRowIdx+1 < len(col.issues) {
+		if v.selRowIdx+1 < len(col.loaded) {
 			v.selRowIdx++
 		}
 	case delta < 0:

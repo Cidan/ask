@@ -39,10 +39,45 @@ func leadingSpaces(s string) int {
 // seedMockIssues fills s with the canonical mock dataset and
 // rebuilds the view so kanban / list cache to the populated state.
 // Centralised so the per-test boilerplate stays one line.
+//
+// In the new (cursor-paginated, query-driven) world this means
+// stashing the dataset as a single chunk under the nil-query
+// fingerprint so listIssueView's rebuildFromCache picks it up,
+// and installing a fake provider whose KanbanColumns() returns
+// one column per distinct status in the data so kanban tests
+// still see column-grouped output.
 func seedMockIssues(s *issuesState) {
-	s.all = mockIssues()
-	s.applySort()
+	all := mockIssues()
+	s.applySort(all)
+	s.provider = newFakeMockProvider(all)
+	s.currentQuery = nil
+	s.appendChunk(nil, issuePageChunk{cursor: "", issues: all})
+	// Stash one cached chunk per kanban column query so
+	// rebuildColumnsFromSpecs's per-column stitching populates each
+	// column with its mock subset.
+	for _, spec := range s.provider.KanbanColumns() {
+		var subset []issue
+		fq, _ := spec.Query.(*fakeQuery)
+		for _, it := range all {
+			if fq != nil && fq.statusMatch != "" && it.status != fq.statusMatch {
+				continue
+			}
+			subset = append(subset, it)
+		}
+		s.appendChunk(spec.Query, issuePageChunk{cursor: "", issues: subset})
+	}
 	s.view = issueViewLayers[0].builder(s)
+}
+
+// issuesAll is the test convenience accessor that returns the
+// concatenation of every cached chunk under the nil-query
+// fingerprint. Replaces the pre-pagination s.all field.
+func issuesAll(s *issuesState) []issue {
+	var out []issue
+	for _, c := range s.cachedChunks(nil) {
+		out = append(out, c.issues...)
+	}
+	return out
 }
 
 func TestIssues_NewStateStartsEmpty(t *testing.T) {
@@ -50,8 +85,8 @@ func TestIssues_NewStateStartsEmpty(t *testing.T) {
 	// itself by dispatching a provider load on entry. The sub-view
 	// is still installed so render paths don't have to nil-check.
 	s := newIssuesState()
-	if len(s.all) != 0 {
-		t.Errorf("fresh state should have no issues, got %d", len(s.all))
+	if rows := issuesAll(s); len(rows) != 0 {
+		t.Errorf("fresh state should have no issues, got %d", len(rows))
 	}
 	if s.view == nil {
 		t.Fatalf("default sub-view should be installed")
@@ -64,8 +99,9 @@ func TestIssues_NewStateStartsEmpty(t *testing.T) {
 func TestIssues_DefaultSortIsByNumberAscending(t *testing.T) {
 	s := newIssuesState()
 	seedMockIssues(s)
-	nums := make([]int, len(s.all))
-	for i, it := range s.all {
+	all := issuesAll(s)
+	nums := make([]int, len(all))
+	for i, it := range all {
 		nums[i] = it.number
 	}
 	if !sort.IntsAreSorted(nums) {
@@ -76,9 +112,10 @@ func TestIssues_DefaultSortIsByNumberAscending(t *testing.T) {
 func TestIssues_RowsIncludeAllRequiredColumns(t *testing.T) {
 	s := newIssuesState()
 	seedMockIssues(s)
-	rows := rowsFromIssues(s.all)
-	if len(rows) != len(s.all) {
-		t.Fatalf("rows=%d want %d (1:1 with issues)", len(rows), len(s.all))
+	all := issuesAll(s)
+	rows := rowsFromIssues(all)
+	if len(rows) != len(all) {
+		t.Fatalf("rows=%d want %d (1:1 with issues)", len(rows), len(all))
 	}
 	// Spot-check the first row has the documented columns:
 	// id, title, assigned, status, created.
@@ -122,7 +159,7 @@ func TestIssues_GotoTopAndBottom(t *testing.T) {
 	// G → bottom
 	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: 'G'})
 	v := m.issues.view.(*listIssueView)
-	wantBottom := len(m.issues.all) - 1
+	wantBottom := len(issuesAll(m.issues)) - 1
 	if v.tbl.Cursor() != wantBottom {
 		t.Errorf("after G cursor=%d want %d", v.tbl.Cursor(), wantBottom)
 	}
@@ -143,7 +180,7 @@ func TestIssues_ViewContainsAllStatuses(t *testing.T) {
 	s := newIssuesState()
 	seedMockIssues(s)
 	body := s.view.view(s)
-	for _, it := range s.all {
+	for _, it := range issuesAll(s) {
 		if !strings.Contains(body, it.status) {
 			t.Errorf("body missing status %q for #%d", it.status, it.number)
 		}
@@ -265,7 +302,7 @@ func TestIssues_DetailRendersDescriptionAndComments(t *testing.T) {
 	s := newIssuesState()
 	seedMockIssues(s)
 	var target issue
-	for _, it := range s.all {
+	for _, it := range issuesAll(s) {
 		if it.number == 12 {
 			target = it
 			break
@@ -372,9 +409,7 @@ func enterIssuesScreen(t *testing.T) model {
 	m.toast = NewToastModel(40, time.Second)
 	m.screen = screenIssues
 	m.issues = newIssuesState()
-	m.issues.all = mockIssues()
-	m.issues.applySort()
-	m.issues.view = issueViewLayers[0].builder(m.issues)
+	seedMockIssues(m.issues)
 	_ = m.activeScreen().view(m) // populates body bounds
 	return m
 }
@@ -645,52 +680,56 @@ func TestKanban_CtrlIFromDetailIsNoOp(t *testing.T) {
 	}
 }
 
-func TestKanban_ColumnsDerivedFromData(t *testing.T) {
-	// Status taxonomy is derived from the live collection — there's
-	// no fixed enum. Build a kanban view directly from issuesState
-	// and assert one column per distinct status value, in
-	// first-seen order against the sorted-ascending data.
+func TestKanban_ColumnsCameFromProvider(t *testing.T) {
+	// Column taxonomy is supplied by provider.KanbanColumns(),
+	// not inferred from data. The mock seed installs a fake
+	// provider with one column per distinct status in the
+	// underlying dataset, so the assertion still relates to the
+	// data — but the source of truth is now the provider.
 	s := newIssuesState()
 	seedMockIssues(s)
 	v := newKanbanIssueView(s)
 	statuses := map[string]bool{}
-	for _, it := range s.all {
+	for _, it := range issuesAll(s) {
 		statuses[it.status] = true
 	}
 	if len(v.columns) != len(statuses) {
 		t.Errorf("kanban columns=%d want %d distinct statuses", len(v.columns), len(statuses))
 	}
 	for _, col := range v.columns {
-		if !statuses[col.status] {
-			t.Errorf("kanban produced unknown status column %q", col.status)
+		if !statuses[col.spec.Label] {
+			t.Errorf("kanban produced unknown column %q", col.spec.Label)
 		}
 	}
 }
 
-func TestKanban_HandlesArbitraryStatusTaxonomy(t *testing.T) {
-	// Synthetic statuses (simulating a backend with custom labels).
-	// Kanban must produce a column for every distinct value rather
-	// than mapping into a fixed enum.
+func TestKanban_HandlesArbitraryColumnTaxonomy(t *testing.T) {
+	// Provider supplies an arbitrary column taxonomy (custom
+	// labels mirroring what a future ClickUp / Linear backend
+	// might emit). Kanban must produce one column per spec, in
+	// the supplied order — never inferred from data.
+	provider := newFakeIssueProvider()
+	provider.columns = []KanbanColumnSpec{
+		{Label: "Inbox", Query: &fakeQuery{statusMatch: "Inbox"}},
+		{Label: "Quarantine", Query: &fakeQuery{statusMatch: "Quarantine"}},
+		{Label: "🔥 hotfix", Query: &fakeQuery{statusMatch: "🔥 hotfix"}},
+	}
 	s := &issuesState{
-		all: []issue{
-			{number: 1, status: "Inbox", title: "a"},
-			{number: 2, status: "Quarantine", title: "b"},
-			{number: 3, status: "🔥 hotfix", title: "c"},
-			{number: 4, status: "Inbox", title: "d"},
-		},
+		pageCache: map[string][]issuePageChunk{},
+		provider:  provider,
 	}
 	v := newKanbanIssueView(s)
-	gotStatuses := make([]string, 0, len(v.columns))
+	gotLabels := make([]string, 0, len(v.columns))
 	for _, c := range v.columns {
-		gotStatuses = append(gotStatuses, c.status)
+		gotLabels = append(gotLabels, c.spec.Label)
 	}
 	want := []string{"Inbox", "Quarantine", "🔥 hotfix"}
-	if len(gotStatuses) != 3 {
-		t.Fatalf("expected 3 columns, got %d: %v", len(gotStatuses), gotStatuses)
+	if len(gotLabels) != 3 {
+		t.Fatalf("expected 3 columns, got %d: %v", len(gotLabels), gotLabels)
 	}
 	for i, w := range want {
-		if gotStatuses[i] != w {
-			t.Errorf("column %d=%q want %q", i, gotStatuses[i], w)
+		if gotLabels[i] != w {
+			t.Errorf("column %d=%q want %q", i, gotLabels[i], w)
 		}
 	}
 }
@@ -729,7 +768,7 @@ func TestKanban_DownArrowMovesWithinColumn(t *testing.T) {
 	m := enterIssuesScreen(t)
 	m, _ = runUpdate(t, m, ctrlKey('i'))
 	v := m.issues.view.(*kanbanIssueView)
-	if len(v.columns[0].issues) < 2 {
+	if len(v.columns[0].loaded) < 2 {
 		t.Skip("first column has only one issue; can't test row navigation")
 	}
 	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
@@ -758,10 +797,10 @@ func TestKanban_EnterOpensDetailWithKanbanAsParent(t *testing.T) {
 	m, _ = runUpdate(t, m, ctrlKey('i'))
 	v := m.issues.view.(*kanbanIssueView)
 	col := v.columns[v.selColIdx]
-	if len(col.issues) == 0 {
+	if len(col.loaded) == 0 {
 		t.Skip("first column is empty in mock data")
 	}
-	wantNum := col.issues[v.selRowIdx].number
+	wantNum := col.loaded[v.selRowIdx].number
 	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.issues.view.name() != "detail" {
 		t.Fatalf("Enter on kanban should open detail; got %q", m.issues.view.name())
@@ -786,7 +825,7 @@ func TestKanban_BodyContainsAllStatuses(t *testing.T) {
 	m := enterIssuesScreen(t)
 	m, _ = runUpdate(t, m, ctrlKey('i'))
 	body := stripAnsi(m.activeScreen().view(m))
-	for _, it := range m.issues.all {
+	for _, it := range issuesAll(m.issues) {
 		if !strings.Contains(body, it.status) {
 			t.Errorf("kanban body missing status %q", it.status)
 		}
@@ -804,7 +843,7 @@ func TestKanban_BodyShowsFocusedColumnAndHidesOthers(t *testing.T) {
 	v := newKanbanIssueView(s)
 	v.resize(80, 30)
 	body := stripAnsi(v.view(s))
-	for _, it := range v.columns[v.selColIdx].issues {
+	for _, it := range v.columns[v.selColIdx].loaded {
 		want := "#" + itoaIssue(it.number)
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing focused-column issue %q:\n%s", want, body)
@@ -814,11 +853,11 @@ func TestKanban_BodyShowsFocusedColumnAndHidesOthers(t *testing.T) {
 		if i == v.selColIdx {
 			continue
 		}
-		for _, it := range col.issues {
+		for _, it := range col.loaded {
 			want := "#" + itoaIssue(it.number)
 			if strings.Contains(body, want) {
 				t.Errorf("body should not show non-focused issue %q (col=%q)",
-					want, col.status)
+					want, col.spec.Label)
 			}
 		}
 	}
@@ -884,7 +923,7 @@ func TestKanban_MouseWheelMovesRowSelection(t *testing.T) {
 	m := enterIssuesScreen(t)
 	m, _ = runUpdate(t, m, ctrlKey('i'))
 	v := m.issues.view.(*kanbanIssueView)
-	if len(v.columns[v.selColIdx].issues) < 2 {
+	if len(v.columns[v.selColIdx].loaded) < 2 {
 		t.Skip("first column has fewer than 2 issues; can't test wheel")
 	}
 	// Re-render to populate body bounds (mouse routing needs them).
@@ -1050,31 +1089,44 @@ func TestIssues_OtherKeysDoNotDismissError(t *testing.T) {
 	}
 }
 
-func TestIssues_LoadedMsgWithErrorPopulatesLoadErr(t *testing.T) {
+func TestIssues_PageLoadedMsgWithErrorPopulatesLoadErr(t *testing.T) {
 	m := enterIssuesScreen(t)
 	m.issues.loading = true
 	loadErr := fmt.Errorf("503 service unavailable")
-	m, _ = runUpdate(t, m, issuesLoadedMsg{tabID: m.id, err: loadErr})
+	m, _ = runUpdate(t, m, issuePageLoadedMsg{
+		tabID:           m.id,
+		gen:             m.issues.queryGen,
+		query:           nil,
+		requestedCursor: "",
+		page:            IssueListPage{},
+		err:             loadErr,
+	})
 	if m.issues.loading {
-		t.Errorf("loading should be cleared after issuesLoadedMsg with error")
+		t.Errorf("loading should be cleared after issuePageLoadedMsg with error")
 	}
 	if m.issues.loadErr == nil || !strings.Contains(m.issues.loadErr.Error(), "503") {
 		t.Errorf("loadErr should reflect the failure; got %v", m.issues.loadErr)
 	}
 }
 
-func TestIssues_LoadedMsgWithSuccessClearsBothFlags(t *testing.T) {
+func TestIssues_PageLoadedMsgWithSuccessClearsBothFlags(t *testing.T) {
 	m := enterIssuesScreen(t)
 	m.issues.loading = true
 	m.issues.loadErr = fmt.Errorf("stale")
-	m, _ = runUpdate(t, m, issuesLoadedMsg{tabID: m.id, issues: mockIssues()})
+	m, _ = runUpdate(t, m, issuePageLoadedMsg{
+		tabID:           m.id,
+		gen:             m.issues.queryGen,
+		query:           nil,
+		requestedCursor: "",
+		page:            IssueListPage{Issues: mockIssues()},
+	})
 	if m.issues.loading {
 		t.Errorf("loading should clear on successful load")
 	}
 	if m.issues.loadErr != nil {
 		t.Errorf("loadErr should clear on successful load; got %v", m.issues.loadErr)
 	}
-	if len(m.issues.all) == 0 {
+	if len(issuesAll(m.issues)) == 0 {
 		t.Errorf("issues should be populated after success")
 	}
 }
@@ -1092,6 +1144,159 @@ func TestIssues_MouseDuringLoadingDoesNotStartSelection(t *testing.T) {
 	if m.issues.selDragging || m.issues.selActive {
 		t.Errorf("mouse click during loading should not start selection: drag=%v active=%v",
 			m.issues.selDragging, m.issues.selActive)
+	}
+}
+
+func TestCtrlR_ReloadClearsCacheAndDispatchesFreshLoad(t *testing.T) {
+	m := enterIssuesScreen(t)
+	// Pre-state: cache has chunks under the nil query.
+	if !m.issues.hasAnyCachedPage(nil) {
+		t.Fatalf("setup: cache should already have nil-query chunks")
+	}
+	prevGen := m.issues.queryGen
+	m, cmd := runUpdate(t, m, ctrlKey('r'))
+	if m.issues.hasAnyCachedPage(nil) {
+		t.Errorf("Ctrl+R should clear the active query's cache")
+	}
+	if m.issues.queryGen != prevGen+1 {
+		t.Errorf("Ctrl+R should bump queryGen: was=%d now=%d", prevGen, m.issues.queryGen)
+	}
+	if !m.issues.loading {
+		t.Errorf("Ctrl+R should set loading=true")
+	}
+	if m.issues.loadingMessage == "" {
+		t.Errorf("Ctrl+R should pick a fresh loading message")
+	}
+	if cmd == nil {
+		t.Errorf("Ctrl+R should return a dispatch tea.Cmd")
+	}
+}
+
+func TestCtrlR_ReloadCancelsInFlight(t *testing.T) {
+	m := enterIssuesScreen(t)
+	// Force a known cancelLoad observer.
+	called := false
+	prev := m.issues.cancelLoad
+	m.issues.cancelLoad = func() {
+		called = true
+		if prev != nil {
+			prev()
+		}
+	}
+	m, _ = runUpdate(t, m, ctrlKey('r'))
+	if !called {
+		t.Errorf("Ctrl+R should cancel any in-flight load via beginLoad")
+	}
+}
+
+func TestCtrlR_ReloadFromKanbanReFiresInitialLoad(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m, _ = runUpdate(t, m, ctrlKey('i'))
+	if m.issues.view.name() != "kanban" {
+		t.Fatalf("setup: not on kanban")
+	}
+	m, cmd := runUpdate(t, m, ctrlKey('r'))
+	if !m.issues.loading {
+		t.Errorf("Ctrl+R on kanban should set loading=true")
+	}
+	if cmd == nil {
+		t.Errorf("Ctrl+R on kanban should return a tea.Batch of column dispatches")
+	}
+	// Every column should be marked fetching after the reload (the
+	// rebuilt view re-fires initialLoad).
+	kv := m.issues.view.(*kanbanIssueView)
+	for i, c := range kv.columns {
+		if !c.fetching {
+			t.Errorf("col %d should be fetching after Ctrl+R reload", i)
+		}
+	}
+}
+
+func TestCtrlR_FromDetailViewIsNoOp(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.issues.view.name() != "detail" {
+		t.Fatalf("setup: not on detail")
+	}
+	prevGen := m.issues.queryGen
+	cacheBefore := m.issues.hasAnyCachedPage(nil)
+	m, _ = runUpdate(t, m, ctrlKey('r'))
+	if m.issues.queryGen != prevGen {
+		t.Errorf("Ctrl+R from detail should NOT bump queryGen; was=%d now=%d", prevGen, m.issues.queryGen)
+	}
+	if m.issues.hasAnyCachedPage(nil) != cacheBefore {
+		t.Errorf("Ctrl+R from detail should NOT clear the cache")
+	}
+	if m.issues.loading {
+		t.Errorf("Ctrl+R from detail should NOT raise loading modal")
+	}
+}
+
+func TestCtrlR_FromErrorModalRetriesFreshFetch(t *testing.T) {
+	m := enterIssuesScreen(t)
+	m.issues.loadErr = fmt.Errorf("flaky network")
+	prevGen := m.issues.queryGen
+	m, cmd := runUpdate(t, m, ctrlKey('r'))
+	if m.issues.loadErr != nil {
+		t.Errorf("Ctrl+R from error modal should clear loadErr; got %v", m.issues.loadErr)
+	}
+	if !m.issues.loading {
+		t.Errorf("Ctrl+R from error modal should re-enter the loading modal")
+	}
+	if m.issues.queryGen != prevGen+1 {
+		t.Errorf("Ctrl+R from error modal should bump queryGen")
+	}
+	if cmd == nil {
+		t.Errorf("Ctrl+R from error modal should dispatch a fresh fetch")
+	}
+}
+
+func TestCtrlR_WhileSearchBoxOpenIsConsumedByTextInput(t *testing.T) {
+	// Design choice (documented in update.go's Ctrl+R branch):
+	// when the search box is open, Ctrl+R is forwarded to the
+	// textinput as a normal keystroke — it does NOT trigger
+	// reload. Verify by confirming the search box stays open and
+	// nothing was reloaded.
+	m := enterIssuesScreen(t)
+	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: '/'})
+	if m.issues.search == nil {
+		t.Fatalf("setup: search box should be open")
+	}
+	prevGen := m.issues.queryGen
+	cacheBefore := m.issues.hasAnyCachedPage(nil)
+	m, _ = runUpdate(t, m, ctrlKey('r'))
+	if m.issues.search == nil {
+		t.Errorf("search box should stay open after Ctrl+R (textinput consumes the key)")
+	}
+	if m.issues.queryGen != prevGen {
+		t.Errorf("Ctrl+R while search box open should NOT bump queryGen")
+	}
+	if m.issues.hasAnyCachedPage(nil) != cacheBefore {
+		t.Errorf("Ctrl+R while search box open should NOT clear cache")
+	}
+}
+
+func TestIssues_ListHintAdvertisesReload(t *testing.T) {
+	v := newListIssueView(newIssuesState())
+	if !strings.Contains(stripAnsi(v.hint()), "r reload") {
+		t.Errorf("list hint should advertise 'r reload', got %q", stripAnsi(v.hint()))
+	}
+}
+
+func TestIssues_KanbanHintAdvertisesReload(t *testing.T) {
+	s := newIssuesState()
+	seedMockIssues(s)
+	v := newKanbanIssueView(s)
+	if !strings.Contains(stripAnsi(v.hint()), "r reload") {
+		t.Errorf("kanban hint should advertise 'r reload', got %q", stripAnsi(v.hint()))
+	}
+}
+
+func TestIssues_DetailHintDoesNotAdvertiseReload(t *testing.T) {
+	parent := newListIssueView(newIssuesState())
+	d := newIssueDetailView(parent, issue{number: 1, title: "x"}, 80, 20)
+	if strings.Contains(stripAnsi(d.hint()), "r reload") {
+		t.Errorf("detail hint should NOT advertise 'r reload', got %q", stripAnsi(d.hint()))
 	}
 }
 

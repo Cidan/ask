@@ -181,10 +181,11 @@ func TestGitHubProvider_LiveListIssues(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	issues, err := p.ListIssues(ctx, pc, cwd)
+	page, err := p.ListIssues(ctx, pc, cwd, nil, IssuePagination{Cursor: "", PerPage: 50})
 	if err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
+	issues := page.Issues
 	t.Logf("listed %d issues from cwd=%q", len(issues), cwd)
 	for i, it := range issues {
 		if i >= 5 {
@@ -220,10 +221,11 @@ func TestGitHubProvider_LiveGetIssue(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	// Fetch list first to find a real issue number.
-	issues, err := p.ListIssues(ctx, pc, cwd)
+	page, err := p.ListIssues(ctx, pc, cwd, nil, IssuePagination{Cursor: "", PerPage: 50})
 	if err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
+	issues := page.Issues
 	if len(issues) == 0 {
 		t.Skip("no issues to fetch")
 	}

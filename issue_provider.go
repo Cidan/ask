@@ -22,6 +22,13 @@ import (
 // screen wires it to a per-load handle so ctrl+o / tab close /
 // /clear can interrupt an in-flight network round trip without
 // stranding goroutines.
+//
+// Query model (v1): IssueQuery is an opaque interface{} value
+// that providers parse from / format to user-facing text. The
+// rest of the app shuffles the value through verbatim — no
+// inspection, no inference. Provider-specific filter taxonomies
+// (GitHub's `is:open label:bug`, ClickUp's status ids, Linear's
+// state filters, …) all stay inside their providers.
 type IssueProvider interface {
 	// ID returns the stable identifier used in the on-disk config
 	// (e.g. "github", "clickup", "none"). MUST be lowercase, kebab-
@@ -37,15 +44,84 @@ type IssueProvider interface {
 	// uses it to decide between rendering data and showing the
 	// "Issues not configured for this project" toast.
 	Configured(cfg projectConfig, cwd string) bool
-	// ListIssues returns the open + most-recent issue collection for
-	// the project rooted at cwd. The provider is responsible for
-	// resolving cwd → backend identity (e.g. github needs owner/repo
-	// from `git remote get-url origin`).
-	ListIssues(ctx context.Context, cfg projectConfig, cwd string) ([]issue, error)
+	// ParseQuery converts the user's typed text into a provider-
+	// specific IssueQuery. Empty input returns a nil query, which
+	// the rest of the app treats as "default" — providers SHOULD
+	// behave the same way they used to before pagination landed
+	// when handed a nil query.
+	ParseQuery(text string) (IssueQuery, error)
+	// FormatQuery renders an IssueQuery back to canonical text.
+	// ParseQuery(FormatQuery(q)) MUST round-trip equivalently
+	// (token order may normalise). nil → empty string.
+	FormatQuery(q IssueQuery) string
+	// QuerySyntaxHelp returns a short non-empty user-facing string
+	// describing the recognised filter tokens. Rendered under the
+	// search box.
+	QuerySyntaxHelp() string
+	// KanbanColumns returns the canonical column taxonomy for the
+	// kanban view. Each spec carries a label and a pre-parsed
+	// IssueQuery. Order is stable; the picker iterates these in
+	// order and dispatches one ListIssues per column.
+	KanbanColumns() []KanbanColumnSpec
+	// ListIssues returns the requested chunk of issues for the
+	// project rooted at cwd, filtered by query. The provider is
+	// responsible for resolving cwd → backend identity (e.g.
+	// github needs owner/repo from `git remote get-url origin`)
+	// and for routing the call to whichever backend tool best
+	// matches the query shape.
+	//
+	// Pagination is cursor-based. Cursor=="" requests the first
+	// chunk; otherwise the provider feeds the cursor verbatim back
+	// to its backend (e.g. GitHub's `after=<endCursor>`). The
+	// returned page carries NextCursor/HasMore so the caller can
+	// dispatch the next chunk without inventing its own offset.
+	// The cursor is opaque outside the provider — callers MUST NOT
+	// inspect or mutate it.
+	ListIssues(ctx context.Context, cfg projectConfig, cwd string, query IssueQuery, page IssuePagination) (IssueListPage, error)
 	// GetIssue returns one issue with description + comments
 	// hydrated. Called when the user hits Enter on a list row to
 	// open the detail view.
 	GetIssue(ctx context.Context, cfg projectConfig, cwd string, number int) (issue, error)
+}
+
+// IssueQuery is an opaque, provider-defined filter value. The
+// picker carries this through ListIssues / KanbanColumnSpec /
+// loadIssuesPageCmd without inspecting it; only the producing
+// provider knows its shape. nil is the canonical "default
+// filter" sentinel — providers SHOULD treat a nil query the
+// same way they used to before pagination landed.
+type IssueQuery interface{}
+
+// IssuePagination is the chunk request. Cursor is the opaque
+// cursor handed back by the previous response (empty string
+// means "first chunk"); PerPage is a soft hint backends with
+// server-side paging honour and others ignore. Providers MUST
+// treat Cursor as opaque — never parse, never reinterpret —
+// because GitHub-style cursors are not stable identifiers.
+type IssuePagination struct {
+	Cursor  string
+	PerPage int
+}
+
+// IssueListPage is the result of one cursor-based ListIssues
+// call. Issues is the chunk contents in order. NextCursor is
+// the cursor to feed back in the next IssuePagination.Cursor
+// to fetch the following chunk; empty string with HasMore=false
+// means end-of-data. HasMore reports whether another chunk is
+// available — providers without an authoritative signal degrade
+// to (len(issues)==perPage) and leave NextCursor blank.
+type IssueListPage struct {
+	Issues     []issue
+	NextCursor string
+	HasMore    bool
+}
+
+// KanbanColumnSpec is one column of the kanban view. Label is
+// the user-facing tab text. Query is the pre-parsed filter the
+// kanban view passes to ListIssues for that column.
+type KanbanColumnSpec struct {
+	Label string
+	Query IssueQuery
 }
 
 // errIssueProviderNotConfigured is the canonical error returned by
@@ -94,11 +170,15 @@ func activeIssueProvider(cfg askConfig, cwd string) (IssueProvider, projectConfi
 // no on-disk entry routes to this without any extra plumbing.
 type noneIssueProvider struct{}
 
-func (noneIssueProvider) ID() string                                 { return "" }
-func (noneIssueProvider) DisplayName() string                        { return "None (issues disabled)" }
-func (noneIssueProvider) Configured(projectConfig, string) bool      { return false }
-func (noneIssueProvider) ListIssues(context.Context, projectConfig, string) ([]issue, error) {
-	return nil, errIssueProviderNotConfigured
+func (noneIssueProvider) ID() string                            { return "" }
+func (noneIssueProvider) DisplayName() string                   { return "None (issues disabled)" }
+func (noneIssueProvider) Configured(projectConfig, string) bool { return false }
+func (noneIssueProvider) ParseQuery(string) (IssueQuery, error) { return nil, nil }
+func (noneIssueProvider) FormatQuery(IssueQuery) string         { return "" }
+func (noneIssueProvider) QuerySyntaxHelp() string               { return "No syntax — issues disabled." }
+func (noneIssueProvider) KanbanColumns() []KanbanColumnSpec     { return nil }
+func (noneIssueProvider) ListIssues(context.Context, projectConfig, string, IssueQuery, IssuePagination) (IssueListPage, error) {
+	return IssueListPage{}, errIssueProviderNotConfigured
 }
 func (noneIssueProvider) GetIssue(context.Context, projectConfig, string, int) (issue, error) {
 	return issue{}, errIssueProviderNotConfigured

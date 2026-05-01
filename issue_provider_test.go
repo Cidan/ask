@@ -33,7 +33,7 @@ func TestIssueProviderByID_KnownProvidersResolve(t *testing.T) {
 
 func TestNoneIssueProvider_ReturnsNotConfigured(t *testing.T) {
 	p := noneIssueProvider{}
-	_, err := p.ListIssues(context.Background(), projectConfig{}, "/tmp")
+	_, err := p.ListIssues(context.Background(), projectConfig{}, "/tmp", nil, IssuePagination{Cursor: "", PerPage: 50})
 	if !errors.Is(err, errIssueProviderNotConfigured) {
 		t.Errorf("ListIssues err=%v, want errIssueProviderNotConfigured", err)
 	}
@@ -43,6 +43,21 @@ func TestNoneIssueProvider_ReturnsNotConfigured(t *testing.T) {
 	}
 	if p.Configured(projectConfig{}, "/tmp") {
 		t.Errorf("noneIssueProvider should never report Configured")
+	}
+	// New surface: ParseQuery / FormatQuery / KanbanColumns must
+	// not crash and return inert defaults so the screen can fall
+	// through to the "not configured" toast cleanly.
+	if q, err := p.ParseQuery("anything"); q != nil || err != nil {
+		t.Errorf("noneIssueProvider.ParseQuery should return (nil, nil), got (%v, %v)", q, err)
+	}
+	if got := p.FormatQuery(nil); got != "" {
+		t.Errorf("noneIssueProvider.FormatQuery should be empty, got %q", got)
+	}
+	if got := p.QuerySyntaxHelp(); got == "" {
+		t.Errorf("noneIssueProvider.QuerySyntaxHelp should be non-empty")
+	}
+	if cols := p.KanbanColumns(); len(cols) != 0 {
+		t.Errorf("noneIssueProvider.KanbanColumns should be empty, got %d", len(cols))
 	}
 }
 

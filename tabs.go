@@ -148,8 +148,6 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.dispatchByTabID(m.tabID, msg)
 	case hookSubagentStopMsg:
 		return a.dispatchByTabID(m.tabID, msg)
-	case issuesLoadedMsg:
-		return a.dispatchByTabID(m.tabID, msg)
 
 	default:
 		// proc-tagged messages (streamStatusMsg, providerDoneMsg, etc.) and
