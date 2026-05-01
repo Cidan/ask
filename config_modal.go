@@ -435,11 +435,41 @@ func (m model) viewConfigModal() string {
 
 // viewConfigGlobalPicker renders the Global Options submenu. Same
 // chrome as viewConfigModal — the lifted rows just live one layer
-// deeper now.
+// deeper now. Delegates the layout to renderLayeredConfigBox so
+// Project Options is byte-identical except for the title + items.
 func (m model) viewConfigGlobalPicker() string {
+	return renderLayeredConfigBox(layeredConfigBoxArgs{
+		width:        m.width,
+		height:       m.height,
+		title:        "Global Options",
+		filter:       m.configFilter,
+		items:        m.filteredGlobalConfigItems(),
+		cursor:       m.configGlobalCursor,
+		helpText:     "↑/↓ choose · enter confirm · esc back",
+	})
+}
+
+// layeredConfigBoxArgs describes one render of the shared full-
+// modal layered-config box. Centralising the shape means Project
+// Options is GUARANTEED to render identically to Global Options —
+// same width math, same row windowing, same filter row, same help
+// row. Adding a new submenu is one struct literal here.
+type layeredConfigBoxArgs struct {
+	width, height int
+	title         string
+	filter        string
+	items         []configItem
+	cursor        int
+	helpText      string
+}
+
+// renderLayeredConfigBox is the canonical full-modal renderer for
+// the layered /config submenus. Identical chrome to the original
+// viewConfigGlobalPicker; both global + project go through it now.
+func renderLayeredConfigBox(a layeredConfigBoxArgs) string {
 	boxW := 72
-	if boxW > m.width-4 {
-		boxW = m.width - 4
+	if boxW > a.width-4 {
+		boxW = a.width - 4
 	}
 	if boxW < 44 {
 		boxW = 44
@@ -448,33 +478,31 @@ func (m model) viewConfigGlobalPicker() string {
 	if innerW < 40 {
 		innerW = 40
 	}
-
 	boxH := 22
-	if boxH > m.height-4 {
-		boxH = m.height - 4
+	if boxH > a.height-4 {
+		boxH = a.height - 4
 	}
 	if boxH < 14 {
 		boxH = 14
 	}
 
-	title := configTitleStyle.Render("Global Options")
+	title := configTitleStyle.Render(a.title)
 
 	var filterBody string
-	if m.configFilter == "" {
+	if a.filter == "" {
 		filterBody = configCaretStyle.Render("▏") + configPlaceholderStyle.Render("Type to filter")
 	} else {
-		filterBody = m.configFilter + configCaretStyle.Render("▏")
+		filterBody = a.filter + configCaretStyle.Render("▏")
 	}
 	filterLine := configPromptStyle.Render("> ") + filterBody
 
-	items := m.filteredGlobalConfigItems()
 	listH := boxH - 6
 	if listH < 1 {
 		listH = 1
 	}
-	cursor := m.configGlobalCursor
-	if cursor >= len(items) {
-		cursor = len(items) - 1
+	cursor := a.cursor
+	if cursor >= len(a.items) {
+		cursor = len(a.items) - 1
 	}
 	if cursor < 0 {
 		cursor = 0
@@ -484,19 +512,19 @@ func (m model) viewConfigGlobalPicker() string {
 		start = cursor - listH + 1
 	}
 	end := start + listH
-	if end > len(items) {
-		end = len(items)
+	if end > len(a.items) {
+		end = len(a.items)
 	}
 
 	rows := make([]string, 0, listH)
 	for i := start; i < end; i++ {
-		rows = append(rows, renderConfigRow(items[i], innerW, i == cursor))
+		rows = append(rows, renderConfigRow(a.items[i], innerW, i == cursor))
 	}
 	for len(rows) < listH {
 		rows = append(rows, strings.Repeat(" ", innerW))
 	}
 
-	help := configHelpStyle.Render("↑/↓ choose · enter confirm · esc back")
+	help := configHelpStyle.Render(a.helpText)
 	body := strings.Join([]string{title, "", filterLine, "", strings.Join(rows, "\n"), "", help}, "\n")
 	return configBoxStyle.Render(body)
 }

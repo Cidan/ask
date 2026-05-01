@@ -4,17 +4,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	lipgloss "charm.land/lipgloss/v2"
 )
-
-// projectPickerRow describes one row in the /config → Project
-// Options submenu. Same shape as memoryPickerRow — name on the
-// left, summary value on the right, id routing the Enter handler.
-type projectPickerRow struct {
-	name string
-	key  string
-	id   string
-}
 
 // projectFieldSpec captures everything the inline editor needs to
 // know to render and persist one editable text field on the
@@ -63,11 +53,13 @@ var projectFieldSpecs = map[string]projectFieldSpec{
 // projectPickerItems builds the row list for the Project Options
 // submenu. Rows are dynamic — when the issue provider is "none",
 // the GitHub-specific rows are hidden so the user isn't asked to
-// configure things that don't apply.
-func (m model) projectPickerItems() []projectPickerRow {
+// configure things that don't apply. Returns []configItem so the
+// rows feed straight into the same renderLayeredConfigBox helper
+// the Global Options submenu uses (no per-picker styling drift).
+func (m model) projectPickerItems() []configItem {
 	cfg, _ := loadConfig()
 	pc := loadProjectConfig(cfg, m.cwd)
-	rows := []projectPickerRow{
+	rows := []configItem{
 		{"Issue provider", issueProviderByID(pc.Issues.Provider).DisplayName(), "issueProvider"},
 	}
 	if pc.Issues.Provider == "github" {
@@ -76,16 +68,39 @@ func (m model) projectPickerItems() []projectPickerRow {
 			endpoint = "(default)"
 		}
 		rows = append(rows,
-			projectPickerRow{"GitHub endpoint", endpoint, "githubEndpoint"},
-			projectPickerRow{"GitHub PAT", maskedSummary(pc.Issues.GitHub.Token), "githubToken"},
+			configItem{"GitHub endpoint", endpoint, "githubEndpoint"},
+			configItem{"GitHub PAT", maskedSummary(pc.Issues.GitHub.Token), "githubToken"},
 		)
 	}
 	return rows
 }
 
+// filteredProjectPickerItems applies the shared configFilter to the
+// project rows so the filter input row in the layered box behaves
+// identically to the Global submenu's. Same case-folded substring
+// match against item name.
+func (m model) filteredProjectPickerItems() []configItem {
+	all := m.projectPickerItems()
+	if m.configFilter == "" {
+		return all
+	}
+	q := strings.ToLower(m.configFilter)
+	out := make([]configItem, 0, len(all))
+	for _, it := range all {
+		if strings.Contains(strings.ToLower(it.name), q) {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
 func (m model) openConfigProjectPicker() model {
 	m.configProjectPickerActive = true
 	m.configProjectCursor = 0
+	// Filter starts empty on entry — same shape as
+	// openConfigGlobalPicker so the two submenus behave identically
+	// from the user's keyboard.
+	m.configFilter = ""
 	return m
 }
 
@@ -94,6 +109,7 @@ func (m model) closeConfigProjectPicker() model {
 	m.configProjectCursor = 0
 	m.configProjectFieldEditing = ""
 	m.configProjectFieldDraft = ""
+	m.configFilter = ""
 	return m
 }
 
@@ -116,12 +132,14 @@ func (m model) closeConfigProjectFieldEditor() model {
 
 // updateConfigProjectPicker handles key presses while the Project
 // Options submenu is active. Routes to the inline editor when one
-// is active; otherwise drives the row cursor.
+// is active; otherwise drives the row cursor and accepts filter
+// keystrokes (same shape as updateConfigGlobalPicker so the two
+// submenus feel identical to the user's keyboard).
 func (m model) updateConfigProjectPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.configProjectFieldEditing != "" {
 		return m.updateConfigProjectFieldInput(msg)
 	}
-	rows := m.projectPickerItems()
+	rows := m.filteredProjectPickerItems()
 	switch {
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		m = m.closeConfigProjectPicker()
@@ -150,6 +168,18 @@ func (m model) updateConfigProjectPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 				return m, nil
 			}
 		}
+		return m, nil
+	case msg.Code == tea.KeyBackspace:
+		if m.configFilter != "" {
+			r := []rune(m.configFilter)
+			m.configFilter = string(r[:len(r)-1])
+			m.configProjectCursor = 0
+		}
+		return m, nil
+	}
+	if msg.Text != "" && msg.Mod&^tea.ModShift == 0 {
+		m.configFilter += msg.Text
+		m.configProjectCursor = 0
 		return m, nil
 	}
 	return m, nil
@@ -234,83 +264,29 @@ func (m model) commitConfigProjectField() (tea.Model, tea.Cmd) {
 	return m, m.toast.show(spec.title + " saved")
 }
 
-// viewConfigProjectPicker renders the Project Options submenu in
-// the same full-modal layout viewConfigGlobalPicker uses, so
-// switching between the two reads as a peer-level swap rather
-// than a "you went deeper" jump. Box dimensions, padding, and
-// chrome match the Global submenu exactly.
+// viewConfigProjectPicker renders Project Options through the same
+// renderLayeredConfigBox helper viewConfigGlobalPicker uses — so
+// the two windows are byte-identical except for the title, items,
+// and help line. Field editor takes precedence when one is open.
 func (m model) viewConfigProjectPicker() string {
 	if m.configProjectFieldEditing != "" {
 		return m.viewConfigProjectFieldInput()
 	}
-	boxW := 72
-	if boxW > m.width-4 {
-		boxW = m.width - 4
-	}
-	if boxW < 44 {
-		boxW = 44
-	}
-	innerW := boxW - 4
-	if innerW < 40 {
-		innerW = 40
-	}
-	boxH := 22
-	if boxH > m.height-4 {
-		boxH = m.height - 4
-	}
-	if boxH < 14 {
-		boxH = 14
-	}
-
-	title := configTitleStyle.Render("Project Options")
-
-	rows := m.projectPickerItems()
-	// Reserve four lines for chrome (title + spacer above, project
-	// path + spacer + help below); the rest goes to the row list.
-	listH := boxH - 6
-	if listH < 1 {
-		listH = 1
-	}
-	cursor := m.configProjectCursor
-	if cursor >= len(rows) {
-		cursor = len(rows) - 1
-	}
-	if cursor < 0 {
-		cursor = 0
-	}
-	start := 0
-	if cursor >= listH {
-		start = cursor - listH + 1
-	}
-	end := start + listH
-	if end > len(rows) {
-		end = len(rows)
-	}
-
-	rendered := make([]string, 0, listH)
-	for i := start; i < end; i++ {
-		rendered = append(rendered, renderProjectPickerRow(rows[i], innerW, i == cursor))
-	}
-	for len(rendered) < listH {
-		rendered = append(rendered, strings.Repeat(" ", innerW))
-	}
-
-	footer := configHelpStyle.Render("project: " + shortCwdOf(m.cwd))
-	help := configHelpStyle.Render("↑/↓ choose · enter open/cycle · esc back")
-	body := strings.Join([]string{
-		title,
-		"",
-		strings.Join(rendered, "\n"),
-		"",
-		footer,
-		help,
-	}, "\n")
-	return configBoxStyle.Render(body)
+	return renderLayeredConfigBox(layeredConfigBoxArgs{
+		width:    m.width,
+		height:   m.height,
+		title:    "Project Options",
+		filter:   m.configFilter,
+		items:    m.filteredProjectPickerItems(),
+		cursor:   m.configProjectCursor,
+		helpText: "↑/↓ choose · enter open/cycle · esc back",
+	})
 }
 
-// viewConfigProjectFieldInput renders the inline editor in the
-// same full-modal layout. When the editor is open, the row list
-// is hidden — the box content is just the prompt + draft + help.
+// viewConfigProjectFieldInput renders the inline editor inside the
+// same configBoxStyle frame as the picker so the user doesn't see
+// the modal resize when they enter / leave the editor. The row
+// list is replaced by the prompt + masked draft.
 func (m model) viewConfigProjectFieldInput() string {
 	spec, ok := projectFieldSpecs[m.configProjectFieldEditing]
 	if !ok {
@@ -320,66 +296,32 @@ func (m model) viewConfigProjectFieldInput() string {
 	if boxW > m.width-4 {
 		boxW = m.width - 4
 	}
-	if boxW < 44 {
-		boxW = 44
-	}
-	innerW := boxW - 4
-	if innerW < 40 {
-		innerW = 40
-	}
+	boxW = max(44, boxW)
+	innerW := max(40, boxW-4)
 	boxH := 22
 	if boxH > m.height-4 {
 		boxH = m.height - 4
 	}
-	if boxH < 14 {
-		boxH = 14
-	}
+	boxH = max(14, boxH)
 
 	display := m.configProjectFieldDraft
 	if spec.masked && display != "" {
 		display = strings.Repeat("•", len([]rune(display)))
 	}
 	title := configTitleStyle.Render(spec.title)
-	help := configHelpStyle.Render(spec.helpHint)
+	hint := configHelpStyle.Render(spec.helpHint)
 	prompt := configPromptStyle.Render("> ") + display + configCaretStyle.Render("▏")
 	footer := configHelpStyle.Render("enter save · esc cancel")
-	// Pad vertical space so the box renders at the same height as
-	// the row-list view (no resize flicker when entering / leaving
-	// the editor).
-	bodyH := boxH - 8
-	if bodyH < 1 {
-		bodyH = 1
-	}
+	bodyH := max(1, boxH-8)
 	pad := strings.Repeat("\n"+strings.Repeat(" ", innerW), bodyH)
 	body := strings.Join([]string{
 		title,
 		"",
-		help,
+		hint,
 		"",
 		prompt,
 		pad,
 		footer,
 	}, "\n")
 	return configBoxStyle.Render(body)
-}
-
-func renderProjectPickerRow(r projectPickerRow, width int, selected bool) string {
-	nameW := lipgloss.Width(r.name)
-	keyW := lipgloss.Width(r.key)
-	pad := width - nameW - keyW
-	if pad < 1 {
-		pad = 1
-	}
-	if selected {
-		plain := r.name + strings.Repeat(" ", pad) + r.key
-		if w := lipgloss.Width(plain); w < width {
-			plain += strings.Repeat(" ", width-w)
-		}
-		return configSelectedRowStyle.Render(plain)
-	}
-	line := r.name + strings.Repeat(" ", pad)
-	if r.key != "" {
-		line += configKeyDimStyle.Render(r.key)
-	}
-	return padRight(line, width)
 }
