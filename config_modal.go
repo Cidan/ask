@@ -436,36 +436,56 @@ func (m model) viewConfigModal() string {
 // viewConfigGlobalPicker renders the Global Options submenu. Same
 // chrome as viewConfigModal — the lifted rows just live one layer
 // deeper now. Delegates the layout to renderLayeredConfigBox so
-// Project Options is byte-identical except for the title + items.
+// Project Options + the PAT editor are byte-identical except for
+// the title + prompt row + items + help text.
 func (m model) viewConfigGlobalPicker() string {
 	return renderLayeredConfigBox(layeredConfigBoxArgs{
-		width:        m.width,
-		height:       m.height,
-		title:        "Global Options",
-		filter:       m.configFilter,
-		items:        m.filteredGlobalConfigItems(),
-		cursor:       m.configGlobalCursor,
-		helpText:     "↑/↓ choose · enter confirm · esc back",
+		width:      m.width,
+		height:     m.height,
+		title:      "Global Options",
+		promptLine: filterPromptLine(m.configFilter, "Type to filter"),
+		items:      m.filteredGlobalConfigItems(),
+		cursor:     m.configGlobalCursor,
+		helpText:   "↑/↓ choose · enter confirm · esc back",
 	})
 }
 
 // layeredConfigBoxArgs describes one render of the shared full-
-// modal layered-config box. Centralising the shape means Project
-// Options is GUARANTEED to render identically to Global Options —
-// same width math, same row windowing, same filter row, same help
-// row. Adding a new submenu is one struct literal here.
+// modal layered-config box. Centralising the shape means every
+// layered window — Global Options, Project Options, the inline
+// PAT/endpoint editor — renders at the same dimensions with the
+// same vertical rhythm. Per-window variation lives in title +
+// promptLine + items + helpText only.
 type layeredConfigBoxArgs struct {
 	width, height int
 	title         string
-	filter        string
-	items         []configItem
-	cursor        int
-	helpText      string
+	// promptLine is the pre-rendered body of the row directly
+	// under the title (the "> " prefix is added by the helper).
+	// Built by filterPromptLine for picker filter inputs and by
+	// fieldPromptLine for inline editors so the visual treatment
+	// is identical across both use cases.
+	promptLine string
+	items      []configItem
+	cursor     int
+	helpText   string
+}
+
+// filterPromptLine renders the body of the prompt row for a
+// picker's filter input — empty draft becomes a caret + the
+// supplied placeholder; non-empty becomes the typed text + caret.
+// Pulled out so the field editor can match the visual treatment
+// without duplicating the placeholder/caret logic.
+func filterPromptLine(value, placeholder string) string {
+	if value == "" {
+		return configCaretStyle.Render("▏") + configPlaceholderStyle.Render(placeholder)
+	}
+	return value + configCaretStyle.Render("▏")
 }
 
 // renderLayeredConfigBox is the canonical full-modal renderer for
-// the layered /config submenus. Identical chrome to the original
-// viewConfigGlobalPicker; both global + project go through it now.
+// the layered /config windows. Identical chrome to the original
+// viewConfigGlobalPicker; Global, Project, and the field editors
+// all go through this single path now.
 func renderLayeredConfigBox(a layeredConfigBoxArgs) string {
 	boxW := 72
 	if boxW > a.width-4 {
@@ -487,14 +507,7 @@ func renderLayeredConfigBox(a layeredConfigBoxArgs) string {
 	}
 
 	title := configTitleStyle.Render(a.title)
-
-	var filterBody string
-	if a.filter == "" {
-		filterBody = configCaretStyle.Render("▏") + configPlaceholderStyle.Render("Type to filter")
-	} else {
-		filterBody = a.filter + configCaretStyle.Render("▏")
-	}
-	filterLine := configPromptStyle.Render("> ") + filterBody
+	filterLine := configPromptStyle.Render("> ") + a.promptLine
 
 	listH := boxH - 6
 	if listH < 1 {

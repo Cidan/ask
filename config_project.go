@@ -273,55 +273,39 @@ func (m model) viewConfigProjectPicker() string {
 		return m.viewConfigProjectFieldInput()
 	}
 	return renderLayeredConfigBox(layeredConfigBoxArgs{
-		width:    m.width,
-		height:   m.height,
-		title:    "Project Options",
-		filter:   m.configFilter,
-		items:    m.filteredProjectPickerItems(),
-		cursor:   m.configProjectCursor,
-		helpText: "↑/↓ choose · enter open/cycle · esc back",
+		width:      m.width,
+		height:     m.height,
+		title:      "Project Options",
+		promptLine: filterPromptLine(m.configFilter, "Type to filter"),
+		items:      m.filteredProjectPickerItems(),
+		cursor:     m.configProjectCursor,
+		helpText:   "↑/↓ choose · enter open/cycle · esc back",
 	})
 }
 
-// viewConfigProjectFieldInput renders the inline editor inside the
-// same configBoxStyle frame as the picker so the user doesn't see
-// the modal resize when they enter / leave the editor. The row
-// list is replaced by the prompt + masked draft.
+// viewConfigProjectFieldInput renders the inline editor for an
+// editable project field (GitHub PAT, GitHub endpoint) through
+// the same renderLayeredConfigBox as the pickers, so dropping
+// into a field editor is visually a peer-level swap rather than a
+// "different window" pop. The picker's "filter" row slot becomes
+// the editor's input prompt; the picker's row list slot stays
+// blank (no items), so the chrome is pixel-identical.
 func (m model) viewConfigProjectFieldInput() string {
 	spec, ok := projectFieldSpecs[m.configProjectFieldEditing]
 	if !ok {
 		return ""
 	}
-	boxW := 72
-	if boxW > m.width-4 {
-		boxW = m.width - 4
-	}
-	boxW = max(44, boxW)
-	innerW := max(40, boxW-4)
-	boxH := 22
-	if boxH > m.height-4 {
-		boxH = m.height - 4
-	}
-	boxH = max(14, boxH)
-
 	display := m.configProjectFieldDraft
 	if spec.masked && display != "" {
 		display = strings.Repeat("•", len([]rune(display)))
 	}
-	title := configTitleStyle.Render(spec.title)
-	hint := configHelpStyle.Render(spec.helpHint)
-	prompt := configPromptStyle.Render("> ") + display + configCaretStyle.Render("▏")
-	footer := configHelpStyle.Render("enter save · esc cancel")
-	bodyH := max(1, boxH-8)
-	pad := strings.Repeat("\n"+strings.Repeat(" ", innerW), bodyH)
-	body := strings.Join([]string{
-		title,
-		"",
-		hint,
-		"",
-		prompt,
-		pad,
-		footer,
-	}, "\n")
-	return configBoxStyle.Render(body)
+	return renderLayeredConfigBox(layeredConfigBoxArgs{
+		width:      m.width,
+		height:     m.height,
+		title:      spec.title,
+		promptLine: filterPromptLine(display, spec.helpHint),
+		items:      nil, // editor has no list — the row area pads to blank
+		cursor:     0,
+		helpText:   "enter save · esc cancel",
+	})
 }

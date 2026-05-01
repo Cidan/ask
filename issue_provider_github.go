@@ -39,14 +39,19 @@ type githubIssueProvider struct {
 	session        *mcp.ClientSession
 }
 
-// MCP tool name + parameter constants for the GitHub MCP server.
-// Centralised so a server-side rename is a one-line patch here.
+// MCP tool name + parameter constants for the GitHub Copilot MCP
+// server (api.githubcopilot.com/mcp). Names verified live via
+// tools/list — drop a debug print into TestGitHubProvider_LiveDump-
+// ToolNames to refresh if the canonical server ever renames.
+//
+// The server exposes a polymorphic `issue_read` tool with a
+// `method` argument: "get" returns the issue + body, "get_comments"
+// returns the comment thread, etc. We use both branches.
 const (
-	githubToolListIssues         = "list_issues"
-	githubToolGetIssue           = "get_issue"
-	githubToolListIssueComments  = "get_issue_comments"
-	githubMCPInitTimeout         = 15 * time.Second
-	githubMCPCallTimeout         = 30 * time.Second
+	githubToolListIssues = "list_issues"
+	githubToolIssueRead  = "issue_read"
+	githubMCPInitTimeout = 15 * time.Second
+	githubMCPCallTimeout = 30 * time.Second
 )
 
 func (p *githubIssueProvider) ID() string          { return "github" }
@@ -106,11 +111,12 @@ func (p *githubIssueProvider) ListIssues(ctx context.Context, cfg projectConfig,
 	return parseGitHubIssueList(res)
 }
 
-// GetIssue hydrates one issue with description and comments. Two
-// MCP calls are needed (the canonical GitHub MCP server returns the
-// description on get_issue but exposes comments via a separate
-// tool); errors from the second are non-fatal — we'd rather show
-// the description with no comments than no detail at all.
+// GetIssue hydrates one issue with description and comments. The
+// GitHub Copilot MCP server exposes a polymorphic `issue_read`
+// tool keyed on a `method` argument — "get" returns the issue and
+// description, "get_comments" returns the thread. We make both
+// calls and merge; comments are best-effort since the description
+// alone is still a useful detail page if the second call fails.
 func (p *githubIssueProvider) GetIssue(ctx context.Context, cfg projectConfig, cwd string, number int) (issue, error) {
 	if cfg.Issues.GitHub.Token == "" {
 		return issue{}, errIssueProviderNotConfigured
@@ -126,29 +132,28 @@ func (p *githubIssueProvider) GetIssue(ctx context.Context, cfg projectConfig, c
 	cctx, cancel := context.WithTimeout(ctx, githubMCPCallTimeout)
 	defer cancel()
 	res, err := cs.CallTool(cctx, &mcp.CallToolParams{
-		Name: githubToolGetIssue,
+		Name: githubToolIssueRead,
 		Arguments: map[string]any{
+			"method":       "get",
 			"owner":        owner,
 			"repo":         repo,
 			"issue_number": number,
 		},
 	})
 	if err != nil {
-		return issue{}, fmt.Errorf("get_issue: %w", err)
+		return issue{}, fmt.Errorf("issue_read get: %w", err)
 	}
 	if res.IsError {
-		return issue{}, fmt.Errorf("get_issue: %s", flattenContent(res.Content))
+		return issue{}, fmt.Errorf("issue_read get: %s", flattenContent(res.Content))
 	}
 	it, err := parseGitHubIssue(res)
 	if err != nil {
 		return issue{}, err
 	}
-	// Comments are best-effort — the description alone is still a
-	// useful detail page if the comment fetch fails.
 	if comments, cerr := p.fetchComments(ctx, cs, owner, repo, number); cerr == nil {
 		it.comments = comments
 	} else {
-		debugLog("github get_issue_comments err: %v", cerr)
+		debugLog("github issue_read get_comments err: %v", cerr)
 	}
 	return it, nil
 }
@@ -157,8 +162,9 @@ func (p *githubIssueProvider) fetchComments(ctx context.Context, cs *mcp.ClientS
 	cctx, cancel := context.WithTimeout(ctx, githubMCPCallTimeout)
 	defer cancel()
 	res, err := cs.CallTool(cctx, &mcp.CallToolParams{
-		Name: githubToolListIssueComments,
+		Name: githubToolIssueRead,
 		Arguments: map[string]any{
+			"method":       "get_comments",
 			"owner":        owner,
 			"repo":         repo,
 			"issue_number": number,
@@ -340,35 +346,69 @@ type githubAPIComment struct {
 }
 
 // parseGitHubIssueList unmarshals the list_issues tool result into
-// a slice of issue. The tool may return either:
-//   - StructuredContent: a JSON array under a key
-//   - TextContent: a JSON-encoded array as a single block
-//
-// We handle both because different MCP server versions phrase it
-// differently and a strict reader would lock us to one.
+// a slice of issue. The GitHub Copilot MCP server (the canonical
+// host) returns `{"issues":[...]}` as a TextContent block; older
+// server builds returned a bare array. We try the bare-array shape
+// first (cheap), then a small registry of known wrapper keys, and
+// finally a generic "first array field in the object" probe so any
+// reasonable wrapper shape works without code changes.
 func parseGitHubIssueList(res *mcp.CallToolResult) ([]issue, error) {
 	raw := pickJSONPayload(res)
 	if raw == nil {
 		return nil, fmt.Errorf("list_issues: empty payload")
 	}
-	var arr []githubAPIIssue
-	if err := json.Unmarshal(raw, &arr); err != nil {
-		// Fallback: some MCP responses wrap the array as
-		// {"items":[...]} or similar. Try a generic shape.
-		var wrapper struct {
-			Items []githubAPIIssue `json:"items"`
-		}
-		if werr := json.Unmarshal(raw, &wrapper); werr == nil && len(wrapper.Items) > 0 {
-			arr = wrapper.Items
-		} else {
-			return nil, fmt.Errorf("list_issues: parse: %w", err)
-		}
+	arr, err := unmarshalIssueArray(raw)
+	if err != nil {
+		return nil, fmt.Errorf("list_issues: parse: %w", err)
 	}
 	out := make([]issue, 0, len(arr))
 	for _, gi := range arr {
 		out = append(out, githubAPIToIssue(gi))
 	}
 	return out, nil
+}
+
+// unmarshalIssueArray accepts:
+//   - a bare JSON array of issues
+//   - {"issues":[...]} — the GitHub Copilot MCP shape
+//   - {"items":[...]}  — older server builds
+//   - any other object that has exactly one array-of-issues field
+//
+// The fallback walks top-level fields probing each as []githubAPIIssue
+// so a future server variant ({"data":[...]}, {"results":[...]}) keeps
+// working without a code change.
+func unmarshalIssueArray(raw []byte) ([]githubAPIIssue, error) {
+	var arr []githubAPIIssue
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		return arr, nil
+	}
+	for _, key := range []string{"issues", "items"} {
+		var wrapper map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &wrapper); err != nil {
+			break
+		}
+		field, ok := wrapper[key]
+		if !ok {
+			continue
+		}
+		var inner []githubAPIIssue
+		if err := json.Unmarshal(field, &inner); err == nil {
+			return inner, nil
+		}
+	}
+	// Last-ditch: walk every field and accept the first one that
+	// successfully unmarshals as []githubAPIIssue.
+	var generic map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		return nil, err
+	}
+	for _, field := range generic {
+		var inner []githubAPIIssue
+		if err := json.Unmarshal(field, &inner); err == nil && len(inner) > 0 {
+			return inner, nil
+		}
+	}
+	return nil, fmt.Errorf("no issue array in payload")
 }
 
 // parseGitHubIssue unmarshals the get_issue tool result.
@@ -431,6 +471,12 @@ func pickJSONPayload(res *mcp.CallToolResult) []byte {
 // rather than labels — labels are noisy and project-specific. The
 // kanban view groups by status so empty status would land
 // everything in one bucket.
+//
+// State is normalised to lowercase: the GitHub MCP server returns
+// "OPEN" / "CLOSED" while the rest of the app (kanban grouping,
+// status badge logic) uses the lowercase REST/GraphQL form. One
+// canonical form keeps the column-derivation deterministic across
+// providers.
 func githubAPIToIssue(gi githubAPIIssue) issue {
 	assignee := "unassigned"
 	switch {
@@ -439,7 +485,7 @@ func githubAPIToIssue(gi githubAPIIssue) issue {
 	case len(gi.Assignees) > 0 && gi.Assignees[0].Login != "":
 		assignee = gi.Assignees[0].Login
 	}
-	status := gi.State
+	status := strings.ToLower(strings.TrimSpace(gi.State))
 	if status == "" {
 		status = "open"
 	}
