@@ -265,14 +265,24 @@ func (h *workflowTrackerHandle) deleteDiskSession(cwd, key string) {
 // broadcastWorkflowStatus delivers a workflowStatusChangedMsg to the
 // live tea.Program so every tab's Update sees the change. No-op when
 // the program isn't registered (early startup, tests without a
-// program). Mirrors mcpBridge.broadcast — same pattern, different
-// payload type.
+// program).
+//
+// The Send is deferred onto a goroutine because every caller in this
+// package fires from inside Update (markWorking from openWorkflowTab,
+// markFinal from advanceWorkflowStep / closeTab, …). Calling
+// tea.Program.Send synchronously from inside Update can stall the
+// main loop if the program's input channel doesn't have headroom —
+// the writer (Update) waits on the reader, who is currently busy
+// running Update. mcpBridge.broadcast is the only other Send caller
+// in this codebase and it always runs on a fresh HTTP-handler
+// goroutine, which is implicitly safe; we mirror that here.
 func broadcastWorkflowStatus(key, status string) {
 	p := teaProgramPtr.Load()
 	if p == nil {
 		return
 	}
-	p.Send(workflowStatusChangedMsg{issueKey: key, status: status})
+	msg := workflowStatusChangedMsg{issueKey: key, status: status}
+	go p.Send(msg)
 }
 
 // workflowDefByName looks up the named workflow under cwd's project
