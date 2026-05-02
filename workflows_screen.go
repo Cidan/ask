@@ -8,6 +8,7 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 // workflowsBuilderFocus names which pane currently owns the cursor.
@@ -825,6 +826,11 @@ func (m model) workflowsBuilderUpdateConfirm(msg tea.KeyPressMsg) (model, tea.Cm
 const (
 	workflowsLeftPaneMinWidth = 28
 	workflowsLeftPaneMaxWidth = 48
+	// workflowsScreenMargin is the 1-cell empty frame around the
+	// split-screen body — top, bottom, left, right. Matches the
+	// chrome the issues screen uses so the two surfaces feel
+	// consistent.
+	workflowsScreenMargin = 1
 )
 
 func (b *workflowsBuilderState) render(width, height int) string {
@@ -840,33 +846,60 @@ func (b *workflowsBuilderState) render(width, height int) string {
 	case b.modelPicker:
 		return b.renderModelPicker(width, height)
 	}
-	leftW := width / 3
+	innerW := width - 2*workflowsScreenMargin
+	innerH := height - 2*workflowsScreenMargin
+	if innerW < workflowsLeftPaneMinWidth*2 {
+		innerW = workflowsLeftPaneMinWidth * 2
+	}
+	if innerH < 8 {
+		innerH = 8
+	}
+	leftW := innerW / 3
 	if leftW < workflowsLeftPaneMinWidth {
 		leftW = workflowsLeftPaneMinWidth
 	}
 	if leftW > workflowsLeftPaneMaxWidth {
 		leftW = workflowsLeftPaneMaxWidth
 	}
-	if leftW > width-workflowsLeftPaneMinWidth {
-		// Pathologically narrow terminal: clamp so right still has
-		// room for at least one field row.
-		leftW = width / 2
+	if leftW > innerW-workflowsLeftPaneMinWidth {
+		leftW = innerW / 2
 	}
-	rightW := width - leftW
-	left := b.renderLeftPane(leftW, height)
-	right := b.renderRightPane(rightW, height)
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	rightW := innerW - leftW
+	left := b.renderLeftPane(leftW, innerH)
+	right := b.renderRightPane(rightW, innerH)
+	joined := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	return frameWithMargin(joined, workflowsScreenMargin)
+}
+
+// frameWithMargin wraps `body` with `m` rows of empty top/bottom
+// margin and `m` columns of empty left/right margin, producing a
+// uniformly-padded frame. Used by the workflows screen so the
+// split-screen content has the same chrome on all four sides.
+func frameWithMargin(body string, m int) string {
+	if m <= 0 {
+		return body
+	}
+	pad := strings.Repeat(" ", m)
+	lines := strings.Split(body, "\n")
+	for i := range lines {
+		lines[i] = pad + lines[i]
+	}
+	top := strings.Repeat("\n", m)
+	bottom := strings.Repeat("\n", m)
+	return top + strings.Join(lines, "\n") + bottom
 }
 
 // renderLeftPane draws the workflow list. "+ New workflow" is row 0
-// so the create affordance is always discoverable at the top.
+// so the create affordance is always discoverable at the top. Rows
+// carry only the workflow name — step counts moved to the right
+// pane's subtitle so the left pane stays narrow without wrapping
+// names against trailing metadata.
 func (b *workflowsBuilderState) renderLeftPane(width, height int) string {
 	rows := []configItem{
 		{name: "+ New workflow", key: ""},
 	}
 	for _, w := range b.items {
-		desc := stepsCount(len(w.Steps))
-		rows = append(rows, configItem{name: w.Name, key: desc})
+		rows = append(rows, configItem{name: w.Name, key: ""})
 	}
 	hint := "↑/↓ navigate · enter open · r rename · d delete · esc back"
 	toast := b.consumeToast()
@@ -1090,15 +1123,50 @@ func renderWorkflowsPane(a workflowsPaneArgs) string {
 // active pane uses the bright accent style; the inactive pane uses
 // a dim selection so the user can still see where their cursor is
 // when they tab back.
+//
+// Long content is truncated rather than allowed to wrap: lipgloss
+// wraps any line wider than its container's content width, which
+// breaks the column alignment the user expects (a row that wraps
+// onto a second line throws the cursor / next row out of register).
+// The name column reserves a max half of `width`; the key column
+// fills the rest.
 func renderWorkflowsRow(it configItem, width int, selected, activePane bool) string {
-	nameW := lipgloss.Width(it.name)
-	keyW := lipgloss.Width(it.key)
+	if width < 4 {
+		width = 4
+	}
+	name := it.name
+	keyText := it.key
+	nameW := lipgloss.Width(name)
+	keyW := lipgloss.Width(keyText)
+	// First budget: leave at least one space between name and key.
+	if nameW+keyW+1 > width {
+		// Try truncating the key only — it's the secondary signal.
+		maxKey := width - nameW - 1
+		if maxKey < 0 {
+			maxKey = 0
+		}
+		if maxKey > 0 {
+			keyText = truncateForRow(keyText, maxKey)
+		} else {
+			keyText = ""
+		}
+		keyW = lipgloss.Width(keyText)
+	}
+	if nameW+keyW+1 > width {
+		// Still too wide → truncate the name.
+		maxName := width - keyW - 1
+		if maxName < 1 {
+			maxName = 1
+		}
+		name = truncateForRow(name, maxName)
+		nameW = lipgloss.Width(name)
+	}
 	pad := width - nameW - keyW
 	if pad < 1 {
 		pad = 1
 	}
 	if selected {
-		plain := it.name + strings.Repeat(" ", pad) + it.key
+		plain := name + strings.Repeat(" ", pad) + keyText
 		if w := lipgloss.Width(plain); w < width {
 			plain += strings.Repeat(" ", width-w)
 		}
@@ -1107,11 +1175,36 @@ func renderWorkflowsRow(it configItem, width int, selected, activePane bool) str
 		}
 		return dimStyle.Render(plain)
 	}
-	line := it.name + strings.Repeat(" ", pad)
-	if it.key != "" {
-		line += configKeyDimStyle.Render(it.key)
+	line := name + strings.Repeat(" ", pad)
+	if keyText != "" {
+		line += configKeyDimStyle.Render(keyText)
 	}
 	return padRight(line, width)
+}
+
+// truncateForRow caps `s` to at most `max` cells, appending a "…"
+// when truncation actually trims the string. Falls back to the raw
+// rune-cut when xansi.Truncate would produce an empty result on
+// max=1 (the ellipsis won't fit).
+func truncateForRow(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= max {
+		return s
+	}
+	if max == 1 {
+		// Single cell: just show the first cell so the user has a
+		// hint something was there. xansi.Truncate("xyz", 1, "…")
+		// returns just "…" which is fine but we keep the literal
+		// for consistency with the cell budget.
+		runes := []rune(s)
+		if len(runes) == 0 {
+			return ""
+		}
+		return string(runes[:1])
+	}
+	return xansi.Truncate(s, max, "…")
 }
 
 func (b *workflowsBuilderState) renderProviderPicker(width, height int) string {
