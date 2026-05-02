@@ -55,6 +55,16 @@ type Provider interface {
 	// --session-id <uuid>).
 	PreMintSessionID(args ProviderSessionArgs) string
 
+	// NativeSessionID returns the provider-assigned session id carried
+	// on a started proc, or "" when the provider has no post-handshake
+	// id to surface (e.g. claude pre-mints; the model already knows it).
+	// Codex assigns its threadID during the app-server handshake, so
+	// returning it here lets the model capture the id at startup
+	// instead of waiting for turn/completed — without that, an
+	// interrupt-before-turn-completed leaves m.sessionID empty and the
+	// next send wrongly takes the fresh-thread path.
+	NativeSessionID(p *providerProc) string
+
 	// StartSession forks the agent CLI in streaming mode. Returns the
 	// process handle and its event channel on success; err non-nil on
 	// launch failure.

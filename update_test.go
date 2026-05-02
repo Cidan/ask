@@ -1117,6 +1117,51 @@ func TestHandleCommand_ConfigEntersConfigMode(t *testing.T) {
 	}
 }
 
+func TestProviderStartDone_CapturesNativeSessionID(t *testing.T) {
+	fp := newFakeProvider()
+	fp.nativeSessionFn = func(*providerProc) string { return "thread-abc" }
+	m := newTestModel(t, fp)
+	m.procStarting = true
+	m.procStartSeq = 1
+	m.busy = true
+
+	proc := &providerProc{stdin: &bufferCloser{Buffer: &bytes.Buffer{}}}
+	ch := make(chan tea.Msg, 1)
+	m2, _ := runUpdate(t, m, providerStartDoneMsg{
+		tabID:      m.id,
+		seq:        1,
+		providerID: fp.id,
+		proc:       proc,
+		streamCh:   ch,
+	})
+	if m2.sessionID != "thread-abc" {
+		t.Errorf("sessionID=%q want thread-abc", m2.sessionID)
+	}
+}
+
+func TestProviderStartDone_PreMintedSessionIDNotOverwritten(t *testing.T) {
+	fp := newFakeProvider()
+	fp.nativeSessionFn = func(*providerProc) string { return "should-be-ignored" }
+	m := newTestModel(t, fp)
+	m.procStarting = true
+	m.procStartSeq = 1
+	m.busy = true
+	m.sessionID = "pre-minted"
+
+	proc := &providerProc{stdin: &bufferCloser{Buffer: &bytes.Buffer{}}}
+	ch := make(chan tea.Msg, 1)
+	m2, _ := runUpdate(t, m, providerStartDoneMsg{
+		tabID:      m.id,
+		seq:        1,
+		providerID: fp.id,
+		proc:       proc,
+		streamCh:   ch,
+	})
+	if m2.sessionID != "pre-minted" {
+		t.Errorf("sessionID=%q want pre-minted (NativeSessionID must not stomp existing id)", m2.sessionID)
+	}
+}
+
 func TestPersistSlashCmdsCmd_CallsSaveSettings(t *testing.T) {
 	fp := newFakeProvider()
 	slashes := []providerSlashEntry{{Name: "foo"}}

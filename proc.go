@@ -337,6 +337,18 @@ func (m model) handleProviderStartDone(msg providerStartDoneMsg) (tea.Model, tea
 	m.busy = true
 	m.status = "thinking…"
 
+	// Capture the provider-native session id at startup so an
+	// interrupt before turn/completed doesn't leave m.sessionID empty
+	// and force the next send down the fresh-session path. Pre-minted
+	// providers (claude) return "" here — m.sessionID is already set
+	// by preMintNativeSessionIfNeeded before the fork.
+	if m.sessionID == "" {
+		if id := m.provider.NativeSessionID(m.proc); id != "" {
+			m.sessionID = id
+			m.recordVirtualSession(id)
+		}
+	}
+
 	queued := m.queuedTurns
 	m.queuedTurns = nil
 	for _, turn := range queued {
