@@ -435,6 +435,24 @@ func (p *githubIssueProvider) MCPServer(cfg projectConfig, cwd string) *issueMCP
 	}
 }
 
+// IssueRef resolves cwd to "owner/repo" via the same mechanism the
+// rest of the github provider uses (`git remote get-url origin`),
+// then assembles the canonical issueRef for `it`. Returns
+// errIssueProviderNotConfigured when the project is unreachable —
+// callers translate that into the standard "issues not configured"
+// toast.
+func (p *githubIssueProvider) IssueRef(_ projectConfig, cwd string, it issue) (issueRef, error) {
+	owner, repo, err := resolveGitHubRepo(cwd)
+	if err != nil {
+		return issueRef{}, errIssueProviderNotConfigured
+	}
+	return issueRef{
+		Provider: p.ID(),
+		Project:  owner + "/" + repo,
+		Number:   it.number,
+	}, nil
+}
+
 func (p *githubIssueProvider) fetchComments(ctx context.Context, cs *mcp.ClientSession, owner, repo string, number int) ([]issueComment, error) {
 	cctx, cancel := context.WithTimeout(ctx, githubMCPCallTimeout)
 	defer cancel()

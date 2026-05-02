@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // neo4jDefaultHost is what the picker fills in when the user has not
@@ -46,7 +47,67 @@ type askConfig struct {
 // loadProjectConfig returns the zero value when the project key is
 // absent, so callers don't have to nil-check.
 type projectConfig struct {
-	Issues issuesConfig `json:"issues,omitempty"`
+	Issues    issuesConfig    `json:"issues,omitempty"`
+	Workflows workflowsConfig `json:"workflows,omitempty"`
+}
+
+// workflowsConfig holds the per-project workflows definition list and
+// the run-history sidecar. Workflows are user-defined chains of one-
+// shot agent calls — pressing `f` on an issue dispatches a workflow
+// and the chain runs each step against the same cwd, swapping
+// provider/model per step. The structure is deliberately generic
+// (nothing about issues here) so future surfaces can reuse the same
+// machinery.
+type workflowsConfig struct {
+	// Items is the ordered list of user-defined workflows. Order is
+	// the order they appear in the picker; the user reorders here
+	// when they want a different default.
+	Items []workflowDef `json:"items,omitempty"`
+
+	// Sessions tracks the persisted per-target run outcomes (terminal
+	// states only — `done` and `failed`). The key shape is
+	// caller-defined; for issue workflows it's
+	// "<provider>:<owner>/<repo>#<number>". `working` is in-memory
+	// only (the workflow runtime tracker) so a process restart never
+	// surfaces stale "in flight" status.
+	Sessions map[string]workflowSession `json:"sessions,omitempty"`
+}
+
+// workflowDef is one named pipeline. Names must be unique per
+// project; the builder screen enforces that on save. Steps run in
+// order — each is a fresh one-shot subprocess with no message
+// history carried across the boundary, only assistant text from the
+// prior step (forwarded as a `Previous step output:` block in the
+// next step's user prompt).
+type workflowDef struct {
+	Name  string         `json:"name"`
+	Steps []workflowStep `json:"steps,omitempty"`
+}
+
+// workflowStep is one stage of a workflow. Provider+Model nail the
+// agent CLI for that step (so a single workflow can chain claude→
+// codex→claude); empty Model defers to the provider's saved default.
+// Prompt is the user-typed instruction for that step.
+type workflowStep struct {
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	Model    string `json:"model,omitempty"`
+	Prompt   string `json:"prompt"`
+}
+
+// workflowSession is the disk-persisted run record. Only terminal
+// statuses ("done", "failed") land here; `working` is process-local.
+// Workflow records the workflow name so a user can tell at a glance
+// which pipeline last touched the issue. StepIndex is the index of
+// the step that finalised the run (the step that emitted `done` or
+// the step that errored on `failed`). Times are RFC3339 — written by
+// the runtime on transition.
+type workflowSession struct {
+	Workflow  string    `json:"workflow"`
+	StepIndex int       `json:"stepIndex"`
+	Status    string    `json:"status"`
+	StartedAt time.Time `json:"startedAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // issuesConfig is the per-project issue-tracking configuration.
@@ -165,7 +226,7 @@ func upsertProjectConfig(cfg askConfig, cwd string, pc projectConfig) askConfig 
 	if key == "" {
 		return cfg
 	}
-	if (pc == projectConfig{}) {
+	if isProjectConfigEmpty(pc) {
 		delete(cfg.Projects, key)
 		if len(cfg.Projects) == 0 {
 			cfg.Projects = nil
@@ -177,6 +238,20 @@ func upsertProjectConfig(cfg askConfig, cwd string, pc projectConfig) askConfig 
 	}
 	cfg.Projects[key] = pc
 	return cfg
+}
+
+// isProjectConfigEmpty reports whether pc carries no user-meaningful
+// data — used by upsertProjectConfig to drop the entry from
+// cfg.Projects so the on-disk file stays minimal. Replaces a struct
+// equality check that broke when workflowsConfig added a map field.
+func isProjectConfigEmpty(pc projectConfig) bool {
+	if pc.Issues != (issuesConfig{}) {
+		return false
+	}
+	if len(pc.Workflows.Items) > 0 || len(pc.Workflows.Sessions) > 0 {
+		return false
+	}
+	return true
 }
 
 // memoryConfig holds the persistent memory toggle and embedder

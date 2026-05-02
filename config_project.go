@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -72,6 +73,14 @@ func (m model) projectPickerItems() []configItem {
 			configItem{"GitHub PAT", maskedSummary(pc.Issues.GitHub.Token), "githubToken"},
 		)
 	}
+	wfCount := len(pc.Workflows.Items)
+	wfDesc := "(none)"
+	if wfCount == 1 {
+		wfDesc = "1 workflow"
+	} else if wfCount > 1 {
+		wfDesc = fmt.Sprintf("%d workflows", wfCount)
+	}
+	rows = append(rows, configItem{"Workflows…", wfDesc, "workflows"})
 	return rows
 }
 
@@ -162,6 +171,21 @@ func (m model) updateConfigProjectPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 		switch id {
 		case "issueProvider":
 			return m.cycleIssueProvider()
+		case "workflows":
+			// "Workflows…" jumps to the dedicated builder screen so
+			// the per-cwd pipeline list / step editor / multi-line
+			// prompt textarea aren't squeezed into the layered
+			// /config box. The picker itself stays open behind so
+			// Esc pops back to Project Options.
+			m = m.closeConfigProjectPicker()
+			m.mode = modeInput
+			m = m.switchScreen(screenWorkflows)
+			if m.workflowsBuilder == nil {
+				m.workflowsBuilder = newWorkflowsBuilderState(m.cwd)
+			} else {
+				m.workflowsBuilder.refreshItems()
+			}
+			return m, nil
 		default:
 			if _, ok := projectFieldSpecs[id]; ok {
 				m = m.openConfigProjectFieldEditor(id)

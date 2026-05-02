@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -97,7 +98,7 @@ func TestProjectConfig_RoundTripPersistsViaUpsert(t *testing.T) {
 	}
 	cfg = upsertProjectConfig(cfg, "/home/me/proj", pc)
 	got := loadProjectConfig(cfg, "/home/me/proj")
-	if got != pc {
+	if !reflect.DeepEqual(got, pc) {
 		t.Errorf("round-trip mismatch:\n got:  %+v\n want: %+v", got, pc)
 	}
 }

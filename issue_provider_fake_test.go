@@ -31,6 +31,7 @@ type fakeIssueProvider struct {
 	listIssuesFn  func(context.Context, projectConfig, string, IssueQuery, IssuePagination) (IssueListPage, error)
 	getIssueFn    func(context.Context, projectConfig, string, int) (issue, error)
 	moveIssueFn   func(context.Context, projectConfig, string, issue, KanbanColumnSpec) error
+	issueRefFn    func(projectConfig, string, issue) (issueRef, error)
 
 	moveCalls []fakeMoveCall
 }
@@ -114,6 +115,17 @@ func (f *fakeIssueProvider) KanbanIssueStatus(target KanbanColumnSpec) string {
 		return fq.statusMatch
 	}
 	return ""
+}
+
+func (f *fakeIssueProvider) IssueRef(cfg projectConfig, cwd string, it issue) (issueRef, error) {
+	if f.issueRefFn != nil {
+		return f.issueRefFn(cfg, cwd, it)
+	}
+	return issueRef{
+		Provider: f.id,
+		Project:  "fake/project",
+		Number:   it.number,
+	}, nil
 }
 
 func (f *fakeIssueProvider) MCPServer(projectConfig, string) *issueMCPServer { return nil }

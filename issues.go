@@ -871,6 +871,16 @@ func (issuesScreen) updateKey(m model, msg tea.KeyPressMsg) (model, tea.Cmd, boo
 	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
 		return m, closeTabCmd(m.id), true
 	}
+	// Workflow picker overlay owns the keyboard when it's open. It
+	// pops over the issues body on `f`; Esc closes; Enter dispatches
+	// a spawnWorkflowTabMsg the app layer turns into a fresh tab.
+	if m.workflowPicker != nil {
+		newM, cmd := m.updateWorkflowPicker(msg)
+		if mm, ok := newM.(model); ok {
+			return mm, cmd, true
+		}
+		return m, cmd, true
+	}
 	// Double-Ctrl+C exit, matching ask. The first press arms
 	// m.exitArmed (a tab-level field shared with ask, which is fine
 	// — Ctrl+C semantics are tab-scoped). The hint line swaps to
@@ -967,11 +977,86 @@ func (issuesScreen) updateKey(m model, msg tea.KeyPressMsg) (model, tea.Cmd, boo
 			return m, nil, true
 		}
 	}
+	// "f" dispatches a workflow run against the focused issue. Works
+	// from kanban (focused card) and the detail view; ignored on any
+	// other sub-view that doesn't surface a single issue. We
+	// intercept here, before the inner view's updateKey, so the
+	// modifier-naked 'f' can never get consumed by something else
+	// downstream (e.g. a future fuzzy-find keybind on a card list).
+	if msg.Mod == 0 && msg.Code == 'f' {
+		return m.dispatchIssueWorkflow()
+	}
 	v, cmd, handled := m.issues.view.updateKey(m.issues, msg)
 	if handled {
 		m.issues.setView(v)
 	}
 	return m, cmd, handled
+}
+
+// dispatchIssueWorkflow resolves the issue currently in focus on the
+// issues screen, then either focuses an existing workflow tab for
+// that issue or pops the workflow picker. Returns (model, cmd,
+// handled=true) — the screen handler always treats `f` as consumed.
+func (m model) dispatchIssueWorkflow() (model, tea.Cmd, bool) {
+	if m.issues == nil {
+		return m, nil, true
+	}
+	it, ok := focusedIssue(m.issues.view)
+	if !ok {
+		return m, nil, true
+	}
+	if m.issues.provider == nil {
+		return m, m.toast.show("issues provider not configured"), true
+	}
+	ref, err := m.issues.provider.IssueRef(m.issues.projectCfg, m.cwd, it)
+	if err != nil {
+		return m, m.toast.show("could not resolve issue ref: " + err.Error()), true
+	}
+	if tabID, alive := workflowTracker().activeTabFor(ref.Key()); alive {
+		// A workflow run is already in flight for this issue. Focus
+		// the existing tab rather than spawn a duplicate — same
+		// `f` lift on the same issue should always land on the
+		// same agent.
+		return m, focusTabCmd(tabID), true
+	}
+	items := projectWorkflows(m.cwd)
+	if len(items) == 0 {
+		return m, m.toast.show("no workflows configured · ctrl+w opens the builder"), true
+	}
+	m = m.openWorkflowPicker(items, ref)
+	return m, nil, true
+}
+
+// focusedIssue returns the issue currently in focus on the active
+// sub-view. ok=false when the focus is undefined (e.g. carry mode,
+// empty column, view layer that doesn't surface an issue). Pulled
+// out of dispatchIssueWorkflow so the same logic can serve the
+// detail view, future per-issue keybinds, and tests.
+func focusedIssue(v issueView) (issue, bool) {
+	switch view := v.(type) {
+	case *kanbanIssueView:
+		if view.carry.active {
+			return issue{}, false
+		}
+		if view.selColIdx < 0 || view.selColIdx >= len(view.columns) {
+			return issue{}, false
+		}
+		col := view.columns[view.selColIdx]
+		if view.selRowIdx < 0 || view.selRowIdx >= len(col.loaded) {
+			return issue{}, false
+		}
+		return col.loaded[view.selRowIdx], true
+	case *issueDetailView:
+		return view.issue, true
+	}
+	return issue{}, false
+}
+
+// focusTabCmd emits a focusTabMsg the app layer handles by switching
+// to the named tab. Used by the workflow `f` path when an in-flight
+// run already exists for the focused issue.
+func focusTabCmd(tabID int) tea.Cmd {
+	return func() tea.Msg { return focusTabMsg{tabID: tabID} }
 }
 
 func (issuesScreen) view(m model) string {
@@ -995,6 +1080,13 @@ func (issuesScreen) view(m model) string {
 	// the modal carries its own dismissal hint when in error state.
 	if m.issues.loading || m.issues.loadErr != nil {
 		return renderIssuesOverlay(m.issues, width, height)
+	}
+	// Workflow picker takes the whole body on `f`. Same trick as the
+	// loading overlay: replace the body, keep the user's context in
+	// their head. The picker is small (one screen of pipeline names)
+	// and confirm-driven so they always know where they are.
+	if m.workflowPicker != nil {
+		return m.renderWorkflowPicker()
 	}
 	// Reserve one column on the right for the scrollbar — fixed
 	// allocation, even when there's no overflow, so selection /
@@ -1356,14 +1448,18 @@ func (v *issueDetailView) view(s *issuesState) string {
 }
 
 func (v *issueDetailView) header(s *issuesState) string {
-	return promptStyle.Render(fmt.Sprintf("Issue #%d", v.issue.number)) +
-		dimStyle.Render("  · ") +
-		v.issue.title
+	prefix, hasPrefix := workflowKeyPrefix(s)
+	glyph := workflowStatusForIssue(s, prefix, hasPrefix, v.issue.number)
+	header := promptStyle.Render(fmt.Sprintf("Issue #%d", v.issue.number))
+	if glyph != "" {
+		header = glyph + " " + header
+	}
+	return header + dimStyle.Render("  · ") + v.issue.title
 }
 
 func (v *issueDetailView) hint() string {
 	return dimStyle.Render(
-		"↑/↓ scroll · pgup/pgdn page · esc/backspace back · ctrl+o back to ask",
+		"↑/↓ scroll · pgup/pgdn page · f run workflow · esc/backspace back · ctrl+o back to ask",
 	)
 }
 
@@ -1776,7 +1872,7 @@ func (v *kanbanIssueView) hint() string {
 		return dimStyle.Render("space drop · ←/→/tab change column · esc cancel · other keys disabled while carrying")
 	}
 	return dimStyle.Render(
-		"↑/↓ row · ←/→/tab column · g/G top/bottom · space pick up · enter open · / search · r reload · ctrl+o back",
+		"↑/↓ row · ←/→/tab column · enter open · space pick up · f run workflow · / search · ctrl+r reload · ctrl+o back",
 	)
 }
 
@@ -1906,7 +2002,7 @@ func (v *kanbanIssueView) view(s *issuesState) string {
 		v.lastRendered = dimStyle.Render("(no issues)")
 		return v.lastRendered
 	}
-	v.lastRendered = v.renderBody()
+	v.lastRendered = v.renderBody(s)
 	return v.lastRendered
 }
 
@@ -1921,7 +2017,7 @@ func (v *kanbanIssueView) view(s *issuesState) string {
 // apart from the normal selection cursor. The destination column's
 // loaded[] still renders at index 0 below it (no row is consumed
 // from the column's data — the carry is purely visual chrome).
-func (v *kanbanIssueView) renderBody() string {
+func (v *kanbanIssueView) renderBody(s *issuesState) string {
 	if v.selColIdx >= len(v.columns) {
 		return ""
 	}
@@ -1941,6 +2037,13 @@ func (v *kanbanIssueView) renderBody() string {
 		Background(activeTheme.warn).
 		Width(v.width)
 
+	// Resolve the issue-key prefix once per render so the per-row
+	// workflow status lookup doesn't reach for `git remote get-url`
+	// every card. ok=false when no provider is available or the
+	// repo doesn't resolve — in that case the cards just don't
+	// carry status icons (no breakage).
+	keyPrefix, hasKeyPrefix := workflowKeyPrefix(s)
+
 	lines := []string{
 		tabs,
 		dimStyle.Render(strings.Repeat("─", v.width)),
@@ -1952,8 +2055,7 @@ func (v *kanbanIssueView) renderBody() string {
 		lines = append(lines, carryStyle.Render(card))
 	}
 	for i, it := range col.loaded {
-		card := fmt.Sprintf("#%d  %s", it.number, it.title)
-		card = xansi.Truncate(card, v.width, "…")
+		card := formatIssueCard(it, keyPrefix, hasKeyPrefix, s, v.width)
 		// While carrying, suppress the normal selection highlight —
 		// the carry card up top is the focus.
 		if !v.carry.active && i == v.selRowIdx {

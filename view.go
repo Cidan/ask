@@ -1095,11 +1095,74 @@ func (m model) viewAskBody() string {
 		b.WriteString("\n")
 	}
 	is := time.Now()
-	b.WriteString(m.input.View())
+	if m.workflowRun != nil {
+		b.WriteString(m.renderWorkflowBanner())
+	} else {
+		b.WriteString(m.input.View())
+	}
 	if debugOn {
 		debugTrace("    vb.input.View", is)
 	}
 	return b.String()
+}
+
+// renderWorkflowBanner renders the read-only stripe that replaces the
+// chat input on a workflow tab. While the chain runs the banner shows
+// the current step; on completion it swaps to a "complete" message;
+// on failure it carries the error. The user has no input affordance
+// — closing the tab (ctrl+d) is the only action.
+func (m model) renderWorkflowBanner() string {
+	r := m.workflowRun
+	if r == nil {
+		return ""
+	}
+	width := m.width - 4
+	if width < 20 {
+		width = 20
+	}
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		Padding(0, 1).
+		Width(width)
+	var title, line2 string
+	switch {
+	case r.failed:
+		box = box.BorderForeground(activeTheme.errorFG)
+		title = errStyle.Render("workflow failed: ") + r.Workflow.Name
+		reason := r.failedReason
+		if reason == "" {
+			reason = "step error"
+		}
+		line2 = dimStyle.Render(fmt.Sprintf("issue %s · step %d · %s · ctrl+d to close",
+			r.Issue.Display(), r.StepIdx+1, reason))
+	case r.done:
+		box = box.BorderForeground(activeTheme.accent)
+		title = promptStyle.Render("✓ workflow complete: ") + r.Workflow.Name
+		line2 = dimStyle.Render(fmt.Sprintf("issue %s · %d step(s) · ctrl+d to close",
+			r.Issue.Display(), len(r.Workflow.Steps)))
+	default:
+		box = box.BorderForeground(activeTheme.accent)
+		stepName := "(unnamed)"
+		stepProvider := ""
+		stepModel := ""
+		if r.StepIdx < len(r.Workflow.Steps) {
+			s := r.Workflow.Steps[r.StepIdx]
+			if s.Name != "" {
+				stepName = s.Name
+			}
+			stepProvider = s.Provider
+			stepModel = s.Model
+		}
+		runMeta := stepProvider
+		if stepModel != "" {
+			runMeta += "/" + stepModel
+		}
+		title = promptStyle.Render("▸ workflow ") + r.Workflow.Name +
+			dimStyle.Render(fmt.Sprintf(" · step %d/%d: %s", r.StepIdx+1, len(r.Workflow.Steps), stepName))
+		line2 = dimStyle.Render(fmt.Sprintf("issue %s · %s · ctrl+d cancel",
+			r.Issue.Display(), runMeta))
+	}
+	return box.Render(title + "\n" + line2)
 }
 
 func (m model) todoBlock() string {

@@ -65,6 +65,10 @@ One `package main`, one file per concern.
 | `kitty_diacritics.go`  | The canonical 297-entry Kitty row/column diacritic table.               |
 | `ask_question.go`      | Question modal state, rendering, navigation, submit/cancel flow.        |
 | `mcp.go`               | MCP server bridge (Streamable HTTP), `ask_user_question` tool schema + handler. |
+| `workflows.go`         | Workflow runtime tracker singleton + persistence helpers + status broadcast. |
+| `workflows_screen.go`  | Workflows builder screen — list/steps/step editor levels with multi-line prompt textarea. |
+| `workflows_picker.go`  | Small centred modal popped on `f` to pick which workflow to run. |
+| `workflows_run.go`     | Step runner: prompt assembly, advance-on-turn-complete, finalise on done/failed. |
 | `util.go`              | Small helpers (`short`, `humanDuration`, `humanBytes`, `shortCwd`).     |
 | `debug.go`             | `ASK_DEBUG=1` → `/tmp/ask.log`.                                         |
 | `*_test.go`            | Fast, behavior-only tests. See "Test layout" below.                    |
@@ -97,6 +101,11 @@ exercised by the user; code alone won't catch layout regressions.
 | `session_test.go`          | `~/.claude/projects/` parsing + history loading.                 |
 | `config_test.go`           | `loadConfig` / `saveConfig` / ollama validation.                 |
 | `update_test.go`           | `model.Update` dispatcher behavior via `fakeProvider`.           |
+| `workflows_test.go`        | Workflow tracker (markWorking/markFinal/lookup/clear), schema round-trip, prompt assembly, glyph table. |
+| `workflows_screen_test.go` | Workflows builder state machine — add/rename/delete persistence + edit-while-running guard. |
+| `workflows_picker_test.go` | Picker open/navigate/Enter dispatches `spawnWorkflowTabMsg`. |
+| `workflows_run_test.go`    | Step runner — advance, finalise, fail, idempotent finalise, unknown-provider rejection. |
+| `issues_workflow_test.go`  | `f` keybind dispatch on the issues screen — toast / picker / focus-existing-tab. |
 | `util_test.go` / `paths_test.go` | Pure helpers, path completion, frontmatter parsing.       |
 
 ### Testing conventions
@@ -209,6 +218,152 @@ string a card placed in target should carry). Both methods have
 no-op implementations on `noneIssueProvider` and behavioral test
 hooks on `fakeIssueProvider`.
 
+## Workflows (issue → agent pipelines)
+
+Pressing `f` on a focused issue (kanban card or detail view) runs
+a user-defined chain of one-shot agent calls against the same cwd.
+Pipelines are per-project and built through a dedicated screen
+(`Ctrl+W` or `/workflows`); each step pins its own provider
+(`claude` / `codex` / …) + model + prompt, so a single workflow can
+chain `claude → codex → claude` if the user wants. There's no
+default — an empty workflow list is a `f`-time toast pointing the
+user at the builder.
+
+### Schema
+
+`projectConfig.Workflows` lives alongside `projectConfig.Issues` in
+`~/.config/ask/ask.json`. The shape is intentionally generic — the
+runtime takes an `issueRef` for the prompt reference, but nothing
+about the broader pipeline machinery is bound to issues. Future
+surfaces (PRs, scheduled tasks, …) plug into the same builder /
+runner.
+
+| Type | Purpose |
+|------|---------|
+| `workflowsConfig{Items, Sessions}` | Per-project block. |
+| `workflowDef{Name, Steps}` | One named pipeline. |
+| `workflowStep{Name, Provider, Model, Prompt}` | One stage (a fresh subprocess at run time). |
+| `workflowSession{Workflow, StepIndex, Status, StartedAt, UpdatedAt}` | Disk-persisted run record — terminal statuses only. |
+
+### Runtime tracker
+
+`workflowTracker()` is a process-wide singleton (`workflows.go`).
+The in-memory map keys on `<provider>:<owner/repo>#<n>` (issueRef.Key()).
+Only `done` / `failed` ever land on disk; `working` is process-local
+because pipeline runs aren't resumable across restarts (one-shots,
+no provider session pinning). Three transitions matter:
+
+- `markWorking(cwd, key, workflow, tabID)` — drops any stale disk
+  record for `key`, broadcasts `workflowStatusChangedMsg` so the
+  kanban repaints with the in-flight icon.
+- `markStep(key, idx)` — bumps the step counter mid-run; the banner
+  re-reads on next render.
+- `markFinal(cwd, key, workflow, status, stepIdx)` — preserves
+  StartedAt across the working→terminal transition, persists
+  `done`/`failed` to disk, broadcasts.
+
+Live UI updates flow through `broadcastWorkflowStatus` →
+`teaProgramPtr.Send(workflowStatusChangedMsg)` → `app.broadcast` →
+every tab's `model.Update` invalidates its frame cache. The kanban
+renderer reads from the tracker on every render (cache-warm after
+first hit), so no per-tab state mutation is needed for repaint.
+
+### Read-only workflow tabs
+
+A workflow tab is a regular `model` with a non-nil `workflowRun`
+field. View consequences:
+
+- `viewAskBody` swaps `m.input.View()` for `renderWorkflowBanner()`
+  — a 3-line bordered status box showing the current step
+  (`▸ workflow "<name>" · step 2/3: review (codex/gpt-5)`),
+  completion (`✓ workflow complete`), or failure (`✗ workflow
+  failed`).
+- `model.Update`'s key dispatch routes through `workflowTabHandleKey`
+  before the screen handler runs: only `Ctrl+D` (close), `Ctrl+C`
+  (cancel = mark failed), and viewport scroll keys (Up/Down/PgUp/
+  PgDn/g/G/j/k/Home/End) are honoured. Everything else is absorbed.
+- `askToolRequestMsg` and `approvalRequestMsg` arriving on a
+  workflow tab auto-cancel/auto-deny so the chain doesn't stall on
+  a modal that has no human to dismiss it. Workflow tabs run with
+  `skipAllPermissions = true` regardless of the global toggle.
+- `closeTab` on a still-running workflow tab marks the run as
+  failed before tearing down — the user closing the tab is the
+  verdict, no graceful drain.
+
+### Step runner
+
+`workflows_run.go` is the chain driver. Each step is a fresh
+subprocess (one-shot — the chain doesn't share a provider session
+across steps; that's why workflow tabs don't pin a virtualSessionID
+and why `providerDoneMsg.SessionID` is suppressed on workflow
+tabs). The runner consumes the existing `sendToProvider` machinery
+unchanged — it just sets `m.provider` / `m.providerModel` / clears
+session state before the call.
+
+Step transitions are signalled through three existing message
+handlers, hooked at the **end** of their existing logic so the
+runner doesn't need to know about provider-specific stream shapes:
+
+- `turnCompleteMsg` (clean turn end) → `workflowAdvanceCmd(tabID, nil)`
+- `providerDoneMsg` with `err != nil` or `IsError == true` →
+  `workflowAdvanceCmd(tabID, errStepError(...))`
+- `providerExitedMsg` with non-nil err on a still-running run →
+  `workflowAdvanceCmd(tabID, errStepError(stderrTail))`
+
+The advance handler kills the proc, rolls the captured per-step
+text into `stepLog`, and either dispatches `workflowRunStartStepMsg`
+for the next step or finalises (`done` on chain end, `failed` on
+error).
+
+### Step prompt assembly
+
+`buildWorkflowStepPrompt(step, issue, log)` produces the full user
+turn for step N:
+
+```
+<step.Prompt>
+
+Reference: <owner/repo#N>
+
+Previous step output:        (only when log is non-empty)
+<log[0]>
+---
+<log[1]>
+...
+```
+
+Reference format is `<project>#<number>` (no provider prefix, no
+URL); the agent has the issue-tracker MCP wired in and resolves
+the rest itself. Whitespace is trimmed at the head and tail; the
+body stays as the user wrote it.
+
+### Builder screen (`Ctrl+W` / `/workflows`)
+
+`workflows_screen.go` is a top-level screen (`screenWorkflows`,
+peer of ask/issues). State lives on `m.workflowsBuilder` and uses
+the standard `renderLayeredConfigBox` chrome for visual parity
+with `/config`. Three navigation levels:
+
+| Level | Cursor over | Keys |
+|-------|------------|------|
+| List (workflowsLevelList) | workflows + "+ New" | enter open / r rename / d delete / esc back to ask |
+| Steps (workflowsLevelSteps) | steps + "+ New step" | enter edit / r rename workflow / d delete step / esc list |
+| Step (workflowsLevelStep) | Name / Provider / Model / Prompt | enter edits the field / esc back to steps |
+
+The Prompt row opens a multi-line `textarea.Model` overlay
+(`workflows_screen.go:newPromptTextarea`) with Ctrl+S to save and
+Esc to cancel. Provider/Model rows pop tiny pickers populated from
+`providerRegistry` / `modelPickerOptions(...)`. Every commit writes
+to disk immediately, so navigating up/back is never a save action.
+
+### Edit guards
+
+A workflow that's currently running anywhere in the process
+(`workflowTracker().activeWorkflowNames()`) is locked against
+rename / delete / step edits — the builder shows a dim
+"blocked: workflow is running" toast in the help row. Once the
+run finalises (or the tab closes), the lock releases.
+
 ## Claude subprocess
 
 - Always `-p --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions`.
@@ -255,7 +410,7 @@ Plain text → `content: string`. With attachments → `content: []block` using 
 ## Conventions
 
 - No new runtime dependencies without asking. We already carry Charm (bubbletea/bubbles/lipgloss/glamour/ultraviolet), the official MCP SDK, and stdlib.
-- Only emojis that already exist in the codebase (`✓`, `▸`, `›`, `▏`) — nothing new unless the user asks.
+- Only emojis that already exist in the codebase (`✓`, `✗`, `▸`, `›`, `▏`) — nothing new unless the user asks.
 - Comments: default to none. Only add one when a reader cannot derive the reason from the code.
 - Debug logging uses `debugLog(format, args...)` and is a no-op unless `ASK_DEBUG=1`. Add one when crossing an async boundary (paste command, MCP handler, claude stream, tool dispatch).
 

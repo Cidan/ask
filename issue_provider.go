@@ -3,7 +3,36 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 )
+
+// issueRef is the provider-neutral identity of an issue. Used by the
+// workflow runtime to build a stable session key and the prompt
+// reference appended to a workflow step. Provider is the
+// IssueProvider id (e.g. "github") so different backends can never
+// collide on the same Key. Project is the provider-natural project
+// scope ("owner/repo" for github). Number is the issue number.
+type issueRef struct {
+	Provider string
+	Project  string
+	Number   int
+}
+
+// Key is the canonical session-map key — "<provider>:<project>#<n>".
+// Stable across processes, so disk-persisted workflowSession entries
+// re-bind to the right issue on subsequent runs.
+func (r issueRef) Key() string {
+	return fmt.Sprintf("%s:%s#%d", r.Provider, r.Project, r.Number)
+}
+
+// Display is the short, user-facing reference appended to a workflow
+// step's prompt — "<project>#<n>", e.g. "charmbracelet/bubbletea#42".
+// Deliberately omits the provider prefix because the LLM has the
+// matching issues-MCP wired in and just needs enough text to call
+// the lookup tool.
+func (r issueRef) Display() string {
+	return fmt.Sprintf("%s#%d", r.Project, r.Number)
+}
 
 // IssueProvider is the abstraction over remote issue-tracking
 // backends. The first concrete implementation is the GitHub MCP
@@ -99,6 +128,13 @@ type IssueProvider interface {
 	// next reload. Empty string when the column has no canonical
 	// status (e.g. the unconfigured "none" provider).
 	KanbanIssueStatus(target KanbanColumnSpec) string
+	// IssueRef returns the provider-neutral identity for `it` rooted
+	// at cwd. Used by the workflow runtime to build a session key
+	// and the prompt reference. Returns an error when cwd doesn't
+	// resolve to a valid backend project (e.g. github needs
+	// owner/repo from `git remote get-url origin`).
+	IssueRef(cfg projectConfig, cwd string, it issue) (issueRef, error)
+
 	// MCPServer returns the MCP server descriptor that should be
 	// injected into the chat agent's --mcp-config when this project
 	// uses the provider, so the chat agent has the same issue-tracker
@@ -224,5 +260,8 @@ func (noneIssueProvider) GetIssue(context.Context, projectConfig, string, int) (
 func (noneIssueProvider) MoveIssue(context.Context, projectConfig, string, issue, KanbanColumnSpec) error {
 	return errIssueProviderNotConfigured
 }
-func (noneIssueProvider) KanbanIssueStatus(KanbanColumnSpec) string         { return "" }
+func (noneIssueProvider) KanbanIssueStatus(KanbanColumnSpec) string { return "" }
+func (noneIssueProvider) IssueRef(projectConfig, string, issue) (issueRef, error) {
+	return issueRef{}, errIssueProviderNotConfigured
+}
 func (noneIssueProvider) MCPServer(projectConfig, string) *issueMCPServer { return nil }

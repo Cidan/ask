@@ -459,6 +459,19 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			m.appendHistory(outputStyle.Render(errStyle.Render(out)))
 		}
+		// Workflow tabs: the proc dying on its own (without
+		// turnCompleteMsg arriving first) is a fatal step error.
+		// turnCompleteMsg's success path already kills the proc
+		// itself, so by the time providerExitedMsg lands on a
+		// healthy step the runner has already moved on; the guard
+		// against `done`/`failed` ensures we don't double-finalise.
+		if m.workflowRun != nil && !m.workflowRun.done && !m.workflowRun.failed {
+			detail := stderrTail
+			if msg.err != nil {
+				detail = msg.err.Error()
+			}
+			return m, workflowAdvanceCmd(m.id, errStepError(detail))
+		}
 		return m, nil
 
 	case providerDoneMsg:
@@ -468,7 +481,10 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		debugLog("providerDoneMsg err=%v isError=%v resultLen=%d",
 			msg.err, msg.res.IsError, len(msg.res.Result))
 		m.dismissCancelTurnConfirmIfIdle()
-		if msg.res.SessionID != "" {
+		// Workflow tabs don't pin a virtual session — every step
+		// is a fresh one-shot, so persisting native session ids
+		// would just leak orphan VS rows.
+		if msg.res.SessionID != "" && m.workflowRun == nil {
 			m.sessionID = msg.res.SessionID
 			m.recordVirtualSession(msg.res.SessionID)
 		}
@@ -479,6 +495,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if uc, err := readUsageCache(); err == nil {
 			m.usageCache = uc
 		}
+		var workflowErr error
 		switch {
 		case msg.err != nil:
 			out := errStyle.Render(fmt.Sprintf("error: %v", msg.err))
@@ -489,17 +506,30 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			m.busy = false
 			m.status = ""
 			m.todos = nil
+			workflowErr = msg.err
 		case msg.res.IsError:
 			m.appendHistory(outputStyle.Render(errStyle.Render("error: " + msg.res.Result)))
 			m.busy = false
 			m.status = ""
 			m.todos = nil
+			workflowErr = errStepError(msg.res.Result)
 		}
 		var cmd tea.Cmd
 		if m.streamCh != nil {
 			cmd = nextStreamCmd(m.streamCh)
 		}
 		m.refreshPathMatches()
+		// Workflow error: hand off to the runner so the chain
+		// finalises with `failed`. Success paths are routed by
+		// turnCompleteMsg instead — providerDoneMsg fires for both
+		// paths and we don't want to double-advance.
+		if workflowErr != nil && m.workflowRun != nil && !m.workflowRun.done && !m.workflowRun.failed {
+			advance := workflowAdvanceCmd(m.id, workflowErr)
+			if cmd != nil {
+				return m, tea.Batch(cmd, advance)
+			}
+			return m, advance
+		}
 		return m, cmd
 
 	case assistantTextMsg:
@@ -509,6 +539,10 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		// Memory capture: feed the response builder for the per-turn
 		// outcome line. No-op when no turn is in flight.
 		(&m).recordAssistantText(msg.text)
+		// Workflow capture: feed the per-step output buffer so
+		// step N+1's prompt can carry "Previous step output:". No-op
+		// off a workflow tab.
+		(&m).workflowAssistantText(msg.text)
 		wasIdle := !m.busy
 		m.busy = true
 		if m.quietMode {
@@ -542,8 +576,27 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m.status = ""
 		m.todos = nil
 		m.dismissCancelTurnConfirmIfIdle()
+		// Workflow tabs: a clean turn completion is the signal to
+		// advance to the next step. The runner kills the proc,
+		// rolls the captured text into the step log, and either
+		// fires the next step or finalises the run. The advance
+		// cmd runs as a fresh tea.Cmd so any next-step proc spawn
+		// happens at a clean Update boundary.
+		var workflowCmd tea.Cmd
+		if m.workflowRun != nil && !m.workflowRun.done && !m.workflowRun.failed {
+			workflowCmd = workflowAdvanceCmd(m.id, nil)
+		}
+		var streamCmd tea.Cmd
 		if m.streamCh != nil {
-			return m, nextStreamCmd(m.streamCh)
+			streamCmd = nextStreamCmd(m.streamCh)
+		}
+		switch {
+		case streamCmd != nil && workflowCmd != nil:
+			return m, tea.Batch(streamCmd, workflowCmd)
+		case streamCmd != nil:
+			return m, streamCmd
+		case workflowCmd != nil:
+			return m, workflowCmd
 		}
 		return m, nil
 
@@ -640,6 +693,15 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 
 	case askToolRequestMsg:
 		debugLog("askToolRequestMsg questions=%d", len(msg.questions))
+		if m.workflowRun != nil {
+			// Workflow tabs have no input affordance — the agent
+			// gets `cancelled: true` immediately so it doesn't sit
+			// waiting on a user answer that will never come.
+			if msg.reply != nil {
+				msg.reply <- askReply{cancelled: true}
+			}
+			return m, nil
+		}
 		if m.mode == modeAskQuestion {
 			msg.reply <- askReply{cancelled: true}
 			return m, nil
@@ -650,11 +712,38 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 
 	case approvalRequestMsg:
 		debugLog("approvalRequestMsg tool=%s id=%s", msg.toolName, msg.toolUseID)
+		if m.workflowRun != nil {
+			// Workflow tabs run with skip-permissions on, but if a
+			// provider still routes an approval request through the
+			// MCP bridge, auto-deny it so the chain doesn't stall.
+			if msg.reply != nil {
+				msg.reply <- approvalReply{allow: false}
+			}
+			return m, nil
+		}
 		if m.mode == modeApproval || m.mode == modeAskQuestion {
 			msg.reply <- approvalReply{allow: false}
 			return m, nil
 		}
 		m = m.startApproval(msg)
+		return m, nil
+
+	case workflowRunStartStepMsg:
+		return m.workflowRunHandleStartStep(msg)
+
+	case workflowRunStepDoneMsg:
+		return m.workflowRunHandleStepDone(msg)
+
+	case workflowStatusChangedMsg:
+		// Status changed somewhere — invalidate cached frame so the
+		// kanban (if visible) repaints with the new icon. The
+		// kanban renderer reads from the workflow tracker on each
+		// render, so no per-tab state mutation is needed.
+		m.lastContentFP = ""
+		if m.fc != nil {
+			m.fc.vpFP = ""
+			m.fc.vbFP = ""
+		}
 		return m, nil
 
 	case imagePastedMsg:
@@ -867,6 +956,17 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		case modeProviderSwitch:
 			return m.updateProviderSwitch(msg)
 		}
+		// Workflow tabs are read-only: the input area is replaced
+		// with a status banner and the user has no way to type a
+		// turn into the chain. We allow only Ctrl+D (close tab),
+		// Ctrl+C (cancel — drops the proc, marks failed, stays open
+		// for the user to read), and viewport scroll keys so the
+		// user can read the streaming output. Screen-switching is
+		// blocked too — leaving a half-finished workflow behind on
+		// another screen would be confusing.
+		if m.workflowRun != nil {
+			return m.workflowTabHandleKey(msg)
+		}
 		// Screen-switching keys (Ctrl+I → issues, Ctrl+O → ask) are
 		// global within a tab but blocked while a modal/confirm overlay
 		// is up. They must run before the active screen's updateKey so a
@@ -960,6 +1060,25 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 				return m, nil
 			}
 			return m, tea.Batch(cmds...)
+		}
+		if msg.Mod == tea.ModCtrl && msg.Code == 'w' && !m.modalOpen() {
+			// Ctrl+W opens the workflows builder. Going to the
+			// builder from the issues screen mirrors Ctrl+I's
+			// "drop the cache + cancel in-flight" hygiene so a
+			// later return to issues re-fetches cleanly.
+			if m.screen == screenIssues && m.issues != nil {
+				if kv, ok := m.issues.view.(*kanbanIssueView); ok {
+					kv.cancelCarry(m.issues)
+				}
+				m.issues.discardOnLeave()
+			}
+			m = m.switchScreen(screenWorkflows)
+			if m.workflowsBuilder == nil {
+				m.workflowsBuilder = newWorkflowsBuilderState(m.cwd)
+			} else {
+				m.workflowsBuilder.refreshItems()
+			}
+			return m, nil
 		}
 		if msg.Mod == tea.ModCtrl && msg.Code == 'o' && !m.modalOpen() {
 			// Leaving issues: drop cache + cancel in-flight so re-entry
@@ -1561,7 +1680,7 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 	cmd, _, _ := strings.Cut(line, " ")
 	if invalid := validateAskCwd(m.cwd); invalid.Msg != "" {
 		switch cmd {
-		case "/resume", "/new", "/clear", "/model", "/effort", "/config":
+		case "/resume", "/new", "/clear", "/model", "/effort", "/config", "/workflows":
 			// Pure UI commands are still safe to run when ask's cwd
 			// is invalid — they don't fork a provider. Blocking them
 			// would also strand the user without a way to fix things
@@ -1622,6 +1741,23 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "/config":
 		m = m.startConfigModal()
+		return m, nil
+	case "/workflows":
+		// /workflows opens the builder. Same flow as Ctrl+W: drop
+		// any in-flight issues query so re-entry to the issues
+		// screen later doesn't stack chunks.
+		if m.screen == screenIssues && m.issues != nil {
+			if kv, ok := m.issues.view.(*kanbanIssueView); ok {
+				kv.cancelCarry(m.issues)
+			}
+			m.issues.discardOnLeave()
+		}
+		m = m.switchScreen(screenWorkflows)
+		if m.workflowsBuilder == nil {
+			m.workflowsBuilder = newWorkflowsBuilderState(m.cwd)
+		} else {
+			m.workflowsBuilder.refreshItems()
+		}
 		return m, nil
 	}
 	bare := strings.TrimPrefix(cmd, "/")

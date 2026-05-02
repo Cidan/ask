@@ -126,6 +126,22 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		tea.MouseWheelMsg, tea.PasteMsg, imagePastedMsg:
 		return a.dispatchActive(msg)
 
+	case spawnWorkflowTabMsg:
+		return a.openWorkflowTab(m)
+	case focusTabMsg:
+		idx := a.indexOfTab(m.tabID)
+		if idx < 0 {
+			return a, nil
+		}
+		newA, _ := a.focusTab(idx)
+		return newA, nil
+	case workflowRunStartStepMsg:
+		return a.dispatchByTabID(m.tabID, msg)
+	case workflowRunStepDoneMsg:
+		return a.dispatchByTabID(m.tabID, msg)
+	case workflowStatusChangedMsg:
+		return a.broadcast(msg)
+
 	case askToolRequestMsg:
 		return a.dispatchByTabID(m.tabID, msg)
 	case approvalRequestMsg:
@@ -291,6 +307,49 @@ func (a app) openTab() (tea.Model, tea.Cmd) {
 	return a2, tea.Batch(resizeCmd, initCmd)
 }
 
+// openWorkflowTab spawns a fresh tab pinned to a workflow run. The
+// new tab inherits cwd from the request (so it stays in the project
+// the issue belongs to), gets a workflowRunState attached, and is
+// dispatched a workflowRunStartStepMsg to kick off step 0. The
+// originating tab is left as-is so the user can swap back via the
+// tab bar to see the kanban while the agent runs in the background.
+func (a app) openWorkflowTab(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
+	cfg, _ := loadConfig()
+	t, err := newTab(a.nextID, cfg)
+	if err != nil {
+		active := a.activeTab()
+		active.appendHistory(outputStyle.Render(errStyle.Render(
+			"could not open workflow tab: " + err.Error())))
+		return a, nil
+	}
+	// Workflow tabs always run with skip-permissions on. The user
+	// invoked the workflow knowing what it does; auto-denying tool
+	// approvals would just stall the chain.
+	t.skipAllPermissions = true
+	t.cwd = req.Cwd
+	t.workflowRun = &workflowRunState{
+		Workflow: req.Workflow,
+		Issue:    req.Issue,
+		StepIdx:  0,
+	}
+	t.mcpBridge.setCwd(t.cwd)
+	a.nextID++
+	a.tabs = append(a.tabs, t)
+	a.active = len(a.tabs) - 1
+	if t.cwd != "" {
+		_ = os.Chdir(t.cwd)
+	}
+	// Mark working immediately so the kanban repaint with the
+	// in-flight icon — the broadcast lands on every tab including
+	// the originating one.
+	workflowTracker().markWorking(req.Cwd, req.Issue.Key(), req.Workflow.Name, t.id)
+	initCmd := t.Init()
+	startStep := func() tea.Msg { return workflowRunStartStepMsg{tabID: t.id} }
+	modAny, resizeCmd := a.broadcastResize()
+	a2 := modAny.(app)
+	return a2, tea.Batch(resizeCmd, initCmd, startStep)
+}
+
 func (a app) switchTab(idx int) (tea.Model, tea.Cmd) {
 	if len(a.tabs) <= 1 {
 		return a, nil
@@ -339,6 +398,21 @@ func (a app) closeTab(tabID int) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 	t := a.tabs[idx]
+	// A workflow tab that's still working when the user closes it
+	// counts as failed — the chain didn't reach a terminal state on
+	// its own. Persist the verdict so the kanban shows the failed
+	// icon next time the user looks. A tab that already finalised
+	// (workflowRun.done / .failed flipped) leaves the disk record
+	// alone.
+	if t.workflowRun != nil && !t.workflowRun.done && !t.workflowRun.failed {
+		workflowTracker().markFinal(
+			t.cwd,
+			t.workflowRun.Issue.Key(),
+			t.workflowRun.Workflow.Name,
+			workflowStatusFailed,
+			t.workflowRun.StepIdx,
+		)
+	}
 	t.drainPendingReplies()
 	t.killProc()
 	t.killShellProc()

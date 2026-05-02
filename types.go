@@ -2,6 +2,7 @@ package main
 
 import (
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -267,6 +268,45 @@ type frameCache struct {
 
 type closeTabMsg struct {
 	tabID int
+}
+
+// focusTabMsg asks the app layer to switch the active tab to the
+// one with the matching id. Used by the workflow `f` dispatch when a
+// live workflow tab already exists for the issue: rather than spawn
+// a duplicate, we focus the existing one.
+type focusTabMsg struct {
+	tabID int
+}
+
+// spawnWorkflowTabMsg asks the app layer to open a new tab dedicated
+// to running `Workflow` against `Issue`, rooted at `Cwd`. Issued by
+// the issues screen when the user hits `f`. The app handler creates
+// the tab, attaches a workflowRunState to its model, and dispatches
+// the first step.
+type spawnWorkflowTabMsg struct {
+	OriginTabID int
+	Cwd         string
+	Workflow    workflowDef
+	Issue       issueRef
+}
+
+// workflowRunStartStepMsg fires when a workflow tab is ready to
+// dispatch its current step. Init issues it for step 0 right after
+// the model is constructed; the runner re-issues it after each step
+// completes so the next step's proc starts from a clean tea.Cmd
+// boundary rather than chaining inside an Update branch.
+type workflowRunStartStepMsg struct {
+	tabID int
+}
+
+// workflowRunStepDoneMsg signals one step finished. The handler
+// either advances StepIndex and emits another workflowRunStartStepMsg,
+// or finalises the run (markFinal + read-only completion banner).
+// err is nil on a clean step exit; non-nil means the proc errored
+// out and the chain aborts at this step.
+type workflowRunStepDoneMsg struct {
+	tabID int
+	err   error
 }
 
 // startupResumeMsg is fired by Init when the model was pre-seeded with
@@ -540,6 +580,70 @@ type model struct {
 	// Turn populates them when sendToProvider dispatches a new user
 	// prompt.
 	currentTurn memoryTurn
+
+	// workflowRun, when non-nil, marks this tab as a workflow runner.
+	// The textarea is replaced with a read-only banner showing the
+	// current step + provider/model; user input is suppressed; the
+	// tab cannot pop ask/approval modals (they auto-cancel). Cleared
+	// on the final step's completion (with `complete` banner) or on
+	// fatal step error (with `failed` banner). Workflow tabs share
+	// the rest of the chat machinery (viewport, scrollback, copy
+	// selection) so the user can read the chain's output as it
+	// streams in.
+	workflowRun *workflowRunState
+
+	// workflowsBuilder, when non-nil, holds the per-tab state of the
+	// workflows builder screen (levels, cursors, in-flight name and
+	// prompt drafts). Lazily allocated on screen entry; cleared on
+	// exit. Only consulted while m.screen == screenWorkflows.
+	workflowsBuilder *workflowsBuilderState
+
+	// workflowPicker, when non-nil, draws the small centered modal
+	// the issues screen pops on `f`. Owns its own cursor + the list
+	// of pipelines the user can pick from. Set on the issues screen
+	// model and consulted by the screen handler before normal key
+	// dispatch so picker keys never bleed into the kanban behind it.
+	workflowPicker *workflowPickerState
+}
+
+// workflowRunState carries per-tab workflow execution state. Owned
+// by the model on a workflow tab and dropped to nil when the chain
+// finalises (so the read-only chrome stays — the post-run banner
+// reads from `workflowDone` / `workflowErr` instead — but no fresh
+// step dispatch fires).
+type workflowRunState struct {
+	Workflow workflowDef
+	Issue    issueRef
+	StepIdx  int
+
+	// stepLog accumulates the assistant non-tool text emitted by
+	// each completed step so step N+1's prompt can include a
+	// `Previous step output:` block for context. One entry per
+	// completed step in order.
+	stepLog []string
+
+	// currentStep accumulates assistantTextMsg payloads for the
+	// in-flight step. Rolled into stepLog on workflowRunStepDoneMsg.
+	currentStep strings.Builder
+
+	// done flips true once the final step exits cleanly. The banner
+	// shows "complete · ctrl+d to close" while the tab stays open.
+	done bool
+
+	// failed flips true if any step errors out. The banner shows the
+	// error and the chain aborts at this step.
+	failed bool
+	failedReason string
+}
+
+// workflowPickerState is the small centered modal that lets the user
+// pick a pipeline to run. Always shown — even with one pipeline —
+// because `f` is a destructive action and a confirm step prevents
+// mis-fires. Esc closes; Enter dispatches a spawnWorkflowTabMsg.
+type workflowPickerState struct {
+	Items  []workflowDef
+	Cursor int
+	Issue  issueRef
 }
 
 type askMode int

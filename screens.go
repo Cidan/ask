@@ -13,6 +13,7 @@ type screenID int
 const (
 	screenAsk screenID = iota
 	screenIssues
+	screenWorkflows
 )
 
 // screen is the per-tab top-level UI handler. Implementations are
@@ -47,8 +48,9 @@ var screensRegistry = newScreenRegistry()
 
 func newScreenRegistry() map[screenID]screen {
 	return map[screenID]screen{
-		screenAsk:    askScreen{},
-		screenIssues: issuesScreen{},
+		screenAsk:       askScreen{},
+		screenIssues:    issuesScreen{},
+		screenWorkflows: workflowsScreen{},
 	}
 }
 
