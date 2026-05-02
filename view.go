@@ -126,7 +126,7 @@ const renderAheadEntries = 10
 
 func (m *model) layout() {
 	atBottom := m.chat.AtBottom()
-	inputH := m.input.Height()
+	inputH := m.inputAreaHeight()
 	extra := m.pendingBlockHeight() + m.todoBlockHeight() + m.spinnerBlockHeight() + m.statusChipHeight()
 	vpH := max(1, m.height-1-inputH-extra)
 	vpW := max(1, m.width-1)
@@ -1105,6 +1105,28 @@ func (m model) viewAskBody() string {
 	}
 	return b.String()
 }
+
+// inputAreaHeight returns the row count layout() should reserve for
+// the bottom input region. Regular tabs expose a textarea
+// (m.input.Height() — dynamic with content). Workflow tabs render
+// the read-only banner instead, which has a fixed 4-row footprint
+// (top border, two content lines, bottom border). Without this
+// hand-off `layout()` would size the viewport against the textarea
+// height while the actual rendered output uses the banner — a
+// mismatch that pushes the tab-bar row off screen, hides the
+// scrollbar's last cell, etc.
+func (m model) inputAreaHeight() int {
+	if m.workflowRun != nil {
+		return workflowBannerHeight
+	}
+	return m.input.Height()
+}
+
+// workflowBannerHeight is the fixed row count of the read-only
+// banner rendered by renderWorkflowBanner: rounded border (2) +
+// title + line2 = 4. Kept as a constant so layout() and the renderer
+// agree without each one re-measuring lipgloss output.
+const workflowBannerHeight = 4
 
 // renderWorkflowBanner renders the read-only stripe that replaces the
 // chat input on a workflow tab. While the chain runs the banner shows
