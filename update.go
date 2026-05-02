@@ -53,6 +53,21 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 	}()
 	switch msg := msg.(type) {
+	case issueLoadingTickMsg:
+		// High-fps loader animation. Drop ticks aimed at a different
+		// tab so a background tab's loader can't burn cycles on the
+		// foreground. When loading flips false (first chunk arrival
+		// or error dismissal) we stop scheduling further ticks; the
+		// in-flight one is silently absorbed here.
+		if msg.tabID != m.id {
+			return m, nil
+		}
+		if m.issues == nil || !m.issues.loading {
+			return m, nil
+		}
+		m.issues.loadingFrame++
+		return m, issueLoadingTickCmd(m.id)
+
 	case issuePageLoadedMsg:
 		if msg.tabID != m.id {
 			return m, nil
@@ -81,13 +96,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			if isFirstChunk {
 				s.loadErr = msg.err
 			}
-			// Clear any pending markers so retries can fire. List
-			// view's single-flight guard now lives on state so it
-			// survives a view rebuild; kanban still tracks its
-			// column-local fetching flag.
-			if _, ok := s.view.(*listIssueView); ok {
-				s.currentPendingFetch = false
-			}
+			// Kanban tracks per-column fetching flags so a retry
+			// can fire on the next scroll trigger.
 			if kv, ok := s.view.(*kanbanIssueView); ok {
 				if idx := kv.columnByQueryFingerprint(s, s.queryFingerprint(msg.query)); idx >= 0 {
 					kv.columns[idx].fetching = false
@@ -104,10 +114,11 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			hasMore:    msg.page.HasMore,
 			issues:     issues,
 		}
-		s.applyListChunk(msg.query, chunk)
-		// Kanban path stays as-is — that view still owns col.loaded
-		// / col.nextCursor / col.fetching as per-column local state
-		// (a future v4 refactor will lift these onto issuesState).
+		s.appendChunk(msg.query, chunk)
+		// Kanban owns col.loaded / col.nextCursor / col.fetching as
+		// per-column local state. The cache append above keeps a
+		// view rebuild (Ctrl+R, search-box close) able to re-stitch
+		// columns from the cache without re-fetching.
 		if kv, ok := s.view.(*kanbanIssueView); ok {
 			fp := s.queryFingerprint(msg.query)
 			idx := kv.columnByQueryFingerprint(s, fp)
@@ -847,10 +858,10 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			m = m.switchScreen(screenIssues)
 			// Flip the loading flag and pick a fun message before
 			// dispatching the provider call. The screen renders a
-			// centered modal whenever loading is true, so the user
-			// sees activity instead of a blank list during the
-			// network round-trip. Any prior loadErr is cleared so
-			// the new attempt starts fresh.
+			// centered animated modal whenever loading is true, so
+			// the user sees activity instead of a blank kanban
+			// during the network round-trip. Any prior loadErr is
+			// cleared so the new attempt starts fresh.
 			if m.issues == nil {
 				m.issues = newIssuesState()
 			}
@@ -864,19 +875,38 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			m.issues.cwd = m.cwd
 			m.issues.tabID = m.id
 			m.issues.view = issueViewLayers[0].builder(m.issues)
-			// First-page-of-query: only show the modal when the
-			// cache has nothing for the current query yet.
-			if !m.issues.hasAnyCachedPage(m.issues.currentQuery) {
+			kv, _ := m.issues.view.(*kanbanIssueView)
+			// Show the loader modal on first entry — when no kanban
+			// column has data yet. Re-entry after a previous load
+			// (cache hit) skips the modal so the user sees content
+			// immediately.
+			anyLoaded := false
+			if kv != nil {
+				for _, c := range kv.columns {
+					if len(c.loaded) > 0 {
+						anyLoaded = true
+						break
+					}
+				}
+			}
+			cmds := []tea.Cmd{}
+			if !anyLoaded {
 				m.issues.loading = true
 				m.issues.loadingMessage = pickLoadingMessage()
+				m.issues.loadingFrame = 0
 				m.issues.loadErr = nil
+				cmds = append(cmds, issueLoadingTickCmd(m.id))
 			}
-			ctx := m.issues.beginLoad()
-			return m, loadIssuesPageCmd(
-				ctx, m.id, provider, pc, m.cwd,
-				nil, IssuePagination{Cursor: "", PerPage: githubDefaultPerPage},
-				m.issues.queryGen,
-			)
+			_ = m.issues.beginLoad()
+			if kv != nil {
+				if c := kv.initialLoad(m.issues); c != nil {
+					cmds = append(cmds, c)
+				}
+			}
+			if len(cmds) == 0 {
+				return m, nil
+			}
+			return m, tea.Batch(cmds...)
 		}
 		if msg.Mod == tea.ModCtrl && msg.Code == 'o' && !m.modalOpen() {
 			// Leaving issues: drop cache + cancel in-flight so re-entry

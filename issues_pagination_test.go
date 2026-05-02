@@ -7,32 +7,23 @@ import (
 	"testing"
 )
 
-// fakePageProvider builds an issuesState whose provider is a
+// newPaginatedTestState builds an issuesState whose provider is a
 // fakeIssueProvider configured with a deterministic data set.
 // Returns the state, the provider (so tests can flip its
 // listIssuesFn), and the data set so tests can compute expected
-// row indexes.
+// row counts.
 func newPaginatedTestState(totalIssues int) (*issuesState, *fakeIssueProvider, []issue) {
 	all := make([]issue, totalIssues)
 	for i := range all {
-		all[i] = issue{number: i + 1, title: "issue " + itoaIssue(i + 1), status: "open"}
+		all[i] = issue{number: i + 1, title: "issue " + itoaIssue(i+1), status: "open"}
 	}
 	provider := newFakeMockProvider(all)
 	s := &issuesState{
 		pageCache: map[string][]issuePageChunk{},
 		provider:  provider,
 	}
-	s.view = newListIssueView(s)
+	s.view = newKanbanIssueView(s)
 	return s, provider, all
-}
-
-// pumpListChunkInto is the test-side eviction driver. Tests that
-// previously called v.appendChunk directly now route through the
-// same canonical helper as the message handler — keeps the
-// eviction policy in one place so the tests can't pass against
-// stale logic.
-func pumpListChunkInto(s *issuesState, q IssueQuery, chunk issuePageChunk) {
-	s.applyListChunk(q, chunk)
 }
 
 func TestIssuesState_QueryFingerprint_NilIsEmptyString(t *testing.T) {
@@ -147,179 +138,6 @@ func TestIssuesState_ResetForNewQuery_CallsCancelLoad(t *testing.T) {
 	case <-ctx.Done():
 	default:
 		t.Errorf("cancelling via s.cancelLoad should close the returned ctx")
-	}
-}
-
-func TestIssuesState_ResetForNewQuery_ResetsReactiveCursor(t *testing.T) {
-	s, _, _ := newPaginatedTestState(0)
-	s.currentRowsBefore = 50
-	s.currentAbsoluteCursor = 73
-	s.currentPendingFetch = true
-	s.resetForNewQuery(&fakeQuery{statusMatch: "fresh"})
-	if s.currentRowsBefore != 0 || s.currentAbsoluteCursor != 0 || s.currentPendingFetch {
-		t.Errorf("resetForNewQuery should zero reactive list-view fields: rowsBefore=%d abs=%d pending=%v",
-			s.currentRowsBefore, s.currentAbsoluteCursor, s.currentPendingFetch)
-	}
-}
-
-// --- Reactive list-view shape: cache + state are the source of truth ---
-
-func TestListReactive_PumpFillsCacheUpToWindow(t *testing.T) {
-	s, _, _ := newPaginatedTestState(6)
-	v := s.view.(*listIssueView)
-	v.perPage = 2
-	pumpListChunkInto(s, nil, issuePageChunk{cursor: "", nextCursor: "2", hasMore: true, issues: []issue{{number: 1}, {number: 2}}})
-	pumpListChunkInto(s, nil, issuePageChunk{cursor: "2", nextCursor: "4", hasMore: true, issues: []issue{{number: 3}, {number: 4}}})
-	pumpListChunkInto(s, nil, issuePageChunk{cursor: "4", nextCursor: "", hasMore: false, issues: []issue{{number: 5}, {number: 6}}})
-	chain := s.cachedChunks(nil)
-	if len(chain) != 3 {
-		t.Errorf("cache chain len=%d want 3", len(chain))
-	}
-	rows := concatRows(chain)
-	if len(rows) != 6 {
-		t.Errorf("rows len=%d want 6", len(rows))
-	}
-	if s.currentRowsBefore != 0 {
-		t.Errorf("currentRowsBefore=%d want 0 (no eviction yet)", s.currentRowsBefore)
-	}
-}
-
-func TestListReactive_HandlerEvictsHeadAndShiftsAbsoluteCursor(t *testing.T) {
-	s, _, _ := newPaginatedTestState(8)
-	v := s.view.(*listIssueView)
-	v.perPage = 2
-	pumpListChunkInto(s, nil, issuePageChunk{cursor: "", nextCursor: "2", hasMore: true, issues: []issue{{number: 1}, {number: 2}}})
-	pumpListChunkInto(s, nil, issuePageChunk{cursor: "2", nextCursor: "4", hasMore: true, issues: []issue{{number: 3}, {number: 4}}})
-	pumpListChunkInto(s, nil, issuePageChunk{cursor: "4", nextCursor: "6", hasMore: true, issues: []issue{{number: 5}, {number: 6}}})
-	// User has moved the cursor to absolute row 4 (issue #5) before
-	// the eviction-triggering chunk arrives.
-	s.currentAbsoluteCursor = 4
-	pumpListChunkInto(s, nil, issuePageChunk{cursor: "6", nextCursor: "", hasMore: false, issues: []issue{{number: 7}, {number: 8}}})
-	// Window now holds chunks 1,2,3 of the chain — len 3, max 3.
-	chain := s.cachedChunks(nil)
-	if len(chain) != 3 {
-		t.Errorf("chain len=%d want 3", len(chain))
-	}
-	if s.currentRowsBefore != 2 {
-		t.Errorf("currentRowsBefore=%d want 2 after one eviction", s.currentRowsBefore)
-	}
-	// Head of the live window is the chunk that fetched cursor "2".
-	if chain[0].cursor != "2" {
-		t.Errorf("chain[0].cursor=%q want %q", chain[0].cursor, "2")
-	}
-	// Absolute cursor stays at 4; localCursor maps it to row 2 in
-	// the new live window.
-	if got := s.currentAbsoluteCursor; got != 4 {
-		t.Errorf("absolute cursor mutated by eviction: got %d want 4", got)
-	}
-	if got := s.localCursor(len(concatRows(chain))); got != 2 {
-		t.Errorf("local cursor=%d want 2 (preserved offset relative to evicted chunk)", got)
-	}
-}
-
-func TestListReactive_ThresholdFiresOnceAcrossThreshold(t *testing.T) {
-	s, _, _ := newPaginatedTestState(200)
-	v := s.view.(*listIssueView)
-	v.perPage = 50
-	pumpListChunkInto(s, nil, issuePageChunk{cursor: "", nextCursor: "50", hasMore: true, issues: make([]issue, 50)})
-	// view() is the projection that binds the cache's rows onto the
-	// table widget — without it the table stays at 0 rows and
-	// SetCursor clamps to 0.
-	_ = v.view(s)
-	// Cursor below 50% — no fetch.
-	v.tbl.SetCursor(20)
-	if cmd := v.maybeFetchNextChunk(s); cmd != nil {
-		t.Errorf("threshold not crossed; should not fetch")
-	}
-	if s.currentPendingFetch {
-		t.Errorf("currentPendingFetch should not be set when no fetch dispatched")
-	}
-	// Cursor at 50% — fires.
-	v.tbl.SetCursor(25)
-	if cmd := v.maybeFetchNextChunk(s); cmd == nil {
-		t.Errorf("threshold crossed; should dispatch fetch")
-	}
-	if !s.currentPendingFetch {
-		t.Errorf("currentPendingFetch should be set after dispatch")
-	}
-	// With pendingFetch set, threshold should not refire.
-	if cmd := v.maybeFetchNextChunk(s); cmd != nil {
-		t.Errorf("with currentPendingFetch set, threshold should not refire")
-	}
-}
-
-func TestListReactive_NoFetchWhenNoMore(t *testing.T) {
-	s, _, _ := newPaginatedTestState(50)
-	v := s.view.(*listIssueView)
-	v.perPage = 50
-	// HasMore=false, NextCursor="" — end of data on first chunk.
-	pumpListChunkInto(s, nil, issuePageChunk{cursor: "", hasMore: false, issues: make([]issue, 50)})
-	v.tbl.SetCursor(40)
-	if cmd := v.maybeFetchNextChunk(s); cmd != nil {
-		t.Errorf("hasMore=false should suppress fetch")
-	}
-}
-
-func TestListReactive_NoFetchWhenNextCursorEmptyButHasMore(t *testing.T) {
-	// Pathological case: HasMore=true with empty NextCursor must
-	// NOT round-trip the empty-cursor first-chunk sentinel.
-	s, _, _ := newPaginatedTestState(50)
-	v := s.view.(*listIssueView)
-	v.perPage = 50
-	pumpListChunkInto(s, nil, issuePageChunk{cursor: "", nextCursor: "", hasMore: true, issues: make([]issue, 50)})
-	v.tbl.SetCursor(40)
-	if cmd := v.maybeFetchNextChunk(s); cmd != nil {
-		t.Errorf("empty-nextCursor + hasMore should not dispatch")
-	}
-}
-
-func TestListReactive_AbsoluteCursorTracksAcrossEviction(t *testing.T) {
-	s, _, _ := newPaginatedTestState(200)
-	v := s.view.(*listIssueView)
-	v.perPage = 50
-	pumpListChunkInto(s, nil, issuePageChunk{cursor: "", nextCursor: "50", hasMore: true, issues: make([]issue, 50)})
-	pumpListChunkInto(s, nil, issuePageChunk{cursor: "50", nextCursor: "100", hasMore: true, issues: make([]issue, 50)})
-	pumpListChunkInto(s, nil, issuePageChunk{cursor: "100", nextCursor: "150", hasMore: true, issues: make([]issue, 50)})
-	// User on absolute row 140 (last 10 rows of chunk 3).
-	s.currentAbsoluteCursor = 140
-	pumpListChunkInto(s, nil, issuePageChunk{cursor: "150", nextCursor: "", hasMore: false, issues: make([]issue, 50)})
-	if s.currentRowsBefore != 50 {
-		t.Errorf("currentRowsBefore=%d want 50 (one chunk evicted)", s.currentRowsBefore)
-	}
-	if s.currentAbsoluteCursor != 140 {
-		t.Errorf("absolute cursor mutated by eviction: %d want 140", s.currentAbsoluteCursor)
-	}
-	rows := concatRows(s.cachedChunks(nil))
-	if got := s.localCursor(len(rows)); got != 90 {
-		t.Errorf("local cursor=%d want 90 (rowsBefore=50 + tbl=90)", got)
-	}
-}
-
-func TestListReactive_HeaderEndOfData(t *testing.T) {
-	s, _, _ := newPaginatedTestState(10)
-	v := s.view.(*listIssueView)
-	v.perPage = 50
-	pumpListChunkInto(s, nil, issuePageChunk{cursor: "", nextCursor: "", hasMore: false, issues: make([]issue, 10)})
-	header := stripAnsi(v.header(s))
-	if !strings.Contains(header, "end") {
-		t.Errorf("end-of-data header should mention 'end', got %q", header)
-	}
-	if strings.Contains(header, "↓ for more") {
-		t.Errorf("end-of-data header should NOT show '↓ for more', got %q", header)
-	}
-}
-
-func TestListReactive_HeaderHasMore(t *testing.T) {
-	s, _, _ := newPaginatedTestState(100)
-	v := s.view.(*listIssueView)
-	v.perPage = 50
-	pumpListChunkInto(s, nil, issuePageChunk{cursor: "", nextCursor: "50", hasMore: true, issues: make([]issue, 50)})
-	header := stripAnsi(v.header(s))
-	if !strings.Contains(header, "↓ for more") {
-		t.Errorf("has-more header should show '↓ for more', got %q", header)
-	}
-	if strings.Contains(header, "· end") {
-		t.Errorf("has-more header should NOT mention 'end', got %q", header)
 	}
 }
 
@@ -460,8 +278,6 @@ func TestKanban_InitialLoadDispatchesOneFetchPerColumn(t *testing.T) {
 
 func TestKanbanColumn_RoutesPageLoadedToCorrectColumn(t *testing.T) {
 	m := enterIssuesScreen(t)
-	// Switch to kanban so the page-loaded handler routes to a column.
-	m, _ = runUpdate(t, m, ctrlKey('i'))
 	kv := m.issues.view.(*kanbanIssueView)
 	if len(kv.columns) < 2 {
 		t.Skipf("need at least 2 columns to test routing; got %d", len(kv.columns))
@@ -495,7 +311,6 @@ func TestKanbanColumn_RoutesPageLoadedToCorrectColumn(t *testing.T) {
 
 func TestKanbanColumn_NextCursorAdvancesOnChunkReceipt(t *testing.T) {
 	m := enterIssuesScreen(t)
-	m, _ = runUpdate(t, m, ctrlKey('i'))
 	kv := m.issues.view.(*kanbanIssueView)
 	if len(kv.columns) == 0 {
 		t.Fatalf("setup: no columns")

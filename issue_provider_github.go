@@ -55,7 +55,7 @@ const (
 	githubMCPCallTimeout   = 30 * time.Second
 	// githubDefaultPerPage is the page size when the caller doesn't
 	// specify one. 50 mirrors GitHub's REST default and keeps the
-	// list view's "have we hit a page boundary?" math simple.
+	// per-column "have we hit a page boundary?" math simple.
 	githubDefaultPerPage = 50
 )
 

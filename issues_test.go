@@ -17,11 +17,6 @@ import (
 // fallback) only need updating in one place.
 func stripAnsi(s string) string { return xansi.Strip(s) }
 
-// visibleLen counts the on-screen cells of a styled string. Mirrors
-// what the terminal renders, which is what the indent-shift assertion
-// cares about.
-func visibleLen(s string) int { return xansi.StringWidth(s) }
-
 // leadingSpaces counts the number of leading space characters of an
 // already-stripped string. Used to verify a selected list row starts
 // at the same column as a non-selected one.
@@ -37,15 +32,15 @@ func leadingSpaces(s string) int {
 }
 
 // seedMockIssues fills s with the canonical mock dataset and
-// rebuilds the view so kanban / list cache to the populated state.
-// Centralised so the per-test boilerplate stays one line.
+// rebuilds the active view so kanban caches to the populated
+// state. Centralised so the per-test boilerplate stays one line.
 //
-// In the new (cursor-paginated, query-driven) world this means
-// stashing the dataset as a single chunk under the nil-query
-// fingerprint so listIssueView's rebuildFromCache picks it up,
-// and installing a fake provider whose KanbanColumns() returns
-// one column per distinct status in the data so kanban tests
-// still see column-grouped output.
+// In the cursor-paginated, query-driven world this means stashing
+// the dataset as a single chunk under the nil-query fingerprint
+// (kept so the issuesAll(s) test convenience accessor still
+// works), and installing a fake provider whose KanbanColumns()
+// returns one column per distinct status in the data so kanban
+// rebuildColumnsFromSpecs populates each column from cache.
 func seedMockIssues(s *issuesState) {
 	all := mockIssues()
 	s.applySort(all)
@@ -91,8 +86,8 @@ func TestIssues_NewStateStartsEmpty(t *testing.T) {
 	if s.view == nil {
 		t.Fatalf("default sub-view should be installed")
 	}
-	if s.view.name() != "list" {
-		t.Errorf("default sub-view name=%q want list", s.view.name())
+	if s.view.name() != "kanban" {
+		t.Errorf("default sub-view name=%q want kanban", s.view.name())
 	}
 }
 
@@ -109,65 +104,69 @@ func TestIssues_DefaultSortIsByNumberAscending(t *testing.T) {
 	}
 }
 
-func TestIssues_RowsIncludeAllRequiredColumns(t *testing.T) {
-	s := newIssuesState()
-	seedMockIssues(s)
-	all := issuesAll(s)
-	rows := rowsFromIssues(all)
-	if len(rows) != len(all) {
-		t.Fatalf("rows=%d want %d (1:1 with issues)", len(rows), len(all))
+// focusKanbanColumnWithRows steers the kanban cursor to the first
+// column carrying at least minRows issues. Returns false (and the
+// caller should skip) when no column qualifies — the mock data
+// shape can vary as kanban columns are derived from distinct
+// statuses in the dataset.
+func focusKanbanColumnWithRows(t *testing.T, m *model, minRows int) bool {
+	t.Helper()
+	v, ok := m.issues.view.(*kanbanIssueView)
+	if !ok {
+		return false
 	}
-	// Spot-check the first row has the documented columns:
-	// id, title, assigned, status, created.
-	r := rows[0]
-	if len(r) != 5 {
-		t.Fatalf("row should have 5 cells (id/title/assigned/status/created), got %d: %v", len(r), r)
+	for i, c := range v.columns {
+		if len(c.loaded) >= minRows {
+			v.selColIdx = i
+			v.selRowIdx = 0
+			return true
+		}
 	}
-	if !strings.HasPrefix(r[0], "#") {
-		t.Errorf("first cell should be #-prefixed id, got %q", r[0])
-	}
-	if r[1] == "" {
-		t.Errorf("title should be non-empty")
-	}
-	// Created column is YYYY-MM-DD; loose check: 10 chars and two dashes.
-	if len(r[4]) != 10 || strings.Count(r[4], "-") != 2 {
-		t.Errorf("created column not YYYY-MM-DD: %q", r[4])
-	}
+	return false
 }
 
-func TestIssues_DownArrowMovesCursor(t *testing.T) {
+func TestIssues_DownArrowMovesKanbanRowCursor(t *testing.T) {
 	m := enterIssuesScreen(t)
 	if m.issues == nil {
 		t.Fatalf("issues state should be initialised")
 	}
-	v, ok := m.issues.view.(*listIssueView)
-	if !ok {
-		t.Fatalf("default view is not a listIssueView: %T", m.issues.view)
+	if _, ok := m.issues.view.(*kanbanIssueView); !ok {
+		t.Fatalf("default view is not a kanbanIssueView: %T", m.issues.view)
 	}
-	if v.tbl.Cursor() != 0 {
-		t.Fatalf("expected cursor at 0 on entry, got %d", v.tbl.Cursor())
+	if !focusKanbanColumnWithRows(t, &m, 2) {
+		t.Skip("no kanban column has >= 2 issues in the seed dataset")
 	}
 	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
-	v = m.issues.view.(*listIssueView)
-	if v.tbl.Cursor() != 1 {
-		t.Errorf("after Down cursor=%d want 1", v.tbl.Cursor())
+	v := m.issues.view.(*kanbanIssueView)
+	if v.selRowIdx != 1 {
+		t.Errorf("after Down row=%d want 1", v.selRowIdx)
 	}
 }
 
 func TestIssues_GotoTopAndBottom(t *testing.T) {
 	m := enterIssuesScreen(t)
-	// G → bottom
+	v, ok := m.issues.view.(*kanbanIssueView)
+	if !ok {
+		t.Fatalf("default view is not a kanbanIssueView: %T", m.issues.view)
+	}
+	if len(v.columns) == 0 {
+		t.Skipf("no columns to navigate")
+	}
+	// G → bottom row of focused column
 	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: 'G'})
-	v := m.issues.view.(*listIssueView)
-	wantBottom := len(issuesAll(m.issues)) - 1
-	if v.tbl.Cursor() != wantBottom {
-		t.Errorf("after G cursor=%d want %d", v.tbl.Cursor(), wantBottom)
+	v = m.issues.view.(*kanbanIssueView)
+	wantBottom := len(v.columns[v.selColIdx].loaded) - 1
+	if wantBottom < 0 {
+		wantBottom = 0
+	}
+	if v.selRowIdx != wantBottom {
+		t.Errorf("after G row=%d want %d", v.selRowIdx, wantBottom)
 	}
 	// g → top
 	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: 'g'})
-	v = m.issues.view.(*listIssueView)
-	if v.tbl.Cursor() != 0 {
-		t.Errorf("after g cursor=%d want 0", v.tbl.Cursor())
+	v = m.issues.view.(*kanbanIssueView)
+	if v.selRowIdx != 0 {
+		t.Errorf("after g row=%d want 0", v.selRowIdx)
 	}
 }
 
@@ -187,60 +186,13 @@ func TestIssues_ViewContainsAllStatuses(t *testing.T) {
 	}
 }
 
-func TestIssues_ResizeShrinksTitleColumnOnNarrowTerminal(t *testing.T) {
-	v := newListIssueView(newIssuesState())
-	v.resize(60, 20)
-	cols := v.tbl.Columns()
-	if len(cols) != 5 {
-		t.Fatalf("expected 5 columns, got %d", len(cols))
-	}
-	if cols[1].Title != "Title" {
-		t.Fatalf("column 1 should be Title, got %q", cols[1].Title)
-	}
-	v.resize(120, 20)
-	colsWide := v.tbl.Columns()
-	if colsWide[1].Width <= cols[1].Width {
-		t.Errorf("title column should grow with width: narrow=%d wide=%d", cols[1].Width, colsWide[1].Width)
-	}
-}
-
-func TestIssues_SelectedRowDoesNotShiftIndent(t *testing.T) {
-	// Repro for the off-by-one indent bug: when the table styled the
-	// selected row with extra padding, the highlighted row's first
-	// cell rendered one column to the right of every other row's. The
-	// fix is to drop padding from styles.Selected (cell padding is
-	// already inside each cell). This test asserts that the selected
-	// row's stripped width matches the non-selected row's.
-	v := newListIssueView(newIssuesState())
-	v.resize(100, 20)
-	body := v.tbl.View()
-	lines := strings.Split(stripAnsi(body), "\n")
-	// First two body lines are: header, then row 0 (selected by
-	// default), then row 1, ...
-	if len(lines) < 4 {
-		t.Fatalf("expected at least 4 lines, got %d:\n%s", len(lines), body)
-	}
-	selectedLen := visibleLen(lines[1])
-	otherLen := visibleLen(lines[2])
-	if selectedLen != otherLen {
-		t.Errorf("selected row visible len=%d, other row=%d — selected is shifted",
-			selectedLen, otherLen)
-	}
-	// The selected row must start at the same column as a non-selected
-	// row — leading whitespace count is the cleanest proxy.
-	if leadingSpaces(lines[1]) != leadingSpaces(lines[2]) {
-		t.Errorf("selected row leading-spaces=%d, other=%d — re-indent regression",
-			leadingSpaces(lines[1]), leadingSpaces(lines[2]))
-	}
-}
-
 func TestIssues_EnterOpensDetailView(t *testing.T) {
 	m := enterIssuesScreen(t)
 	if m.issues == nil {
 		t.Fatalf("issues state should be initialised")
 	}
-	if got := m.issues.view.name(); got != "list" {
-		t.Fatalf("entry view=%q want list", got)
+	if got := m.issues.view.name(); got != "kanban" {
+		t.Fatalf("entry view=%q want kanban", got)
 	}
 	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if got := m.issues.view.name(); got != "detail" {
@@ -255,44 +207,52 @@ func TestIssues_EnterOpensDetailView(t *testing.T) {
 	}
 }
 
-func TestIssues_EscFromDetailReturnsToListPreservingCursor(t *testing.T) {
+func TestIssues_EscFromDetailReturnsToKanbanPreservingCursor(t *testing.T) {
 	m := enterIssuesScreen(t)
-	// Walk the cursor down a couple of rows so we can verify the
-	// list view we land back on still has its cursor there.
+	if _, ok := m.issues.view.(*kanbanIssueView); !ok {
+		t.Fatalf("setup: not on kanban: %T", m.issues.view)
+	}
+	if !focusKanbanColumnWithRows(t, &m, 2) {
+		t.Skip("no kanban column has >= 2 issues in the seed dataset")
+	}
+	// Walk the row cursor down so we can verify the kanban view we
+	// land back on after the detail round-trip preserves both the
+	// instance identity and the cursor position.
 	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
-	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
-	listBefore := m.issues.view.(*listIssueView)
-	cursorBefore := listBefore.tbl.Cursor()
-	if cursorBefore != 2 {
-		t.Fatalf("setup: expected cursor=2 after two Downs, got %d", cursorBefore)
+	kBefore := m.issues.view.(*kanbanIssueView)
+	colBefore := kBefore.selColIdx
+	rowBefore := kBefore.selRowIdx
+	if rowBefore != 1 {
+		t.Fatalf("setup: expected row=1 after one Down, got %d", rowBefore)
 	}
 	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
-	if got := m.issues.view.name(); got != "list" {
-		t.Fatalf("after Esc view=%q want list", got)
+	if got := m.issues.view.name(); got != "kanban" {
+		t.Fatalf("after Esc view=%q want kanban", got)
 	}
-	listAfter, ok := m.issues.view.(*listIssueView)
+	kAfter, ok := m.issues.view.(*kanbanIssueView)
 	if !ok {
-		t.Fatalf("post-back view is not list: %T", m.issues.view)
+		t.Fatalf("post-back view is not kanban: %T", m.issues.view)
 	}
-	if listAfter != listBefore {
-		t.Errorf("Esc returned a fresh listIssueView instead of restoring parent")
+	if kAfter != kBefore {
+		t.Errorf("Esc returned a fresh kanbanIssueView instead of restoring parent")
 	}
-	if listAfter.tbl.Cursor() != cursorBefore {
-		t.Errorf("cursor not preserved across detail round-trip: before=%d after=%d",
-			cursorBefore, listAfter.tbl.Cursor())
+	if kAfter.selColIdx != colBefore || kAfter.selRowIdx != rowBefore {
+		t.Errorf("kanban cursor not preserved across detail round-trip: "+
+			"before=(%d,%d) after=(%d,%d)",
+			colBefore, rowBefore, kAfter.selColIdx, kAfter.selRowIdx)
 	}
 }
 
-func TestIssues_BackspaceAlsoReturnsToList(t *testing.T) {
+func TestIssues_BackspaceAlsoReturnsToKanban(t *testing.T) {
 	m := enterIssuesScreen(t)
 	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.issues.view.name() != "detail" {
 		t.Fatalf("setup: not on detail")
 	}
 	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
-	if got := m.issues.view.name(); got != "list" {
-		t.Errorf("Backspace from detail view=%q want list", got)
+	if got := m.issues.view.name(); got != "kanban" {
+		t.Errorf("Backspace from detail view=%q want kanban", got)
 	}
 }
 
@@ -311,7 +271,7 @@ func TestIssues_DetailRendersDescriptionAndComments(t *testing.T) {
 	if target.number == 0 || target.description == "" || len(target.comments) == 0 {
 		t.Fatalf("setup: mock issue #12 should carry description + comments")
 	}
-	parent := newListIssueView(s)
+	parent := newKanbanIssueView(s)
 	d := newIssueDetailView(parent, target, 100, 30)
 	body := stripAnsi(d.view(s))
 	// Description text appears.
@@ -330,7 +290,7 @@ func TestIssues_DetailRendersDescriptionAndComments(t *testing.T) {
 }
 
 func TestIssues_DetailWithNoCommentsShowsPlaceholder(t *testing.T) {
-	parent := newListIssueView(newIssuesState())
+	parent := newKanbanIssueView(newIssuesState())
 	stub := issue{number: 999, title: "stub", description: "Body."}
 	d := newIssueDetailView(parent, stub, 80, 20)
 	body := stripAnsi(d.view(newIssuesState()))
@@ -340,7 +300,7 @@ func TestIssues_DetailWithNoCommentsShowsPlaceholder(t *testing.T) {
 }
 
 func TestIssues_DetailHeaderIncludesNumberAndTitle(t *testing.T) {
-	parent := newListIssueView(newIssuesState())
+	parent := newKanbanIssueView(newIssuesState())
 	d := newIssueDetailView(parent, issue{number: 42, title: "answer"}, 80, 20)
 	header := stripAnsi(d.header(newIssuesState()))
 	if !strings.Contains(header, "Issue #42") {
@@ -414,30 +374,35 @@ func enterIssuesScreen(t *testing.T) model {
 	return m
 }
 
-func TestIssues_MouseWheelDownAdvancesListCursor(t *testing.T) {
+func TestIssues_MouseWheelDownAdvancesKanbanRowCursor(t *testing.T) {
 	m := enterIssuesScreen(t)
-	v := m.issues.view.(*listIssueView)
-	if v.tbl.Cursor() != 0 {
-		t.Fatalf("setup: expected cursor=0, got %d", v.tbl.Cursor())
+	if !focusKanbanColumnWithRows(t, &m, 2) {
+		t.Skip("no kanban column has >= 2 issues for wheel test")
 	}
 	m, _ = runUpdate(t, m, tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: 50, Y: 5})
-	v = m.issues.view.(*listIssueView)
-	if v.tbl.Cursor() == 0 {
-		t.Errorf("cursor did not advance on wheel-down: %d", v.tbl.Cursor())
+	v := m.issues.view.(*kanbanIssueView)
+	if v.selRowIdx == 0 {
+		t.Errorf("row cursor did not advance on wheel-down: %d", v.selRowIdx)
 	}
 }
 
-func TestIssues_MouseWheelUpMovesCursorUp(t *testing.T) {
+func TestIssues_MouseWheelUpMovesKanbanRowCursorUp(t *testing.T) {
 	m := enterIssuesScreen(t)
-	// Position cursor mid-list first.
-	for i := 0; i < 5; i++ {
+	if !focusKanbanColumnWithRows(t, &m, 2) {
+		t.Skip("no kanban column has >= 2 issues for wheel test")
+	}
+	v := m.issues.view.(*kanbanIssueView)
+	loaded := len(v.columns[v.selColIdx].loaded)
+	// Walk a few rows down first so wheel-up has somewhere to go.
+	steps := min(3, loaded-1)
+	for i := 0; i < steps; i++ {
 		m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	before := m.issues.view.(*listIssueView).tbl.Cursor()
+	before := m.issues.view.(*kanbanIssueView).selRowIdx
 	m, _ = runUpdate(t, m, tea.MouseWheelMsg{Button: tea.MouseWheelUp, X: 50, Y: 5})
-	after := m.issues.view.(*listIssueView).tbl.Cursor()
+	after := m.issues.view.(*kanbanIssueView).selRowIdx
 	if after >= before {
-		t.Errorf("cursor did not move up on wheel-up: before=%d after=%d", before, after)
+		t.Errorf("row cursor did not move up on wheel-up: before=%d after=%d", before, after)
 	}
 }
 
@@ -642,26 +607,36 @@ func TestIssues_ScrollbarDragMovesScrollPosition(t *testing.T) {
 	}
 }
 
-func TestKanban_CtrlIFromListSwapsToKanban(t *testing.T) {
+func TestKanban_CtrlIOnSingleEntryCycleIsNoOp(t *testing.T) {
+	// issueViewLayers currently has one entry (kanban). Ctrl+I on
+	// the issues screen should call cycleView() but stay on the same
+	// kanban instance — rebuilding the view would reset the row/col
+	// cursor for no user-visible benefit. cycleView() is preserved
+	// as the cycle-infrastructure hook for future view types.
 	m := enterIssuesScreen(t)
-	if m.issues.view.name() != "list" {
-		t.Fatalf("setup: expected list view, got %q", m.issues.view.name())
+	before, ok := m.issues.view.(*kanbanIssueView)
+	if !ok {
+		t.Fatalf("setup: expected kanban view, got %T", m.issues.view)
 	}
 	m, _ = runUpdate(t, m, ctrlKey('i'))
-	if m.issues.view.name() != "kanban" {
-		t.Errorf("Ctrl+I from list should swap to kanban; got %q", m.issues.view.name())
+	after, ok := m.issues.view.(*kanbanIssueView)
+	if !ok {
+		t.Fatalf("Ctrl+I from kanban changed view type unexpectedly: %T", m.issues.view)
+	}
+	if after != before {
+		t.Errorf("Ctrl+I rebuilt the kanban view (lost the cursor); want same instance")
 	}
 }
 
-func TestKanban_CtrlICyclesBackToList(t *testing.T) {
-	m := enterIssuesScreen(t)
-	m, _ = runUpdate(t, m, ctrlKey('i'))
-	if m.issues.view.name() != "kanban" {
-		t.Fatalf("setup: expected kanban view")
-	}
-	m, _ = runUpdate(t, m, ctrlKey('i'))
-	if m.issues.view.name() != "list" {
-		t.Errorf("Ctrl+I from kanban should cycle to list; got %q", m.issues.view.name())
+func TestCycleView_SingleEntryRegistryReturnsFalse(t *testing.T) {
+	// Direct unit test on the cycle helper: with one layer registered,
+	// cycleView() reports no-move so callers can decide whether to
+	// run any cycle-side-effects (kanban initialLoad, etc.).
+	s := newIssuesState()
+	s.provider = newFakeMockProvider(mockIssues())
+	s.view = issueViewLayers[0].builder(s)
+	if got := s.cycleView(); got {
+		t.Errorf("cycleView with single-entry registry should return false, got true")
 	}
 }
 
@@ -950,17 +925,23 @@ func TestIssues_MockDataAllHaveDescription(t *testing.T) {
 
 func TestIssues_HeaderAndHintInScreenView(t *testing.T) {
 	m := enterIssuesScreen(t)
-	body := m.activeScreen().view(m)
+	body := stripAnsi(m.activeScreen().view(m))
 	if !strings.Contains(body, "Issues") {
 		t.Errorf("issues screen missing header: %q", body)
 	}
 	if !strings.Contains(body, "ctrl+o back to ask") {
 		t.Errorf("issues screen missing footer hint: %q", body)
 	}
-	// Column headers from bubbles/table should make it to the body.
-	for _, want := range []string{"ID", "Title", "Assigned", "Status", "Created"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("issues screen missing column header %q", want)
+	// Kanban header advertises the active view; tab strip surfaces
+	// the provider-supplied column labels so the user sees the full
+	// taxonomy at a glance.
+	if !strings.Contains(body, "kanban view") {
+		t.Errorf("issues screen header should call out 'kanban view': %q", body)
+	}
+	kv := m.issues.view.(*kanbanIssueView)
+	for _, col := range kv.columns {
+		if !strings.Contains(body, col.spec.Label) {
+			t.Errorf("issues screen missing kanban column label %q", col.spec.Label)
 		}
 	}
 }
@@ -1005,13 +986,12 @@ func TestIssues_LoadingStateRendersCenteredModal(t *testing.T) {
 	if !strings.Contains(body, "Reticulating splines...") {
 		t.Errorf("loading modal missing the picked message: %q", body)
 	}
-	// The list view's column headers must be suppressed while the
-	// modal is up — otherwise the user sees a half-rendered table
-	// peeking through the load.
-	for _, col := range []string{"ID", "Title", "Assigned", "Created"} {
-		if strings.Contains(body, col) {
-			t.Errorf("loading modal should suppress list column %q, but body=%q", col, body)
-		}
+	// Kanban chrome (the column tab strip + "kanban view" header
+	// label) must be suppressed while the modal is up — otherwise
+	// the user sees a half-rendered surface peeking through the
+	// load.
+	if strings.Contains(body, "kanban view") {
+		t.Errorf("loading modal should suppress the kanban-view header label, body=%q", body)
 	}
 }
 
@@ -1276,13 +1256,6 @@ func TestCtrlR_WhileSearchBoxOpenIsConsumedByTextInput(t *testing.T) {
 	}
 }
 
-func TestIssues_ListHintAdvertisesReload(t *testing.T) {
-	v := newListIssueView(newIssuesState())
-	if !strings.Contains(stripAnsi(v.hint()), "r reload") {
-		t.Errorf("list hint should advertise 'r reload', got %q", stripAnsi(v.hint()))
-	}
-}
-
 func TestIssues_KanbanHintAdvertisesReload(t *testing.T) {
 	s := newIssuesState()
 	seedMockIssues(s)
@@ -1293,7 +1266,7 @@ func TestIssues_KanbanHintAdvertisesReload(t *testing.T) {
 }
 
 func TestIssues_DetailHintDoesNotAdvertiseReload(t *testing.T) {
-	parent := newListIssueView(newIssuesState())
+	parent := newKanbanIssueView(newIssuesState())
 	d := newIssueDetailView(parent, issue{number: 1, title: "x"}, 80, 20)
 	if strings.Contains(stripAnsi(d.hint()), "r reload") {
 		t.Errorf("detail hint should NOT advertise 'r reload', got %q", stripAnsi(d.hint()))
@@ -1303,13 +1276,17 @@ func TestIssues_DetailHintDoesNotAdvertiseReload(t *testing.T) {
 func TestIssues_WheelDuringErrorIsNoOp(t *testing.T) {
 	m := enterIssuesScreen(t)
 	m.issues.loadErr = fmt.Errorf("boom")
-	// Cursor starts at 0; if wheel were honoured it would advance.
-	m, _ = runUpdate(t, m, tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: 50, Y: 5})
-	v, ok := m.issues.view.(*listIssueView)
+	v, ok := m.issues.view.(*kanbanIssueView)
 	if !ok {
-		t.Fatalf("setup: not on list view")
+		t.Fatalf("setup: not on kanban view")
 	}
-	if v.tbl.Cursor() != 0 {
-		t.Errorf("wheel-down during error should not advance cursor; got %d", v.tbl.Cursor())
+	beforeRow := v.selRowIdx
+	beforeCol := v.selColIdx
+	m, _ = runUpdate(t, m, tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: 50, Y: 5})
+	v = m.issues.view.(*kanbanIssueView)
+	if v.selRowIdx != beforeRow || v.selColIdx != beforeCol {
+		t.Errorf("wheel-down during error should not move cursor; "+
+			"before=(%d,%d) after=(%d,%d)",
+			beforeCol, beforeRow, v.selColIdx, v.selRowIdx)
 	}
 }

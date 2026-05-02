@@ -157,16 +157,21 @@ func (m *model) contentFingerprint() string {
 		shellLen = len(m.history[m.shellOutIdx].text)
 	}
 	// Mix the active screen + the issues cursor in. The issues body is
-	// driven by m.issues.view (a bubbles/table cursor), so without
-	// these terms a j/k stroke in the list view would hit a stale
-	// vbWithBar cache and never repaint the highlight.
+	// driven by m.issues.view (kanban col/row), so without these terms
+	// a j/k stroke would hit a stale vbWithBar cache and never repaint
+	// the highlight. We also mix in the loader frame so the high-fps
+	// animation isn't masked by the cache while the modal is up.
 	issueCursor := -1
+	loadingFrame := 0
 	if m.issues != nil {
-		if v, ok := m.issues.view.(*listIssueView); ok {
-			issueCursor = v.tbl.Cursor()
+		if v, ok := m.issues.view.(*kanbanIssueView); ok {
+			issueCursor = v.selColIdx*1_000_000 + v.selRowIdx
+		}
+		if m.issues.loading {
+			loadingFrame = m.issues.loadingFrame + 1
 		}
 	}
-	return fmt.Sprintf("%d|%d|%d|%d|%d", len(m.history), m.width, shellLen, int(m.screen), issueCursor)
+	return fmt.Sprintf("%d|%d|%d|%d|%d|%d", len(m.history), m.width, shellLen, int(m.screen), issueCursor, loadingFrame)
 }
 
 // estimateEntryLines returns the wrapped line count of entry idx
