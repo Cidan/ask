@@ -365,7 +365,7 @@ func TestCreateExternalWorktree_MakesSiblingAndBranch(t *testing.T) {
 	}
 	// The lock reason should be ours.
 	locks := worktreeLocks(dir)
-	reason, ok := locks[path]
+	reason, ok := worktreeLockReason(locks, path)
 	if !ok {
 		t.Errorf("worktree should be locked after createExternalWorktree; locks=%v", locks)
 	}
@@ -531,13 +531,47 @@ func TestWorktreeLocks_ParsesPorcelain(t *testing.T) {
 		t.Fatalf("createExternalWorktree: %v", err)
 	}
 	locks := worktreeLocks(dir)
-	if _, ok := locks[path]; !ok {
+	if _, ok := worktreeLockReason(locks, path); !ok {
 		t.Errorf("worktreeLocks missing %s; got %v", path, locks)
 	}
 	// Cleanup
 	runGit(t, dir, "worktree", "unlock", path)
 	runGit(t, dir, "worktree", "remove", "--force", path)
 	runGit(t, dir, "branch", "-D", "worktree-"+name)
+}
+
+func TestWorktreeLockReason_DirectHit(t *testing.T) {
+	locks := map[string]string{"/a/b": "ask:42"}
+	reason, ok := worktreeLockReason(locks, "/a/b")
+	if !ok || reason != "ask:42" {
+		t.Errorf("direct lookup miss: reason=%q ok=%v", reason, ok)
+	}
+}
+
+func TestWorktreeLockReason_FallsBackToEvalSymlinks(t *testing.T) {
+	canonical := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(canonical, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	resolved, err := filepath.EvalSymlinks(link)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	// Map keyed on the canonical form (what `git worktree list
+	// --porcelain` would produce); caller has the symlinked form.
+	locks := map[string]string{resolved: "ask:7"}
+	reason, ok := worktreeLockReason(locks, link)
+	if !ok || reason != "ask:7" {
+		t.Errorf("symlink-aware lookup miss: reason=%q ok=%v keys=%v", reason, ok, locks)
+	}
+}
+
+func TestWorktreeLockReason_MissReturnsFalse(t *testing.T) {
+	locks := map[string]string{"/x/y": "r"}
+	if _, ok := worktreeLockReason(locks, "/no/such"); ok {
+		t.Error("unrelated path should miss")
+	}
 }
 
 func TestEnsureResumeWorktree_NoopWhenEmpty(t *testing.T) {

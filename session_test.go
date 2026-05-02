@@ -78,7 +78,15 @@ func TestClaudeCandidateSessionDirs_ResolvesSymlinkedCwd(t *testing.T) {
 	if err := os.Symlink(canonical, link); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
-	_ = seedClaudeProjects(t, home, canonical, "S-canonical",
+	// On macOS t.TempDir() returns paths under /var which itself
+	// resolves through to /private/var; production code (correctly)
+	// EvalSymlinks all the way to the kernel-canonical form. Resolve
+	// here so the expected encoding matches that form on every OS.
+	resolvedCanonical, err := filepath.EvalSymlinks(canonical)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	_ = seedClaudeProjects(t, home, resolvedCanonical, "S-canonical",
 		`{"type":"user","message":{"role":"user","content":"hi"}}`)
 
 	dirs, err := claudeCandidateSessionDirs(link)
@@ -94,7 +102,7 @@ func TestClaudeCandidateSessionDirs_ResolvesSymlinkedCwd(t *testing.T) {
 		t.Errorf("first dir must stay on literal cwd for error reporting; got %+v", dirs[0])
 	}
 	wantCanonical := filepath.Join(home, ".claude", "projects",
-		strings.ReplaceAll(canonical, "/", "-"))
+		strings.ReplaceAll(resolvedCanonical, "/", "-"))
 	var found bool
 	for _, d := range dirs {
 		if d.dir == wantCanonical {

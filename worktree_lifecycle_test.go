@@ -287,7 +287,7 @@ func TestCreateWorktree_LocksItAsOurs(t *testing.T) {
 		t.Fatalf("createWorktree: %v", err)
 	}
 	locks := worktreeLocks(dir)
-	reason, ok := locks[path]
+	reason, ok := worktreeLockReason(locks, path)
 	if !ok {
 		t.Fatalf("new worktree should be locked; got locks=%v", locks)
 	}
