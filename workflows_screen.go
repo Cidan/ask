@@ -10,19 +10,28 @@ import (
 	lipgloss "charm.land/lipgloss/v2"
 )
 
-// workflowsBuilderLevel names the navigation depth inside the
-// workflows builder. Adding levels is a new constant; adding
-// sub-modals (e.g. the provider picker overlay) just gates input
-// behind a bool flag on workflowsBuilderState.
-type workflowsBuilderLevel int
+// workflowsBuilderFocus names which pane currently owns the cursor.
+// Tab swaps between the two; Enter on the left auto-shifts to right.
+type workflowsBuilderFocus int
 
 const (
-	workflowsLevelList  workflowsBuilderLevel = iota // workflow list
-	workflowsLevelSteps                              // step list for selected workflow
-	workflowsLevelStep                               // step editor (4 fields)
+	workflowsBuilderFocusLeft workflowsBuilderFocus = iota
+	workflowsBuilderFocusRight
 )
 
-// workflowsStepField is the focused field on the step-editor screen.
+// workflowsBuilderRightMode names what the right pane is rendering.
+// Driven by the left cursor (cursor on a workflow → steps mode;
+// cursor on the +New row → empty mode) plus an explicit promotion
+// to step mode when the user opens a step from the right pane.
+type workflowsBuilderRightMode int
+
+const (
+	workflowsBuilderRightEmpty workflowsBuilderRightMode = iota
+	workflowsBuilderRightSteps
+	workflowsBuilderRightStep
+)
+
+// workflowsStepField is the focused field on the step-detail pane.
 type workflowsStepField int
 
 const (
@@ -33,46 +42,49 @@ const (
 )
 
 // workflowsBuilderState bundles every per-tab editor surface so the
-// model.struct stays compact. Each level has its own cursor; the
-// inline name editor and prompt textarea are mutually exclusive
-// (only one input at a time). Disk writes happen on every commit so
-// "back" is never a save action — exit is just navigation.
+// model.struct stays compact. The data model is fully reactive: the
+// left cursor drives the right pane's content. Disk writes happen
+// on every commit so "back" is never a save action — exit is just
+// navigation.
 type workflowsBuilderState struct {
-	level workflowsBuilderLevel
-
-	// cwd is the project root used for loadConfig/saveConfig calls.
-	// Captured on screen entry and never changes for the lifetime of
-	// the builder; the builder is bound to one project at a time.
+	// cwd is the project root used for loadConfig / saveConfig.
+	// Captured on screen entry and never changes for the lifetime
+	// of the builder; the builder is bound to one project at a time.
 	cwd string
 
-	// listCursor is the row cursor on the workflow list; len(items)
-	// itself targets the trailing "+ New workflow" row.
+	// items is the local snapshot of cfg.Projects[cwd].Workflows.Items.
+	// Refreshed from disk on screen entry and after every commit so
+	// the screen always reflects persisted state.
+	items []workflowDef
+
+	// focus is the active pane.
+	focus workflowsBuilderFocus
+
+	// rightMode is what the right pane renders. Empty/steps is
+	// derived from the left cursor; step requires an explicit Enter
+	// from steps mode.
+	rightMode workflowsBuilderRightMode
+
+	// listCursor is the row cursor on the left pane. Row 0 is the
+	// "+ New workflow" affordance; rows 1..len(items) are the
+	// workflows in disk order.
 	listCursor int
 
-	// selectedWorkflow indexes the currently-edited workflow on the
-	// step list / step editor levels. Re-validated on every render
-	// against len(items).
-	selectedWorkflow int
-
-	// stepsCursor is the row cursor on the step list; len(steps)
-	// itself targets the trailing "+ New step" row.
+	// stepsCursor is the row cursor on the right(steps) pane. Row 0
+	// is the "+ New step" affordance; rows 1..len(steps) are the
+	// steps of the selected workflow.
 	stepsCursor int
 
-	// stepCursor is the focused field on the step editor.
-	stepCursor workflowsStepField
+	// stepFieldCursor is the focused field on the right(step) pane.
+	stepFieldCursor workflowsStepField
 
-	// renaming = "workflow" while the inline workflow name editor
-	// is open, "step" while the inline step name editor is open,
-	// "" otherwise. The draft buffer accumulates keystrokes; Enter
-	// commits, Esc cancels.
+	// renaming is "workflow" / "step" / "" — the inline rename
+	// editor's mode flag. While non-empty, keys feed renameDraft.
 	renaming    string
 	renameDraft string
 
 	// providerPicker / modelPicker flag the small overlays for
-	// step.Provider and step.Model selection. Each carries its own
-	// cursor; modelPickerOpts is rebuilt every time the provider
-	// picker commits so the model list always matches the freshly-
-	// selected provider's options.
+	// step.Provider and step.Model selection.
 	providerPicker  bool
 	providerCursor  int
 	modelPicker     bool
@@ -81,25 +93,16 @@ type workflowsBuilderState struct {
 
 	// prompt is the in-flight multi-line textarea editor for the
 	// step prompt. Non-nil while open; Enter inserts a newline,
-	// Ctrl+S commits, Esc cancels — same shape as the chat input
-	// but in a dedicated editor frame.
+	// Ctrl+S commits, Esc cancels.
 	prompt *textarea.Model
 
-	// confirming = "delete-workflow" or "delete-step" while a
-	// confirm overlay is up; "" otherwise. The 0/1 cursor swaps
-	// between Cancel and Delete; Enter on Delete commits.
+	// confirming is "delete-workflow" / "delete-step" / "" — the
+	// destructive confirm overlay's mode flag.
 	confirming    string
 	confirmCursor int
 
-	// toast carries a short status line ("workflow saved", "deleted",
-	// edit-blocked) shown in the help row for one render cycle. Not
-	// strictly required, but keeps the screen self-explaining.
+	// toast carries a short status line shown on the next render.
 	toast string
-
-	// items is the local snapshot of cfg.Projects[cwd].Workflows.Items.
-	// Refreshed from disk on screen entry and after every commit so
-	// the screen always reflects the persisted state.
-	items []workflowDef
 }
 
 // workflowsScreen is the screen-interface implementation. State lives
@@ -117,9 +120,7 @@ func (workflowsScreen) updateKey(m model, msg tea.KeyPressMsg) (model, tea.Cmd, 
 		return m, closeTabCmd(m.id), true
 	}
 	b := m.workflowsBuilder
-	// Mode/overlay precedence: confirm > rename > prompt > pickers
-	// > level. Each mode owns the keyboard until it dismisses, so
-	// stray keys can't leak into the level beneath.
+	// Overlay precedence: confirm > rename > prompt > pickers > pane focus.
 	if b.confirming != "" {
 		return m.workflowsBuilderUpdateConfirm(msg)
 	}
@@ -135,13 +136,23 @@ func (workflowsScreen) updateKey(m model, msg tea.KeyPressMsg) (model, tea.Cmd, 
 	if b.modelPicker {
 		return m.workflowsBuilderUpdateModelPicker(msg)
 	}
-	switch b.level {
-	case workflowsLevelList:
-		return m.workflowsBuilderUpdateList(msg)
-	case workflowsLevelSteps:
-		return m.workflowsBuilderUpdateSteps(msg)
-	case workflowsLevelStep:
-		return m.workflowsBuilderUpdateStep(msg)
+	switch b.focus {
+	case workflowsBuilderFocusLeft:
+		return m.workflowsBuilderUpdateLeft(msg)
+	case workflowsBuilderFocusRight:
+		switch b.rightMode {
+		case workflowsBuilderRightSteps:
+			return m.workflowsBuilderUpdateRightSteps(msg)
+		case workflowsBuilderRightStep:
+			return m.workflowsBuilderUpdateRightStep(msg)
+		default:
+			// rightMode==empty + focus==right shouldn't normally
+			// happen (left is the only entry point that promotes
+			// rightMode), but the defensive fall-through to the
+			// left handler keeps the screen recoverable.
+			b.focus = workflowsBuilderFocusLeft
+			return m.workflowsBuilderUpdateLeft(msg)
+		}
 	}
 	return m, nil, true
 }
@@ -154,39 +165,79 @@ func (workflowsScreen) view(m model) string {
 }
 
 // newWorkflowsBuilderState seeds a fresh builder pinned to cwd,
-// hydrating the local items snapshot from disk. Always non-nil.
+// hydrating the local items snapshot from disk and parking the
+// cursor on "+ New workflow" for first-time visitors.
 func newWorkflowsBuilderState(cwd string) *workflowsBuilderState {
-	b := &workflowsBuilderState{cwd: cwd}
+	b := &workflowsBuilderState{cwd: cwd, focus: workflowsBuilderFocusLeft}
 	b.refreshItems()
+	b.syncRightFromLeft()
 	return b
 }
 
-// refreshItems re-reads the workflow list from disk so the builder
-// always reflects the persisted state. Cursor positions are clamped
-// to the new list length so an out-of-range cursor (e.g. after
-// delete) snaps to the closest valid row.
+// refreshItems re-reads the workflow list from disk and clamps every
+// cursor to the new shape. Called on screen entry and after every
+// commit.
 func (b *workflowsBuilderState) refreshItems() {
 	b.items = projectWorkflows(b.cwd)
-	if b.listCursor > len(b.items) {
-		b.listCursor = len(b.items)
+	maxList := len(b.items) // valid range: 0 (+ New) .. len(items)
+	if b.listCursor > maxList {
+		b.listCursor = maxList
 	}
-	if b.selectedWorkflow >= len(b.items) {
-		b.selectedWorkflow = len(b.items) - 1
-		if b.selectedWorkflow < 0 {
-			b.selectedWorkflow = 0
-		}
+	if b.listCursor < 0 {
+		b.listCursor = 0
 	}
-	if b.selectedWorkflow >= 0 && b.selectedWorkflow < len(b.items) {
-		steps := b.items[b.selectedWorkflow].Steps
-		if b.stepsCursor > len(steps) {
-			b.stepsCursor = len(steps)
+	if idx, ok := b.selectedWorkflowIdx(); ok {
+		steps := b.items[idx].Steps
+		maxSteps := len(steps) // valid range: 0 (+ New step) .. len(steps)
+		if b.stepsCursor > maxSteps {
+			b.stepsCursor = maxSteps
 		}
 	}
 }
 
-// commitItems writes b.items back to disk under cwd's project entry,
-// then re-hydrates so any normalisation the persistence layer applies
-// is reflected in the local copy.
+// syncRightFromLeft is the reactive sync: the right pane's mode
+// follows the left cursor whenever the user navigates. Cursor on
+// "+ New workflow" → empty pane. Cursor on a workflow → steps pane,
+// stepsCursor reset to the +New step row.
+//
+// Called from updateLeft after every cursor mutation so the user's
+// glance at the right pane is always accurate to where they are.
+func (b *workflowsBuilderState) syncRightFromLeft() {
+	if _, ok := b.selectedWorkflowIdx(); !ok {
+		b.rightMode = workflowsBuilderRightEmpty
+		return
+	}
+	b.rightMode = workflowsBuilderRightSteps
+	b.stepsCursor = 0
+}
+
+// selectedWorkflowIdx maps the left cursor to a workflow index.
+// Returns ok=false when the cursor is on the "+ New workflow" row
+// (no workflow selected).
+func (b *workflowsBuilderState) selectedWorkflowIdx() (int, bool) {
+	if b.listCursor <= 0 || b.listCursor > len(b.items) {
+		return 0, false
+	}
+	return b.listCursor - 1, true
+}
+
+// selectedStepIdx maps the right(steps) cursor to a step index for
+// the selected workflow. ok=false when the cursor is on "+ New step"
+// or no workflow is selected.
+func (b *workflowsBuilderState) selectedStepIdx() (workflowIdx, stepIdx int, ok bool) {
+	wIdx, hasWorkflow := b.selectedWorkflowIdx()
+	if !hasWorkflow {
+		return 0, 0, false
+	}
+	steps := b.items[wIdx].Steps
+	if b.stepsCursor <= 0 || b.stepsCursor > len(steps) {
+		return wIdx, 0, false
+	}
+	return wIdx, b.stepsCursor - 1, true
+}
+
+// commitItems writes b.items back to disk and re-hydrates so any
+// normalisation the persistence layer applies is reflected locally.
 func (b *workflowsBuilderState) commitItems() error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -206,10 +257,9 @@ func (b *workflowsBuilderState) commitItems() error {
 	return nil
 }
 
-// uniqueWorkflowName returns a name not already used by any
-// workflow in b.items. Used by "+ New workflow" / "Duplicate" so the
-// list never has two rows that collide on Name (the runtime / picker
-// look up by Name).
+// uniqueWorkflowName returns a name not used by any workflow in
+// b.items. Used by "+ New workflow" so the list never has two rows
+// that collide on Name (the runtime / picker key on Name).
 func (b *workflowsBuilderState) uniqueWorkflowName(seed string) string {
 	if seed == "" {
 		seed = "untitled"
@@ -229,18 +279,18 @@ func (b *workflowsBuilderState) uniqueWorkflowName(seed string) string {
 	}
 }
 
-// uniqueStepName returns a step name not already used inside the
-// workflow at b.selectedWorkflow. Same shape as uniqueWorkflowName,
-// just scoped per-workflow.
+// uniqueStepName returns a step name not used inside the selected
+// workflow.
 func (b *workflowsBuilderState) uniqueStepName(seed string) string {
 	if seed == "" {
 		seed = "step"
 	}
-	if b.selectedWorkflow < 0 || b.selectedWorkflow >= len(b.items) {
+	wIdx, ok := b.selectedWorkflowIdx()
+	if !ok {
 		return seed
 	}
 	taken := make(map[string]struct{})
-	for _, s := range b.items[b.selectedWorkflow].Steps {
+	for _, s := range b.items[wIdx].Steps {
 		taken[s.Name] = struct{}{}
 	}
 	if _, clash := taken[seed]; !clash {
@@ -254,14 +304,15 @@ func (b *workflowsBuilderState) uniqueStepName(seed string) string {
 	}
 }
 
-// activeWorkflowGuard returns the toast string when destructive
-// edits are blocked because the current workflow is running. Empty
-// when no guard applies.
-func (b *workflowsBuilderState) activeWorkflowGuard() string {
-	if b.selectedWorkflow < 0 || b.selectedWorkflow >= len(b.items) {
+// runningGuard returns the toast string when destructive edits are
+// blocked because the workflow under the left cursor is running.
+// Empty when no guard applies.
+func (b *workflowsBuilderState) runningGuard() string {
+	wIdx, ok := b.selectedWorkflowIdx()
+	if !ok {
 		return ""
 	}
-	name := b.items[b.selectedWorkflow].Name
+	name := b.items[wIdx].Name
 	active := workflowTracker().activeWorkflowNames()
 	if _, running := active[name]; running {
 		return "blocked: workflow is running"
@@ -269,63 +320,70 @@ func (b *workflowsBuilderState) activeWorkflowGuard() string {
 	return ""
 }
 
-// ----- Level 0: workflow list -----
+// ----- Left pane (workflow list) -----
 
-func (m model) workflowsBuilderUpdateList(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
+func (m model) workflowsBuilderUpdateLeft(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 	b := m.workflowsBuilder
 	switch {
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
-		// Esc on level 0: leave the screen back to ask.
 		m.workflowsBuilder = nil
 		return m.switchScreen(screenAsk), nil, true
+	case msg.Code == tea.KeyTab:
+		// Tab → right (only if right has content; otherwise no-op).
+		if b.rightMode != workflowsBuilderRightEmpty {
+			b.focus = workflowsBuilderFocusRight
+		}
+		return m, nil, true
 	case msg.Code == tea.KeyUp:
 		if b.listCursor > 0 {
 			b.listCursor--
+			b.syncRightFromLeft()
 		}
 		return m, nil, true
 	case msg.Code == tea.KeyDown:
-		max := len(b.items)
-		if b.listCursor < max {
+		if b.listCursor < len(b.items) {
 			b.listCursor++
+			b.syncRightFromLeft()
 		}
 		return m, nil, true
 	case msg.Code == tea.KeyEnter:
-		if b.listCursor == len(b.items) {
-			// "+ New workflow" — create with a unique seed name and
-			// drill into Level 1 immediately so the user can start
-			// adding steps.
+		if b.listCursor == 0 {
+			// "+ New workflow" → create + drill into the new entry.
 			b.items = append(b.items, workflowDef{Name: b.uniqueWorkflowName("untitled")})
 			if err := b.commitItems(); err != nil {
 				b.toast = "save failed: " + err.Error()
 				return m, nil, true
 			}
-			b.selectedWorkflow = len(b.items) - 1
+			// New row goes at the end; jump there.
+			b.listCursor = len(b.items)
 			b.stepsCursor = 0
-			b.level = workflowsLevelSteps
+			b.rightMode = workflowsBuilderRightSteps
+			b.focus = workflowsBuilderFocusRight
 			return m, nil, true
 		}
-		b.selectedWorkflow = b.listCursor
-		b.stepsCursor = 0
-		b.level = workflowsLevelSteps
+		// Enter on an existing workflow → focus shifts right;
+		// rightMode is already steps via syncRightFromLeft.
+		b.focus = workflowsBuilderFocusRight
+		b.rightMode = workflowsBuilderRightSteps
 		return m, nil, true
 	case msg.Mod == 0 && msg.Code == 'r':
-		// Inline rename of the focused workflow row.
-		if b.listCursor < 0 || b.listCursor >= len(b.items) {
+		_, ok := b.selectedWorkflowIdx()
+		if !ok {
 			return m, nil, true
 		}
-		if guard := b.activeWorkflowGuardForCursor(b.listCursor); guard != "" {
+		if guard := b.runningGuard(); guard != "" {
 			b.toast = guard
 			return m, nil, true
 		}
 		b.renaming = "workflow"
-		b.renameDraft = b.items[b.listCursor].Name
+		b.renameDraft = b.items[b.listCursor-1].Name
 		return m, nil, true
 	case msg.Mod == 0 && msg.Code == 'd':
-		// Confirm delete of the focused workflow row.
-		if b.listCursor < 0 || b.listCursor >= len(b.items) {
+		_, ok := b.selectedWorkflowIdx()
+		if !ok {
 			return m, nil, true
 		}
-		if guard := b.activeWorkflowGuardForCursor(b.listCursor); guard != "" {
+		if guard := b.runningGuard(); guard != "" {
 			b.toast = guard
 			return m, nil, true
 		}
@@ -336,34 +394,25 @@ func (m model) workflowsBuilderUpdateList(msg tea.KeyPressMsg) (model, tea.Cmd, 
 	return m, nil, true
 }
 
-// activeWorkflowGuardForCursor is the same as activeWorkflowGuard
-// but evaluated against an arbitrary list cursor, not b.selectedWorkflow.
-// Used by the list-level rename/delete which targets the row under
-// the cursor rather than the drilled-in workflow.
-func (b *workflowsBuilderState) activeWorkflowGuardForCursor(idx int) string {
-	if idx < 0 || idx >= len(b.items) {
-		return ""
-	}
-	name := b.items[idx].Name
-	active := workflowTracker().activeWorkflowNames()
-	if _, running := active[name]; running {
-		return "blocked: workflow is running"
-	}
-	return ""
-}
+// ----- Right(steps) pane -----
 
-// ----- Level 1: step list (workflow's steps) -----
-
-func (m model) workflowsBuilderUpdateSteps(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
+func (m model) workflowsBuilderUpdateRightSteps(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 	b := m.workflowsBuilder
-	if b.selectedWorkflow < 0 || b.selectedWorkflow >= len(b.items) {
-		b.level = workflowsLevelList
+	wIdx, ok := b.selectedWorkflowIdx()
+	if !ok {
+		// No workflow selected — nothing to render here. Bounce
+		// focus back to left.
+		b.focus = workflowsBuilderFocusLeft
 		return m, nil, true
 	}
-	steps := b.items[b.selectedWorkflow].Steps
+	steps := b.items[wIdx].Steps
 	switch {
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
-		b.level = workflowsLevelList
+		// Esc on right(steps) returns focus to left.
+		b.focus = workflowsBuilderFocusLeft
+		return m, nil, true
+	case msg.Code == tea.KeyTab:
+		b.focus = workflowsBuilderFocusLeft
 		return m, nil, true
 	case msg.Code == tea.KeyUp:
 		if b.stepsCursor > 0 {
@@ -376,8 +425,9 @@ func (m model) workflowsBuilderUpdateSteps(msg tea.KeyPressMsg) (model, tea.Cmd,
 		}
 		return m, nil, true
 	case msg.Code == tea.KeyEnter:
-		if b.stepsCursor == len(steps) {
-			if guard := b.activeWorkflowGuard(); guard != "" {
+		if b.stepsCursor == 0 {
+			// "+ New step" → create + drop into step details.
+			if guard := b.runningGuard(); guard != "" {
 				b.toast = guard
 				return m, nil, true
 			}
@@ -385,7 +435,7 @@ func (m model) workflowsBuilderUpdateSteps(msg tea.KeyPressMsg) (model, tea.Cmd,
 			if len(providerRegistry) > 0 {
 				defaultProvider = providerRegistry[0].ID()
 			}
-			b.items[b.selectedWorkflow].Steps = append(steps, workflowStep{
+			b.items[wIdx].Steps = append(steps, workflowStep{
 				Name:     b.uniqueStepName("step"),
 				Provider: defaultProvider,
 			})
@@ -393,31 +443,21 @@ func (m model) workflowsBuilderUpdateSteps(msg tea.KeyPressMsg) (model, tea.Cmd,
 				b.toast = "save failed: " + err.Error()
 				return m, nil, true
 			}
-			b.stepsCursor = len(b.items[b.selectedWorkflow].Steps) - 1
-			b.stepCursor = workflowsStepFieldName
-			b.level = workflowsLevelStep
+			// Jump cursor onto the new step.
+			b.stepsCursor = len(b.items[wIdx].Steps)
+			b.rightMode = workflowsBuilderRightStep
+			b.stepFieldCursor = workflowsStepFieldName
 			return m, nil, true
 		}
-		b.stepCursor = workflowsStepFieldName
-		b.level = workflowsLevelStep
-		return m, nil, true
-	case msg.Mod == 0 && msg.Code == 'r':
-		// 'r' on the step list renames the parent workflow (the
-		// workflow name is rendered in the title; rename is the
-		// only way to change it from this level). Step rename is on
-		// the step-editor level.
-		if guard := b.activeWorkflowGuard(); guard != "" {
-			b.toast = guard
-			return m, nil, true
-		}
-		b.renaming = "workflow"
-		b.renameDraft = b.items[b.selectedWorkflow].Name
+		// Enter on an existing step → step details.
+		b.rightMode = workflowsBuilderRightStep
+		b.stepFieldCursor = workflowsStepFieldName
 		return m, nil, true
 	case msg.Mod == 0 && msg.Code == 'd':
-		if b.stepsCursor < 0 || b.stepsCursor >= len(steps) {
+		if b.stepsCursor == 0 {
 			return m, nil, true
 		}
-		if guard := b.activeWorkflowGuard(); guard != "" {
+		if guard := b.runningGuard(); guard != "" {
 			b.toast = guard
 			return m, nil, true
 		}
@@ -428,52 +468,55 @@ func (m model) workflowsBuilderUpdateSteps(msg tea.KeyPressMsg) (model, tea.Cmd,
 	return m, nil, true
 }
 
-// ----- Level 2: step editor -----
+// ----- Right(step) pane -----
 
-func (m model) workflowsBuilderUpdateStep(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
+func (m model) workflowsBuilderUpdateRightStep(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 	b := m.workflowsBuilder
-	if b.selectedWorkflow < 0 || b.selectedWorkflow >= len(b.items) {
-		b.level = workflowsLevelList
-		return m, nil, true
-	}
-	steps := b.items[b.selectedWorkflow].Steps
-	if b.stepsCursor < 0 || b.stepsCursor >= len(steps) {
-		b.level = workflowsLevelSteps
+	wIdx, sIdx, ok := b.selectedStepIdx()
+	if !ok {
+		b.rightMode = workflowsBuilderRightSteps
 		return m, nil, true
 	}
 	switch {
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
-		b.level = workflowsLevelSteps
+		// Esc on right(step) pops back to right(steps), keeps focus.
+		b.rightMode = workflowsBuilderRightSteps
+		return m, nil, true
+	case msg.Code == tea.KeyTab:
+		// Tab on right(step) bounces focus to left, keeps the step
+		// pane state so a later Tab back returns the user to the
+		// same field.
+		b.focus = workflowsBuilderFocusLeft
 		return m, nil, true
 	case msg.Code == tea.KeyUp:
-		if b.stepCursor > 0 {
-			b.stepCursor--
+		if b.stepFieldCursor > 0 {
+			b.stepFieldCursor--
 		}
 		return m, nil, true
 	case msg.Code == tea.KeyDown:
-		if b.stepCursor < workflowsStepFieldPrompt {
-			b.stepCursor++
+		if b.stepFieldCursor < workflowsStepFieldPrompt {
+			b.stepFieldCursor++
 		}
 		return m, nil, true
 	case msg.Code == tea.KeyEnter:
-		if guard := b.activeWorkflowGuard(); guard != "" {
+		if guard := b.runningGuard(); guard != "" {
 			b.toast = guard
 			return m, nil, true
 		}
-		switch b.stepCursor {
+		step := b.items[wIdx].Steps[sIdx]
+		switch b.stepFieldCursor {
 		case workflowsStepFieldName:
 			b.renaming = "step"
-			b.renameDraft = steps[b.stepsCursor].Name
+			b.renameDraft = step.Name
 		case workflowsStepFieldProvider:
 			b.providerPicker = true
-			b.providerCursor = indexOfRegisteredProvider(steps[b.stepsCursor].Provider)
+			b.providerCursor = indexOfRegisteredProvider(step.Provider)
 		case workflowsStepFieldModel:
-			step := steps[b.stepsCursor]
 			b.modelPickerOpts = modelOptionsForProvider(step.Provider)
 			b.modelPicker = true
 			b.modelCursor = indexOfModel(b.modelPickerOpts, step.Model)
 		case workflowsStepFieldPrompt:
-			ta := newPromptTextarea(steps[b.stepsCursor].Prompt)
+			ta := newPromptTextarea(step.Prompt)
 			b.prompt = &ta
 		}
 		return m, nil, true
@@ -506,8 +549,7 @@ func modelOptionsForProvider(id string) []string {
 }
 
 // indexOfModel returns the slice index whose label equals `model`,
-// or 0 when no match. Mirrors indexOfRegisteredProvider for the
-// model row.
+// or 0 when no match.
 func indexOfModel(opts []string, model string) int {
 	for i, o := range opts {
 		if o == model {
@@ -518,9 +560,7 @@ func indexOfModel(opts []string, model string) int {
 }
 
 // newPromptTextarea spins up a multi-line textarea seeded with the
-// current step prompt. Layout is computed by the renderer; this
-// helper just bakes the keymap (Enter inserts newline, Ctrl+S
-// commits is handled by the screen, not the bubble) and the value.
+// current step prompt.
 func newPromptTextarea(seed string) textarea.Model {
 	ta := textarea.New()
 	ta.Prompt = ""
@@ -532,9 +572,8 @@ func newPromptTextarea(seed string) textarea.Model {
 	ta.SetHeight(12)
 	ta.SetWidth(60)
 	// Enter inserts a newline; Ctrl+S commits (handled by the
-	// screen update). This matches the chat-input UX on
-	// Shift+Enter — for a dedicated multiline editor it makes more
-	// sense for plain Enter to be the newline.
+	// screen update). For a dedicated multiline editor it makes
+	// more sense for plain Enter to be the newline.
 	ta.KeyMap.InsertNewline = key.NewBinding(
 		key.WithKeys("enter", "shift+enter", "ctrl+j"),
 	)
@@ -568,12 +607,11 @@ func (m model) workflowsBuilderUpdateProviderPicker(msg tea.KeyPressMsg) (model,
 			return m, nil, true
 		}
 		newID := providerRegistry[b.providerCursor].ID()
-		if b.selectedWorkflow >= 0 && b.selectedWorkflow < len(b.items) &&
-			b.stepsCursor >= 0 && b.stepsCursor < len(b.items[b.selectedWorkflow].Steps) {
-			step := &b.items[b.selectedWorkflow].Steps[b.stepsCursor]
+		if wIdx, sIdx, ok := b.selectedStepIdx(); ok {
+			step := &b.items[wIdx].Steps[sIdx]
 			if step.Provider != newID {
 				step.Provider = newID
-				step.Model = "" // reset to provider default; user picks a fresh one if they want
+				step.Model = "" // reset to provider default; user picks fresh
 			}
 			if err := b.commitItems(); err != nil {
 				b.toast = "save failed: " + err.Error()
@@ -609,9 +647,8 @@ func (m model) workflowsBuilderUpdateModelPicker(msg tea.KeyPressMsg) (model, te
 			return m, nil, true
 		}
 		picked := b.modelPickerOpts[b.modelCursor]
-		if b.selectedWorkflow >= 0 && b.selectedWorkflow < len(b.items) &&
-			b.stepsCursor >= 0 && b.stepsCursor < len(b.items[b.selectedWorkflow].Steps) {
-			b.items[b.selectedWorkflow].Steps[b.stepsCursor].Model = picked
+		if wIdx, sIdx, ok := b.selectedStepIdx(); ok {
+			b.items[wIdx].Steps[sIdx].Model = picked
 			if err := b.commitItems(); err != nil {
 				b.toast = "save failed: " + err.Error()
 			}
@@ -639,40 +676,32 @@ func (m model) workflowsBuilderUpdateRename(msg tea.KeyPressMsg) (model, tea.Cmd
 		}
 		switch b.renaming {
 		case "workflow":
-			idx := b.listCursor
-			if b.level == workflowsLevelSteps || b.level == workflowsLevelStep {
-				idx = b.selectedWorkflow
-			}
-			if idx < 0 || idx >= len(b.items) {
+			wIdx, ok := b.selectedWorkflowIdx()
+			if !ok {
 				b.renaming = ""
 				return m, nil, true
 			}
-			// Reject name collisions to keep the picker / runtime
-			// lookup stable.
 			for i, w := range b.items {
-				if i != idx && w.Name == draft {
+				if i != wIdx && w.Name == draft {
 					b.toast = "another workflow already uses that name"
 					return m, nil, true
 				}
 			}
-			b.items[idx].Name = draft
+			b.items[wIdx].Name = draft
 		case "step":
-			if b.selectedWorkflow < 0 || b.selectedWorkflow >= len(b.items) {
+			wIdx, sIdx, ok := b.selectedStepIdx()
+			if !ok {
 				b.renaming = ""
 				return m, nil, true
 			}
-			steps := b.items[b.selectedWorkflow].Steps
-			if b.stepsCursor < 0 || b.stepsCursor >= len(steps) {
-				b.renaming = ""
-				return m, nil, true
-			}
+			steps := b.items[wIdx].Steps
 			for i, s := range steps {
-				if i != b.stepsCursor && s.Name == draft {
+				if i != sIdx && s.Name == draft {
 					b.toast = "another step in this workflow already uses that name"
 					return m, nil, true
 				}
 			}
-			steps[b.stepsCursor].Name = draft
+			steps[sIdx].Name = draft
 		}
 		if err := b.commitItems(); err != nil {
 			b.toast = "save failed: " + err.Error()
@@ -705,11 +734,9 @@ func (m model) workflowsBuilderUpdatePrompt(msg tea.KeyPressMsg) (model, tea.Cmd
 		b.prompt = nil
 		return m, nil, true
 	case msg.Mod == tea.ModCtrl && msg.Code == 's':
-		// Commit the prompt to the current step.
 		val := b.prompt.Value()
-		if b.selectedWorkflow >= 0 && b.selectedWorkflow < len(b.items) &&
-			b.stepsCursor >= 0 && b.stepsCursor < len(b.items[b.selectedWorkflow].Steps) {
-			b.items[b.selectedWorkflow].Steps[b.stepsCursor].Prompt = val
+		if wIdx, sIdx, ok := b.selectedStepIdx(); ok {
+			b.items[wIdx].Steps[sIdx].Prompt = val
 			if err := b.commitItems(); err != nil {
 				b.toast = "save failed: " + err.Error()
 			}
@@ -751,26 +778,37 @@ func (m model) workflowsBuilderUpdateConfirm(msg tea.KeyPressMsg) (model, tea.Cm
 		}
 		switch b.confirming {
 		case "delete-workflow":
-			idx := b.listCursor
-			if idx < 0 || idx >= len(b.items) {
+			wIdx, ok := b.selectedWorkflowIdx()
+			if !ok {
 				b.confirming = ""
 				return m, nil, true
 			}
-			b.items = append(b.items[:idx], b.items[idx+1:]...)
+			b.items = append(b.items[:wIdx], b.items[wIdx+1:]...)
+			// Clamp cursor and resync the right pane to whatever
+			// is now under it.
+			if b.listCursor > len(b.items) {
+				b.listCursor = len(b.items)
+			}
 		case "delete-step":
-			if b.selectedWorkflow < 0 || b.selectedWorkflow >= len(b.items) {
+			wIdx, sIdx, ok := b.selectedStepIdx()
+			if !ok {
 				b.confirming = ""
 				return m, nil, true
 			}
-			steps := b.items[b.selectedWorkflow].Steps
-			if b.stepsCursor < 0 || b.stepsCursor >= len(steps) {
-				b.confirming = ""
-				return m, nil, true
+			steps := b.items[wIdx].Steps
+			b.items[wIdx].Steps = append(steps[:sIdx], steps[sIdx+1:]...)
+			if b.stepsCursor > len(b.items[wIdx].Steps) {
+				b.stepsCursor = len(b.items[wIdx].Steps)
 			}
-			b.items[b.selectedWorkflow].Steps = append(steps[:b.stepsCursor], steps[b.stepsCursor+1:]...)
+			b.rightMode = workflowsBuilderRightSteps
 		}
 		if err := b.commitItems(); err != nil {
 			b.toast = "save failed: " + err.Error()
+		}
+		// Re-sync right after refresh in case the deleted entry
+		// changed which workflow the cursor sits on.
+		if b.confirming == "delete-workflow" {
+			b.syncRightFromLeft()
 		}
 		b.confirming = ""
 		b.confirmCursor = 0
@@ -779,7 +817,15 @@ func (m model) workflowsBuilderUpdateConfirm(msg tea.KeyPressMsg) (model, tea.Cm
 	return m, nil, true
 }
 
-// ----- Render -----
+// ----- Render (split-screen) -----
+
+// workflowsLeftPaneMinWidth / MaxWidth bound the left pane so a very
+// narrow terminal still works and a very wide one doesn't waste
+// space.
+const (
+	workflowsLeftPaneMinWidth = 28
+	workflowsLeftPaneMaxWidth = 48
+)
 
 func (b *workflowsBuilderState) render(width, height int) string {
 	switch {
@@ -794,49 +840,87 @@ func (b *workflowsBuilderState) render(width, height int) string {
 	case b.modelPicker:
 		return b.renderModelPicker(width, height)
 	}
-	switch b.level {
-	case workflowsLevelList:
-		return b.renderList(width, height)
-	case workflowsLevelSteps:
-		return b.renderSteps(width, height)
-	case workflowsLevelStep:
-		return b.renderStep(width, height)
+	leftW := width / 3
+	if leftW < workflowsLeftPaneMinWidth {
+		leftW = workflowsLeftPaneMinWidth
+	}
+	if leftW > workflowsLeftPaneMaxWidth {
+		leftW = workflowsLeftPaneMaxWidth
+	}
+	if leftW > width-workflowsLeftPaneMinWidth {
+		// Pathologically narrow terminal: clamp so right still has
+		// room for at least one field row.
+		leftW = width / 2
+	}
+	rightW := width - leftW
+	left := b.renderLeftPane(leftW, height)
+	right := b.renderRightPane(rightW, height)
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+}
+
+// renderLeftPane draws the workflow list. "+ New workflow" is row 0
+// so the create affordance is always discoverable at the top.
+func (b *workflowsBuilderState) renderLeftPane(width, height int) string {
+	rows := []configItem{
+		{name: "+ New workflow", key: ""},
+	}
+	for _, w := range b.items {
+		desc := stepsCount(len(w.Steps))
+		rows = append(rows, configItem{name: w.Name, key: desc})
+	}
+	hint := "↑/↓ navigate · enter open · r rename · d delete · esc back"
+	toast := b.consumeToast()
+	if toast != "" {
+		hint = toast + " · " + hint
+	}
+	return renderWorkflowsPane(workflowsPaneArgs{
+		width:    width,
+		height:   height,
+		title:    "Workflows",
+		subtitle: "Select or create a workflow",
+		rows:     rows,
+		cursor:   b.listCursor,
+		active:   b.focus == workflowsBuilderFocusLeft,
+		hint:     hint,
+	})
+}
+
+// renderRightPane draws the right side: empty placeholder, steps
+// list, or step details depending on rightMode + listCursor.
+func (b *workflowsBuilderState) renderRightPane(width, height int) string {
+	switch b.rightMode {
+	case workflowsBuilderRightEmpty:
+		return b.renderRightEmpty(width, height)
+	case workflowsBuilderRightSteps:
+		return b.renderRightSteps(width, height)
+	case workflowsBuilderRightStep:
+		return b.renderRightStep(width, height)
 	}
 	return ""
 }
 
-func (b *workflowsBuilderState) renderList(width, height int) string {
-	rows := make([]configItem, 0, len(b.items)+1)
-	for _, w := range b.items {
-		desc := fmt.Sprintf("%d step", len(w.Steps))
-		if len(w.Steps) != 1 {
-			desc = fmt.Sprintf("%d steps", len(w.Steps))
-		}
-		rows = append(rows, configItem{name: w.Name, key: desc})
-	}
-	rows = append(rows, configItem{name: "+ New workflow", key: ""})
-	help := "↑/↓ navigate · enter open · r rename · d delete · esc back"
-	if b.toast != "" {
-		help = b.toast + " · " + help
-		b.toast = ""
-	}
-	return renderLayeredConfigBox(layeredConfigBoxArgs{
-		width:      width,
-		height:     height,
-		title:      "Workflows",
-		promptLine: configPromptStyle.Render("> ") + dimStyle.Render("Select or create a workflow"),
-		items:      rows,
-		cursor:     b.listCursor,
-		helpText:   help,
+func (b *workflowsBuilderState) renderRightEmpty(width, height int) string {
+	return renderWorkflowsPane(workflowsPaneArgs{
+		width:    width,
+		height:   height,
+		title:    "Steps",
+		subtitle: "Pick a workflow on the left to view its steps",
+		rows:     nil,
+		cursor:   0,
+		active:   b.focus == workflowsBuilderFocusRight,
+		hint:     "tab focus left",
 	})
 }
 
-func (b *workflowsBuilderState) renderSteps(width, height int) string {
-	if b.selectedWorkflow < 0 || b.selectedWorkflow >= len(b.items) {
-		return b.renderList(width, height)
+func (b *workflowsBuilderState) renderRightSteps(width, height int) string {
+	wIdx, ok := b.selectedWorkflowIdx()
+	if !ok {
+		return b.renderRightEmpty(width, height)
 	}
-	wf := b.items[b.selectedWorkflow]
-	rows := make([]configItem, 0, len(wf.Steps)+1)
+	wf := b.items[wIdx]
+	rows := []configItem{
+		{name: "+ New step", key: ""},
+	}
 	for _, s := range wf.Steps {
 		desc := s.Provider
 		if s.Model != "" {
@@ -844,36 +928,32 @@ func (b *workflowsBuilderState) renderSteps(width, height int) string {
 		}
 		rows = append(rows, configItem{name: s.Name, key: desc})
 	}
-	rows = append(rows, configItem{name: "+ New step", key: ""})
-	help := "↑/↓ navigate · enter edit · r rename workflow · d delete step · esc back"
-	if b.toast != "" {
-		help = b.toast + " · " + help
-		b.toast = ""
+	hint := "↑/↓ navigate · enter edit · d delete · tab focus left · esc back"
+	toast := b.consumeToast()
+	if toast != "" {
+		hint = toast + " · " + hint
 	}
-	title := "Workflow · " + wf.Name
-	return renderLayeredConfigBox(layeredConfigBoxArgs{
-		width:      width,
-		height:     height,
-		title:      title,
-		promptLine: configPromptStyle.Render("> ") + dimStyle.Render(fmt.Sprintf("%d step(s) — runs sequentially", len(wf.Steps))),
-		items:      rows,
-		cursor:     b.stepsCursor,
-		helpText:   help,
+	return renderWorkflowsPane(workflowsPaneArgs{
+		width:    width,
+		height:   height,
+		title:    "Workflow · " + wf.Name,
+		subtitle: fmt.Sprintf("%s — runs sequentially", stepsCount(len(wf.Steps))),
+		rows:     rows,
+		cursor:   b.stepsCursor,
+		active:   b.focus == workflowsBuilderFocusRight,
+		hint:     hint,
 	})
 }
 
-func (b *workflowsBuilderState) renderStep(width, height int) string {
-	if b.selectedWorkflow < 0 || b.selectedWorkflow >= len(b.items) {
-		return b.renderList(width, height)
+func (b *workflowsBuilderState) renderRightStep(width, height int) string {
+	wIdx, sIdx, ok := b.selectedStepIdx()
+	if !ok {
+		return b.renderRightSteps(width, height)
 	}
-	steps := b.items[b.selectedWorkflow].Steps
-	if b.stepsCursor < 0 || b.stepsCursor >= len(steps) {
-		return b.renderSteps(width, height)
-	}
-	step := steps[b.stepsCursor]
+	step := b.items[wIdx].Steps[sIdx]
 	promptPreview := step.Prompt
-	if len(promptPreview) > 50 {
-		promptPreview = promptPreview[:47] + "…"
+	if len(promptPreview) > 60 {
+		promptPreview = promptPreview[:57] + "…"
 	}
 	if promptPreview == "" {
 		promptPreview = "(empty)"
@@ -893,21 +973,145 @@ func (b *workflowsBuilderState) renderStep(width, height int) string {
 		{name: "Model", key: modelDisplay},
 		{name: "Prompt", key: promptPreview},
 	}
-	help := "↑/↓ navigate · enter edit · esc back"
-	if b.toast != "" {
-		help = b.toast + " · " + help
-		b.toast = ""
+	hint := "↑/↓ navigate · enter edit · esc back · tab focus left"
+	toast := b.consumeToast()
+	if toast != "" {
+		hint = toast + " · " + hint
 	}
-	title := fmt.Sprintf("Step · %s", step.Name)
-	return renderLayeredConfigBox(layeredConfigBoxArgs{
-		width:      width,
-		height:     height,
-		title:      title,
-		promptLine: configPromptStyle.Render("> ") + dimStyle.Render(b.items[b.selectedWorkflow].Name),
-		items:      rows,
-		cursor:     int(b.stepCursor),
-		helpText:   help,
+	return renderWorkflowsPane(workflowsPaneArgs{
+		width:    width,
+		height:   height,
+		title:    "Step · " + step.Name,
+		subtitle: b.items[wIdx].Name,
+		rows:     rows,
+		cursor:   int(b.stepFieldCursor),
+		active:   b.focus == workflowsBuilderFocusRight,
+		hint:     hint,
 	})
+}
+
+// consumeToast clears b.toast on read so it shows for one render
+// cycle. Helps the user see the warning without it sticking around
+// stale.
+func (b *workflowsBuilderState) consumeToast() string {
+	t := b.toast
+	b.toast = ""
+	return t
+}
+
+// workflowsPaneArgs is the shape of one pane in the split-screen
+// builder. Centralising the chrome means the two panes stay
+// pixel-aligned without each renderer eyeballing widths.
+type workflowsPaneArgs struct {
+	width, height int
+	title         string
+	subtitle      string
+	rows          []configItem
+	cursor        int
+	active        bool
+	hint          string
+}
+
+// renderWorkflowsPane renders a single side of the split-screen
+// builder. The active pane gets an accent border so the user can
+// tell at a glance which side has focus; the inactive pane uses
+// the dim border style.
+func renderWorkflowsPane(a workflowsPaneArgs) string {
+	borderColor := activeTheme.dim
+	if a.active {
+		borderColor = activeTheme.accent
+	}
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Padding(1, 2)
+
+	innerW := a.width - 6 // 2 border + 4 padding
+	if innerW < 10 {
+		innerW = 10
+	}
+	innerH := a.height - 4 // 2 border + 2 padding
+	if innerH < 6 {
+		innerH = 6
+	}
+
+	title := configTitleStyle.Render(a.title)
+	subtitle := configPromptStyle.Render("> ") + dimStyle.Render(a.subtitle)
+	hint := configHelpStyle.Render(a.hint)
+
+	// Available rows for the row list = innerH - title - blank -
+	// subtitle - blank - blank-before-hint - hint = innerH-5.
+	listH := innerH - 5
+	if listH < 1 {
+		listH = 1
+	}
+
+	cursor := a.cursor
+	if cursor >= len(a.rows) {
+		cursor = len(a.rows) - 1
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	start := 0
+	if cursor >= listH {
+		start = cursor - listH + 1
+	}
+	end := start + listH
+	if end > len(a.rows) {
+		end = len(a.rows)
+	}
+	rendered := make([]string, 0, listH)
+	for i := start; i < end; i++ {
+		// On an inactive pane, render the cursor row dimmed so the
+		// user still sees their position without it competing with
+		// the active pane's accent highlight.
+		row := renderWorkflowsRow(a.rows[i], innerW, i == cursor, a.active)
+		rendered = append(rendered, row)
+	}
+	for len(rendered) < listH {
+		rendered = append(rendered, strings.Repeat(" ", innerW))
+	}
+
+	body := strings.Join([]string{
+		title,
+		"",
+		subtitle,
+		"",
+		strings.Join(rendered, "\n"),
+		"",
+		hint,
+	}, "\n")
+	return box.Width(innerW).Height(innerH).Render(body)
+}
+
+// renderWorkflowsRow draws one list row inside a pane. activePane
+// controls which highlight style to use on the cursor row: the
+// active pane uses the bright accent style; the inactive pane uses
+// a dim selection so the user can still see where their cursor is
+// when they tab back.
+func renderWorkflowsRow(it configItem, width int, selected, activePane bool) string {
+	nameW := lipgloss.Width(it.name)
+	keyW := lipgloss.Width(it.key)
+	pad := width - nameW - keyW
+	if pad < 1 {
+		pad = 1
+	}
+	if selected {
+		plain := it.name + strings.Repeat(" ", pad) + it.key
+		if w := lipgloss.Width(plain); w < width {
+			plain += strings.Repeat(" ", width-w)
+		}
+		if activePane {
+			return configSelectedRowStyle.Render(plain)
+		}
+		return dimStyle.Render(plain)
+	}
+	line := it.name + strings.Repeat(" ", pad)
+	if it.key != "" {
+		line += configKeyDimStyle.Render(it.key)
+	}
+	return padRight(line, width)
 }
 
 func (b *workflowsBuilderState) renderProviderPicker(width, height int) string {
@@ -993,13 +1197,12 @@ func (b *workflowsBuilderState) renderConfirm(width, height int) string {
 	target := "this entry"
 	switch b.confirming {
 	case "delete-workflow":
-		if b.listCursor >= 0 && b.listCursor < len(b.items) {
-			target = "workflow \"" + b.items[b.listCursor].Name + "\""
+		if wIdx, ok := b.selectedWorkflowIdx(); ok {
+			target = "workflow \"" + b.items[wIdx].Name + "\""
 		}
 	case "delete-step":
-		if b.selectedWorkflow >= 0 && b.selectedWorkflow < len(b.items) &&
-			b.stepsCursor >= 0 && b.stepsCursor < len(b.items[b.selectedWorkflow].Steps) {
-			target = "step \"" + b.items[b.selectedWorkflow].Steps[b.stepsCursor].Name + "\""
+		if wIdx, sIdx, ok := b.selectedStepIdx(); ok {
+			target = "step \"" + b.items[wIdx].Steps[sIdx].Name + "\""
 		}
 	}
 	box := lipgloss.NewStyle().
