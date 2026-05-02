@@ -69,6 +69,14 @@ func buildGlamourStyle(t theme) ansi.StyleConfig {
 	successHex := hexOf(t.success)
 	warnHex := hexOf(t.warn)
 	errHex := hexOf(t.errorFG)
+	highlightHex := mutedHex
+	if t.highlightFG != nil {
+		highlightHex = hexOf(t.highlightFG)
+	}
+	stringHex := successHex
+	if t.stringFG != nil {
+		stringHex = hexOf(t.stringFG)
+	}
 
 	s.Document.StylePrimitive.Color = &textHex
 
@@ -81,7 +89,7 @@ func buildGlamourStyle(t theme) ansi.StyleConfig {
 	s.LinkText.Color = &promptDotHex
 	s.HorizontalRule.Color = &dimHex
 
-	s.Code.StylePrimitive.Color = &mutedHex
+	s.Code.StylePrimitive.Color = &highlightHex
 	s.Code.StylePrimitive.BackgroundColor = &rowHex
 
 	s.CodeBlock.StyleBlock.StylePrimitive.Color = &textHex
@@ -104,7 +112,7 @@ func buildGlamourStyle(t theme) ansi.StyleConfig {
 		NameDecorator:       ansi.StylePrimitive{Color: &warnHex},
 		NameFunction:        ansi.StylePrimitive{Color: &altHex},
 		LiteralNumber:       ansi.StylePrimitive{Color: &warnHex},
-		LiteralString:       ansi.StylePrimitive{Color: &successHex},
+		LiteralString:       ansi.StylePrimitive{Color: &stringHex},
 		LiteralStringEscape: ansi.StylePrimitive{Color: &accentHex},
 		GenericDeleted:      ansi.StylePrimitive{Color: &errHex},
 		GenericEmph:         ansi.StylePrimitive{Italic: boolPtr(true)},

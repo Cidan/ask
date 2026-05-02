@@ -21,6 +21,8 @@ type theme struct {
 	inverseFG   color.Color
 	darkFG      color.Color
 	rowHL       color.Color
+	highlightFG color.Color
+	stringFG    color.Color
 	scrollTrack color.Color
 	tabActive   color.Color
 
@@ -49,6 +51,7 @@ var themeRegistry = []theme{
 	hackerTheme(),
 	amberTheme(),
 	loveTheme(),
+	ayuTheme(),
 }
 
 func defaultTheme() theme {
@@ -395,6 +398,34 @@ func loveTheme() theme {
 		scrollTrack: lipgloss.Color("#201F26"),
 		tabActive:   lipgloss.Color("#FF60FF"),
 		background:  lipgloss.Color("#201F26"),
+	}
+}
+
+// ayuTheme is Ayu Mirage: a dark blue-grey base (#1F2430) with the signature
+// Ayu/Codex yellow (#E6B450) as the primary accent and Ayu cyan/teal (#95E6CB)
+// as the secondary. Background and foreground are explicit so the theme reads
+// the same on terminals whose default fg is light.
+func ayuTheme() theme {
+	return theme{
+		name:        "ayu",
+		accent:      lipgloss.Color("#E6B450"),
+		accentAlt:   lipgloss.Color("#95E6CB"),
+		prompt:      lipgloss.Color("#DABAFA"),
+		promptDot:   lipgloss.Color("#90E1C6"),
+		success:     lipgloss.Color("#87D96C"),
+		errorFG:     lipgloss.Color("#F28779"),
+		warn:        lipgloss.Color("#FFD173"),
+		dim:         lipgloss.Color("#686868"),
+		muted:       lipgloss.Color("#B5B5B5"),
+		inverseFG:   lipgloss.Color("#CCCAC2"),
+		darkFG:      lipgloss.Color("#1F2430"),
+		rowHL:       lipgloss.Color("#242B38"),
+		highlightFG: lipgloss.Color("#E6B450"),
+		stringFG:    lipgloss.Color("#95E6CB"),
+		scrollTrack: lipgloss.Color("#1F2430"),
+		tabActive:   lipgloss.Color("#E6B450"),
+		background:  lipgloss.Color("#1F2430"),
+		foreground:  lipgloss.Color("#E6E1CF"),
 	}
 }
 

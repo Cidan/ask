@@ -21,7 +21,7 @@
 pipes events through a Bubble Tea TUI, and swaps Claude's built-in
 `AskUserQuestion` tool for a tabbed modal backed by an embedded MCP
 server. Sessions resume, tabs isolate, shell mode drops you straight
-into `$SHELL`, and fifteen themes re-paint the whole UI live.
+into `$SHELL`, and sixteen themes re-paint the whole UI live.
 
 ## Features
 
@@ -30,7 +30,7 @@ into `$SHELL`, and fifteen themes re-paint the whole UI live.
 - **Resume sessions** — `/resume` opens a picker of prior conversations in the current directory
 - **Pick the Claude model** — `/model` opens a picker (default / haiku / sonnet / opus / custom) and persists the choice
 - **Configurable UI** — `/config` toggles quiet mode, cursor blink, inline diff rendering, and skip-all-permissions; persisted to `~/.config/ask/ask.json`
-- **Themes** — pick a palette from `/config` → Theme (15 flavors: `default`, `dracula`, `nord`, `gruvbox`, `tokyo night`, the four Catppuccin variants `latte`/`frappé`/`macchiato`/`mocha` plus the green-leaning Mocha sibling `matcha`, `rose pine`, `fighter` (Monokai Pro), `love` (crush), `hacker` (Matrix), `amber` (CRT)). Backgrounds, foregrounds, borders, and glamour markdown/syntax highlighting all follow the active theme.
+- **Themes** — pick a palette from `/config` → Theme (16 flavors: `default`, `dracula`, `nord`, `gruvbox`, `tokyo night`, the four Catppuccin variants `latte`/`frappé`/`macchiato`/`mocha` plus the green-leaning Mocha sibling `matcha`, `rose pine`, `fighter` (Monokai Pro), `love` (crush), `hacker` (Matrix), `amber` (CRT), `ayu` (Ayu Mirage)). Backgrounds, foregrounds, borders, and glamour markdown/syntax highlighting all follow the active theme.
 - **Inline markdown rendering** with [glamour](https://github.com/charmbracelet/glamour), cached per history entry so typing stays responsive in long chats
 - **Live turn status** — spinner line surfaces the tool Claude is running (`Read: file.go`, `Bash: <description>`, `Grep: <pattern>`, `Task: <subagent>`, …)
 - **Live todo panel** — `TodoWrite` entries render inline as a bordered box with ☐ / ▸ / ✓ markers while the turn is active
@@ -127,13 +127,13 @@ rather than a swatch. `Enter` saves the selection to
 `~/.config/ask/ask.json`; `Esc` reverts to whatever theme was active
 when you opened the picker.
 
-Fifteen flavors ship by default: `default` (respects your terminal's
+Sixteen flavors ship by default: `default` (respects your terminal's
 own background), `dracula`, `nord`, `gruvbox`, `tokyo night`, all four
 official Catppuccin variants (`latte`, `frappé`, `macchiato`, `mocha`),
 the green-leaning Mocha sibling `matcha`, `rose pine`, `fighter` (the
 softer Monokai Pro / Octagon palette), `love` (the Charm crush
-charmtone palette), `hacker` (Matrix phosphor green on CRT black), and
-`amber` (1970s DEC/IBM amber phosphor). All glamour markdown and
+charmtone palette), `hacker` (Matrix phosphor green on CRT black),
+`amber` (1970s DEC/IBM amber phosphor), and `ayu` (Ayu Mirage). All glamour markdown and
 syntax highlighting follow the active theme, so code blocks in
 responses re-theme too.
 
