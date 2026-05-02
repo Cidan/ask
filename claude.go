@@ -312,6 +312,10 @@ func (claudeProvider) Interrupt(_ *providerProc) (bool, error) { return false, n
 // turn's `result` event).
 func (claudeProvider) PreMintSessionID(_ ProviderSessionArgs) string { return newUUIDv4() }
 
+// NativeSessionID returns "" — claude's id is pre-minted, so the model
+// already has it before StartSession returns.
+func (claudeProvider) NativeSessionID(_ *providerProc) string { return "" }
+
 func (claudeProvider) Send(p *providerProc, text string, attachments []pendingAttachment) error {
 	payload := map[string]any{
 		"type": "user",

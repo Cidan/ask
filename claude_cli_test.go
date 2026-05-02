@@ -369,6 +369,34 @@ func TestCodexProvider_PreMintSessionIDReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestClaudeProvider_NativeSessionIDReturnsEmpty(t *testing.T) {
+	// Claude pre-mints the id into m.sessionID before fork, so the
+	// post-startup hook has nothing to add.
+	if got := (claudeProvider{}).NativeSessionID(&providerProc{}); got != "" {
+		t.Errorf("claudeProvider.NativeSessionID=%q want empty", got)
+	}
+}
+
+func TestCodexProvider_NativeSessionIDReturnsThreadID(t *testing.T) {
+	// The threadID is stashed on proc.payload by codexHandshake; the
+	// hook reads it back so handleProviderStartDone can capture it
+	// before the first turn/completed.
+	proc := &providerProc{payload: &codexState{threadID: "thread-xyz"}}
+	got := codexProvider{}.NativeSessionID(proc)
+	if got != "thread-xyz" {
+		t.Errorf("NativeSessionID=%q want thread-xyz", got)
+	}
+}
+
+func TestCodexProvider_NativeSessionIDEmptyPayload(t *testing.T) {
+	// Defensive: a proc without a codexState payload (test fakes,
+	// future refactors) must not panic.
+	got := codexProvider{}.NativeSessionID(&providerProc{})
+	if got != "" {
+		t.Errorf("NativeSessionID(no payload)=%q want empty", got)
+	}
+}
+
 func TestClaudeCLIArgs_NeverPassesWorktreeFlag(t *testing.T) {
 	// ask owns worktree lifecycle end-to-end now; claude's own
 	// --worktree machinery must not be triggered regardless of input.
