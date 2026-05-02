@@ -50,6 +50,7 @@ type githubIssueProvider struct {
 const (
 	githubToolListIssues   = "list_issues"
 	githubToolIssueRead    = "issue_read"
+	githubToolIssueWrite   = "issue_write"
 	githubToolSearchIssues = "search_issues"
 	githubMCPInitTimeout   = 15 * time.Second
 	githubMCPCallTimeout   = 30 * time.Second
@@ -334,6 +335,82 @@ func (p *githubIssueProvider) GetIssue(ctx context.Context, cfg projectConfig, c
 		debugLog("github issue_read get_comments err: %v", cerr)
 	}
 	return it, nil
+}
+
+// MoveIssue dispatches issue_write with method=update to mutate the
+// issue's GitHub state. The target column's *githubQuery encodes
+// where the user wants the card to land — Open columns set
+// state=open, Closed columns set state=closed plus the appropriate
+// state_reason (completed / not_planned / duplicate). Same-column
+// drops are short-circuited at the kanban layer and never reach
+// this method.
+func (p *githubIssueProvider) MoveIssue(ctx context.Context, cfg projectConfig, cwd string, it issue, target KanbanColumnSpec) error {
+	if cfg.Issues.GitHub.Token == "" {
+		return errIssueProviderNotConfigured
+	}
+	owner, repo, err := resolveGitHubRepo(cwd)
+	if err != nil {
+		return fmt.Errorf("resolve repo: %w", err)
+	}
+	gq, ok := target.Query.(*githubQuery)
+	if !ok || gq == nil {
+		return fmt.Errorf("move: target column has no github query")
+	}
+	cs, err := p.connect(ctx, cfg.Issues.GitHub)
+	if err != nil {
+		return err
+	}
+	cctx, cancel := context.WithTimeout(ctx, githubMCPCallTimeout)
+	defer cancel()
+	toolName, args := githubBuildMoveIssueArgs(owner, repo, it.number, gq)
+	res, err := cs.CallTool(cctx, &mcp.CallToolParams{
+		Name:      toolName,
+		Arguments: args,
+	})
+	if err != nil {
+		return fmt.Errorf("%s: %w", toolName, err)
+	}
+	if res.IsError {
+		return fmt.Errorf("%s: %s", toolName, flattenContent(res.Content))
+	}
+	return nil
+}
+
+// KanbanIssueStatus returns the canonical issue.status value an
+// issue parked in target should carry. For github that's the column
+// query's lowercase state ("open" / "closed"), matching what
+// githubAPIToIssue would set after a fresh ListIssues.
+func (p *githubIssueProvider) KanbanIssueStatus(target KanbanColumnSpec) string {
+	gq, ok := target.Query.(*githubQuery)
+	if !ok || gq == nil {
+		return ""
+	}
+	return gq.state
+}
+
+// githubBuildMoveIssueArgs is the pure args-builder for the
+// issue_write MCP call. Pulled out of MoveIssue so the four-target
+// matrix (Open / Closed:completed / Closed:not_planned /
+// Closed:duplicate) is covered by a unit test instead of an
+// httptest MCP loop. method=update is the issue_write verb the
+// canonical GitHub MCP server uses for state mutations.
+func githubBuildMoveIssueArgs(owner, repo string, issueNumber int, target *githubQuery) (string, map[string]any) {
+	args := map[string]any{
+		"method":       "update",
+		"owner":        owner,
+		"repo":         repo,
+		"issue_number": issueNumber,
+	}
+	switch target.state {
+	case "open":
+		args["state"] = "open"
+	case "closed":
+		args["state"] = "closed"
+		if target.closedReason != "" {
+			args["state_reason"] = target.closedReason
+		}
+	}
+	return githubToolIssueWrite, args
 }
 
 // MCPServer returns the github MCP server descriptor for injection

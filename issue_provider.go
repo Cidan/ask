@@ -82,6 +82,23 @@ type IssueProvider interface {
 	// hydrated. Called when the user hits Enter on a list row to
 	// open the detail view.
 	GetIssue(ctx context.Context, cfg projectConfig, cwd string, number int) (issue, error)
+	// MoveIssue mutates the issue's status so that a subsequent
+	// ListIssues call against target.Query would return it. Called
+	// by the kanban carry-and-drop flow after the user lands a
+	// carried card in a different column. Providers translate the
+	// target's IssueQuery into whatever backend op encodes the
+	// transition (close, reopen, set state_reason, …) and return
+	// the resulting error verbatim. Same-column drops short-circuit
+	// at the call site and never reach this method.
+	MoveIssue(ctx context.Context, cfg projectConfig, cwd string, it issue, target KanbanColumnSpec) error
+	// KanbanIssueStatus is the canonical issue.status string an issue
+	// living in target should report. Used by the carry-and-drop
+	// flow to keep the locally-cached issue's status field in sync
+	// with the backend semantics implied by the column it's now in,
+	// so the detail view / future renderers don't go stale until the
+	// next reload. Empty string when the column has no canonical
+	// status (e.g. the unconfigured "none" provider).
+	KanbanIssueStatus(target KanbanColumnSpec) string
 	// MCPServer returns the MCP server descriptor that should be
 	// injected into the chat agent's --mcp-config when this project
 	// uses the provider, so the chat agent has the same issue-tracker
@@ -204,4 +221,8 @@ func (noneIssueProvider) ListIssues(context.Context, projectConfig, string, Issu
 func (noneIssueProvider) GetIssue(context.Context, projectConfig, string, int) (issue, error) {
 	return issue{}, errIssueProviderNotConfigured
 }
+func (noneIssueProvider) MoveIssue(context.Context, projectConfig, string, issue, KanbanColumnSpec) error {
+	return errIssueProviderNotConfigured
+}
+func (noneIssueProvider) KanbanIssueStatus(KanbanColumnSpec) string         { return "" }
 func (noneIssueProvider) MCPServer(projectConfig, string) *issueMCPServer { return nil }

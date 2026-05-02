@@ -929,7 +929,7 @@ func TestIssues_HeaderAndHintInScreenView(t *testing.T) {
 	if !strings.Contains(body, "Issues") {
 		t.Errorf("issues screen missing header: %q", body)
 	}
-	if !strings.Contains(body, "ctrl+o back to ask") {
+	if !strings.Contains(body, "ctrl+o back") {
 		t.Errorf("issues screen missing footer hint: %q", body)
 	}
 	// Kanban header advertises the active view; tab strip surfaces

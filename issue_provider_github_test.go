@@ -651,6 +651,58 @@ func TestGitHubProvider_MCPServer_ConfiguredEmitsAuthHeader(t *testing.T) {
 	}
 }
 
+// TestGitHubBuildMoveIssueArgs covers the carry-and-drop translation
+// from a kanban column spec to the issue_write tool call. Each of the
+// four canonical GitHub columns must produce the right state +
+// state_reason combination, with state_reason omitted for the Open
+// target so the GitHub backend doesn't reject it as nonsensical.
+func TestGitHubBuildMoveIssueArgs(t *testing.T) {
+	cols := (&githubIssueProvider{}).KanbanColumns()
+	cases := []struct {
+		name           string
+		col            KanbanColumnSpec
+		wantState      string
+		wantReason     string
+		wantNoReasonOk bool
+	}{
+		{"open", cols[0], "open", "", true},
+		{"closed:completed", cols[1], "closed", "completed", false},
+		{"closed:not_planned", cols[2], "closed", "not_planned", false},
+		{"closed:duplicate", cols[3], "closed", "duplicate", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gq, ok := tc.col.Query.(*githubQuery)
+			if !ok {
+				t.Fatalf("column %q has no *githubQuery, got %T", tc.name, tc.col.Query)
+			}
+			tool, args := githubBuildMoveIssueArgs("Cidan", "ask", 42, gq)
+			if tool != githubToolIssueWrite {
+				t.Errorf("tool=%q want %q", tool, githubToolIssueWrite)
+			}
+			if args["method"] != "update" {
+				t.Errorf("method=%v want update", args["method"])
+			}
+			if args["owner"] != "Cidan" || args["repo"] != "ask" {
+				t.Errorf("owner/repo not propagated: %+v", args)
+			}
+			if args["issue_number"] != 42 {
+				t.Errorf("issue_number=%v want 42", args["issue_number"])
+			}
+			if args["state"] != tc.wantState {
+				t.Errorf("state=%v want %q", args["state"], tc.wantState)
+			}
+			if tc.wantNoReasonOk {
+				if _, present := args["state_reason"]; present {
+					t.Errorf("state_reason must be absent for open target, got %+v", args)
+				}
+			} else if args["state_reason"] != tc.wantReason {
+				t.Errorf("state_reason=%v want %q", args["state_reason"], tc.wantReason)
+			}
+		})
+	}
+}
+
 // A custom endpoint (GHE-style) overrides the default. Token is still
 // passed through verbatim.
 func TestGitHubProvider_MCPServer_HonoursCustomEndpoint(t *testing.T) {

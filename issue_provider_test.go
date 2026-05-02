@@ -59,6 +59,9 @@ func TestNoneIssueProvider_ReturnsNotConfigured(t *testing.T) {
 	if cols := p.KanbanColumns(); len(cols) != 0 {
 		t.Errorf("noneIssueProvider.KanbanColumns should be empty, got %d", len(cols))
 	}
+	if err := p.MoveIssue(context.Background(), projectConfig{}, "/tmp", issue{number: 1}, KanbanColumnSpec{}); !errors.Is(err, errIssueProviderNotConfigured) {
+		t.Errorf("MoveIssue err=%v, want errIssueProviderNotConfigured", err)
+	}
 }
 
 func TestActiveIssueProvider_DefaultIsNone(t *testing.T) {

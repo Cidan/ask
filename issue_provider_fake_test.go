@@ -30,6 +30,17 @@ type fakeIssueProvider struct {
 	formatQueryFn func(IssueQuery) string
 	listIssuesFn  func(context.Context, projectConfig, string, IssueQuery, IssuePagination) (IssueListPage, error)
 	getIssueFn    func(context.Context, projectConfig, string, int) (issue, error)
+	moveIssueFn   func(context.Context, projectConfig, string, issue, KanbanColumnSpec) error
+
+	moveCalls []fakeMoveCall
+}
+
+// fakeMoveCall captures one MoveIssue invocation so carry-and-drop
+// tests can assert that the cmd actually fired (not just that the
+// in-memory cache updated).
+type fakeMoveCall struct {
+	issue  issue
+	target KanbanColumnSpec
 }
 
 func newFakeIssueProvider() *fakeIssueProvider {
@@ -88,6 +99,21 @@ func (f *fakeIssueProvider) GetIssue(ctx context.Context, cfg projectConfig, cwd
 		return f.getIssueFn(ctx, cfg, cwd, n)
 	}
 	return issue{number: n}, nil
+}
+
+func (f *fakeIssueProvider) MoveIssue(ctx context.Context, cfg projectConfig, cwd string, it issue, target KanbanColumnSpec) error {
+	f.moveCalls = append(f.moveCalls, fakeMoveCall{issue: it, target: target})
+	if f.moveIssueFn != nil {
+		return f.moveIssueFn(ctx, cfg, cwd, it, target)
+	}
+	return nil
+}
+
+func (f *fakeIssueProvider) KanbanIssueStatus(target KanbanColumnSpec) string {
+	if fq, ok := target.Query.(*fakeQuery); ok && fq != nil {
+		return fq.statusMatch
+	}
+	return ""
 }
 
 func (f *fakeIssueProvider) MCPServer(projectConfig, string) *issueMCPServer { return nil }

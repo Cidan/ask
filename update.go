@@ -132,6 +132,59 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		return m, nil
 
+	case issueMoveDoneMsg:
+		if msg.tabID != m.id || m.issues == nil {
+			return m, nil
+		}
+		if msg.err == nil {
+			return m, nil
+		}
+		s := m.issues
+		kv, ok := s.view.(*kanbanIssueView)
+		if !ok {
+			return m, m.toast.show("issues: move failed: " + msg.err.Error())
+		}
+		// Defensive rollback: locate the issue by number rather than
+		// blindly indexing the target column. A reload between drop
+		// and rollback wipes the cache + columns; in that case the
+		// issue is no longer at the head of the target slice (or is
+		// missing entirely) and we silently drop the rollback rather
+		// than corrupting freshly-fetched state.
+		if msg.targetColIdx >= 0 && msg.targetColIdx < len(kv.columns) {
+			tcol := &kv.columns[msg.targetColIdx]
+			for i := range tcol.loaded {
+				if tcol.loaded[i].number == msg.issueNumber {
+					tcol.loaded = append(tcol.loaded[:i], tcol.loaded[i+1:]...)
+					break
+				}
+			}
+			s.removeIssueFromCache(tcol.spec.Query, msg.issueNumber)
+		}
+		if msg.originColIdx >= 0 && msg.originColIdx < len(kv.columns) {
+			ocol := &kv.columns[msg.originColIdx]
+			alreadyPresent := false
+			for _, it := range ocol.loaded {
+				if it.number == msg.issueNumber {
+					alreadyPresent = true
+					break
+				}
+			}
+			if !alreadyPresent {
+				row := msg.originRowIdx
+				if row < 0 {
+					row = 0
+				}
+				if row > len(ocol.loaded) {
+					row = len(ocol.loaded)
+				}
+				ocol.loaded = append(ocol.loaded[:row],
+					append([]issue{msg.originSnap}, ocol.loaded[row:]...)...)
+				s.insertIssueIntoCache(ocol.spec.Query, msg.originSnap, row)
+			}
+		}
+		kv.clampSelection()
+		return m, m.toast.show("issues: move failed: " + msg.err.Error())
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -910,8 +963,14 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		if msg.Mod == tea.ModCtrl && msg.Code == 'o' && !m.modalOpen() {
 			// Leaving issues: drop cache + cancel in-flight so re-entry
-			// doesn't stack duplicate chunks onto the chain.
+			// doesn't stack duplicate chunks onto the chain. Carry
+			// state lives on the kanban view, so we re-insert the
+			// in-flight card before discardOnLeave wipes the cache —
+			// otherwise the row would silently disappear next entry.
 			if m.screen == screenIssues && m.issues != nil {
+				if kv, ok := m.issues.view.(*kanbanIssueView); ok {
+					kv.cancelCarry(m.issues)
+				}
 				m.issues.discardOnLeave()
 			}
 			return m.switchScreen(screenAsk), nil

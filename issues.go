@@ -34,6 +34,15 @@ func pickLoadingMessage() string {
 	return issueLoadingMessages[rand.Intn(len(issueLoadingMessages))]
 }
 
+// issueMoveTimeout caps how long a single carry-and-drop provider
+// call is allowed to run before the cmd resolves with a context.Canceled
+// error (which the rollback handler surfaces as a toast). 30s is a
+// conservative bound — the GitHub MCP server typically responds in
+// under a second, but a saturated network shouldn't strand the user
+// without feedback. Lives at the provider-agnostic layer so future
+// backends with their own latency profiles are still bounded.
+const issueMoveTimeout = 30 * time.Second
+
 // issueLoadingTickInterval is the cadence of the loader animation.
 // ~30fps lands smooth on every terminal we've tried without burning
 // CPU. Bumping to 16ms (60fps) felt great on a 120Hz monitor but
@@ -418,6 +427,76 @@ func (s *issuesState) clearQueryCache(q IssueQuery) {
 		return
 	}
 	delete(s.pageCache, s.queryFingerprint(q))
+}
+
+// removeIssueFromCache strips the issue with matching number from
+// q's cached chunk chain, returning the removed issue, an absolute
+// row index across the flattened chain (so a later insertIssueIntoCache
+// call can put it back where it was), and an ok flag. The cursor /
+// nextCursor / hasMore fields of surviving chunks are untouched —
+// removal is a content-only edit, not a chain truncation. Used by
+// the kanban carry flow to rip a card out of its origin column.
+func (s *issuesState) removeIssueFromCache(q IssueQuery, issueNumber int) (issue, int, bool) {
+	if s.pageCache == nil {
+		return issue{}, 0, false
+	}
+	fp := s.queryFingerprint(q)
+	chain, ok := s.pageCache[fp]
+	if !ok {
+		return issue{}, 0, false
+	}
+	flatIdx := 0
+	for ci := range chain {
+		for ii := range chain[ci].issues {
+			if chain[ci].issues[ii].number == issueNumber {
+				removed := chain[ci].issues[ii]
+				chain[ci].issues = append(chain[ci].issues[:ii], chain[ci].issues[ii+1:]...)
+				s.pageCache[fp] = chain
+				return removed, flatIdx, true
+			}
+			flatIdx++
+		}
+	}
+	return issue{}, 0, false
+}
+
+// insertIssueIntoCache puts it back into q's cached chunk chain at
+// the given absolute index across the flattened chain. Negative
+// indices clamp to 0; indices past the end clamp to append. When no
+// cache entry exists for q yet, a fresh single-chunk entry is created
+// (cursor / nextCursor empty, hasMore=false) so a later ListIssues
+// resumes from "first chunk" cleanly without colliding on cursors.
+func (s *issuesState) insertIssueIntoCache(q IssueQuery, it issue, index int) {
+	if s.pageCache == nil {
+		s.pageCache = map[string][]issuePageChunk{}
+	}
+	fp := s.queryFingerprint(q)
+	chain := s.pageCache[fp]
+	if len(chain) == 0 {
+		s.pageCache[fp] = []issuePageChunk{{issues: []issue{it}}}
+		return
+	}
+	if index < 0 {
+		index = 0
+	}
+	flatIdx := 0
+	for ci := range chain {
+		chunkLen := len(chain[ci].issues)
+		if index <= flatIdx+chunkLen {
+			local := index - flatIdx
+			if local < 0 {
+				local = 0
+			}
+			chain[ci].issues = append(chain[ci].issues[:local],
+				append([]issue{it}, chain[ci].issues[local:]...)...)
+			s.pageCache[fp] = chain
+			return
+		}
+		flatIdx += chunkLen
+	}
+	last := len(chain) - 1
+	chain[last].issues = append(chain[last].issues, it)
+	s.pageCache[fp] = chain
 }
 
 func (s *issuesState) hasAnyCachedPage(q IssueQuery) bool {
@@ -868,7 +947,8 @@ func (issuesScreen) updateKey(m model, msg tea.KeyPressMsg) (model, tea.Cmd, boo
 	// so the user can keep editing without the reload yanking the
 	// screen out from under them.
 	if isCtrlR {
-		if _, ok := m.issues.view.(*kanbanIssueView); ok {
+		if kv, ok := m.issues.view.(*kanbanIssueView); ok {
+			kv.cancelCarry(m.issues)
 			return m, m.issues.reloadCurrentQuery(), true
 		}
 	}
@@ -877,7 +957,8 @@ func (issuesScreen) updateKey(m model, msg tea.KeyPressMsg) (model, tea.Cmd, boo
 	// the typed "/" doesn't bleed into the kanban layer behind
 	// the box.
 	if msg.Mod == 0 && msg.Code == '/' {
-		if _, ok := m.issues.view.(*kanbanIssueView); ok {
+		if kv, ok := m.issues.view.(*kanbanIssueView); ok {
+			kv.cancelCarry(m.issues)
 			help := ""
 			if m.issues.provider != nil {
 				help = m.issues.provider.QuerySyntaxHelp()
@@ -1342,12 +1423,38 @@ type kanbanIssueView struct {
 	selColIdx int
 	selRowIdx int
 
+	// carry tracks an in-flight pickup. While carrying, the picked-up
+	// card is stripped from its origin column.loaded + cache and
+	// drawn pinned to the top of whichever column is currently
+	// focused. ←/→/Tab change the focused column under the carry;
+	// Space drops; Esc cancels (re-inserts at origin). Only one
+	// carry at a time — the pickup handler is a no-op when carrying
+	// is already true.
+	carry kanbanCarry
+
 	// lastRendered caches the most recent body so the screen-level
 	// drag-select / right-click-copy stack has something to slice.
 	// Selection on kanban isn't hugely useful (cards are short and
 	// already styled), but participating in the same machinery as
 	// the other views keeps mouse semantics uniform.
 	lastRendered string
+}
+
+// kanbanCarry is the carry-mode bookkeeping. Lives on the view
+// (not on issuesState) because every other column-mutation field
+// is view-local; centralising prevents stale carry state surviving
+// a screen-leave by accident.
+//
+// item is the snapshot of the issue at pickup time, with the original
+// status field preserved so a rollback can restore it bit-for-bit.
+// originColIdx + originRowIdx record where the card was so a cancel
+// (Esc, screen-leave, same-column drop) can put it back exactly there.
+type kanbanCarry struct {
+	active       bool
+	item         issue
+	originStatus string
+	originColIdx int
+	originRowIdx int
 }
 
 // kanbanColumn is one provider-defined column. spec carries the
@@ -1403,6 +1510,139 @@ func (v *kanbanIssueView) rebuildColumnsFromSpecs(s *issuesState) {
 	}
 	v.columns = cols
 	v.clampSelection()
+}
+
+// pickupCarry strips the focused card from its column (loaded slice
+// AND cached chunk chain) and stages it on v.carry for follow-on
+// navigation. No-op when already carrying or when the cursor isn't
+// over a real card. Returns true when a pickup actually happened so
+// the caller can decide whether to fire follow-up effects.
+func (v *kanbanIssueView) pickupCarry(s *issuesState) bool {
+	if v.carry.active {
+		return false
+	}
+	if v.selColIdx < 0 || v.selColIdx >= len(v.columns) {
+		return false
+	}
+	col := &v.columns[v.selColIdx]
+	if v.selRowIdx < 0 || v.selRowIdx >= len(col.loaded) {
+		return false
+	}
+	it := col.loaded[v.selRowIdx]
+	v.carry = kanbanCarry{
+		active:       true,
+		item:         it,
+		originStatus: it.status,
+		originColIdx: v.selColIdx,
+		originRowIdx: v.selRowIdx,
+	}
+	col.loaded = append(col.loaded[:v.selRowIdx], col.loaded[v.selRowIdx+1:]...)
+	s.removeIssueFromCache(col.spec.Query, it.number)
+	v.clampSelection()
+	return true
+}
+
+// dropCarry commits the carry into the currently-focused column. A
+// same-column drop is a no-op (re-inserts the issue at origin without
+// any provider call); a cross-column drop applies the optimistic
+// move locally and returns a tea.Cmd that dispatches the provider's
+// MoveIssue. Returns (cmd, dropped=true) only when carry was active.
+func (v *kanbanIssueView) dropCarry(s *issuesState, tabID int) (tea.Cmd, bool) {
+	if !v.carry.active {
+		return nil, false
+	}
+	if v.selColIdx == v.carry.originColIdx {
+		v.cancelCarry(s)
+		return nil, true
+	}
+	if v.selColIdx < 0 || v.selColIdx >= len(v.columns) {
+		v.cancelCarry(s)
+		return nil, true
+	}
+	target := v.columns[v.selColIdx].spec
+	// Snapshot every value the async cmd needs BEFORE we mutate
+	// v.carry — by the time the closure runs we'd otherwise read
+	// the zero-valued struct.
+	originIdx := v.carry.originColIdx
+	originRow := v.carry.originRowIdx
+	targetIdx := v.selColIdx
+	originalSnapshot := v.carry.item
+
+	moved := v.carry.item
+	if newStatus := s.provider.KanbanIssueStatus(target); newStatus != "" {
+		moved.status = newStatus
+	}
+	col := &v.columns[v.selColIdx]
+	col.loaded = append([]issue{moved}, col.loaded...)
+	s.insertIssueIntoCache(target.Query, moved, 0)
+	v.carry = kanbanCarry{}
+	v.selRowIdx = 0
+
+	provider := s.provider
+	pc := s.projectCfg
+	cwd := s.cwd
+	cmd := func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), issueMoveTimeout)
+		defer cancel()
+		err := provider.MoveIssue(ctx, pc, cwd, originalSnapshot, target)
+		return issueMoveDoneMsg{
+			tabID:        tabID,
+			issueNumber:  originalSnapshot.number,
+			originSnap:   originalSnapshot,
+			originColIdx: originIdx,
+			originRowIdx: originRow,
+			targetColIdx: targetIdx,
+			err:          err,
+		}
+	}
+	return cmd, true
+}
+
+// cancelCarry restores the carried issue to its origin column.loaded
+// at originRowIdx and the cached chunk chain at the same flat index,
+// then clears v.carry. Used by Esc, same-column drop, search-box
+// open, Ctrl+R reload, and screen-leave paths.
+func (v *kanbanIssueView) cancelCarry(s *issuesState) {
+	if !v.carry.active {
+		return
+	}
+	idx := v.carry.originColIdx
+	if idx < 0 || idx >= len(v.columns) {
+		v.carry = kanbanCarry{}
+		return
+	}
+	col := &v.columns[idx]
+	it := v.carry.item
+	it.status = v.carry.originStatus
+	row := v.carry.originRowIdx
+	if row < 0 {
+		row = 0
+	}
+	if row > len(col.loaded) {
+		row = len(col.loaded)
+	}
+	col.loaded = append(col.loaded[:row], append([]issue{it}, col.loaded[row:]...)...)
+	s.insertIssueIntoCache(col.spec.Query, it, row)
+	v.selColIdx = idx
+	v.selRowIdx = row
+	v.carry = kanbanCarry{}
+	v.clampSelection()
+}
+
+// issueMoveDoneMsg fires when provider.MoveIssue returns. err==nil
+// is a silent ack — the optimistic state already reflects the move.
+// err!=nil triggers a rollback: the moved issue is yanked out of the
+// target column and re-inserted at originRowIdx in the origin column,
+// status restored from the pre-mutation snapshot, and a toast surfaces
+// the underlying provider error.
+type issueMoveDoneMsg struct {
+	tabID        int
+	issueNumber  int
+	originSnap   issue
+	originColIdx int
+	originRowIdx int
+	targetColIdx int
+	err          error
 }
 
 func (v *kanbanIssueView) name() string { return "kanban" }
@@ -1532,8 +1772,11 @@ func (v *kanbanIssueView) header(s *issuesState) string {
 }
 
 func (v *kanbanIssueView) hint() string {
+	if v.carry.active {
+		return dimStyle.Render("space drop · ←/→/tab change column · esc cancel · other keys disabled while carrying")
+	}
 	return dimStyle.Render(
-		"↑/↓ row · ←/→ column · enter open · / search · r reload · ctrl+o back to ask",
+		"↑/↓ row · ←/→/tab column · g/G top/bottom · space pick up · enter open · / search · r reload · ctrl+o back",
 	)
 }
 
@@ -1547,7 +1790,13 @@ func (v *kanbanIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueV
 	if isKanbanNav(msg) {
 		s.clearSelection()
 	}
+	if v.carry.active {
+		return v.updateKeyCarrying(s, msg)
+	}
 	switch msg.Code {
+	case ' ':
+		v.pickupCarry(s)
+		return v, nil, true
 	case tea.KeyEnter:
 		if v.selColIdx >= len(v.columns) {
 			return v, nil, true
@@ -1602,13 +1851,51 @@ func (v *kanbanIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueV
 	return v, nil, true
 }
 
+// updateKeyCarrying owns the keymap while a card is in flight.
+// j/k/Up/Down/g/G/Enter are absorbed silently — the carried card is
+// the focus, rows under it are decoration. ←/→/Tab cycle the focused
+// column so the carry follows the user across tabs. Space drops;
+// Esc cancels.
+func (v *kanbanIssueView) updateKeyCarrying(s *issuesState, msg tea.KeyPressMsg) (issueView, tea.Cmd, bool) {
+	switch msg.Code {
+	case ' ':
+		cmd, _ := v.dropCarry(s, s.tabID)
+		return v, cmd, true
+	case tea.KeyEsc:
+		v.cancelCarry(s)
+		return v, nil, true
+	case tea.KeyLeft, 'h':
+		if v.selColIdx > 0 {
+			v.selColIdx--
+		}
+		return v, nil, true
+	case tea.KeyRight, 'l':
+		if v.selColIdx+1 < len(v.columns) {
+			v.selColIdx++
+		}
+		return v, nil, true
+	case tea.KeyTab:
+		if len(v.columns) > 0 {
+			v.selColIdx = (v.selColIdx + 1) % len(v.columns)
+		}
+		return v, nil, true
+	}
+	// Every other key (j/k/Up/Down/g/G/Enter/etc.) is absorbed so a
+	// stray press can't corrupt the carry.
+	return v, nil, true
+}
+
 // isKanbanNav reports whether the keypress is going to move the
 // kanban cursor (so the screen handler can drop a stale selection
 // highlight). Enter opens detail, which also voids the highlight.
+// Space and Esc participate too once carry mode lands — both flip
+// the view's focus state in a way that supersedes any active text
+// selection rectangle.
 func isKanbanNav(msg tea.KeyPressMsg) bool {
 	switch msg.Code {
 	case tea.KeyUp, tea.KeyDown, tea.KeyLeft, tea.KeyRight,
-		tea.KeyTab, tea.KeyEnter, 'h', 'j', 'k', 'l', 'g', 'G':
+		tea.KeyTab, tea.KeyEnter, tea.KeyEsc,
+		' ', 'h', 'j', 'k', 'l', 'g', 'G':
 		return true
 	}
 	return false
@@ -1628,6 +1915,12 @@ func (v *kanbanIssueView) view(s *issuesState) string {
 // The strip is truncated if its joined width exceeds the screen so
 // very narrow terminals don't break the layout — the focused tab is
 // always visible because it's rendered first in the slice.
+//
+// Carry mode adds one row above col.loaded[]: the carried card,
+// rendered with a warn-background style so the user can tell it
+// apart from the normal selection cursor. The destination column's
+// loaded[] still renders at index 0 below it (no row is consumed
+// from the column's data — the carry is purely visual chrome).
 func (v *kanbanIssueView) renderBody() string {
 	if v.selColIdx >= len(v.columns) {
 		return ""
@@ -1642,15 +1935,28 @@ func (v *kanbanIssueView) renderBody() string {
 		Foreground(activeTheme.inverseFG).
 		Background(activeTheme.accent).
 		Width(v.width)
+	carryStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(activeTheme.darkFG).
+		Background(activeTheme.warn).
+		Width(v.width)
 
 	lines := []string{
 		tabs,
 		dimStyle.Render(strings.Repeat("─", v.width)),
 	}
+	if v.carry.active {
+		it := v.carry.item
+		card := fmt.Sprintf("#%d  %s", it.number, it.title)
+		card = xansi.Truncate(card, v.width, "…")
+		lines = append(lines, carryStyle.Render(card))
+	}
 	for i, it := range col.loaded {
 		card := fmt.Sprintf("#%d  %s", it.number, it.title)
 		card = xansi.Truncate(card, v.width, "…")
-		if i == v.selRowIdx {
+		// While carrying, suppress the normal selection highlight —
+		// the carry card up top is the focus.
+		if !v.carry.active && i == v.selRowIdx {
 			lines = append(lines, selStyle.Render(card))
 		} else {
 			lines = append(lines, cellStyle.Render(card))

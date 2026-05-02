@@ -142,7 +142,7 @@ yet follow it — see the bullet at the bottom):
 - **Single-flight guards live on state, not view.** Bookkeeping that must survive a view rebuild (Tab cycle, search-box close) belongs on the state struct. Putting it on the view causes double-fires after rebuild — a real bug we already shipped a fix for.
 - **View constructors derive their initial state from the cache.** A view that's reconstructed (cycle, Ctrl+R, search-box close) re-stitches its display from the cache so the user lands at the same virtual row.
 - **Anti-pattern: dual state.** If your view has `chunks []X` or `rows []Y` fields that mirror the cache, you have two sources of truth. The handler mutates the cache, the view mutates its copy, and they drift. Symptoms in the issue tracker were duplicate-on-re-entry rows, error-Esc duplicates, and the pendingFetch-reset bug. Pick one source — and it should be the cache.
-- **Kanban is NOT yet on this discipline.** `kanbanIssueView.columns` still holds per-column `loaded`/`nextCursor`/`hasMore`/`fetching` mirroring the cache, plus its own selection cursor. Earmarked as a follow-up refactor — don't read this section and assume kanban already follows the rule.
+- **Kanban is NOT yet on this discipline.** `kanbanIssueView.columns` still holds per-column `loaded`/`nextCursor`/`hasMore`/`fetching` mirroring the cache, plus its own selection cursor. Carry-and-drop adds another dual-state surface (the `kanbanCarry` struct lives on the view, but `pickupCarry`/`dropCarry`/`cancelCarry` mutate both `column.loaded` AND `s.pageCache` in lockstep via the state-level `removeIssueFromCache` / `insertIssueIntoCache` helpers — keep them paired or columns and cache will drift). Earmarked as a follow-up refactor — don't read this section and assume kanban already follows the rule.
 
 ### Issues loader animation
 
@@ -162,6 +162,52 @@ tick for the high-FPS "still alive" cue), two spaces, then the
 picked fun message (stable for the duration of the load).
 `lipgloss.Place(width, height, Center, Center, box)` centers the
 whole modal on screen.
+
+### Kanban carry-and-drop
+
+`Space` on a focused card enters carry mode: the issue is ripped
+out of its origin column (both `column.loaded` AND the matching
+cached chunk via `s.removeIssueFromCache`) and stashed on
+`kanbanIssueView.carry`. Carry is a view-local affordance — it
+lives on the kanban view because every other column-mutation
+field already does, and bundling it onto the view prevents stale
+carry state from outliving a screen-leave by accident. While
+carrying, `←`/`→`/`Tab` cycle the focused column with the carry
+following (rendered with a `warn`-background style pinned at row
+0 above the destination column's loaded[] slice — no slot is
+consumed from the column's data). `j`/`k`/`Up`/`Down`/`g`/`G`/`Enter`
+are absorbed silently — the carry is the focus, rows underneath
+don't matter. `Space` drops; `Esc` cancels.
+
+The drop is **optimistic with rollback**: same-column drops are
+short-circuited to `cancelCarry` (no provider call); cross-column
+drops update the cache + `column.loaded` immediately and dispatch
+`provider.MoveIssue` via a `tea.Cmd` whose context is *independent*
+of `s.loadCtx` (`Ctrl+R` must not cancel an in-flight backend
+mutation). The cmd resolves with an `issueMoveDoneMsg`; the
+`update.go` handler is a silent no-op on success and a defensive
+rollback on failure — it locates the issue *by number* in the
+target column (not by blind index, so an intervening reload
+between drop and rollback degrades to a no-op rather than
+corrupting fresh state) and re-inserts at the recorded
+`originRowIdx` before emitting a toast through `m.toast.show`.
+
+Carry cancellation is wired into every screen-leave path:
+`Ctrl+R`, `/` (search-box open), and `Ctrl+O` all call
+`kv.cancelCarry(s)` *before* their normal effect, so the rolled-back
+issue is back in the cache before `discardOnLeave` /
+`reloadCurrentQuery` wipe it. Closing a tab (`Ctrl+D`, double
+`Ctrl+C`) drops the entire issues state along with the tab —
+no extra teardown needed, the in-memory carry evaporates with it.
+
+The provider interface gained two methods to support this:
+`MoveIssue(ctx, cfg, cwd, it, target)` (which github translates to
+`issue_write` with `state` + `state_reason` per the four canonical
+columns) and `KanbanIssueStatus(target)` (which keeps the kanban
+view provider-agnostic by letting providers report the issue.status
+string a card placed in target should carry). Both methods have
+no-op implementations on `noneIssueProvider` and behavioral test
+hooks on `fakeIssueProvider`.
 
 ## Claude subprocess
 
