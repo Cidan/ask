@@ -226,7 +226,7 @@ func pruneWorktrees() {
 		}
 		name := e.Name()
 		path := filepath.Join(cwd, ".claude", "worktrees", name)
-		if reason, locked := locks[path]; locked {
+		if reason, locked := worktreeLockReason(locks, path); locked {
 			if !lockIsAskFormat(reason) {
 				debugLog("worktree skip %s: foreign lock %q", path, reason)
 				continue
@@ -287,9 +287,32 @@ func lockWorktreeAt(cwd, name string) {
 	debugLog("worktree locked %s reason=%s", path, reason)
 }
 
+// worktreeLockReason looks up a path in the locks map returned by
+// worktreeLocks, falling back to the symlink-resolved form on miss.
+// git's `worktree list --porcelain` canonicalizes paths it emits
+// (so on macOS `/var/...` arrives as `/private/var/...`), while
+// callers typically build the lookup key with filepath.Join from an
+// uncanonicalized cwd. Without the fallback, every locked worktree
+// looks unlocked under any symlinked checkout and prune misbehaves.
+func worktreeLockReason(locks map[string]string, path string) (string, bool) {
+	if reason, ok := locks[path]; ok {
+		return reason, true
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil && resolved != path {
+		if reason, ok := locks[resolved]; ok {
+			return reason, true
+		}
+	}
+	return "", false
+}
+
 // worktreeLocks returns absolute path → lock reason for every locked worktree
 // ask manages. Unlocked entries are omitted. Reason is the empty string when
 // the lock carries no message.
+//
+// Keys come from each backend's native listing — git canonicalizes
+// through symlinks; jj uses paths we constructed ourselves. Use
+// worktreeLockReason for lookups so callers don't have to know which.
 func worktreeLocks(cwd string) map[string]string {
 	switch worktreeBackendAt(cwd) {
 	case workspaceBackendGit:
