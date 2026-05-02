@@ -336,6 +336,28 @@ func (p *githubIssueProvider) GetIssue(ctx context.Context, cfg projectConfig, c
 	return it, nil
 }
 
+// MCPServer returns the github MCP server descriptor for injection
+// into the chat agent's --mcp-config. Returns nil when the project
+// isn't fully configured (no PAT, or cwd doesn't resolve to a github
+// remote) — letting the chat agent see a half-wired github tool that
+// errors on every call would be worse than not exposing it at all.
+//
+// The Authorization header carries the user's PAT verbatim. Keep the
+// Headers field out of any debug log; the bearerRoundTripper warning
+// in this file applies here too.
+func (p *githubIssueProvider) MCPServer(cfg projectConfig, cwd string) *issueMCPServer {
+	if !p.Configured(cfg, cwd) {
+		return nil
+	}
+	return &issueMCPServer{
+		Name: "github",
+		URL:  githubEndpointOrDefault(cfg.Issues.GitHub),
+		Headers: map[string]string{
+			"Authorization": "Bearer " + cfg.Issues.GitHub.Token,
+		},
+	}
+}
+
 func (p *githubIssueProvider) fetchComments(ctx context.Context, cs *mcp.ClientSession, owner, repo string, number int) ([]issueComment, error) {
 	cctx, cancel := context.WithTimeout(ctx, githubMCPCallTimeout)
 	defer cancel()

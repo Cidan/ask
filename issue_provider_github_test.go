@@ -581,3 +581,94 @@ func TestParseGitHubPageInfo_NoEnvelopeYieldsNotFound(t *testing.T) {
 		t.Errorf("object without pageInfo should not be recognised as having a cursor signal")
 	}
 }
+
+// MCPServer must return nil whenever the provider isn't fully
+// configured. The chat agent only gets a github MCP entry when ask
+// itself can talk to the same backend — anything less would expose a
+// half-wired tool to claude.
+func TestGitHubProvider_MCPServer_NilWhenUnconfigured(t *testing.T) {
+	p := &githubIssueProvider{}
+	dir := initGitRepo(t)
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/Cidan/ask.git")
+
+	cases := []struct {
+		name string
+		pc   projectConfig
+		cwd  string
+	}{
+		{
+			name: "wrong provider id",
+			pc:   projectConfig{Issues: issuesConfig{Provider: "none", GitHub: githubIssuesConfig{Token: "ghp_x"}}},
+			cwd:  dir,
+		},
+		{
+			name: "missing token",
+			pc:   projectConfig{Issues: issuesConfig{Provider: "github"}},
+			cwd:  dir,
+		},
+		{
+			name: "non-github remote",
+			pc:   projectConfig{Issues: issuesConfig{Provider: "github", GitHub: githubIssuesConfig{Token: "ghp_x"}}},
+			cwd:  initGitRepo(t), // fresh repo with no remote at all
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := p.MCPServer(tc.pc, tc.cwd); got != nil {
+				t.Errorf("MCPServer should return nil when unconfigured, got %+v", got)
+			}
+		})
+	}
+}
+
+// Configured projects expose a github MCP server with the user's PAT
+// in the Authorization header so the chat agent can call list_issues
+// / issue_read without re-authenticating. The endpoint follows the
+// same default that ask itself uses for ctrl+i.
+func TestGitHubProvider_MCPServer_ConfiguredEmitsAuthHeader(t *testing.T) {
+	p := &githubIssueProvider{}
+	dir := initGitRepo(t)
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/Cidan/ask.git")
+
+	pc := projectConfig{
+		Issues: issuesConfig{
+			Provider: "github",
+			GitHub:   githubIssuesConfig{Token: "ghp_secret"},
+		},
+	}
+	got := p.MCPServer(pc, dir)
+	if got == nil {
+		t.Fatalf("MCPServer should return a descriptor when fully configured")
+	}
+	if got.Name != "github" {
+		t.Errorf("Name=%q want %q", got.Name, "github")
+	}
+	if got.URL != githubIssuesDefaultEndpoint {
+		t.Errorf("URL=%q want default %q", got.URL, githubIssuesDefaultEndpoint)
+	}
+	if auth := got.Headers["Authorization"]; auth != "Bearer ghp_secret" {
+		t.Errorf("Authorization header=%q want %q", auth, "Bearer ghp_secret")
+	}
+}
+
+// A custom endpoint (GHE-style) overrides the default. Token is still
+// passed through verbatim.
+func TestGitHubProvider_MCPServer_HonoursCustomEndpoint(t *testing.T) {
+	p := &githubIssueProvider{}
+	dir := initGitRepo(t)
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/Cidan/ask.git")
+
+	pc := projectConfig{
+		Issues: issuesConfig{
+			Provider: "github",
+			GitHub:   githubIssuesConfig{Token: "ghp_x", Endpoint: "https://ghe.example/mcp"},
+		},
+	}
+	got := p.MCPServer(pc, dir)
+	if got == nil {
+		t.Fatalf("MCPServer should return a descriptor when fully configured")
+	}
+	if got.URL != "https://ghe.example/mcp" {
+		t.Errorf("URL=%q want %q", got.URL, "https://ghe.example/mcp")
+	}
+}

@@ -210,6 +210,12 @@ func (m model) cycleIssueProvider() (tea.Model, tea.Cmd) {
 		debugLog("project provider saveConfig: %v", err)
 		return m, m.toast.show("config: " + err.Error())
 	}
+	// The chat agent's MCP roster is baked at fork time, so an open
+	// session is still pointing at the previous issue provider's
+	// servers. Kill the proc; the next user input respawns it with
+	// the new --mcp-config — same pattern the worktree / skip-perms
+	// toggles use.
+	m.killProc()
 	return m, m.toast.show("issues: provider → " + next.DisplayName())
 }
 
@@ -261,6 +267,13 @@ func (m model) commitConfigProjectField() (tea.Model, tea.Cmd) {
 		return m, m.toast.show("config: save: " + err.Error())
 	}
 	m = m.closeConfigProjectFieldEditor()
+	// Issue-provider credentials get baked into the chat agent's
+	// --mcp-config at fork time. A live proc is still holding the
+	// pre-edit token/endpoint — kill it so the next user input
+	// respawns with the freshly saved values. All current project
+	// fields feed the issue provider, so unconditional is correct;
+	// when a non-issue field type lands later, gate this on spec.
+	m.killProc()
 	return m, m.toast.show(spec.title + " saved")
 }
 

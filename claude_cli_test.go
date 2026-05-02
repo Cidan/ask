@@ -219,6 +219,68 @@ func TestClaudeCLIArgs_ExplicitModelPassesThrough(t *testing.T) {
 	}
 }
 
+// When the project has a configured issue provider, its MCP entry
+// must land in --mcp-config alongside the loopback "ask" bridge so
+// the chat agent has the same issue-tracker access ask uses for
+// ctrl+i. Auth headers go on the entry verbatim — the chat agent's
+// MCP client reads them and attaches Authorization: Bearer …
+func TestClaudeCLIArgs_IssueMCPInjectedIntoMCPConfig(t *testing.T) {
+	args := claudeCLIArgs(ProviderSessionArgs{
+		MCPPort: 4321,
+		IssueMCP: &issueMCPServer{
+			Name:    "github",
+			URL:     "https://api.githubcopilot.com/mcp",
+			Headers: map[string]string{"Authorization": "Bearer ghp_secret"},
+		},
+	}, false)
+
+	cfg := argAfter(args, "--mcp-config")
+	if cfg == "" {
+		t.Fatalf("--mcp-config missing: %v", args)
+	}
+	var parsed struct {
+		MCPServers map[string]struct {
+			Type    string            `json:"type"`
+			URL     string            `json:"url"`
+			Headers map[string]string `json:"headers"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(cfg), &parsed); err != nil {
+		t.Fatalf("--mcp-config not JSON (%v): %s", err, cfg)
+	}
+	if _, ok := parsed.MCPServers["ask"]; !ok {
+		t.Errorf("ask bridge entry must always be present: %s", cfg)
+	}
+	gh, ok := parsed.MCPServers["github"]
+	if !ok {
+		t.Fatalf("github MCP entry missing from --mcp-config: %s", cfg)
+	}
+	if gh.Type != "http" || gh.URL != "https://api.githubcopilot.com/mcp" {
+		t.Errorf("github entry shape wrong: %+v", gh)
+	}
+	if gh.Headers["Authorization"] != "Bearer ghp_secret" {
+		t.Errorf("Authorization header missing or wrong: %+v", gh.Headers)
+	}
+}
+
+func TestClaudeCLIArgs_NoIssueMCP_OnlyAskEntry(t *testing.T) {
+	args := claudeCLIArgs(ProviderSessionArgs{MCPPort: 4321}, false)
+	cfg := argAfter(args, "--mcp-config")
+	var parsed struct {
+		MCPServers map[string]any `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(cfg), &parsed); err != nil {
+		t.Fatalf("--mcp-config not JSON: %v", err)
+	}
+	if _, ok := parsed.MCPServers["ask"]; !ok {
+		t.Errorf("ask entry should always exist: %s", cfg)
+	}
+	if len(parsed.MCPServers) != 1 {
+		t.Errorf("only ask should be present without IssueMCP, got %d entries: %s",
+			len(parsed.MCPServers), cfg)
+	}
+}
+
 func TestClaudeCLIArgs_EmptyModelSkipsFlag(t *testing.T) {
 	args := claudeCLIArgs(ProviderSessionArgs{}, false)
 	if containsArg(args, "--model") {

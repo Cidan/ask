@@ -36,6 +36,7 @@ func (m model) sessionArgs() ProviderSessionArgs {
 		ResumeCwd:          m.resumeCwd,
 		PluginDir:          usagePluginDir,
 		AddedDirs:          append([]string(nil), m.addedDirs...),
+		IssueMCP:           projectIssueMCP(m.cwd),
 	}
 	if m.sessionMinted {
 		args.NewSessionID = m.sessionID
@@ -43,6 +44,25 @@ func (m model) sessionArgs() ProviderSessionArgs {
 		args.SessionID = m.sessionID
 	}
 	return args
+}
+
+// projectIssueMCP resolves the configured issue provider for cwd to
+// its MCP server descriptor, or nil when no provider is configured
+// (or the one selected isn't fully configured). Pulled out of
+// sessionArgs so the prepareProviderSession path — which also rebuilds
+// args from disk-backed config inside startAndSendProviderCmd — can
+// pick up the latest issue config after the user edits it without
+// having to re-thread state through every caller.
+func projectIssueMCP(cwd string) *issueMCPServer {
+	if cwd == "" {
+		return nil
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		return nil
+	}
+	provider, pc := activeIssueProvider(cfg, cwd)
+	return provider.MCPServer(pc, cwd)
 }
 
 // ensureProc lazily starts a provider session on first send in a turn.

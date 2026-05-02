@@ -160,6 +160,40 @@ func shellQuote(s string) string {
 
 const mcpTimeoutMillis = "86400000"
 
+// claudeMCPConfig builds the JSON passed via --mcp-config. The "ask"
+// entry is always present (it's the loopback bridge for the question
+// modal, permission prompts, and the memory hooks). When the project
+// has a configured issue provider, its MCP descriptor lands as a peer
+// entry under its own name (e.g. "github") so the chat agent can call
+// list_issues / issue_read / search_issues without a separate config
+// step.
+//
+// The token in issue.Headers is sensitive — it goes onto a child
+// process's argv, which is visible to the user (`ps`) and to system
+// audit. That's the same trust boundary the GitHub MCP CLI itself
+// asks for, so we don't introduce extra indirection here, but DO
+// keep the JSON out of debug logs.
+func claudeMCPConfig(mcpPort int, issue *issueMCPServer) string {
+	servers := map[string]any{
+		"ask": map[string]any{
+			"type": "http",
+			"url":  fmt.Sprintf("http://127.0.0.1:%d/", mcpPort),
+		},
+	}
+	if issue != nil && issue.Name != "" && issue.URL != "" {
+		entry := map[string]any{
+			"type": "http",
+			"url":  issue.URL,
+		}
+		if len(issue.Headers) > 0 {
+			entry["headers"] = issue.Headers
+		}
+		servers[issue.Name] = entry
+	}
+	b, _ := json.Marshal(map[string]any{"mcpServers": servers})
+	return string(b)
+}
+
 // claudeEnv returns the claude subprocess environment, routing Anthropic
 // traffic through a local ollama host when model == "ollama".
 func claudeEnv(args ProviderSessionArgs) []string {
@@ -192,8 +226,7 @@ func claudeCLIArgs(args ProviderSessionArgs, probe bool) []string {
 		out = append(out, "--plugin-dir", args.PluginDir)
 	}
 	if args.MCPPort > 0 {
-		out = append(out, "--mcp-config",
-			fmt.Sprintf(`{"mcpServers":{"ask":{"type":"http","url":"http://127.0.0.1:%d/"}}}`, args.MCPPort))
+		out = append(out, "--mcp-config", claudeMCPConfig(args.MCPPort, args.IssueMCP))
 		out = append(out, "--settings", claudeHookSettings(args.MCPPort))
 		if !probe {
 			out = append(out, "--permission-prompt-tool", "mcp__ask__approval_prompt")

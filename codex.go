@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -192,6 +193,11 @@ type codexState struct {
 // TOML override (the same config key codex's interactive --add-dir
 // flag writes to). Each path is strconv.Quote'd so spaces or quotes
 // don't break codex's TOML parser.
+//
+// IssueMCP translates to a -c mcp_servers.<name>.url override pair.
+// Codex pulls the bearer token from an env var (not from config), so
+// we point it at codexIssueMCPBearerEnv and codexEnv exports the
+// matching key.
 func codexCLIArgs(args ProviderSessionArgs) []string {
 	out := []string{"app-server", "--listen", "stdio://"}
 	if len(args.AddedDirs) > 0 {
@@ -202,7 +208,50 @@ func codexCLIArgs(args ProviderSessionArgs) []string {
 		out = append(out, "-c",
 			"sandbox_workspace_write.writable_roots=["+strings.Join(quoted, ",")+"]")
 	}
+	if mcp := args.IssueMCP; mcp != nil && mcp.Name != "" && mcp.URL != "" {
+		base := "mcp_servers." + mcp.Name
+		out = append(out, "-c", base+".url="+strconv.Quote(mcp.URL))
+		if codexIssueBearerToken(mcp) != "" {
+			out = append(out, "-c",
+				base+".bearer_token_env_var="+strconv.Quote(codexIssueMCPBearerEnv))
+		}
+	}
 	return out
+}
+
+// codexIssueMCPBearerEnv is the env-var name codex reads for the
+// streamable-HTTP bearer token. Hard-coded — codex's MCP config takes
+// only one bearer slot per server and ask only injects one issue MCP
+// per session, so a single well-known env var is enough.
+const codexIssueMCPBearerEnv = "ASK_ISSUE_MCP_BEARER"
+
+// codexIssueBearerToken extracts the raw bearer token from an issue
+// MCP descriptor's Authorization header (`Bearer <token>`). Returns
+// empty string when the descriptor has no Authorization header — the
+// caller then omits the bearer_token_env_var override, leaving the
+// MCP server unauthenticated (which is fine for public servers).
+func codexIssueBearerToken(mcp *issueMCPServer) string {
+	if mcp == nil {
+		return ""
+	}
+	auth := mcp.Headers["Authorization"]
+	const prefix = "Bearer "
+	if !strings.HasPrefix(auth, prefix) {
+		return ""
+	}
+	return strings.TrimPrefix(auth, prefix)
+}
+
+// codexEnv returns the env block for the codex subprocess. Inherits
+// the parent process env and layers on the bearer-token env var when
+// an issue MCP with auth is configured. Pulled out so tests assert
+// the env without spawning a process.
+func codexEnv(args ProviderSessionArgs) []string {
+	env := os.Environ()
+	if tok := codexIssueBearerToken(args.IssueMCP); tok != "" {
+		env = append(env, codexIssueMCPBearerEnv+"="+tok)
+	}
+	return env
 }
 
 // handshake request ids — fixed so the handshake scanner can match by id.
@@ -223,6 +272,7 @@ const codexHandshakeTimeout = 15 * time.Second
 
 func (codexProvider) StartSession(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
 	cmd := exec.Command("codex", codexCLIArgs(args)...)
+	cmd.Env = codexEnv(args)
 	if args.Cwd != "" {
 		cmd.Dir = args.Cwd
 	}

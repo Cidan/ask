@@ -82,6 +82,27 @@ type IssueProvider interface {
 	// hydrated. Called when the user hits Enter on a list row to
 	// open the detail view.
 	GetIssue(ctx context.Context, cfg projectConfig, cwd string, number int) (issue, error)
+	// MCPServer returns the MCP server descriptor that should be
+	// injected into the chat agent's --mcp-config when this project
+	// uses the provider, so the chat agent has the same issue-tracker
+	// access ask itself uses for ctrl+i. nil means "don't inject" —
+	// either the provider is unconfigured (token missing, cwd doesn't
+	// resolve to a valid backend) or the provider has no MCP surface
+	// to share. The returned spec is consumed verbatim by claudeCLIArgs.
+	MCPServer(cfg projectConfig, cwd string) *issueMCPServer
+}
+
+// issueMCPServer is the MCP server descriptor an IssueProvider exposes
+// to the chat agent. Name is the key that appears under mcpServers in
+// claude's --mcp-config (and the prefix the agent sees for tools, e.g.
+// `mcp__github__list_issues`). URL is the streamable HTTP endpoint;
+// Headers carries any auth headers the server needs (typically
+// `Authorization: Bearer <pat>`). Headers MUST NOT be logged — they
+// hold the user's credential.
+type issueMCPServer struct {
+	Name    string
+	URL     string
+	Headers map[string]string
 }
 
 // IssueQuery is an opaque, provider-defined filter value. The
@@ -183,3 +204,4 @@ func (noneIssueProvider) ListIssues(context.Context, projectConfig, string, Issu
 func (noneIssueProvider) GetIssue(context.Context, projectConfig, string, int) (issue, error) {
 	return issue{}, errIssueProviderNotConfigured
 }
+func (noneIssueProvider) MCPServer(projectConfig, string) *issueMCPServer { return nil }

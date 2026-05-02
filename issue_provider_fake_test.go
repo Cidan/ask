@@ -90,6 +90,8 @@ func (f *fakeIssueProvider) GetIssue(ctx context.Context, cfg projectConfig, cwd
 	return issue{number: n}, nil
 }
 
+func (f *fakeIssueProvider) MCPServer(projectConfig, string) *issueMCPServer { return nil }
+
 // newFakeMockProvider produces a fake provider configured with
 // one kanban column per distinct status in the supplied data.
 // Used by seedMockIssues so the legacy "columns derived from

@@ -192,3 +192,50 @@ func TestEscFromProjectSubmenu_BacksOutToTopLevel(t *testing.T) {
 		t.Errorf("Esc from Project submenu should close it")
 	}
 }
+
+// Cycling the issue provider must kill any open chat agent so the
+// next user input respawns it with the freshly built --mcp-config.
+// Otherwise the agent is still pointing at the previous provider's
+// MCP server and tools.
+func TestCycleIssueProvider_KillsOpenProc(t *testing.T) {
+	isolateHome(t)
+	m := newTestModel(t, newFakeProvider())
+	m.cwd = t.TempDir()
+	m.toast = NewToastModel(40, time.Second)
+	m.proc = &providerProc{}
+	m = m.openConfigProjectPicker()
+	mi, _ := m.cycleIssueProvider()
+	mm := mi.(model)
+	if mm.proc != nil {
+		t.Errorf("cycleIssueProvider should kill the open proc; m.proc=%v", mm.proc)
+	}
+}
+
+// Saving a GitHub PAT (or any project field) likewise needs to kill
+// the open proc — the agent's MCP roster bakes the token at fork
+// time, and a stale agent would happily keep using the previous
+// credential until the user manually killed it.
+func TestCommitConfigProjectField_KillsOpenProc(t *testing.T) {
+	isolateHome(t)
+	m := newTestModel(t, newFakeProvider())
+	m.cwd = t.TempDir()
+	m.toast = NewToastModel(40, time.Second)
+	m = m.openConfigProjectPicker()
+	// Set provider to github so the GitHub fields appear.
+	mi, _ := m.cycleIssueProvider()
+	m = mi.(model)
+	// A live proc must survive the cycle (we already test the kill in
+	// the cycle test); install a fresh one so we can observe the kill
+	// triggered by the field commit specifically.
+	m.proc = &providerProc{}
+	m = m.openConfigProjectFieldEditor("githubToken")
+	for _, r := range "ghp_abc" {
+		mi, _ = m.updateConfigProjectFieldInput(tea.KeyPressMsg{Text: string(r)})
+		m = mi.(model)
+	}
+	mi, _ = m.updateConfigProjectFieldInput(tea.KeyPressMsg{Code: tea.KeyEnter})
+	mm := mi.(model)
+	if mm.proc != nil {
+		t.Errorf("commit on a project field should kill the open proc; m.proc=%v", mm.proc)
+	}
+}

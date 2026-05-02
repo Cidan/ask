@@ -82,3 +82,91 @@ func TestCodexCLIArgs_AddedDirsQuoteEscaped(t *testing.T) {
 		t.Errorf("-c override should quote-escape paths; got %q; argv=%v", got, args)
 	}
 }
+
+// IssueMCP must land as a -c mcp_servers.<name>.url override pair so
+// codex's TOML config picks up an HTTP MCP server at launch — same
+// access ask uses for ctrl+i. Bearer auth goes via env (codex's MCP
+// config takes only an env-var name, not the literal token).
+func TestCodexCLIArgs_IssueMCPEmitsURLAndBearerOverrides(t *testing.T) {
+	args := codexCLIArgs(ProviderSessionArgs{
+		IssueMCP: &issueMCPServer{
+			Name:    "github",
+			URL:     "https://api.githubcopilot.com/mcp",
+			Headers: map[string]string{"Authorization": "Bearer ghp_secret"},
+		},
+	})
+	var sawURL, sawBearer bool
+	for i, a := range args {
+		if a != "-c" || i+1 >= len(args) {
+			continue
+		}
+		v := args[i+1]
+		switch {
+		case strings.HasPrefix(v, "mcp_servers.github.url="):
+			sawURL = true
+			if !strings.Contains(v, `"https://api.githubcopilot.com/mcp"`) {
+				t.Errorf("url override should TOML-quote the value: %q", v)
+			}
+		case strings.HasPrefix(v, "mcp_servers.github.bearer_token_env_var="):
+			sawBearer = true
+			if !strings.Contains(v, `"`+codexIssueMCPBearerEnv+`"`) {
+				t.Errorf("bearer_token_env_var should point at %s, got %q",
+					codexIssueMCPBearerEnv, v)
+			}
+		}
+	}
+	if !sawURL {
+		t.Errorf("missing mcp_servers.github.url override; argv=%v", args)
+	}
+	if !sawBearer {
+		t.Errorf("missing mcp_servers.github.bearer_token_env_var override; argv=%v", args)
+	}
+}
+
+// Public/unauthenticated MCP servers (no Authorization header) skip
+// the bearer override but still emit the url. Otherwise codex would
+// refuse the launch citing a missing env var.
+func TestCodexCLIArgs_IssueMCPWithoutAuthOmitsBearer(t *testing.T) {
+	args := codexCLIArgs(ProviderSessionArgs{
+		IssueMCP: &issueMCPServer{
+			Name: "public",
+			URL:  "https://example.com/mcp",
+		},
+	})
+	for i, a := range args {
+		if a == "-c" && i+1 < len(args) &&
+			strings.Contains(args[i+1], "bearer_token_env_var") {
+			t.Errorf("bearer_token_env_var should be absent without an auth header; argv=%v", args)
+		}
+	}
+}
+
+// codexEnv must export the bearer token under codexIssueMCPBearerEnv
+// so the codex subprocess can read it. The token MUST appear only in
+// the env (process-private) — never on argv (visible via ps).
+func TestCodexEnv_ExportsBearerToken(t *testing.T) {
+	env := codexEnv(ProviderSessionArgs{
+		IssueMCP: &issueMCPServer{
+			Headers: map[string]string{"Authorization": "Bearer ghp_secret"},
+		},
+	})
+	want := codexIssueMCPBearerEnv + "=ghp_secret"
+	var saw bool
+	for _, e := range env {
+		if e == want {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Errorf("env should carry %q; got tail=%v", want, env[len(env)-min(len(env), 3):])
+	}
+}
+
+func TestCodexEnv_NoIssueMCP_LeavesEnvUntouched(t *testing.T) {
+	env := codexEnv(ProviderSessionArgs{})
+	for _, e := range env {
+		if strings.HasPrefix(e, codexIssueMCPBearerEnv+"=") {
+			t.Errorf("no IssueMCP should leave %s unset; saw %q", codexIssueMCPBearerEnv, e)
+		}
+	}
+}
