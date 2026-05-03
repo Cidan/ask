@@ -17,6 +17,16 @@ import (
 
 const askProgressInterval = 20 * time.Second
 
+// bridgeShutdownTimeout caps how long mcpBridge.stop() waits for
+// in-flight HTTP handlers to finish before forcibly returning. This
+// matters because hook handlers call into memmy (memoryRecall) which
+// is bounded by memoryHookCtxTimeout (8s); the bridge timeout is set
+// slightly longer so a hook that hits its own ctx deadline still has
+// a moment to unwind cleanly. Without this drain, a hook in flight
+// during process shutdown would race closeMemoryService and crash on
+// a nil neo4j driver — see the panic at neo4j/db.go:135.
+const bridgeShutdownTimeout = 10 * time.Second
+
 type mcpOption struct {
 	Label   string `json:"label" jsonschema:"short label for the option"`
 	Diagram string `json:"diagram,omitempty" jsonschema:"required only for pick_diagram kind: monospace box-drawing art, max 40 cols x 12 rows"`
@@ -126,6 +136,14 @@ type mcpBridge struct {
 	ln     net.Listener
 	server *mcp.Server
 
+	// httpServer is the HTTP transport for the bridge's handlers
+	// (the hook routes plus the catch-all MCP streamable handler).
+	// It owns the listener after Serve runs; stop() calls Shutdown
+	// on it so in-flight handlers finish before the listener tears
+	// down. Nil only on bridges built directly in tests that bypass
+	// newMCPBridge.
+	httpServer *http.Server
+
 	// alwaysAllow is a per-tab session allowlist. When the user picks
 	// "Always allow" in the approval modal, the corresponding permissionRule
 	// lands here, and subsequent approval_prompt invocations matching the
@@ -205,8 +223,11 @@ func newMCPBridge(tabID int) (*mcpBridge, error) {
 	mux.HandleFunc("/hooks/user-prompt-submit", b.handleHookUserPromptSubmit)
 	mux.HandleFunc("/hooks/pre-tool-use", b.handleHookPreToolUse)
 	mux.Handle("/", handler)
+	b.httpServer = &http.Server{Handler: mux}
 	go func() {
-		_ = http.Serve(b.ln, mux)
+		// Serve returns http.ErrServerClosed after Shutdown completes
+		// (or any other listener error). Either way the bridge is done.
+		_ = b.httpServer.Serve(b.ln)
 	}()
 	return b, nil
 }
@@ -263,11 +284,30 @@ func (b *mcpBridge) decodeHook(w http.ResponseWriter, r *http.Request) (hookInpu
 	return ev, true
 }
 
+// stop tears the bridge down. The contract is graceful: in-flight HTTP
+// handlers (memory hooks, MCP tool calls) finish on their own time and
+// only then does Shutdown return. This is what guarantees that a hook
+// holding a memmy reference has released it before the surrounding
+// process tears closeMemoryService through, which used to cause a nil-
+// driver panic at neo4j/db.go:135 if shutdown raced an in-flight
+// SessionStart hook.
+//
+// Idempotent and nil-safe: callers do not have to track whether the
+// bridge has already been stopped, and several test paths construct
+// a bare mcpBridge without an httpServer/listener.
 func (b *mcpBridge) stop() {
-	if b == nil || b.ln == nil {
+	if b == nil {
 		return
 	}
-	_ = b.ln.Close()
+	if b.httpServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), bridgeShutdownTimeout)
+		defer cancel()
+		_ = b.httpServer.Shutdown(ctx)
+		return
+	}
+	if b.ln != nil {
+		_ = b.ln.Close()
+	}
 }
 
 func (b *mcpBridge) askTool(ctx context.Context, req *mcp.CallToolRequest, in askInput) (*mcp.CallToolResult, askOutput, error) {
