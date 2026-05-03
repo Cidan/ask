@@ -112,6 +112,7 @@ func (codexProvider) BaseSlashCommands() []slashCmd {
 		{"/model", "select the Codex model"},
 		{"/effort", "select the Codex reasoning effort"},
 		{"/add-dir", "add a directory the agent may access"},
+		{"/compact", "compact the current Codex thread"},
 	}
 }
 
@@ -449,6 +450,74 @@ func (codexProvider) Interrupt(p *providerProc) (bool, error) {
 	return true, codexWriteJSONLocked(state, codexRequest(id, "turn/interrupt", map[string]any{
 		"threadId": tid,
 		"turnId":   turnID,
+	}))
+}
+
+// handleCodexCompact is /compact's dispatch target. Refuses on the
+// wrong provider (with an explanation, since the slash popover only
+// suggests it for codex but a user can still type it manually) and
+// reports "no session to compact" when no codex thread is in flight.
+// The wire send goes through codexCompact so the provider-specific
+// JSON-RPC details stay inside this file.
+//
+// The user's chat history is unchanged on success — codex emits its
+// own stream events for the compact lifecycle, and the existing
+// readCodexStream path renders them as they arrive.
+func (m model) handleCodexCompact() (tea.Model, tea.Cmd) {
+	if m.provider == nil || m.provider.ID() != "codex" {
+		m.appendHistory(outputStyle.Render(errStyle.Render(
+			"/compact is only available with the Codex provider")))
+		return m, nil
+	}
+	if m.busy {
+		// Mid-turn — refuse, matching the shape of /provider's busy
+		// guard. Sending compact while a turn is in flight would
+		// race the stream reader and the next turn/completed.
+		return m, nil
+	}
+	if m.proc == nil {
+		m.appendHistory(outputStyle.Render(errStyle.Render(
+			"No Codex session to compact.")))
+		return m, nil
+	}
+	sent, err := codexCompact(m.proc)
+	if err != nil {
+		m.appendHistory(outputStyle.Render(errStyle.Render(
+			"compact failed: " + err.Error())))
+		return m, nil
+	}
+	if !sent {
+		m.appendHistory(outputStyle.Render(errStyle.Render(
+			"No Codex session to compact.")))
+		return m, nil
+	}
+	return m, nil
+}
+
+// codexCompact sends thread/compact/start for the active thread,
+// asking codex to summarise context and reset the session window.
+// Returns sent=false (no error) when the proc has no codexState
+// payload or no threadID — caller decides whether that's an error
+// surface or a no-op message.
+//
+// Symmetric with Interrupt: takes the state mutex around the
+// threadID read + nextID bump so the JSON write doesn't interleave
+// with a concurrent Send or approval reply.
+func codexCompact(p *providerProc) (sent bool, err error) {
+	state, _ := p.payload.(*codexState)
+	if state == nil {
+		return false, nil
+	}
+	state.mu.Lock()
+	tid := state.threadID
+	id := state.nextID
+	state.nextID++
+	state.mu.Unlock()
+	if tid == "" {
+		return false, nil
+	}
+	return true, codexWriteJSONLocked(state, codexRequest(id, "thread/compact/start", map[string]any{
+		"threadId": tid,
 	}))
 }
 
