@@ -870,13 +870,26 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.mode == modeConfig && m.configProjectPickerActive && m.configProjectFieldEditing != "" {
 			return m.applyConfigProjectPaste(msg.Content)
 		}
-		if m.mode == modeInput && !m.busy {
-			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
-			m.refreshPathMatches()
-			return m, cmd
+		if m.mode != modeInput {
+			return m, nil
 		}
-		return m, nil
+		// Workflow tabs replace the composer with a status banner; a
+		// forwarded paste would land in a hidden textarea with no way
+		// to submit. Mirrors workflowTabHandleKey absorbing typed keys.
+		if m.workflowRun != nil {
+			return m, nil
+		}
+		// Inline confirms overlay the input area and intercept typed
+		// keys so they don't bleed into the textarea — paste must
+		// follow the same rule or it becomes a side-channel write.
+		if m.cancelTurnConfirming || m.closeTabConfirming {
+			return m, nil
+		}
+		// No !m.busy gate: typed keys, image pastes, and shell-mode
+		// keystrokes all reach the textarea while a turn (or shell
+		// command) is in flight so the user can stage a follow-up.
+		// Bracketed paste is the same input modality and must match.
+		return m, m.updateComposer(msg)
 
 	case shellBatchMsg:
 		if msg.tabID != m.id {
@@ -1297,9 +1310,14 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	return m, m.updateComposer(msg)
+}
+
+func (m *model) updateComposer(msg tea.Msg) tea.Cmd {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
-	if m.historyIdx >= 0 && m.input.Value() != m.inputHistory[m.historyIdx] {
+	if m.historyIdx >= 0 && m.historyIdx < len(m.inputHistory) &&
+		m.input.Value() != m.inputHistory[m.historyIdx] {
 		m.resetHistoryNav()
 	}
 	if items := m.filterSlashCmds(); m.menuIdx >= len(items) {
@@ -1311,7 +1329,7 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.pathMatches = nil
 		m.pathIdx = 0
 	}
-	return m, cmd
+	return cmd
 }
 
 func (m model) updateShellInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {

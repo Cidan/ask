@@ -265,6 +265,10 @@ func newTestModel(t *testing.T, prov Provider) model {
 	ta := textarea.New()
 	ta.SetHeight(3)
 	ta.DynamicHeight = true
+	// Production calls Focus on the input textarea (main.go:newTab).
+	// Without it, textarea.Update silently returns on every msg —
+	// including tea.PasteMsg — so paste tests would land empty.
+	ta.Focus()
 	vp := newChatView()
 	sp := spinner.New()
 	return model{

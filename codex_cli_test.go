@@ -163,10 +163,26 @@ func TestCodexEnv_ExportsBearerToken(t *testing.T) {
 }
 
 func TestCodexEnv_NoIssueMCP_LeavesEnvUntouched(t *testing.T) {
+	t.Setenv(codexIssueMCPBearerEnv, "stale-token")
 	env := codexEnv(ProviderSessionArgs{})
 	for _, e := range env {
 		if strings.HasPrefix(e, codexIssueMCPBearerEnv+"=") {
 			t.Errorf("no IssueMCP should leave %s unset; saw %q", codexIssueMCPBearerEnv, e)
+		}
+	}
+}
+
+func TestCodexEnv_PublicIssueMCPDoesNotLeakInheritedBearer(t *testing.T) {
+	t.Setenv(codexIssueMCPBearerEnv, "stale-token")
+	env := codexEnv(ProviderSessionArgs{
+		IssueMCP: &issueMCPServer{
+			Name: "public",
+			URL:  "https://example.com/mcp",
+		},
+	})
+	for _, e := range env {
+		if strings.HasPrefix(e, codexIssueMCPBearerEnv+"=") {
+			t.Errorf("public IssueMCP should not inherit %s; saw %q", codexIssueMCPBearerEnv, e)
 		}
 	}
 }

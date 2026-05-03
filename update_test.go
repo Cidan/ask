@@ -1174,3 +1174,347 @@ func TestPersistSlashCmdsCmd_CallsSaveSettings(t *testing.T) {
 		t.Errorf("unexpected saved settings: %+v", fp.savedState[0])
 	}
 }
+
+// Bracketed paste must reach the textarea while a turn is in flight.
+// Pre-fix this was silently dropped because the case tea.PasteMsg
+// branch gated on `!m.busy`, even though typed keystrokes and image
+// pastes both bypass the busy gate. The whole point of letting the
+// user keep typing during a turn is to stage the next prompt — paste
+// is the same input modality and must behave the same way.
+// (Cidan/ask#1.)
+func TestUpdate_PasteMsgWhileBusyAppendsToInput(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.busy = true
+	m.input.SetValue("draft ")
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "tail"})
+
+	if m2.input.Value() != "draft tail" {
+		t.Errorf("paste during busy turn must reach the textarea: got %q want %q",
+			m2.input.Value(), "draft tail")
+	}
+	if !m2.busy {
+		t.Errorf("paste must not flip busy off, got busy=false")
+	}
+}
+
+// Idle-state paste was already forwarded pre-fix; this guards against
+// a regression where the rewrite accidentally drops the path the bug
+// report wasn't about.
+func TestUpdate_PasteMsgWhileIdleAppendsToInput(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.input.SetValue("hello ")
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "world"})
+
+	if m2.input.Value() != "hello world" {
+		t.Errorf("idle paste should append to input: got %q", m2.input.Value())
+	}
+}
+
+// After a paste lands in the textarea, refreshPathMatches must run so
+// `cd ` / `ls ` / `/add-dir ` prefix completion sees the new value.
+// Without it the picker would lag one keystroke behind a paste.
+func TestUpdate_PasteMsgRefreshesPathMatches(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "alpha"), 0o755); err != nil {
+		t.Fatalf("mkdir alpha: %v", err)
+	}
+	t.Chdir(dir)
+
+	m := newTestModel(t, newFakeProvider())
+	m.input.SetValue("cd ")
+	// Stale matches that should be cleared and rebuilt by the paste.
+	m.pathMatches = []string{"sentinel"}
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "a"})
+
+	if m2.input.Value() != "cd a" {
+		t.Fatalf("paste must append to cd input: got %q", m2.input.Value())
+	}
+	// pathMatches should now reflect entries starting with "a" in the
+	// process cwd — the sentinel proves it was rebuilt rather than left
+	// stale.
+	if len(m2.pathMatches) == 0 {
+		t.Fatalf("refreshPathMatches should populate matches for cd a; got nil")
+	}
+	for _, p := range m2.pathMatches {
+		if p == "sentinel" {
+			t.Errorf("stale sentinel survived refresh: %v", m2.pathMatches)
+		}
+	}
+	var sawAlpha bool
+	for _, p := range m2.pathMatches {
+		if p == "alpha" {
+			sawAlpha = true
+		}
+	}
+	if !sawAlpha {
+		t.Errorf("refreshPathMatches missed alpha: %v", m2.pathMatches)
+	}
+}
+
+// Typed input clears path-picker state while busy; paste must not leave
+// a divergent completion cache behind just because it arrived through a
+// different Bubble Tea message.
+func TestUpdate_PasteMsgWhileBusyClearsPathMatchesLikeTypedInput(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.busy = true
+	m.input.SetValue("cd ")
+	m.pathMatches = []string{"stale"}
+	m.pathIdx = 3
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "a"})
+
+	if m2.input.Value() != "cd a" {
+		t.Fatalf("paste must append to busy draft: got %q", m2.input.Value())
+	}
+	if m2.pathMatches != nil {
+		t.Errorf("busy paste must clear path matches like typed input: %v", m2.pathMatches)
+	}
+	if m2.pathIdx != 0 {
+		t.Errorf("busy paste must reset pathIdx, got %d", m2.pathIdx)
+	}
+}
+
+// Pasted edits must break out of history navigation the same way typed
+// edits do; otherwise Enter can submit the wrong historic draft after a
+// paste.
+func TestUpdate_PasteMsgResetsHistoryNavOnEdit(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.inputHistory = []string{"draft"}
+	m.historyIdx = 0
+	m.input.SetValue("draft")
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: " more"})
+
+	if m2.input.Value() != "draft more" {
+		t.Fatalf("paste must append to draft: got %q", m2.input.Value())
+	}
+	if m2.historyIdx != -1 {
+		t.Errorf("paste must reset history navigation, got historyIdx=%d", m2.historyIdx)
+	}
+}
+
+// Slash-menu cursor clamping is part of the composer's reactive state
+// update. Paste must share it or a stale menuIdx can point past the
+// filtered list after the draft changes.
+func TestUpdate_PasteMsgClampsMenuIdx(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.input.SetValue("/co")
+	if items := m.filterSlashCmds(); len(items) == 0 {
+		t.Fatal("expected /co to match at least one slash command")
+	}
+	m.menuIdx = 99
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "nfig"})
+
+	if m2.input.Value() != "/config" {
+		t.Fatalf("paste must append to slash draft: got %q", m2.input.Value())
+	}
+	if m2.menuIdx != 0 {
+		t.Errorf("paste must clamp stale menuIdx after refilter, got %d", m2.menuIdx)
+	}
+}
+
+// Paste in shell mode while a shell command is running must reach the
+// textarea — typed keystrokes already do (updateShellInput forwards
+// them via m.input.Update), and the user expects to stage the next
+// shell command while the current one runs. The PasteMsg dispatcher
+// runs at the model level, so it doesn't go through updateShellInput;
+// we only need to make sure the top-level handler doesn't drop it.
+func TestUpdate_PasteMsgInShellModeWhileRunningAppendsToInput(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.shellMode = true
+	m.shellCh = make(chan tea.Msg, 1)
+	m.busy = true
+	m.input.SetValue("ls -")
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "la"})
+
+	if m2.input.Value() != "ls -la" {
+		t.Errorf("shell-mode paste while running must reach the textarea: got %q", m2.input.Value())
+	}
+}
+
+// Workflow tabs replace the composer with a status banner — the
+// textarea is not rendered, so a forwarded paste lands invisibly.
+// workflowTabHandleKey absorbs typed keystrokes for the same reason;
+// PasteMsg must match. Covers both busy (mid-step) and idle
+// (chain finished) so a closed/cancelled workflow tab can't suddenly
+// start collecting paste either.
+func TestUpdate_PasteMsgOnWorkflowTabIsAbsorbed(t *testing.T) {
+	cases := []struct {
+		name string
+		busy bool
+		done bool
+	}{
+		{"running step", true, false},
+		{"chain done", false, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := newTestModel(t, newFakeProvider())
+			m.workflowRun = &workflowRunState{
+				Workflow: workflowDef{Name: "wf", Steps: []workflowStep{{Provider: "fake"}}},
+				Issue:    issueRef{Provider: "github", Project: "Cidan/ask", Number: 1},
+				done:     c.done,
+			}
+			m.busy = c.busy
+			m.input.SetValue("staged ")
+
+			m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "tail"})
+
+			if m2.input.Value() != "staged " {
+				t.Errorf("paste on workflow tab must be absorbed: got %q want %q",
+					m2.input.Value(), "staged ")
+			}
+		})
+	}
+}
+
+// Inline confirms (cancel-turn / close-tab) overlay the input area
+// and intercept typed keys so they don't reach the textarea —
+// updateCancelTurnConfirm and updateCloseTabConfirm both return
+// `(m, nil)` on any unmatched key. PasteMsg must follow the same
+// rule, otherwise it becomes a side-channel write that bypasses the
+// confirm.
+func TestUpdate_PasteMsgDuringCancelTurnConfirmIsAbsorbed(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.busy = true
+	m.cancelTurnConfirming = true
+	m.input.SetValue("hi ")
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "there"})
+
+	if m2.input.Value() != "hi " {
+		t.Errorf("paste during cancel-turn confirm must be absorbed: got %q", m2.input.Value())
+	}
+	if !m2.cancelTurnConfirming {
+		t.Errorf("paste must not dismiss the cancel-turn confirm")
+	}
+}
+
+func TestUpdate_PasteMsgDuringCloseTabConfirmIsAbsorbed(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.closeTabConfirming = true
+	m.input.SetValue("draft")
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "more"})
+
+	if m2.input.Value() != "draft" {
+		t.Errorf("paste during close-tab confirm must be absorbed: got %q", m2.input.Value())
+	}
+	if !m2.closeTabConfirming {
+		t.Errorf("paste must not dismiss the close-tab confirm")
+	}
+}
+
+// Paste in any mode that isn't modeInput is absorbed (with the two
+// config-field-edit fast paths handled by their own tests). Covers
+// every non-input viewMode so a future mode addition can't silently
+// fall through to the textarea.
+func TestUpdate_PasteMsgInNonInputModesIsAbsorbed(t *testing.T) {
+	cases := []struct {
+		name string
+		mode viewMode
+	}{
+		{"sessionPicker", modeSessionPicker},
+		{"askQuestion", modeAskQuestion},
+		{"approval", modeApproval},
+		{"providerSwitch", modeProviderSwitch},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := newTestModel(t, newFakeProvider())
+			m.mode = c.mode
+			m.input.SetValue("seed")
+
+			m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "leak"})
+
+			if m2.input.Value() != "seed" {
+				t.Errorf("paste in mode %v must be absorbed: got %q", c.mode, m2.input.Value())
+			}
+			if m2.mode != c.mode {
+				t.Errorf("paste must not change mode, got %v want %v", m2.mode, c.mode)
+			}
+		})
+	}
+}
+
+// modeConfig has two field-edit fast paths that route paste into the
+// editor's draft buffer instead of the chat composer. These were
+// already correct pre-fix; re-asserted here as a regression guard
+// since the dispatcher was rewritten.
+func TestUpdate_PasteMsgInConfigMemoryFieldEditorRoutes(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.mode = modeConfig
+	m.configMemoryPickerActive = true
+	m.configMemoryFieldEditing = "geminiKey"
+	m.configMemoryFieldDraft = "AIza"
+	m.input.SetValue("composer-untouched")
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "-paste"})
+
+	if m2.configMemoryFieldDraft != "AIza-paste" {
+		t.Errorf("paste should append to memory field draft: %q", m2.configMemoryFieldDraft)
+	}
+	if m2.input.Value() != "composer-untouched" {
+		t.Errorf("composer must not receive the paste while a memory field is open: %q", m2.input.Value())
+	}
+}
+
+func TestUpdate_PasteMsgInConfigProjectFieldEditorRoutes(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.mode = modeConfig
+	m.configProjectPickerActive = true
+	m.configProjectFieldEditing = "githubToken"
+	m.configProjectFieldDraft = "ghp_"
+	m.input.SetValue("composer-untouched")
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "abcd"})
+
+	if m2.configProjectFieldDraft != "ghp_abcd" {
+		t.Errorf("paste should append to project field draft: %q", m2.configProjectFieldDraft)
+	}
+	if m2.input.Value() != "composer-untouched" {
+		t.Errorf("composer must not receive the paste while a project field is open: %q", m2.input.Value())
+	}
+}
+
+// modeConfig with no field editor open should still absorb paste —
+// the picker rows are not text inputs and there is no destination
+// for the pasted content.
+func TestUpdate_PasteMsgInConfigWithoutEditorIsAbsorbed(t *testing.T) {
+	cases := []struct {
+		name                string
+		memoryPickerActive  bool
+		projectPickerActive bool
+	}{
+		{"no picker", false, false},
+		{"memory picker open, no field", true, false},
+		{"project picker open, no field", false, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := newTestModel(t, newFakeProvider())
+			m.mode = modeConfig
+			m.configMemoryPickerActive = c.memoryPickerActive
+			m.configProjectPickerActive = c.projectPickerActive
+			m.input.SetValue("seed")
+
+			m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "leak"})
+
+			if m2.input.Value() != "seed" {
+				t.Errorf("paste in modeConfig without editor must be absorbed: got %q", m2.input.Value())
+			}
+			if m2.configMemoryFieldDraft != "" || m2.configProjectFieldDraft != "" {
+				t.Errorf("paste must not leak into field drafts: memory=%q project=%q",
+					m2.configMemoryFieldDraft, m2.configProjectFieldDraft)
+			}
+		})
+	}
+}

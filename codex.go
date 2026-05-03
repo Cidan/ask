@@ -263,7 +263,13 @@ func codexIssueBearerToken(mcp *issueMCPServer) string {
 // an issue MCP with auth is configured. Pulled out so tests assert
 // the env without spawning a process.
 func codexEnv(args ProviderSessionArgs) []string {
-	env := os.Environ()
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, codexIssueMCPBearerEnv+"=") {
+			continue
+		}
+		env = append(env, e)
+	}
 	if tok := codexIssueBearerToken(args.IssueMCP); tok != "" {
 		env = append(env, codexIssueMCPBearerEnv+"="+tok)
 	}
