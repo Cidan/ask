@@ -70,6 +70,7 @@ func TestFirstPageError_ClearsLoadingAndShowsModal(t *testing.T) {
 	loadErr := fmt.Errorf("auth: bad token")
 	m, _ = runUpdate(t, m, issuePageLoadedMsg{
 		tabID:           m.id,
+		screen:          screenIssues,
 		gen:             m.issues.queryGen,
 		query:           nil,
 		requestedCursor: "",
@@ -133,7 +134,7 @@ func TestLoaderAnimation_TickAdvancesFrameWhileLoading(t *testing.T) {
 	m.issues.loading = true
 	m.issues.loadingMessage = "Brewing fresh issues..."
 	m.issues.loadingFrame = 0
-	m, cmd := runUpdate(t, m, issueLoadingTickMsg{tabID: m.id})
+	m, cmd := runUpdate(t, m, issueLoadingTickMsg{tabID: m.id, screen: screenIssues})
 	if m.issues.loadingFrame != 1 {
 		t.Errorf("frame should advance on tick: got %d want 1", m.issues.loadingFrame)
 	}
@@ -146,7 +147,7 @@ func TestLoaderAnimation_TickStopsAfterLoadingClears(t *testing.T) {
 	m := enterIssuesScreen(t)
 	m.issues.loading = false
 	startFrame := m.issues.loadingFrame
-	_, cmd := runUpdate(t, m, issueLoadingTickMsg{tabID: m.id})
+	_, cmd := runUpdate(t, m, issueLoadingTickMsg{tabID: m.id, screen: screenIssues})
 	if m.issues.loadingFrame != startFrame {
 		t.Errorf("frame should not advance when not loading: got %d want %d",
 			m.issues.loadingFrame, startFrame)
@@ -160,7 +161,7 @@ func TestLoaderAnimation_TickIgnoresWrongTab(t *testing.T) {
 	m := enterIssuesScreen(t)
 	m.issues.loading = true
 	m.issues.loadingFrame = 5
-	_, cmd := runUpdate(t, m, issueLoadingTickMsg{tabID: m.id + 999})
+	_, cmd := runUpdate(t, m, issueLoadingTickMsg{tabID: m.id + 999, screen: screenIssues})
 	if m.issues.loadingFrame != 5 {
 		t.Errorf("foreign-tab tick should not advance frame")
 	}
@@ -179,7 +180,7 @@ func TestLoaderAnimation_RenderDiffersBetweenFrames(t *testing.T) {
 	m.issues.loadingMessage = "Reticulating splines..."
 	m.issues.loadingFrame = 0
 	first := stripAnsi(m.activeScreen().view(m))
-	m, _ = runUpdate(t, m, issueLoadingTickMsg{tabID: m.id})
+	m, _ = runUpdate(t, m, issueLoadingTickMsg{tabID: m.id, screen: screenIssues})
 	second := stripAnsi(m.activeScreen().view(m))
 	if first == second {
 		t.Errorf("two consecutive frames produced identical output:\nfirst:\n%s\nsecond:\n%s",
@@ -288,10 +289,11 @@ func TestStaleGenResponseDoesNotMutate(t *testing.T) {
 	beforeFingerprint := m.issues.queryFingerprint(m.issues.currentQuery)
 	staleQuery := &fakeQuery{statusMatch: "ghost"}
 	m, _ = runUpdate(t, m, issuePageLoadedMsg{
-		tabID: m.id,
-		gen:   3, // stale!
-		query: staleQuery,
-		page:  IssueListPage{Issues: []issue{{number: 12345}}, HasMore: false},
+		tabID:  m.id,
+		screen: screenIssues,
+		gen:    3, // stale!
+		query:  staleQuery,
+		page:   IssueListPage{Issues: []issue{{number: 12345}}, HasMore: false},
 	})
 	if got := len(issuesAll(m.issues)); got != beforeCount {
 		t.Errorf("nil-query rows mutated by stale msg: %d → %d", beforeCount, got)

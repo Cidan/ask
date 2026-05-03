@@ -14,7 +14,22 @@ const (
 	screenAsk screenID = iota
 	screenIssues
 	screenWorkflows
+	// screenPRs is the GitHub Pull Requests kanban surface. It reuses
+	// the entire issues kanban machinery (kanbanIssueView,
+	// issueDetailView, page cache, scrollbar, mouse, search) but
+	// installs a different IssueProvider (githubPRProvider) on its
+	// per-tab state and adds an `m` keybind for the merge action.
+	screenPRs
 )
+
+func isIssueScreen(id screenID) bool {
+	switch id {
+	case screenIssues, screenPRs:
+		return true
+	default:
+		return false
+	}
+}
 
 // screen is the per-tab top-level UI handler. Implementations are
 // stateless dispatchers — screen-specific state lives on model in
@@ -51,6 +66,7 @@ func newScreenRegistry() map[screenID]screen {
 		screenAsk:       askScreen{},
 		screenIssues:    issuesScreen{},
 		screenWorkflows: workflowsScreen{},
+		screenPRs:       prsScreen{},
 	}
 }
 
@@ -59,6 +75,49 @@ func (m model) activeScreen() screen {
 		return s
 	}
 	return askScreen{}
+}
+
+func (m model) issueStateForScreen(screen screenID) *issuesState {
+	switch screen {
+	case screenIssues:
+		return m.issues
+	case screenPRs:
+		return m.prs
+	default:
+		return nil
+	}
+}
+
+func (m *model) ensureIssueState(screen screenID) *issuesState {
+	switch screen {
+	case screenIssues:
+		if m.issues == nil {
+			m.issues = newIssuesState()
+		}
+		return m.issues
+	case screenPRs:
+		if m.prs == nil {
+			m.prs = newPRsState()
+		}
+		return m.prs
+	default:
+		return nil
+	}
+}
+
+func (m model) activeIssueState() *issuesState {
+	return m.issueStateForScreen(m.screen)
+}
+
+func (m *model) discardIssueScreenState(screen screenID) {
+	s := m.issueStateForScreen(screen)
+	if s == nil {
+		return
+	}
+	if kv, ok := s.view.(*kanbanIssueView); ok {
+		kv.cancelCarry(s)
+	}
+	s.discardOnLeave()
 }
 
 // modalOpen reports whether a modal/picker is currently blocking
@@ -74,7 +133,7 @@ func (m model) modalOpen() bool {
 	if m.mode != modeInput {
 		return true
 	}
-	if m.cancelTurnConfirming || m.closeTabConfirming {
+	if m.cancelTurnConfirming || m.closeTabConfirming || m.mergePRConfirming {
 		return true
 	}
 	return false
@@ -99,6 +158,9 @@ func (m model) switchScreen(target screenID) model {
 	// state (cursor position, future filters) persists across flips.
 	if target == screenIssues && m.issues == nil {
 		m.issues = newIssuesState()
+	}
+	if target == screenPRs && m.prs == nil {
+		m.prs = newPRsState()
 	}
 	// Clear the chat-view text selection on the way out of ask — the
 	// selection's anchor coordinates are tied to the chat viewport,

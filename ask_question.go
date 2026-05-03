@@ -517,6 +517,15 @@ func (m model) viewCloseTabConfirm() string {
 	return renderCancelConfirmBox("Close this tab?", "Stops claude in this tab.", m.closeTabChoice)
 }
 
+func (m model) viewMergePRConfirm() string {
+	title := fmt.Sprintf("Merge PR #%d?", m.mergePRItem.number)
+	sub := "Merges this pull request via GitHub."
+	if strings.TrimSpace(m.mergePRReason) != "" {
+		sub = m.mergePRReason
+	}
+	return renderCancelConfirmBox(title, sub, m.mergePRChoice)
+}
+
 func renderCancelConfirmBox(title, sub string, choice int) string {
 	no := askConfirmBtnStyle.Render("No")
 	yes := askConfirmBtnStyle.Render("Yes")

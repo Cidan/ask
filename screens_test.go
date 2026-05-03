@@ -46,6 +46,49 @@ func TestScreens_CtrlIBlockedWhenUnconfigured(t *testing.T) {
 	}
 }
 
+func TestScreens_CtrlPBlockedWhenUnconfigured(t *testing.T) {
+	prev := githubPRScreenProvider
+	prov := newFakeIssueProvider()
+	prov.configured = false
+	githubPRScreenProvider = prov
+	t.Cleanup(func() { githubPRScreenProvider = prev })
+
+	m := newTestModel(t, newFakeProvider())
+	m.toast = NewToastModel(40, time.Second)
+	m2, cmd := runUpdate(t, m, ctrlKey('p'))
+	if m2.screen != screenAsk {
+		t.Errorf("Ctrl+P unconfigured should leave us on ask, got %v", m2.screen)
+	}
+	if cmd == nil {
+		t.Errorf("Ctrl+P unconfigured should produce a toast command")
+	}
+}
+
+func TestScreens_CtrlPConfiguredEntersPRScreen(t *testing.T) {
+	prev := githubPRScreenProvider
+	prov := newFakeIssueProvider()
+	prov.configured = true
+	prov.columns = []KanbanColumnSpec{{Label: "Open", Query: &fakeQuery{statusMatch: "open"}}}
+	githubPRScreenProvider = prov
+	t.Cleanup(func() { githubPRScreenProvider = prev })
+
+	m := newTestModel(t, newFakeProvider())
+	m.toast = NewToastModel(40, time.Second)
+	m2, cmd := runUpdate(t, m, ctrlKey('p'))
+	if m2.screen != screenPRs {
+		t.Fatalf("Ctrl+P should switch to PR screen, got %v", m2.screen)
+	}
+	if m2.prs == nil {
+		t.Fatalf("Ctrl+P should seed PR state")
+	}
+	if m2.prs.provider != prov {
+		t.Fatalf("PR state provider mismatch: got %T want fake provider", m2.prs.provider)
+	}
+	if cmd == nil {
+		t.Fatalf("Ctrl+P should dispatch initial screen work")
+	}
+}
+
 func TestScreens_CtrlOFlipsBackToAsk(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m = onIssuesDirect(m)
@@ -67,6 +110,7 @@ func TestScreens_BlockedWhileModalOpen(t *testing.T) {
 		{"provider switch", func(m *model) { m.mode = modeProviderSwitch }},
 		{"cancel-turn confirm", func(m *model) { m.cancelTurnConfirming = true }},
 		{"close-tab confirm", func(m *model) { m.closeTabConfirming = true }},
+		{"merge-pr confirm", func(m *model) { m.mergePRConfirming = true }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -144,7 +188,7 @@ func TestScreens_ViewBodyDispatchesToActiveScreen(t *testing.T) {
 }
 
 func TestScreens_RegistryRoundTrip(t *testing.T) {
-	for _, id := range []screenID{screenAsk, screenIssues} {
+	for _, id := range []screenID{screenAsk, screenIssues, screenPRs} {
 		m := newTestModel(t, newFakeProvider())
 		m.screen = id
 		got := m.activeScreen().id()

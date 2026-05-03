@@ -148,7 +148,7 @@ func TestLoadIssuesPageCmd_EmitsTaggedMsg(t *testing.T) {
 	provider.listIssuesFn = func(ctx context.Context, _ projectConfig, _ string, q IssueQuery, p IssuePagination) (IssueListPage, error) {
 		return IssueListPage{Issues: []issue{{number: 1}}, NextCursor: "1", HasMore: false}, nil
 	}
-	cmd := loadIssuesPageCmd(context.Background(), 42, provider, projectConfig{}, "/tmp", nil, IssuePagination{Cursor: "abc", PerPage: 50}, 7)
+	cmd := loadIssuesPageCmd(context.Background(), 42, screenIssues, provider, projectConfig{}, "/tmp", nil, IssuePagination{Cursor: "abc", PerPage: 50}, 7)
 	msg := cmd().(issuePageLoadedMsg)
 	if msg.tabID != 42 {
 		t.Errorf("tabID=%d want 42", msg.tabID)
@@ -173,10 +173,11 @@ func TestIssuePageLoadedMsg_StaleGenIsDropped(t *testing.T) {
 	beforeRows := len(issuesAll(m.issues))
 	// Send a message with a different gen — must not mutate state.
 	m, _ = runUpdate(t, m, issuePageLoadedMsg{
-		tabID: m.id,
-		gen:   2,
-		query: nil,
-		page:  IssueListPage{Issues: []issue{{number: 999}}, HasMore: false},
+		tabID:  m.id,
+		screen: screenIssues,
+		gen:    2,
+		query:  nil,
+		page:   IssueListPage{Issues: []issue{{number: 999}}, HasMore: false},
 	})
 	if got := len(issuesAll(m.issues)); got != beforeRows {
 		t.Errorf("stale-gen msg mutated state: rows %d → %d", beforeRows, got)
@@ -188,6 +189,7 @@ func TestIssuePageLoadedMsg_FreshGenStoresInCache(t *testing.T) {
 	gen := m.issues.queryGen
 	m, _ = runUpdate(t, m, issuePageLoadedMsg{
 		tabID:           m.id,
+		screen:          screenIssues,
 		gen:             gen,
 		query:           &fakeQuery{statusMatch: "fresh"},
 		requestedCursor: "",
@@ -208,6 +210,7 @@ func TestIssuePageLoadedMsg_FirstChunkErrorSetsLoadErr(t *testing.T) {
 	gen := m.issues.queryGen
 	m, _ = runUpdate(t, m, issuePageLoadedMsg{
 		tabID:           m.id,
+		screen:          screenIssues,
 		gen:             gen,
 		query:           nil,
 		requestedCursor: "",
@@ -229,6 +232,7 @@ func TestIssuePageLoadedMsg_SecondChunkErrorDoesNotShowModal(t *testing.T) {
 	gen := m.issues.queryGen
 	m, _ = runUpdate(t, m, issuePageLoadedMsg{
 		tabID:           m.id,
+		screen:          screenIssues,
 		gen:             gen,
 		query:           nil,
 		requestedCursor: "1",
@@ -293,6 +297,7 @@ func TestKanbanColumn_RoutesPageLoadedToCorrectColumn(t *testing.T) {
 	target := kv.columns[1].spec.Query
 	m, _ = runUpdate(t, m, issuePageLoadedMsg{
 		tabID:           m.id,
+		screen:          screenIssues,
 		gen:             gen,
 		query:           target,
 		requestedCursor: "5",
@@ -321,6 +326,7 @@ func TestKanbanColumn_NextCursorAdvancesOnChunkReceipt(t *testing.T) {
 	gen := m.issues.queryGen
 	m, _ = runUpdate(t, m, issuePageLoadedMsg{
 		tabID:           m.id,
+		screen:          screenIssues,
 		gen:             gen,
 		query:           target,
 		requestedCursor: "",
@@ -384,6 +390,7 @@ func TestKanbanPageLoad_AutoFetchesMoreWhenFirstChunkDoesNotFillViewport(t *test
 
 	m, cmd := runUpdate(t, m, issuePageLoadedMsg{
 		tabID:           s.tabID,
+		screen:          screenIssues,
 		gen:             s.queryGen,
 		query:           kv.columns[0].spec.Query,
 		requestedCursor: "",

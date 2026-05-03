@@ -20,12 +20,18 @@ type fakeQuery struct {
 // method has an overridable *Fn hook so tests can simulate
 // arbitrary behaviour (errors, slow responses, custom column
 // taxonomies). When a hook is nil, sensible defaults take over.
+//
+// Carry support defaults to true so existing kanban-carry tests
+// against the default fake keep working. PR-screen tests that need
+// the merger surface use fakeMergerIssueProvider, which composes
+// over a fakeIssueProvider with carry disabled.
 type fakeIssueProvider struct {
 	id            string
 	displayName   string
 	configured    bool
 	syntaxHelp    string
 	columns       []KanbanColumnSpec
+	supportsCarry bool
 	parseQueryFn  func(string) (IssueQuery, error)
 	formatQueryFn func(IssueQuery) string
 	listIssuesFn  func(context.Context, projectConfig, string, IssueQuery, IssuePagination) (IssueListPage, error)
@@ -46,10 +52,11 @@ type fakeMoveCall struct {
 
 func newFakeIssueProvider() *fakeIssueProvider {
 	return &fakeIssueProvider{
-		id:          "fake",
-		displayName: "Fake Issues",
-		configured:  true,
-		syntaxHelp:  "fake syntax",
+		id:            "fake",
+		displayName:   "Fake Issues",
+		configured:    true,
+		syntaxHelp:    "fake syntax",
+		supportsCarry: true,
 	}
 }
 
@@ -58,6 +65,7 @@ func (f *fakeIssueProvider) DisplayName() string                   { return f.di
 func (f *fakeIssueProvider) Configured(projectConfig, string) bool { return f.configured }
 func (f *fakeIssueProvider) QuerySyntaxHelp() string               { return f.syntaxHelp }
 func (f *fakeIssueProvider) KanbanColumns() []KanbanColumnSpec     { return f.columns }
+func (f *fakeIssueProvider) SupportsCarry() bool                   { return f.supportsCarry }
 
 func (f *fakeIssueProvider) ParseQuery(text string) (IssueQuery, error) {
 	if f.parseQueryFn != nil {
@@ -194,5 +202,57 @@ func newFakeMockProvider(all []issue) *fakeIssueProvider {
 			HasMore:    hasMore,
 		}, nil
 	}
+	p.getIssueFn = func(_ context.Context, _ projectConfig, _ string, number int) (issue, error) {
+		for _, it := range all {
+			if it.number == number {
+				return it, nil
+			}
+		}
+		return issue{number: number}, nil
+	}
 	return p
+}
+
+// fakeMergerIssueProvider is the test double for an IssueProvider
+// that ALSO implements IssueMerger. PR-screen tests use this to
+// exercise the `m` merge keybind, the pre-flight Mergeable() round
+// trip, and the post-merge reload. It composes over fakeIssueProvider
+// so all the existing IssueProvider hooks are still available; the
+// added Mergeable / Merge methods record their call args so tests
+// can assert dispatch happened with the right issue snapshot.
+//
+// Default behaviour: Mergeable returns canMerge=true / state=clean,
+// Merge returns nil. Tests override the *Fn hooks for failure paths.
+type fakeMergerIssueProvider struct {
+	*fakeIssueProvider
+
+	mergeableFn func(context.Context, projectConfig, string, issue) (mergeableState, error)
+	mergeFn     func(context.Context, projectConfig, string, issue) error
+
+	mergeableCalls []issue
+	mergeCalls     []issue
+}
+
+func newFakeMergerIssueProvider() *fakeMergerIssueProvider {
+	base := newFakeIssueProvider()
+	base.id = "fake-merger"
+	base.displayName = "Fake PRs"
+	base.supportsCarry = false
+	return &fakeMergerIssueProvider{fakeIssueProvider: base}
+}
+
+func (f *fakeMergerIssueProvider) Mergeable(ctx context.Context, cfg projectConfig, cwd string, it issue) (mergeableState, error) {
+	f.mergeableCalls = append(f.mergeableCalls, it)
+	if f.mergeableFn != nil {
+		return f.mergeableFn(ctx, cfg, cwd, it)
+	}
+	return mergeableState{canMerge: true, state: "clean"}, nil
+}
+
+func (f *fakeMergerIssueProvider) Merge(ctx context.Context, cfg projectConfig, cwd string, it issue) error {
+	f.mergeCalls = append(f.mergeCalls, it)
+	if f.mergeFn != nil {
+		return f.mergeFn(ctx, cfg, cwd, it)
+	}
+	return nil
 }

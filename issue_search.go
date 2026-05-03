@@ -26,11 +26,11 @@ const (
 // owns the cursor and edit state; we layer mode + parseErr +
 // aiNotice around it.
 type issueSearchBox struct {
-	input     textinput.Model
-	mode      searchMode
-	parseErr  string
-	aiNotice  string
-	width     int
+	input    textinput.Model
+	mode     searchMode
+	parseErr string
+	aiNotice string
+	width    int
 }
 
 // newIssueSearchBox builds the overlay with sensible defaults
@@ -151,7 +151,7 @@ func (b *issueSearchBox) submitRaw(s *issuesState) tea.Cmd {
 	}
 	pagination := IssuePagination{Cursor: "", PerPage: githubDefaultPerPage}
 	return loadIssuesPageCmd(
-		ctx, s.tabID, s.provider, s.projectCfg, s.cwd,
+		ctx, s.tabID, s.screen, s.provider, s.projectCfg, s.cwd,
 		q, pagination, s.queryGen,
 	)
 }
