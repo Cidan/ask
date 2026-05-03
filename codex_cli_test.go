@@ -83,13 +83,13 @@ func TestCodexCLIArgs_AddedDirsQuoteEscaped(t *testing.T) {
 	}
 }
 
-// IssueMCP must land as a -c mcp_servers.<name>.url override pair so
+// ProjectMCP must land as a -c mcp_servers.<name>.url override pair so
 // codex's TOML config picks up an HTTP MCP server at launch — same
 // access ask uses for ctrl+i. Bearer auth goes via env (codex's MCP
 // config takes only an env-var name, not the literal token).
-func TestCodexCLIArgs_IssueMCPEmitsURLAndBearerOverrides(t *testing.T) {
+func TestCodexCLIArgs_ProjectMCPEmitsURLAndBearerOverrides(t *testing.T) {
 	args := codexCLIArgs(ProviderSessionArgs{
-		IssueMCP: &issueMCPServer{
+		ProjectMCP: &issueMCPServer{
 			Name:    "github",
 			URL:     "https://api.githubcopilot.com/mcp",
 			Headers: map[string]string{"Authorization": "Bearer ghp_secret"},
@@ -109,9 +109,9 @@ func TestCodexCLIArgs_IssueMCPEmitsURLAndBearerOverrides(t *testing.T) {
 			}
 		case strings.HasPrefix(v, "mcp_servers.github.bearer_token_env_var="):
 			sawBearer = true
-			if !strings.Contains(v, `"`+codexIssueMCPBearerEnv+`"`) {
+			if !strings.Contains(v, `"`+codexProjectMCPBearerEnv+`"`) {
 				t.Errorf("bearer_token_env_var should point at %s, got %q",
-					codexIssueMCPBearerEnv, v)
+					codexProjectMCPBearerEnv, v)
 			}
 		}
 	}
@@ -126,9 +126,9 @@ func TestCodexCLIArgs_IssueMCPEmitsURLAndBearerOverrides(t *testing.T) {
 // Public/unauthenticated MCP servers (no Authorization header) skip
 // the bearer override but still emit the url. Otherwise codex would
 // refuse the launch citing a missing env var.
-func TestCodexCLIArgs_IssueMCPWithoutAuthOmitsBearer(t *testing.T) {
+func TestCodexCLIArgs_ProjectMCPWithoutAuthOmitsBearer(t *testing.T) {
 	args := codexCLIArgs(ProviderSessionArgs{
-		IssueMCP: &issueMCPServer{
+		ProjectMCP: &issueMCPServer{
 			Name: "public",
 			URL:  "https://example.com/mcp",
 		},
@@ -141,16 +141,16 @@ func TestCodexCLIArgs_IssueMCPWithoutAuthOmitsBearer(t *testing.T) {
 	}
 }
 
-// codexEnv must export the bearer token under codexIssueMCPBearerEnv
+// codexEnv must export the bearer token under codexProjectMCPBearerEnv
 // so the codex subprocess can read it. The token MUST appear only in
 // the env (process-private) — never on argv (visible via ps).
 func TestCodexEnv_ExportsBearerToken(t *testing.T) {
 	env := codexEnv(ProviderSessionArgs{
-		IssueMCP: &issueMCPServer{
+		ProjectMCP: &issueMCPServer{
 			Headers: map[string]string{"Authorization": "Bearer ghp_secret"},
 		},
 	})
-	want := codexIssueMCPBearerEnv + "=ghp_secret"
+	want := codexProjectMCPBearerEnv + "=ghp_secret"
 	var saw bool
 	for _, e := range env {
 		if e == want {
@@ -162,27 +162,57 @@ func TestCodexEnv_ExportsBearerToken(t *testing.T) {
 	}
 }
 
-func TestCodexEnv_NoIssueMCP_LeavesEnvUntouched(t *testing.T) {
-	t.Setenv(codexIssueMCPBearerEnv, "stale-token")
+func TestCodexEnv_NoProjectMCP_LeavesEnvUntouched(t *testing.T) {
+	t.Setenv(codexProjectMCPBearerEnv, "stale-token")
 	env := codexEnv(ProviderSessionArgs{})
 	for _, e := range env {
-		if strings.HasPrefix(e, codexIssueMCPBearerEnv+"=") {
-			t.Errorf("no IssueMCP should leave %s unset; saw %q", codexIssueMCPBearerEnv, e)
+		if strings.HasPrefix(e, codexProjectMCPBearerEnv+"=") {
+			t.Errorf("no ProjectMCP should leave %s unset; saw %q", codexProjectMCPBearerEnv, e)
 		}
 	}
 }
 
-func TestCodexEnv_PublicIssueMCPDoesNotLeakInheritedBearer(t *testing.T) {
-	t.Setenv(codexIssueMCPBearerEnv, "stale-token")
+// codexCLIArgs must surface the github MCP override whenever the
+// project has a token saved, even when Issues.Provider is empty.
+// Mirror of TestClaudeCLIArgs_ProjectMCPIndependentOfIssueProvider —
+// proves the inversion holds across both providers.
+func TestCodexCLIArgs_ProjectMCPIndependentOfIssueProvider(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	cfg, _ := loadConfig()
+	cfg = upsertProjectConfig(cfg, cwd, projectConfig{
+		MCP: projectMCPConfig{GitHub: githubMCPConfig{Token: "ghp_secret"}},
+		// Issues.Provider deliberately left empty.
+	})
+	if err := saveConfig(cfg); err != nil {
+		t.Fatalf("seed saveConfig: %v", err)
+	}
+	args := codexCLIArgs(ProviderSessionArgs{
+		ProjectMCP: projectGitHubMCP(cwd),
+	})
+	var sawURL bool
+	for i, a := range args {
+		if a == "-c" && i+1 < len(args) &&
+			strings.HasPrefix(args[i+1], "mcp_servers.github.url=") {
+			sawURL = true
+		}
+	}
+	if !sawURL {
+		t.Errorf("github MCP url override must be injected when MCP token is set even without an issue provider; argv=%v", args)
+	}
+}
+
+func TestCodexEnv_PublicProjectMCPDoesNotLeakInheritedBearer(t *testing.T) {
+	t.Setenv(codexProjectMCPBearerEnv, "stale-token")
 	env := codexEnv(ProviderSessionArgs{
-		IssueMCP: &issueMCPServer{
+		ProjectMCP: &issueMCPServer{
 			Name: "public",
 			URL:  "https://example.com/mcp",
 		},
 	})
 	for _, e := range env {
-		if strings.HasPrefix(e, codexIssueMCPBearerEnv+"=") {
-			t.Errorf("public IssueMCP should not inherit %s; saw %q", codexIssueMCPBearerEnv, e)
+		if strings.HasPrefix(e, codexProjectMCPBearerEnv+"=") {
+			t.Errorf("public ProjectMCP should not inherit %s; saw %q", codexProjectMCPBearerEnv, e)
 		}
 	}
 }

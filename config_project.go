@@ -28,50 +28,49 @@ type projectFieldSpec struct {
 }
 
 // projectFieldSpecs is the registry. Order doesn't matter; row
-// order in the submenu comes from projectPickerItems.
+// order in the submenu comes from projectPickerItems. The GitHub
+// rows write into projectConfig.MCP.GitHub — the project-level MCP
+// slot the github issue provider also piggybacks on.
 var projectFieldSpecs = map[string]projectFieldSpec{
-	"githubEndpoint": {
-		id:       "githubEndpoint",
+	"githubMCPEndpoint": {
+		id:       "githubMCPEndpoint",
 		title:    "GitHub MCP endpoint",
 		helpHint: "blank uses the default (api.githubcopilot.com/mcp); enter to save",
 		load: func(c askConfig, cwd string) string {
-			return loadProjectConfig(c, cwd).Issues.GitHub.Endpoint
+			return loadProjectConfig(c, cwd).MCP.GitHub.Endpoint
 		},
-		save: func(p *projectConfig, v string) { p.Issues.GitHub.Endpoint = v },
+		save: func(p *projectConfig, v string) { p.MCP.GitHub.Endpoint = v },
 	},
-	"githubToken": {
-		id:       "githubToken",
-		title:    "GitHub PAT",
+	"githubMCPToken": {
+		id:       "githubMCPToken",
+		title:    "GitHub MCP PAT",
 		helpHint: "personal access token with `repo` and `read:org`; enter to save",
 		masked:   true,
 		load: func(c askConfig, cwd string) string {
-			return loadProjectConfig(c, cwd).Issues.GitHub.Token
+			return loadProjectConfig(c, cwd).MCP.GitHub.Token
 		},
-		save: func(p *projectConfig, v string) { p.Issues.GitHub.Token = v },
+		save: func(p *projectConfig, v string) { p.MCP.GitHub.Token = v },
 	},
 }
 
 // projectPickerItems builds the row list for the Project Options
-// submenu. Rows are dynamic — when the issue provider is "none",
-// the GitHub-specific rows are hidden so the user isn't asked to
-// configure things that don't apply. Returns []configItem so the
+// submenu. The GitHub MCP rows are always visible — the project-
+// level MCP slot is independent of whether the issue provider is
+// configured (the chat agent gets the GitHub MCP whenever a token
+// is set, even with issues disabled). Returns []configItem so the
 // rows feed straight into the same renderLayeredConfigBox helper
 // the Global Options submenu uses (no per-picker styling drift).
 func (m model) projectPickerItems() []configItem {
 	cfg, _ := loadConfig()
 	pc := loadProjectConfig(cfg, m.cwd)
-	rows := []configItem{
-		{"Issue provider", issueProviderByID(pc.Issues.Provider).DisplayName(), "issueProvider"},
+	endpoint := pc.MCP.GitHub.Endpoint
+	if endpoint == "" {
+		endpoint = "(default)"
 	}
-	if pc.Issues.Provider == "github" {
-		endpoint := pc.Issues.GitHub.Endpoint
-		if endpoint == "" {
-			endpoint = "(default)"
-		}
-		rows = append(rows,
-			configItem{"GitHub endpoint", endpoint, "githubEndpoint"},
-			configItem{"GitHub PAT", maskedSummary(pc.Issues.GitHub.Token), "githubToken"},
-		)
+	rows := []configItem{
+		{"GitHub MCP endpoint", endpoint, "githubMCPEndpoint"},
+		{"GitHub MCP PAT", maskedSummary(pc.MCP.GitHub.Token), "githubMCPToken"},
+		{"Issue provider", issueProviderByID(pc.Issues.Provider).DisplayName(), "issueProvider"},
 	}
 	wfCount := len(pc.Workflows.Items)
 	wfDesc := "(none)"
@@ -214,6 +213,14 @@ func (m model) updateConfigProjectPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 // cycle is tab-aware: existing tabs continue with whatever their
 // state was; the change applies to all future issue-screen loads
 // project-wide.
+//
+// Cycling INTO a provider that piggybacks on a project-level MCP slot
+// (today: github → projectConfig.MCP.GitHub) requires that slot to be
+// configured first; otherwise we'd land in a state where issues are
+// nominally "github" but every list call fails because no token is
+// wired. The gate only fires on the transition into the constrained
+// provider — wrap-around back to "" / none always succeeds so the
+// user can never get stuck.
 func (m model) cycleIssueProvider() (tea.Model, tea.Cmd) {
 	cfg, _ := loadConfig()
 	pc := loadProjectConfig(cfg, m.cwd)
@@ -228,18 +235,15 @@ func (m model) cycleIssueProvider() (tea.Model, tea.Cmd) {
 		curIdx = 0
 	}
 	next := issueProviderRegistry[(curIdx+1)%len(issueProviderRegistry)]
+	if next.ID() == "github" && pc.MCP.GitHub.Token == "" {
+		return m, m.toast.show("issues: configure GitHub MCP PAT first")
+	}
 	pc.Issues.Provider = next.ID()
 	cfg = upsertProjectConfig(cfg, m.cwd, pc)
 	if err := saveConfig(cfg); err != nil {
 		debugLog("project provider saveConfig: %v", err)
 		return m, m.toast.show("config: " + err.Error())
 	}
-	// The chat agent's MCP roster is baked at fork time, so an open
-	// session is still pointing at the previous issue provider's
-	// servers. Kill the proc; the next user input respawns it with
-	// the new --mcp-config — same pattern the worktree / skip-perms
-	// toggles use.
-	m.killProc()
 	return m, m.toast.show("issues: provider → " + next.DisplayName())
 }
 
@@ -291,12 +295,13 @@ func (m model) commitConfigProjectField() (tea.Model, tea.Cmd) {
 		return m, m.toast.show("config: save: " + err.Error())
 	}
 	m = m.closeConfigProjectFieldEditor()
-	// Issue-provider credentials get baked into the chat agent's
+	// Project MCP credentials get baked into the chat agent's
 	// --mcp-config at fork time. A live proc is still holding the
 	// pre-edit token/endpoint — kill it so the next user input
 	// respawns with the freshly saved values. All current project
-	// fields feed the issue provider, so unconditional is correct;
-	// when a non-issue field type lands later, gate this on spec.
+	// fields feed the chat agent's MCP roster, so unconditional is
+	// correct; when a non-MCP field type lands later, gate this on
+	// spec.
 	m.killProc()
 	return m, m.toast.show(spec.title + " saved")
 }
@@ -321,12 +326,13 @@ func (m model) viewConfigProjectPicker() string {
 }
 
 // viewConfigProjectFieldInput renders the inline editor for an
-// editable project field (GitHub PAT, GitHub endpoint) through
-// the same renderLayeredConfigBox as the pickers, so dropping
-// into a field editor is visually a peer-level swap rather than a
-// "different window" pop. The picker's "filter" row slot becomes
-// the editor's input prompt; the picker's row list slot stays
-// blank (no items), so the chrome is pixel-identical.
+// editable project field (GitHub MCP PAT, GitHub MCP endpoint)
+// through the same renderLayeredConfigBox as the pickers, so
+// dropping into a field editor is visually a peer-level swap
+// rather than a "different window" pop. The picker's "filter"
+// row slot becomes the editor's input prompt; the picker's row
+// list slot stays blank (no items), so the chrome is
+// pixel-identical.
 func (m model) viewConfigProjectFieldInput() string {
 	spec, ok := projectFieldSpecs[m.configProjectFieldEditing]
 	if !ok {

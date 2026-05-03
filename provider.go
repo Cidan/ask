@@ -192,13 +192,15 @@ type ProviderSessionArgs struct {
 	// --add-dir; codex: sandbox_workspace_write.writable_roots). The
 	// list is deduped and ordered as the user added them.
 	AddedDirs []string
-	// IssueMCP is the project's issue-provider MCP server (the same
-	// backend ask uses for ctrl+i), exposed to the chat agent so it can
-	// search/read issues directly. nil when no provider is configured
-	// or the configured one is missing credentials. Providers wire this
+	// ProjectMCP is the project-level MCP server (today: the GitHub
+	// MCP slot the github issue provider also piggybacks on), exposed
+	// to the chat agent so it can call the same tools ask uses for
+	// ctrl+i. nil when the project hasn't configured a token. The chat
+	// agent gets this whenever projectConfig.MCP.GitHub.Token is set,
+	// regardless of whether issues are wired up. Providers wire this
 	// into their native MCP plumbing — claude appends it to its
 	// --mcp-config; providers without an MCP surface ignore it.
-	IssueMCP *issueMCPServer
+	ProjectMCP *issueMCPServer
 }
 
 // HistoryOpts narrows what the history replay renders. ToolOutput is

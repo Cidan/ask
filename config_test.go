@@ -219,6 +219,178 @@ func TestLoadConfig_NewToolOutputWinsOverLegacy(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_MigratesLegacyIssuesGitHub covers the auto-migration
+// from the deprecated `issues.github.{endpoint,token}` block to the
+// new top-level `mcp.github.*` slot. Real users on disk still have the
+// legacy shape; loadConfig must preserve their endpoint/token without
+// any manual intervention. Each case asserts the legacy fields land in
+// the new slot and that an explicit new value always wins.
+func TestLoadConfig_MigratesLegacyIssuesGitHub(t *testing.T) {
+	cases := []struct {
+		name         string
+		raw          string
+		wantToken    string
+		wantEndpoint string
+	}{
+		{
+			name:         "token and endpoint both move",
+			raw:          `{"projects":{"/proj":{"issues":{"provider":"github","github":{"token":"ghp_legacy","endpoint":"https://ghe.example/mcp"}}}}}`,
+			wantToken:    "ghp_legacy",
+			wantEndpoint: "https://ghe.example/mcp",
+		},
+		{
+			name:         "token only",
+			raw:          `{"projects":{"/proj":{"issues":{"provider":"github","github":{"token":"ghp_only"}}}}}`,
+			wantToken:    "ghp_only",
+			wantEndpoint: "",
+		},
+		{
+			name:         "endpoint only",
+			raw:          `{"projects":{"/proj":{"issues":{"provider":"github","github":{"endpoint":"https://ghe.example/mcp"}}}}}`,
+			wantToken:    "",
+			wantEndpoint: "https://ghe.example/mcp",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			home := isolateHome(t)
+			path := filepath.Join(home, ".config", "ask", "ask.json")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			if err := os.WriteFile(path, []byte(c.raw), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			cfg, err := loadConfig()
+			if err != nil {
+				t.Fatalf("loadConfig: %v", err)
+			}
+			pc, ok := cfg.Projects["/proj"]
+			if !ok {
+				t.Fatalf("project entry missing from cfg.Projects after load")
+			}
+			if pc.MCP.GitHub.Token != c.wantToken {
+				t.Errorf("MCP.GitHub.Token=%q want %q", pc.MCP.GitHub.Token, c.wantToken)
+			}
+			if pc.MCP.GitHub.Endpoint != c.wantEndpoint {
+				t.Errorf("MCP.GitHub.Endpoint=%q want %q", pc.MCP.GitHub.Endpoint, c.wantEndpoint)
+			}
+			// Issues.Provider must be preserved through the migration —
+			// the user opted into github issues, and we don't want to
+			// silently disable that just because the credential moved.
+			if pc.Issues.Provider != "github" {
+				t.Errorf("Issues.Provider=%q want %q (migration must preserve provider)",
+					pc.Issues.Provider, "github")
+			}
+		})
+	}
+}
+
+// An explicit value in the new slot must beat the legacy value — the
+// migration runs on every load, and a user who has saved a fresh PAT
+// under mcp.github should not see it silently rewritten by a stale
+// issues.github value left over in the same file.
+func TestLoadConfig_NewMCPGitHubWinsOverLegacy(t *testing.T) {
+	home := isolateHome(t)
+	path := filepath.Join(home, ".config", "ask", "ask.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	raw := `{"projects":{"/proj":{
+		"issues":{"provider":"github","github":{"token":"ghp_legacy","endpoint":"https://legacy"}},
+		"mcp":{"github":{"token":"ghp_new","endpoint":"https://new"}}
+	}}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	pc := cfg.Projects["/proj"]
+	if pc.MCP.GitHub.Token != "ghp_new" {
+		t.Errorf("explicit new token should win, got %q", pc.MCP.GitHub.Token)
+	}
+	if pc.MCP.GitHub.Endpoint != "https://new" {
+		t.Errorf("explicit new endpoint should win, got %q", pc.MCP.GitHub.Endpoint)
+	}
+}
+
+// Migration must be a no-op for projects that have no entry in
+// cfg.Projects yet — otherwise a malformed legacy block could
+// accidentally synthesise an entry that didn't exist before.
+func TestLoadConfig_MigrationIsNoOpForUnknownProjects(t *testing.T) {
+	home := isolateHome(t)
+	path := filepath.Join(home, ".config", "ask", "ask.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// projects:{} (empty), no entries — migration must not panic
+	// on the empty map and must not create entries from thin air.
+	raw := `{"projects":{}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if len(cfg.Projects) != 0 {
+		t.Errorf("empty projects map should remain empty, got %d entries", len(cfg.Projects))
+	}
+}
+
+// Round-trip the new shape: write via saveConfig, read back via
+// loadConfig — MCP.GitHub fields persist verbatim and the migration
+// is idempotent (a load → save → load cycle on a freshly-written
+// new-shape file leaves the values unchanged).
+func TestSaveConfig_RoundTripPreservesMCPGitHub(t *testing.T) {
+	isolateHome(t)
+	want := askConfig{
+		Projects: map[string]projectConfig{
+			"/proj": {
+				Issues: issuesConfig{Provider: "github"},
+				MCP: projectMCPConfig{
+					GitHub: githubMCPConfig{
+						Token:    "ghp_xyz",
+						Endpoint: "https://ghe.example/mcp",
+					},
+				},
+			},
+		},
+	}
+	if err := saveConfig(want); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	got, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	pc := got.Projects["/proj"]
+	if pc.MCP.GitHub.Token != "ghp_xyz" {
+		t.Errorf("token lost in roundtrip: %q", pc.MCP.GitHub.Token)
+	}
+	if pc.MCP.GitHub.Endpoint != "https://ghe.example/mcp" {
+		t.Errorf("endpoint lost in roundtrip: %q", pc.MCP.GitHub.Endpoint)
+	}
+	if pc.Issues.Provider != "github" {
+		t.Errorf("issues.provider lost in roundtrip: %q", pc.Issues.Provider)
+	}
+	// Idempotence: a second save+load cycle must produce the same
+	// values, proving the migration doesn't drift the data each pass.
+	if err := saveConfig(got); err != nil {
+		t.Fatalf("second saveConfig: %v", err)
+	}
+	got2, err := loadConfig()
+	if err != nil {
+		t.Fatalf("second loadConfig: %v", err)
+	}
+	pc2 := got2.Projects["/proj"]
+	if pc2.MCP != pc.MCP || pc2.Issues != pc.Issues {
+		t.Errorf("migration not idempotent:\n got: %+v\nwant: %+v", pc2, pc)
+	}
+}
+
 func TestConfigPath_UnderHome(t *testing.T) {
 	home := isolateHome(t)
 	path, err := configPath()

@@ -91,9 +91,9 @@ func TestActiveIssueProvider_RoutesToConfiguredProvider(t *testing.T) {
 func TestProjectConfig_RoundTripPersistsViaUpsert(t *testing.T) {
 	cfg := askConfig{}
 	pc := projectConfig{
-		Issues: issuesConfig{
-			Provider: "github",
-			GitHub:   githubIssuesConfig{Token: "ghp_secret", Endpoint: "https://example.com/mcp"},
+		Issues: issuesConfig{Provider: "github"},
+		MCP: projectMCPConfig{
+			GitHub: githubMCPConfig{Token: "ghp_secret", Endpoint: "https://example.com/mcp"},
 		},
 	}
 	cfg = upsertProjectConfig(cfg, "/home/me/proj", pc)
@@ -179,15 +179,15 @@ func TestProjectRoot_FallsBackToCwdWhenNoGit(t *testing.T) {
 	}
 }
 
-func TestGitHubEndpointDefault_AppliesWhenBlank(t *testing.T) {
-	got := githubEndpointOrDefault(githubIssuesConfig{})
-	if got != githubIssuesDefaultEndpoint {
-		t.Errorf("default = %q want %q", got, githubIssuesDefaultEndpoint)
+func TestGitHubMCPEndpointDefault_AppliesWhenBlank(t *testing.T) {
+	got := githubMCPEndpointOrDefault(githubMCPConfig{})
+	if got != githubMCPDefaultEndpoint {
+		t.Errorf("default = %q want %q", got, githubMCPDefaultEndpoint)
 	}
 }
 
-func TestGitHubEndpointDefault_RespectsExplicit(t *testing.T) {
-	got := githubEndpointOrDefault(githubIssuesConfig{Endpoint: "https://ghe.example/mcp"})
+func TestGitHubMCPEndpointDefault_RespectsExplicit(t *testing.T) {
+	got := githubMCPEndpointOrDefault(githubMCPConfig{Endpoint: "https://ghe.example/mcp"})
 	if got != "https://ghe.example/mcp" {
 		t.Errorf("explicit endpoint not preserved: %q", got)
 	}

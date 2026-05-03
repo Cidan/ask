@@ -1471,7 +1471,7 @@ func TestUpdate_PasteMsgInConfigProjectFieldEditorRoutes(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.mode = modeConfig
 	m.configProjectPickerActive = true
-	m.configProjectFieldEditing = "githubToken"
+	m.configProjectFieldEditing = "githubMCPToken"
 	m.configProjectFieldDraft = "ghp_"
 	m.input.SetValue("composer-untouched")
 

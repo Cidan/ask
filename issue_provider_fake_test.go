@@ -53,11 +53,11 @@ func newFakeIssueProvider() *fakeIssueProvider {
 	}
 }
 
-func (f *fakeIssueProvider) ID() string                                 { return f.id }
-func (f *fakeIssueProvider) DisplayName() string                        { return f.displayName }
-func (f *fakeIssueProvider) Configured(projectConfig, string) bool      { return f.configured }
-func (f *fakeIssueProvider) QuerySyntaxHelp() string                    { return f.syntaxHelp }
-func (f *fakeIssueProvider) KanbanColumns() []KanbanColumnSpec          { return f.columns }
+func (f *fakeIssueProvider) ID() string                            { return f.id }
+func (f *fakeIssueProvider) DisplayName() string                   { return f.displayName }
+func (f *fakeIssueProvider) Configured(projectConfig, string) bool { return f.configured }
+func (f *fakeIssueProvider) QuerySyntaxHelp() string               { return f.syntaxHelp }
+func (f *fakeIssueProvider) KanbanColumns() []KanbanColumnSpec     { return f.columns }
 
 func (f *fakeIssueProvider) ParseQuery(text string) (IssueQuery, error) {
 	if f.parseQueryFn != nil {
@@ -127,8 +127,6 @@ func (f *fakeIssueProvider) IssueRef(cfg projectConfig, cwd string, it issue) (i
 		Number:   it.number,
 	}, nil
 }
-
-func (f *fakeIssueProvider) MCPServer(projectConfig, string) *issueMCPServer { return nil }
 
 // newFakeMockProvider produces a fake provider configured with
 // one kanban column per distinct status in the supplied data.
