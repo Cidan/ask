@@ -702,6 +702,46 @@ func (m model) View() tea.View {
 				Min: image.Pt(mX, mY),
 				Max: image.Pt(mX+mW, mY+mH),
 			})
+			// Parent submenus (Global / Project) draw first so the leaf
+			// pickers (Theme / Provider / Memory) opened from inside them
+			// can layer on top. Reversing the order would let the parent
+			// overdraw the leaf — the leaf still owns the keyboard via
+			// updateConfigModal's flag-priority order, but the user sees
+			// nothing happen.
+			if m.configGlobalPickerActive {
+				picker := m.viewConfigGlobalPicker()
+				pW := lipgloss.Width(picker)
+				pH := lipgloss.Height(picker)
+				pX := (m.width - pW) / 2
+				pY := (m.height - pH) / 2
+				if pX < 0 {
+					pX = 0
+				}
+				if pY < 0 {
+					pY = 0
+				}
+				uv.NewStyledString(picker).Draw(canvas, image.Rectangle{
+					Min: image.Pt(pX, pY),
+					Max: image.Pt(pX+pW, pY+pH),
+				})
+			}
+			if m.configProjectPickerActive {
+				picker := m.viewConfigProjectPicker()
+				pW := lipgloss.Width(picker)
+				pH := lipgloss.Height(picker)
+				pX := (m.width - pW) / 2
+				pY := (m.height - pH) / 2
+				if pX < 0 {
+					pX = 0
+				}
+				if pY < 0 {
+					pY = 0
+				}
+				uv.NewStyledString(picker).Draw(canvas, image.Rectangle{
+					Min: image.Pt(pX, pY),
+					Max: image.Pt(pX+pW, pY+pH),
+				})
+			}
 			if m.configThemePickerActive {
 				picker := m.viewThemePicker()
 				pW := lipgloss.Width(picker)
@@ -738,40 +778,6 @@ func (m model) View() tea.View {
 			}
 			if m.configMemoryPickerActive {
 				picker := m.viewConfigMemoryPicker()
-				pW := lipgloss.Width(picker)
-				pH := lipgloss.Height(picker)
-				pX := (m.width - pW) / 2
-				pY := (m.height - pH) / 2
-				if pX < 0 {
-					pX = 0
-				}
-				if pY < 0 {
-					pY = 0
-				}
-				uv.NewStyledString(picker).Draw(canvas, image.Rectangle{
-					Min: image.Pt(pX, pY),
-					Max: image.Pt(pX+pW, pY+pH),
-				})
-			}
-			if m.configGlobalPickerActive {
-				picker := m.viewConfigGlobalPicker()
-				pW := lipgloss.Width(picker)
-				pH := lipgloss.Height(picker)
-				pX := (m.width - pW) / 2
-				pY := (m.height - pH) / 2
-				if pX < 0 {
-					pX = 0
-				}
-				if pY < 0 {
-					pY = 0
-				}
-				uv.NewStyledString(picker).Draw(canvas, image.Rectangle{
-					Min: image.Pt(pX, pY),
-					Max: image.Pt(pX+pW, pY+pH),
-				})
-			}
-			if m.configProjectPickerActive {
-				picker := m.viewConfigProjectPicker()
 				pW := lipgloss.Width(picker)
 				pH := lipgloss.Height(picker)
 				pX := (m.width - pW) / 2
