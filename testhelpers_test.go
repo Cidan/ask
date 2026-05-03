@@ -26,16 +26,17 @@ type fakeProvider struct {
 	effortOptions []string
 	baseSlash     []slashCmd
 
-	probeInitFn    func(ProviderSessionArgs) tea.Cmd
-	preMintFn      func(ProviderSessionArgs) string
-	startSessionFn func(ProviderSessionArgs) (*providerProc, chan tea.Msg, error)
-	sendFn         func(*providerProc, string, []pendingAttachment) error
-	interruptFn    func(*providerProc) (bool, error)
-	listSessionsFn func(string) ([]sessionEntry, error)
-	loadHistoryFn  func(string, HistoryOpts) ([]historyEntry, error)
-	loadSettingsFn func() ProviderSettings
-	saveSettingsFn func(ProviderSettings) error
-	materializeFn  func(string, []NeutralTurn) (string, string, error)
+	probeInitFn     func(ProviderSessionArgs) tea.Cmd
+	preMintFn       func(ProviderSessionArgs) string
+	nativeSessionFn func(*providerProc) string
+	startSessionFn  func(ProviderSessionArgs) (*providerProc, chan tea.Msg, error)
+	sendFn          func(*providerProc, string, []pendingAttachment) error
+	interruptFn     func(*providerProc) (bool, error)
+	listSessionsFn  func(string) ([]sessionEntry, error)
+	loadHistoryFn   func(string, HistoryOpts) ([]historyEntry, error)
+	loadSettingsFn  func() ProviderSettings
+	saveSettingsFn  func(ProviderSettings) error
+	materializeFn   func(string, []NeutralTurn) (string, string, error)
 
 	settings ProviderSettings
 
@@ -81,6 +82,13 @@ func (f *fakeProvider) ProbeInit(args ProviderSessionArgs) tea.Cmd {
 func (f *fakeProvider) PreMintSessionID(args ProviderSessionArgs) string {
 	if f.preMintFn != nil {
 		return f.preMintFn(args)
+	}
+	return ""
+}
+
+func (f *fakeProvider) NativeSessionID(p *providerProc) string {
+	if f.nativeSessionFn != nil {
+		return f.nativeSessionFn(p)
 	}
 	return ""
 }

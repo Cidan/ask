@@ -929,6 +929,15 @@ func TestClaudeMaterialize_RoundTripsViaLoadClaudeHistory(t *testing.T) {
 	home := isolateHome(t)
 	t.Chdir(t.TempDir())
 	cwd, _ := os.Getwd()
+	// Production canonicalizes the workspace via EvalSymlinks so the
+	// encoded dir matches where claude itself reads via getcwd(2).
+	// On macOS t.TempDir() lives under /var which symlinks to
+	// /private/var, so we have to canonicalize the same way to
+	// derive the expected encoded path.
+	resolved, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
 
 	turns := []NeutralTurn{
 		{Role: "user", Text: "first user"},
@@ -943,11 +952,11 @@ func TestClaudeMaterialize_RoundTripsViaLoadClaudeHistory(t *testing.T) {
 	if sid == "" {
 		t.Fatal("expected non-empty session id")
 	}
-	if nativeCwd != cwd {
-		t.Errorf("nativeCwd=%q want %q", nativeCwd, cwd)
+	if nativeCwd != resolved {
+		t.Errorf("nativeCwd=%q want %q", nativeCwd, resolved)
 	}
 	// File landed under HOME/.claude/projects/<enc>.
-	enc := strings.ReplaceAll(cwd, "/", "-")
+	enc := strings.ReplaceAll(resolved, "/", "-")
 	enc = strings.ReplaceAll(enc, ".", "-")
 	fp := filepath.Join(home, ".claude", "projects", enc, sid+".jsonl")
 	if _, err := os.Stat(fp); err != nil {
@@ -988,15 +997,22 @@ func TestClaudeMaterialize_ResolvesSymlinkedWorkspace(t *testing.T) {
 	if err := os.Symlink(canonical, link); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
+	// EvalSymlinks resolves through every symlink, including macOS's
+	// /var → /private/var. Production canonicalizes the same way, so
+	// expected paths must use the fully-resolved form on every OS.
+	resolvedCanonical, err := filepath.EvalSymlinks(canonical)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
 	turns := []NeutralTurn{{Role: "user", Text: "hi"}}
 	sid, nativeCwd, err := writeClaudeSyntheticSession(link, turns)
 	if err != nil {
 		t.Fatalf("materialize: %v", err)
 	}
-	if nativeCwd != canonical {
-		t.Errorf("nativeCwd=%q want canonical %q", nativeCwd, canonical)
+	if nativeCwd != resolvedCanonical {
+		t.Errorf("nativeCwd=%q want canonical %q", nativeCwd, resolvedCanonical)
 	}
-	encCanon := strings.ReplaceAll(canonical, "/", "-")
+	encCanon := strings.ReplaceAll(resolvedCanonical, "/", "-")
 	encCanon = strings.ReplaceAll(encCanon, ".", "-")
 	canonPath := filepath.Join(home, ".claude", "projects", encCanon, sid+".jsonl")
 	if _, err := os.Stat(canonPath); err != nil {

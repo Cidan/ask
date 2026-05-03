@@ -127,6 +127,22 @@ func (codexProvider) BaseSlashCommands() []slashCmd {
 // has no caller-chosen id slot.
 func (codexProvider) PreMintSessionID(_ ProviderSessionArgs) string { return "" }
 
+// NativeSessionID returns the threadID assigned during the
+// thread/start handshake. Available as soon as StartSession returns,
+// so handleProviderStartDone can capture it before the first
+// turn/completed — without that, an interrupt mid-turn leaves
+// m.sessionID empty and the next send hits thread/start instead of
+// thread/resume.
+func (codexProvider) NativeSessionID(p *providerProc) string {
+	state, _ := p.payload.(*codexState)
+	if state == nil {
+		return ""
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.threadID
+}
+
 func (codexProvider) ProbeInit(args ProviderSessionArgs) tea.Cmd {
 	return func() tea.Msg {
 		skills, err := fetchCodexSkills(args.Cwd)
