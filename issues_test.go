@@ -844,6 +844,10 @@ func TestKanban_BodyKeepsFocusedRowVisibleInBoundedViewport(t *testing.T) {
 	v.columns[0].loaded = append([]issue(nil), all...)
 	v.resize(80, 6) // 2 fixed rows => 4 visible cards
 	v.selRowIdx = 8
+	// Persistent-yOffset world: handlers own the cursor invariant.
+	// Bypassing them in the test means we have to invoke the same
+	// invariant-enforcer that real handlers call.
+	v.ensureCursorVisible()
 
 	body := stripAnsi(v.view(s))
 	if !strings.Contains(body, "#9") {
@@ -860,6 +864,7 @@ func TestKanban_ResizeKeepsFocusedRowVisible(t *testing.T) {
 	v.columns[0].loaded = append([]issue(nil), all...)
 	v.resize(80, 6)
 	v.selRowIdx = 10
+	v.ensureCursorVisible()
 	before := stripAnsi(v.view(s))
 	if !strings.Contains(before, "#11") {
 		t.Fatalf("setup: focused row missing before resize:\n%s", before)
