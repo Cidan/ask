@@ -1030,7 +1030,7 @@ func (m model) dispatchIssueWorkflow() (model, tea.Cmd, bool) {
 	if len(items) == 0 {
 		return m, m.toast.show("no workflows configured · ctrl+w opens the builder"), true
 	}
-	m = m.openWorkflowPicker(items, ref)
+	m = m.openWorkflowPicker(items, issueWorkflowSource(ref))
 	return m, nil, true
 }
 

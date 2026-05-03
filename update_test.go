@@ -1359,7 +1359,7 @@ func TestUpdate_PasteMsgOnWorkflowTabIsAbsorbed(t *testing.T) {
 			m := newTestModel(t, newFakeProvider())
 			m.workflowRun = &workflowRunState{
 				Workflow: workflowDef{Name: "wf", Steps: []workflowStep{{Provider: "fake"}}},
-				Issue:    issueRef{Provider: "github", Project: "Cidan/ask", Number: 1},
+				Source:   issueWorkflowSource(issueRef{Provider: "github", Project: "Cidan/ask", Number: 1}),
 				done:     c.done,
 			}
 			m.busy = c.busy

@@ -67,8 +67,10 @@ One `package main`, one file per concern.
 | `mcp.go`               | MCP server bridge (Streamable HTTP), `ask_user_question` tool schema + handler. |
 | `workflows.go`         | Workflow runtime tracker singleton + persistence helpers + status broadcast. |
 | `workflows_screen.go`  | Workflows builder screen — list/steps/step editor levels with multi-line prompt textarea. |
-| `workflows_picker.go`  | Small centred modal popped on `f` to pick which workflow to run. |
+| `workflows_picker.go`  | Small centred modal popped on `f` (issues) / `Ctrl+F` (chat) to pick which workflow to run. |
 | `workflows_run.go`     | Step runner: prompt assembly, advance-on-turn-complete, finalise on done/failed. |
+| `workflow_source.go`   | `workflowSource` tagged union (issue ref vs chat transcript) consumed by picker / runner / banner. |
+| `chat_workflow.go`     | `Ctrl+F` dispatcher — snapshots `m.history` into a chat source, gates on busy/empty, opens the picker. |
 | `util.go`              | Small helpers (`short`, `humanDuration`, `humanBytes`, `shortCwd`).     |
 | `debug.go`             | `ASK_DEBUG=1` → `/tmp/ask.log`.                                         |
 | `*_test.go`            | Fast, behavior-only tests. See "Test layout" below.                    |
@@ -106,6 +108,7 @@ exercised by the user; code alone won't catch layout regressions.
 | `workflows_picker_test.go` | Picker open/navigate/Enter dispatches `spawnWorkflowTabMsg`. |
 | `workflows_run_test.go`    | Step runner — advance, finalise, fail, idempotent finalise, unknown-provider rejection. |
 | `issues_workflow_test.go`  | `f` keybind dispatch on the issues screen — toast / picker / focus-existing-tab. |
+| `chat_workflow_test.go`    | `Ctrl+F` chat-source flow — transcript filter, key uniqueness, prompt assembly, dispatcher gates (busy/empty/no-workflows/workflow-tab), end-to-end picker → spawn. |
 | `util_test.go` / `paths_test.go` | Pure helpers, path completion, frontmatter parsing.       |
 
 ### Testing conventions
@@ -220,23 +223,44 @@ hooks on `fakeIssueProvider`.
 
 ## Workflows (issue → agent pipelines)
 
-Pressing `f` on a focused issue (kanban card or detail view) runs
-a user-defined chain of one-shot agent calls against the same cwd.
-Pipelines are per-project and built through a dedicated screen
-(`Ctrl+W` or `/workflows`); each step pins its own provider
-(`claude` / `codex` / …) + model + prompt, so a single workflow can
-chain `claude → codex → claude` if the user wants. There's no
-default — an empty workflow list is a `f`-time toast pointing the
-user at the builder.
+Two entry paths spawn a workflow run:
+
+- `f` on a focused issue (kanban card or detail view) runs a
+  pipeline against that issue.
+- `Ctrl+F` on a chat tab runs a pipeline against the current
+  conversation — the user/assistant turns from `m.history` are
+  filtered (tool calls, shell output, system entries dropped) and
+  appended to step 1's prompt under a `Reference (chat
+  transcript):` block.
+
+Either path opens the same picker (`workflows_picker.go`) and
+spawns a workflow tab. Pipelines are per-project and built
+through a dedicated screen (`Ctrl+W` or `/workflows`); each step
+pins its own provider (`claude` / `codex` / …) + model + prompt,
+so a single workflow can chain `claude → codex → claude` if the
+user wants. There's no default — an empty workflow list is a
+toast at trigger time pointing the user at the builder.
+
+### Workflow source abstraction
+
+The picker, the spawned tab, and the runner accept a
+`workflowSource` value (defined in `workflow_source.go`). It is
+a tagged union: `Kind == workflowSourceIssue` carries an
+`issueRef`; `Kind == workflowSourceChat` carries a filtered
+`[]chatTurn` plus a label and a unique key. The accessors
+`Key() / Display() / RefBlock()` give the runtime everything it
+needs without branching on the kind. Adding a third entry path
+(PR review against a draft? scheduled run against a saved query?)
+is one new constant + a switch arm per accessor.
 
 ### Schema
 
 `projectConfig.Workflows` lives alongside `projectConfig.Issues` in
 `~/.config/ask/ask.json`. The shape is intentionally generic — the
-runtime takes an `issueRef` for the prompt reference, but nothing
-about the broader pipeline machinery is bound to issues. Future
-surfaces (PRs, scheduled tasks, …) plug into the same builder /
-runner.
+runtime takes a `workflowSource` for the prompt reference (issue or
+chat snapshot), but nothing about the broader pipeline machinery is
+bound to issues. Future surfaces (PRs, scheduled tasks, …) plug into
+the same builder / runner.
 
 | Type | Purpose |
 |------|---------|
@@ -248,10 +272,14 @@ runner.
 ### Runtime tracker
 
 `workflowTracker()` is a process-wide singleton (`workflows.go`).
-The in-memory map keys on `<provider>:<owner/repo>#<n>` (issueRef.Key()).
-Only `done` / `failed` ever land on disk; `working` is process-local
-because pipeline runs aren't resumable across restarts (one-shots,
-no provider session pinning). Three transitions matter:
+The in-memory map keys on `workflowSource.Key()` —
+`<provider>:<owner/repo>#<n>` for issue sources,
+`chat:<tabID>:<unix-nanos>` for chat sources (the timestamp suffix
+makes two consecutive Ctrl+F runs from the same tab distinct so
+they don't stomp each other). Only `done` / `failed` ever land on
+disk; `working` is process-local because pipeline runs aren't
+resumable across restarts (one-shots, no provider session pinning).
+Three transitions matter:
 
 - `markWorking(cwd, key, workflow, tabID)` — drops any stale disk
   record for `key`, broadcasts `workflowStatusChangedMsg` so the

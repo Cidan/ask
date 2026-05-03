@@ -12,15 +12,16 @@ func TestWorkflowPicker_OpenAndClose(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	items := []workflowDef{{Name: "alpha"}, {Name: "beta"}}
 	issue := issueRef{Provider: "github", Project: "ow/r", Number: 1}
-	m = m.openWorkflowPicker(items, issue)
+	source := issueWorkflowSource(issue)
+	m = m.openWorkflowPicker(items, source)
 	if m.workflowPicker == nil {
 		t.Fatalf("picker should be open")
 	}
 	if got := m.workflowPicker.Cursor; got != 0 {
 		t.Errorf("cursor should start at 0; got %d", got)
 	}
-	if got := m.workflowPicker.Issue; got != issue {
-		t.Errorf("issue should be threaded through; got %+v", got)
+	if got := m.workflowPicker.Source.Issue; got != issue {
+		t.Errorf("issue should be threaded through source; got %+v", got)
 	}
 	newM, _ := m.updateWorkflowPicker(tea.KeyPressMsg{Code: tea.KeyEsc})
 	mm, ok := newM.(model)
@@ -43,7 +44,8 @@ func TestWorkflowPicker_NavigateAndEnter(t *testing.T) {
 		{Name: "gamma"},
 	}
 	issue := issueRef{Provider: "github", Project: "ow/r", Number: 7}
-	m = m.openWorkflowPicker(items, issue)
+	source := issueWorkflowSource(issue)
+	m = m.openWorkflowPicker(items, source)
 	// Down twice → cursor on gamma.
 	m2, _ := m.updateWorkflowPicker(tea.KeyPressMsg{Code: tea.KeyDown})
 	mm := m2.(model)
@@ -75,8 +77,8 @@ func TestWorkflowPicker_NavigateAndEnter(t *testing.T) {
 	if spawn.Workflow.Name != "beta" {
 		t.Errorf("dispatched workflow: got %q want beta", spawn.Workflow.Name)
 	}
-	if spawn.Issue != issue {
-		t.Errorf("dispatched issue: got %+v want %+v", spawn.Issue, issue)
+	if spawn.Source.Kind != workflowSourceIssue || spawn.Source.Issue != issue {
+		t.Errorf("dispatched source: got %+v want issue=%+v", spawn.Source, issue)
 	}
 	if spawn.Cwd != m.cwd {
 		t.Errorf("dispatched cwd: got %q want %q", spawn.Cwd, m.cwd)
@@ -92,7 +94,7 @@ func TestWorkflowPicker_NavigateAndEnter(t *testing.T) {
 // the picker's own Enter handler must not crash).
 func TestWorkflowPicker_EnterEmptyItemsIsNoop(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
-	m = m.openWorkflowPicker(nil, issueRef{Provider: "github", Project: "x/y", Number: 1})
+	m = m.openWorkflowPicker(nil, issueWorkflowSource(issueRef{Provider: "github", Project: "x/y", Number: 1}))
 	m2, cmd := m.updateWorkflowPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm := m2.(model)
 	if cmd != nil {

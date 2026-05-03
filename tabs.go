@@ -344,7 +344,7 @@ func (a app) openWorkflowTab(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
 	t.cwd = req.Cwd
 	t.workflowRun = &workflowRunState{
 		Workflow: req.Workflow,
-		Issue:    req.Issue,
+		Source:   req.Source,
 		StepIdx:  0,
 	}
 	t.mcpBridge.setCwd(t.cwd)
@@ -357,7 +357,7 @@ func (a app) openWorkflowTab(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
 	// Mark working immediately so the kanban repaint with the
 	// in-flight icon — the broadcast lands on every tab including
 	// the originating one.
-	workflowTracker().markWorking(req.Cwd, req.Issue.Key(), req.Workflow.Name, t.id)
+	workflowTracker().markWorking(req.Cwd, req.Source.Key(), req.Workflow.Name, t.id)
 	initCmd := t.Init()
 	startStep := func() tea.Msg { return workflowRunStartStepMsg{tabID: t.id} }
 	modAny, resizeCmd := a.broadcastResize()
@@ -422,7 +422,7 @@ func (a app) closeTab(tabID int) (tea.Model, tea.Cmd) {
 	if t.workflowRun != nil && !t.workflowRun.done && !t.workflowRun.failed {
 		workflowTracker().markFinal(
 			t.cwd,
-			t.workflowRun.Issue.Key(),
+			t.workflowRun.Source.Key(),
 			t.workflowRun.Workflow.Name,
 			workflowStatusFailed,
 			t.workflowRun.StepIdx,

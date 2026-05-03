@@ -1137,6 +1137,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 }
 
 func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.workflowPicker != nil {
+		return m.updateWorkflowPicker(msg)
+	}
 	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
 		return m, closeTabCmd(m.id)
 	}
@@ -1199,6 +1202,15 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.openProviderSwitch(), nil
+	}
+	if msg.Mod == tea.ModCtrl && msg.Code == 'f' {
+		// Path-picker / slash popover are mid-edit affordances; let
+		// them keep the keypress so Ctrl+F doesn't yank the user out
+		// of an in-flight completion.
+		if m.pathPickerActive() || len(m.filterSlashCmds()) > 0 {
+			return m, nil
+		}
+		return m.dispatchChatWorkflow()
 	}
 	if msg.Mod == 0 && msg.Code == tea.KeyEsc {
 		if m.busy {

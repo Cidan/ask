@@ -279,15 +279,17 @@ type focusTabMsg struct {
 }
 
 // spawnWorkflowTabMsg asks the app layer to open a new tab dedicated
-// to running `Workflow` against `Issue`, rooted at `Cwd`. Issued by
-// the issues screen when the user hits `f`. The app handler creates
-// the tab, attaches a workflowRunState to its model, and dispatches
-// the first step.
+// to running `Workflow` against `Source`, rooted at `Cwd`. Issued by
+// the issues screen when the user hits `f` (Source carries an
+// issueRef) or by the chat screen when the user hits Ctrl+F (Source
+// carries a chat-transcript snapshot). The app handler creates the
+// tab, attaches a workflowRunState to its model, and dispatches the
+// first step.
 type spawnWorkflowTabMsg struct {
 	OriginTabID int
 	Cwd         string
 	Workflow    workflowDef
-	Issue       issueRef
+	Source      workflowSource
 }
 
 // workflowRunStartStepMsg fires when a workflow tab is ready to
@@ -613,7 +615,7 @@ type model struct {
 // step dispatch fires).
 type workflowRunState struct {
 	Workflow workflowDef
-	Issue    issueRef
+	Source   workflowSource
 	StepIdx  int
 
 	// stepLog accumulates the assistant non-tool text emitted by
@@ -638,12 +640,13 @@ type workflowRunState struct {
 
 // workflowPickerState is the small centered modal that lets the user
 // pick a pipeline to run. Always shown — even with one pipeline —
-// because `f` is a destructive action and a confirm step prevents
-// mis-fires. Esc closes; Enter dispatches a spawnWorkflowTabMsg.
+// because `f` / `Ctrl+F` is a destructive action and a confirm step
+// prevents mis-fires. Esc closes; Enter dispatches a
+// spawnWorkflowTabMsg.
 type workflowPickerState struct {
 	Items  []workflowDef
 	Cursor int
-	Issue  issueRef
+	Source workflowSource
 }
 
 type askMode int

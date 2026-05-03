@@ -287,7 +287,7 @@ func TestIssueRef_KeyAndDisplay(t *testing.T) {
 // and tail is trimmed; the body is left as the user wrote it.
 func TestBuildWorkflowStepPrompt(t *testing.T) {
 	step := workflowStep{Prompt: "Implement the fix."}
-	issue := issueRef{Provider: "github", Project: "ow/r", Number: 1}
+	issue := issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1})
 
 	step0 := buildWorkflowStepPrompt(step, issue, nil)
 	if !strings.Contains(step0, "Implement the fix.") {
