@@ -1575,12 +1575,21 @@ type kanbanCarry struct {
 // with hasMore + len(loaded)). hasMore reflects the latest
 // fetch; fetching guards against double-dispatch while a load
 // is in flight.
+//
+// yOffset is the row index of the topmost rendered card. The
+// active column's offset is adjusted by ensureCursorVisible so
+// the selection cursor always sits inside [yOffset,
+// yOffset+visibleCardRows). Inactive columns keep whatever
+// offset they had when last viewed — bounds are re-clamped on
+// every entry so a row removal (carry pickup, mid-flight cache
+// trim) can't strand the viewport past the end of the column.
 type kanbanColumn struct {
 	spec       KanbanColumnSpec
 	loaded     []issue
 	nextCursor string
 	hasMore    bool
 	fetching   bool
+	yOffset    int
 }
 
 func newKanbanIssueView(s *issuesState) *kanbanIssueView {
@@ -1687,6 +1696,11 @@ func (v *kanbanIssueView) dropCarry(s *issuesState, tabID int) (tea.Cmd, bool) {
 	s.insertIssueIntoCache(target.Query, moved, 0)
 	v.carry = kanbanCarry{}
 	v.selRowIdx = 0
+	// Carry just deactivated → fixedRows shrinks → visibleCardRows
+	// grows. The dropped card sits at row 0 and is the focus, so
+	// snap the target column's yOffset to 0 (ensureCursorVisible
+	// does this naturally because selRowIdx=0 < any prior offset).
+	v.ensureCursorVisible()
 
 	provider := s.provider
 	pc := s.projectCfg
@@ -1760,7 +1774,9 @@ func (v *kanbanIssueView) name() string { return "kanban" }
 // clampSelection pulls col/row back into bounds after a column
 // disappears or a column's issue count shrinks. Called from
 // rebuildColumnsFromSpecs and from any nav handler that could
-// leave the cursor stranded.
+// leave the cursor stranded. Also re-runs ensureCursorVisible so
+// the focused column's yOffset stays in sync with the (possibly
+// freshly clamped) selection.
 func (v *kanbanIssueView) clampSelection() {
 	if len(v.columns) == 0 {
 		v.selColIdx, v.selRowIdx = 0, 0
@@ -1779,6 +1795,7 @@ func (v *kanbanIssueView) clampSelection() {
 	if v.selRowIdx < 0 {
 		v.selRowIdx = 0
 	}
+	v.ensureCursorVisible()
 }
 
 // columnByQueryFingerprint returns the column whose spec.Query
@@ -1877,28 +1894,67 @@ func (v *kanbanIssueView) visibleCardRows() int {
 	return max(1, v.height-v.fixedRows())
 }
 
+// cardYOffsetForColumn returns the topmost rendered row for column
+// idx. Reads the stored col.yOffset directly — every state mutation
+// that could invalidate it (selection move, resize, row removal,
+// carry transition) flows through ensureCursorVisible, so the render
+// path can trust the value without re-deriving it.
 func (v *kanbanIssueView) cardYOffsetForColumn(idx int) int {
 	if idx < 0 || idx >= len(v.columns) {
 		return 0
 	}
-	col := v.columns[idx]
-	visible := v.visibleCardRows()
-	if len(col.loaded) <= visible || v.selRowIdx < visible {
-		return 0
-	}
-	maxOffset := len(col.loaded) - visible
-	offset := v.selRowIdx - visible + 1
-	if offset > maxOffset {
-		offset = maxOffset
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	return offset
+	return v.columns[idx].yOffset
 }
 
 func (v *kanbanIssueView) cardYOffset() int {
 	return v.cardYOffsetForColumn(v.selColIdx)
+}
+
+// ensureCursorVisible adjusts the focused column's yOffset so the
+// selection cursor stays inside [yOffset, yOffset+visibleCardRows()).
+// Always bound-clamps yOffset to [0, max(0, len(loaded)-visible)] so
+// resizing the viewport, removing cards from the column, or rebuilds
+// from cache can't strand it past the end of the column.
+//
+// During carry the on-screen cursor is suppressed (the carry pin
+// renders above col.loaded and the row highlight is hidden), so we
+// only bound-clamp — the stored yOffset still tracks where the user
+// was scrolled inside the destination column, which we restore as
+// soon as the carry resolves.
+//
+// Cursor invariant ("scroll only when the cursor would leave the
+// viewport"):
+//   - selRowIdx <  yOffset            → snap yOffset down to selRowIdx
+//   - selRowIdx >= yOffset + visible  → snap yOffset up to keep the
+//     cursor on the bottom row
+//   - otherwise                       → leave yOffset put so the user
+//     sees the cursor walking through a stable viewport, not the
+//     viewport sliding under a pinned cursor
+func (v *kanbanIssueView) ensureCursorVisible() {
+	idx := v.selColIdx
+	if idx < 0 || idx >= len(v.columns) {
+		return
+	}
+	col := &v.columns[idx]
+	visible := v.visibleCardRows()
+	maxOff := max(0, len(col.loaded)-visible)
+	if col.yOffset > maxOff {
+		col.yOffset = maxOff
+	}
+	if col.yOffset < 0 {
+		col.yOffset = 0
+	}
+	if v.carry.active {
+		return
+	}
+	if v.selRowIdx < col.yOffset {
+		col.yOffset = v.selRowIdx
+	} else if v.selRowIdx >= col.yOffset+visible {
+		col.yOffset = v.selRowIdx - visible + 1
+	}
+	if col.yOffset < 0 {
+		col.yOffset = 0
+	}
 }
 
 func (v *kanbanIssueView) shouldFetchToFillViewportForColumn(idx int) bool {
@@ -1938,6 +1994,10 @@ func (v *kanbanIssueView) resize(width, height int) {
 	width = max(20, width)
 	v.width = width
 	v.height = max(4, height)
+	// Height changes shrink/grow visibleCardRows; re-clamp so a
+	// terminal resize doesn't strand yOffset past the new max or
+	// leave the cursor outside the new viewport.
+	v.ensureCursorVisible()
 }
 
 func (v *kanbanIssueView) header(s *issuesState) string {
@@ -1954,7 +2014,7 @@ func (v *kanbanIssueView) hint() string {
 		return dimStyle.Render("space drop · ←/→/tab change column · esc cancel · other keys disabled while carrying")
 	}
 	return dimStyle.Render(
-		"↑/↓ row · ←/→/tab column · enter open · space pick up · f run workflow · / search · ctrl+r reload · ctrl+o back",
+		"↑/↓ row · pgup/pgdn page · ←/→/tab column · enter open · space pick up · f run workflow · / search · ctrl+r reload · ctrl+o back",
 	)
 }
 
@@ -1988,6 +2048,7 @@ func (v *kanbanIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueV
 		if v.selRowIdx > 0 {
 			v.selRowIdx--
 		}
+		v.ensureCursorVisible()
 		return v, nil, true
 	case tea.KeyDown, 'j':
 		if v.selColIdx < len(v.columns) {
@@ -1996,6 +2057,7 @@ func (v *kanbanIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueV
 				v.selRowIdx++
 			}
 		}
+		v.ensureCursorVisible()
 		return v, v.maybeFetchVisibleWork(s), true
 	case tea.KeyLeft, 'h':
 		if v.selColIdx > 0 {
@@ -2015,16 +2077,44 @@ func (v *kanbanIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueV
 			v.clampSelection()
 		}
 		return v, v.maybeFetchToFillViewport(s), true
+	case tea.KeyPgUp:
+		v.selRowIdx -= v.pageJumpRows()
+		if v.selRowIdx < 0 {
+			v.selRowIdx = 0
+		}
+		v.ensureCursorVisible()
+		return v, nil, true
+	case tea.KeyPgDown:
+		if v.selColIdx < len(v.columns) {
+			col := v.columns[v.selColIdx]
+			if last := len(col.loaded) - 1; last >= 0 {
+				v.selRowIdx = min(v.selRowIdx+v.pageJumpRows(), last)
+			}
+		}
+		v.ensureCursorVisible()
+		return v, v.maybeFetchVisibleWork(s), true
 	case 'g':
 		v.selRowIdx = 0
+		v.ensureCursorVisible()
 		return v, nil, true
 	case 'G':
 		if v.selColIdx < len(v.columns) {
 			v.selRowIdx = max(0, len(v.columns[v.selColIdx].loaded)-1)
 		}
+		v.ensureCursorVisible()
 		return v, v.maybeFetchVisibleWork(s), true
 	}
 	return v, nil, true
+}
+
+// pageJumpRows is the row delta for PgUp/PgDn. We jump by
+// visibleCardRows-1 so the user always sees one row of overlap
+// between consecutive pages — the previous page's last visible card
+// becomes the new page's first card, which keeps visual continuity
+// during fast paging through a long backlog. Floors at 1 so a
+// single-row terminal still moves the cursor on every press.
+func (v *kanbanIssueView) pageJumpRows() int {
+	return max(1, v.visibleCardRows()-1)
 }
 
 // updateKeyCarrying owns the keymap while a card is in flight.
@@ -2043,16 +2133,19 @@ func (v *kanbanIssueView) updateKeyCarrying(s *issuesState, msg tea.KeyPressMsg)
 	case tea.KeyLeft, 'h':
 		if v.selColIdx > 0 {
 			v.selColIdx--
+			v.ensureCursorVisible()
 		}
 		return v, nil, true
 	case tea.KeyRight, 'l':
 		if v.selColIdx+1 < len(v.columns) {
 			v.selColIdx++
+			v.ensureCursorVisible()
 		}
 		return v, nil, true
 	case tea.KeyTab:
 		if len(v.columns) > 0 {
 			v.selColIdx = (v.selColIdx + 1) % len(v.columns)
+			v.ensureCursorVisible()
 		}
 		return v, nil, true
 	}
@@ -2071,6 +2164,7 @@ func isKanbanNav(msg tea.KeyPressMsg) bool {
 	switch msg.Code {
 	case tea.KeyUp, tea.KeyDown, tea.KeyLeft, tea.KeyRight,
 		tea.KeyTab, tea.KeyEnter, tea.KeyEsc,
+		tea.KeyPgUp, tea.KeyPgDown,
 		' ', 'h', 'j', 'k', 'l', 'g', 'G':
 		return true
 	}
@@ -2222,18 +2316,19 @@ func (v *kanbanIssueView) wheel(delta int) {
 			v.selRowIdx--
 		}
 	}
+	v.ensureCursorVisible()
 }
 
 func (v *kanbanIssueView) selectableBody() string { return v.lastRendered }
 
-// selectionYOffset returns 0 because kanban has no global vertical
-// scroll today — selection coordinates are screen-relative. If
-// per-column scroll lands later (each column gets its own yOffset),
-// this needs to switch to whichever offset the focused column has,
-// AND selectableBody must return the *full* rendered body (not just
-// the visible slice) so the copy path can slice past scrolled-off
-// rows. selectionYOffset and selectableBody are coupled by that
-// invariant — change them together.
+// selectionYOffset returns 0 because kanban selection remains
+// screen-relative even though the focused column now maintains a
+// bounded card-window yOffset. Any keyboard or wheel navigation that
+// changes the window clears selection first, so the copy/highlight
+// path only ever reasons about the currently rendered slice in
+// selectableBody. If selection is ever allowed to survive kanban
+// scrolling, selectionYOffset and selectableBody will need to move to
+// content-relative coordinates together.
 func (v *kanbanIssueView) selectionYOffset() int { return 0 }
 
 // mockIssues is the seed data for the issues screen until real

@@ -218,6 +218,7 @@ func TestCarry_JKEnterAbsorbedDuringCarry(t *testing.T) {
 	preCol, preRow := f.view.selColIdx, f.view.selRowIdx
 	for _, key := range []tea.Key{
 		{Code: 'j'}, {Code: 'k'}, {Code: tea.KeyDown}, {Code: tea.KeyUp},
+		{Code: tea.KeyPgUp}, {Code: tea.KeyPgDown},
 		{Code: 'g'}, {Code: 'G'}, {Code: tea.KeyEnter},
 	} {
 		next, cmd, handled := f.view.updateKey(f.state, tea.KeyPressMsg(key))
