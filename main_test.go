@@ -81,6 +81,56 @@ func TestResumeLookup_EmptyWorkspaceErrors(t *testing.T) {
 	}
 }
 
+func TestParseCLICommand(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		wantKind cliCommandKind
+		wantVSID string
+		wantErr  string // substring; "" means no error
+	}{
+		{name: "no args", args: nil, wantKind: cliRun},
+		{name: "empty argv", args: []string{}, wantKind: cliRun},
+		{name: "--help", args: []string{"--help"}, wantKind: cliHelp},
+		{name: "-h", args: []string{"-h"}, wantKind: cliHelp},
+		{name: "bare help", args: []string{"help"}, wantKind: cliHelp},
+		{name: "help with extra arg", args: []string{"help", "--foo"}, wantErr: "help takes no arguments"},
+		{name: "resume with vsID", args: []string{"resume", "vs-deadbeef"}, wantKind: cliResume, wantVSID: "vs-deadbeef"},
+		{name: "resume missing vsID", args: []string{"resume"}, wantErr: "missing virtual session id"},
+		{name: "resume extra arg", args: []string{"resume", "vs-1", "vs-2"}, wantErr: "extra arguments"},
+		{name: "resume option-like vsID", args: []string{"resume", "--foo"}, wantErr: "unknown option: --foo"},
+		{name: "unknown long flag", args: []string{"--frobnicate"}, wantErr: "unknown option: --frobnicate"},
+		{name: "unknown short flag", args: []string{"-x"}, wantErr: "unknown option: -x"},
+		{name: "unknown subcommand", args: []string{"banana"}, wantErr: "unknown argument: banana"},
+		// Provider-typo regression: caught as an unknown option, not
+		// silently swallowed (the bug this issue fixes).
+		{name: "provider typo", args: []string{"--proivder", "claude"}, wantErr: "unknown option: --proivder"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := parseCLICommand(c.args)
+			if c.wantErr != "" {
+				if err == nil {
+					t.Fatalf("want error containing %q, got nil (cmd=%+v)", c.wantErr, got)
+				}
+				if !strings.Contains(err.Error(), c.wantErr) {
+					t.Errorf("err=%q want substring %q", err.Error(), c.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.Kind != c.wantKind {
+				t.Errorf("Kind=%q want %q", got.Kind, c.wantKind)
+			}
+			if got.VSID != c.wantVSID {
+				t.Errorf("VSID=%q want %q", got.VSID, c.wantVSID)
+			}
+		})
+	}
+}
+
 func TestPrintHelp_MentionsKeyCommands(t *testing.T) {
 	var buf bytes.Buffer
 	printHelp(&buf)
@@ -311,4 +361,3 @@ func TestUpdate_StartupResumeMsgIgnoresWrongTab(t *testing.T) {
 		t.Errorf("wrong tab should not seed virtualSessionID, got %q", newM.virtualSessionID)
 	}
 }
-
