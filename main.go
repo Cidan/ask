@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -159,6 +160,59 @@ the TUI. Quitting ask prints the active tab's id so it can be passed to
 `)
 }
 
+// cliCommandKind discriminates the dispatched ask subcommand.
+type cliCommandKind string
+
+const (
+	cliRun    cliCommandKind = "run"
+	cliHelp   cliCommandKind = "help"
+	cliResume cliCommandKind = "resume"
+)
+
+// cliCommand is the parsed shape of os.Args[1:].
+type cliCommand struct {
+	Kind cliCommandKind
+	VSID string
+}
+
+// parseCLICommand validates argv (without the program name) and
+// returns the dispatched command. Bare ask is "run"; --help/-h/help
+// are "help"; resume <vid> is "resume". Anything else — unknown
+// flags, unknown leading positionals, wrong-arity resume — is an
+// error so typos in shell aliases (`ask --proivder claude`) fail
+// loudly instead of silently launching the TUI.
+//
+// The internal _hook subcommand is stripped by the caller before
+// parseCLICommand sees argv: it's a non-user entry point and its
+// argv is opaque to the validator.
+func parseCLICommand(args []string) (cliCommand, error) {
+	if len(args) == 0 {
+		return cliCommand{Kind: cliRun}, nil
+	}
+	head, rest := args[0], args[1:]
+	switch head {
+	case "--help", "-h", "help":
+		if len(rest) > 0 {
+			return cliCommand{}, fmt.Errorf("help takes no arguments")
+		}
+		return cliCommand{Kind: cliHelp}, nil
+	case "resume":
+		switch {
+		case len(rest) == 0:
+			return cliCommand{}, fmt.Errorf("resume: missing virtual session id")
+		case strings.HasPrefix(rest[0], "-"):
+			return cliCommand{}, fmt.Errorf("unknown option: %s", rest[0])
+		case len(rest) > 1:
+			return cliCommand{}, fmt.Errorf("resume: extra arguments after vsID: %v", rest[1:])
+		}
+		return cliCommand{Kind: cliResume, VSID: rest[0]}, nil
+	}
+	if strings.HasPrefix(head, "-") {
+		return cliCommand{}, fmt.Errorf("unknown option: %s", head)
+	}
+	return cliCommand{}, fmt.Errorf("unknown argument: %s", head)
+}
+
 // resumeLookup resolves vsID against ~/.config/ask/sessions.json and
 // returns the matching VS id and the recorded workspace path. Pure: no
 // side effects — main is responsible for the os.Chdir, which keeps
@@ -193,30 +247,29 @@ func main() {
 		}
 		return
 	}
+	cmd, err := parseCLICommand(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ask:", err)
+		fmt.Fprintln(os.Stderr)
+		printHelp(os.Stderr)
+		os.Exit(2)
+	}
 	var startupResumeVID string
-	if len(os.Args) >= 2 {
-		switch os.Args[1] {
-		case "--help", "-h", "help":
-			printHelp(os.Stdout)
-			return
-		case "resume":
-			if len(os.Args) < 3 {
-				fmt.Fprintln(os.Stderr, "ask resume: missing virtual session id")
-				fmt.Fprintln(os.Stderr)
-				printHelp(os.Stderr)
-				os.Exit(2)
-			}
-			vid, ws, err := resumeLookup(os.Args[2])
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "ask resume:", err)
-				os.Exit(1)
-			}
-			if err := os.Chdir(ws); err != nil {
-				fmt.Fprintln(os.Stderr, "ask resume: chdir", ws+":", err)
-				os.Exit(1)
-			}
-			startupResumeVID = vid
+	switch cmd.Kind {
+	case cliHelp:
+		printHelp(os.Stdout)
+		return
+	case cliResume:
+		vid, ws, err := resumeLookup(cmd.VSID)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ask resume:", err)
+			os.Exit(1)
 		}
+		if err := os.Chdir(ws); err != nil {
+			fmt.Fprintln(os.Stderr, "ask resume: chdir", ws+":", err)
+			os.Exit(1)
+		}
+		startupResumeVID = vid
 	}
 	cfg, _ := loadConfig()
 	_ = saveConfig(cfg)
