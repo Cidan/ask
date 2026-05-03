@@ -11,10 +11,10 @@ import (
 
 func TestParseGitHubRemoteURL_HTTPS(t *testing.T) {
 	cases := []struct {
-		url        string
-		wantOwner  string
-		wantRepo   string
-		wantOK     bool
+		url       string
+		wantOwner string
+		wantRepo  string
+		wantOK    bool
 	}{
 		{"https://github.com/Cidan/ask", "Cidan", "ask", true},
 		{"https://github.com/Cidan/ask.git", "Cidan", "ask", true},
@@ -248,6 +248,21 @@ func TestGitHubProvider_ParseQuery_RecognisesEachToken(t *testing.T) {
 				t.Errorf("state=%q want all", q.state)
 			}
 		}},
+		{"reason:completed", func(t *testing.T, q *githubQuery) {
+			if q.closedReason != "completed" {
+				t.Errorf("closedReason=%q want completed", q.closedReason)
+			}
+		}},
+		{"reason:not_planned", func(t *testing.T, q *githubQuery) {
+			if q.closedReason != "not_planned" {
+				t.Errorf("closedReason=%q want not_planned", q.closedReason)
+			}
+		}},
+		{"reason:duplicate", func(t *testing.T, q *githubQuery) {
+			if q.closedReason != "duplicate" {
+				t.Errorf("closedReason=%q want duplicate", q.closedReason)
+			}
+		}},
 		{"label:bug", func(t *testing.T, q *githubQuery) {
 			if len(q.labels) != 1 || q.labels[0] != "bug" {
 				t.Errorf("labels=%v want [bug]", q.labels)
@@ -316,6 +331,7 @@ func TestGitHubProvider_ParseQuery_RejectsInvalidValues(t *testing.T) {
 	p := &githubIssueProvider{}
 	for _, input := range []string{
 		"is:bogus",
+		"reason:bogus",
 		"sort:weird",
 		"order:sideways",
 		"no:everyone",
@@ -332,6 +348,8 @@ func TestGitHubProvider_FormatQuery_RoundTrip(t *testing.T) {
 	inputs := []string{
 		"",
 		"is:open",
+		"is:closed reason:completed",
+		"is:closed reason:not_planned",
 		"is:closed label:bug",
 		"label:bug label:p0 assignee:antonio",
 		"is:all author:fritz no:assignee sort:updated order:desc",
@@ -361,6 +379,18 @@ func TestGitHubProvider_FormatQuery_NilIsEmpty(t *testing.T) {
 	p := &githubIssueProvider{}
 	if got := p.FormatQuery(nil); got != "" {
 		t.Errorf("FormatQuery(nil) = %q want empty", got)
+	}
+}
+
+func TestGitHubProvider_FormatQuery_ClosedReasonsStayDistinct(t *testing.T) {
+	p := &githubIssueProvider{}
+	seen := map[string]string{}
+	for _, col := range p.KanbanColumns() {
+		got := p.FormatQuery(col.Query)
+		if prev, ok := seen[got]; ok {
+			t.Fatalf("query fingerprint collision: %q used by %q and %q", got, prev, col.Label)
+		}
+		seen[got] = col.Label
 	}
 }
 

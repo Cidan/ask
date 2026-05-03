@@ -84,6 +84,7 @@ func (p *githubIssueProvider) Configured(cfg projectConfig, cwd string) bool {
 // builds a *githubQuery. Recognised tokens:
 //
 //	is:open|closed|all
+//	reason:completed|not_planned|duplicate
 //	label:<value>             (multi — combined as AND)
 //	assignee:<value>
 //	author:<value>
@@ -125,6 +126,14 @@ func (p *githubIssueProvider) ParseQuery(text string) (IssueQuery, error) {
 			default:
 				return nil, fmt.Errorf("is:%s — expected open, closed, or all", val)
 			}
+		case "reason":
+			v := strings.ToLower(val)
+			switch v {
+			case "completed", "not_planned", "duplicate":
+				q.closedReason = v
+			default:
+				return nil, fmt.Errorf("reason:%s — expected completed, not_planned, or duplicate", val)
+			}
 		case "label":
 			q.labels = append(q.labels, val)
 		case "assignee":
@@ -164,7 +173,7 @@ func (p *githubIssueProvider) ParseQuery(text string) (IssueQuery, error) {
 
 // FormatQuery renders a parsed query back to canonical text.
 // Token order is normalised (is, label, assignee, author,
-// no:assignee, sort, order, free-text) so ParseQuery(FormatQuery(q))
+// reason, no:assignee, sort, order, free-text) so ParseQuery(FormatQuery(q))
 // round-trips equivalently. nil → empty string.
 func (p *githubIssueProvider) FormatQuery(q IssueQuery) string {
 	gq, ok := q.(*githubQuery)
@@ -183,6 +192,9 @@ func (p *githubIssueProvider) FormatQuery(q IssueQuery) string {
 	}
 	if gq.author != "" {
 		parts = append(parts, "author:"+gq.author)
+	}
+	if gq.closedReason != "" {
+		parts = append(parts, "reason:"+gq.closedReason)
 	}
 	if gq.noAssignee {
 		parts = append(parts, "no:assignee")
@@ -203,7 +215,7 @@ func (p *githubIssueProvider) FormatQuery(q IssueQuery) string {
 // the search box for the GitHub provider. Keep it terse — it has
 // to fit in a narrow terminal alongside the input.
 func (p *githubIssueProvider) QuerySyntaxHelp() string {
-	return "is:open|closed|all  label:<v>  assignee:<v>  author:<v>  no:assignee  sort:<v>  order:<v>  + free text"
+	return "is:open|closed|all  reason:<v>  label:<v>  assignee:<v>  author:<v>  no:assignee  sort:<v>  order:<v>  + free text"
 }
 
 // KanbanColumns returns the canonical 4-column GitHub kanban
