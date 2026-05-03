@@ -307,6 +307,24 @@ func providerByID(id string) Provider {
 	return nil
 }
 
+// providerByIDStrict returns the provider with the given ID and true,
+// or nil and false when nothing matches. Unlike providerByID it does
+// not fall back to the first registered provider — used by callers
+// (the resume-side LastProvider override) that need to detect a
+// missing/renamed id and surface it instead of silently swapping
+// providers under the user.
+func providerByIDStrict(id string) (Provider, bool) {
+	if id == "" {
+		return nil, false
+	}
+	for _, p := range providerRegistry {
+		if p.ID() == id {
+			return p, true
+		}
+	}
+	return nil, false
+}
+
 // kill terminates the subprocess and closes stdin. Safe on nil or
 // already-reaped receivers.
 func (p *providerProc) kill() {

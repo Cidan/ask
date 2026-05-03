@@ -65,6 +65,57 @@ func TestProviderByID_EmptyIDReturnsFirst(t *testing.T) {
 	}
 }
 
+// providerByIDStrict must NEVER fall back to the first registered
+// provider. The resume-side LastProvider override depends on this:
+// silently swapping providers when the recorded id is missing would
+// either reopen the conversation under the wrong backend (defeating
+// the purpose) or hide the rename/removal from the user.
+func TestProviderByIDStrict_HitReturnsTrue(t *testing.T) {
+	f1 := newFakeProvider()
+	f1.id = "alpha"
+	f2 := newFakeProvider()
+	f2.id = "beta"
+	withRegisteredProviders(t, f1, f2)
+	got, ok := providerByIDStrict("beta")
+	if !ok {
+		t.Fatal("strict lookup should find beta")
+	}
+	if got != f2 {
+		t.Errorf("strict beta returned %v want f2", got)
+	}
+}
+
+func TestProviderByIDStrict_MissReturnsNilFalse(t *testing.T) {
+	f1 := newFakeProvider()
+	f1.id = "alpha"
+	withRegisteredProviders(t, f1)
+	got, ok := providerByIDStrict("not-real")
+	if ok {
+		t.Error("strict miss must return false, not the first-fallback")
+	}
+	if got != nil {
+		t.Errorf("strict miss should return nil, got %v", got)
+	}
+}
+
+func TestProviderByIDStrict_EmptyIDReturnsNilFalse(t *testing.T) {
+	f1 := newFakeProvider()
+	f1.id = "alpha"
+	withRegisteredProviders(t, f1)
+	got, ok := providerByIDStrict("")
+	if ok || got != nil {
+		t.Errorf("strict empty id must miss; got=%v ok=%v", got, ok)
+	}
+}
+
+func TestProviderByIDStrict_EmptyRegistryMisses(t *testing.T) {
+	withRegisteredProviders(t)
+	got, ok := providerByIDStrict("anything")
+	if ok || got != nil {
+		t.Errorf("strict empty registry must miss; got=%v ok=%v", got, ok)
+	}
+}
+
 func TestClaudeProvider_Metadata(t *testing.T) {
 	var p claudeProvider
 	if got := p.ID(); got != "claude" {

@@ -214,30 +214,55 @@ func parseCLICommand(args []string) (cliCommand, error) {
 }
 
 // resumeLookup resolves vsID against ~/.config/ask/sessions.json and
-// returns the matching VS id and the recorded workspace path. Pure: no
-// side effects — main is responsible for the os.Chdir, which keeps
-// tests self-contained (chdirs from a test process pollute every test
+// returns the matching VS id, the recorded workspace path, and the
+// provider id that wrote the most recent turn (empty for legacy VSes
+// stored before LastProvider was tracked). Pure: no side effects —
+// main is responsible for the os.Chdir, which keeps tests
+// self-contained (chdirs from a test process pollute every test
 // that follows because the cleanup ordering against t.TempDir teardown
 // is fragile when the cwd points inside a doomed tempdir).
-func resumeLookup(vsID string) (id, workspace string, err error) {
+func resumeLookup(vsID string) (id, workspace, lastProvider string, err error) {
 	if vsID == "" {
-		return "", "", fmt.Errorf("missing virtual session id")
+		return "", "", "", fmt.Errorf("missing virtual session id")
 	}
 	store, err := loadVirtualSessions()
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	vs := store.findByID(vsID)
 	if vs == nil {
-		return "", "", fmt.Errorf("virtual session %q not found", vsID)
+		return "", "", "", fmt.Errorf("virtual session %q not found", vsID)
 	}
 	if vs.Workspace == "" {
-		return "", "", fmt.Errorf("virtual session %q has no workspace recorded", vsID)
+		return "", "", "", fmt.Errorf("virtual session %q has no workspace recorded", vsID)
 	}
 	if _, err := os.Stat(vs.Workspace); err != nil {
-		return "", "", fmt.Errorf("workspace %s: %w", vs.Workspace, err)
+		return "", "", "", fmt.Errorf("workspace %s: %w", vs.Workspace, err)
 	}
-	return vs.ID, vs.Workspace, nil
+	return vs.ID, vs.Workspace, vs.LastProvider, nil
+}
+
+// resolveStartupProvider picks the provider id ask should use for
+// this session, given an optional resume-side override and the saved
+// default. When the override resolves to a registered provider it
+// wins; when the override is a stale id (provider removed or renamed
+// since the VS was written), warn on `warn` and fall back to the
+// saved default. Empty override → saved default, matching the pre-fix
+// CLI behavior so legacy VSes (written before LastProvider tracking)
+// keep working.
+//
+// The warn writer is parameterised so tests can capture the line
+// without touching os.Stderr.
+func resolveStartupProvider(resumeProviderID, savedDefault string, warn io.Writer) string {
+	if resumeProviderID == "" {
+		return savedDefault
+	}
+	if _, ok := providerByIDStrict(resumeProviderID); ok {
+		return resumeProviderID
+	}
+	fmt.Fprintf(warn, "ask: resumed session was last used with provider %q which is no longer registered; falling back to %q\n",
+		resumeProviderID, savedDefault)
+	return savedDefault
 }
 
 func main() {
@@ -254,13 +279,13 @@ func main() {
 		printHelp(os.Stderr)
 		os.Exit(2)
 	}
-	var startupResumeVID string
+	var startupResumeVID, startupResumeProvider string
 	switch cmd.Kind {
 	case cliHelp:
 		printHelp(os.Stdout)
 		return
 	case cliResume:
-		vid, ws, err := resumeLookup(cmd.VSID)
+		vid, ws, lastProv, err := resumeLookup(cmd.VSID)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "ask resume:", err)
 			os.Exit(1)
@@ -270,9 +295,15 @@ func main() {
 			os.Exit(1)
 		}
 		startupResumeVID = vid
+		startupResumeProvider = lastProv
 	}
 	cfg, _ := loadConfig()
 	_ = saveConfig(cfg)
+	// Resume-time provider override: respects the conversation's
+	// LastProvider so resuming a Claude thread under a Codex default
+	// reopens under Claude. Applied AFTER saveConfig so the override
+	// stays per-launch and never rewrites the persisted default.
+	cfg.Provider = resolveStartupProvider(startupResumeProvider, cfg.Provider, os.Stderr)
 	if cfg.UI.Worktree != nil && *cfg.UI.Worktree {
 		ensureWorktreeGitignore()
 	}
