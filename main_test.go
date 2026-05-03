@@ -20,7 +20,7 @@ func TestResumeLookup_FindsVSAndReturnsWorkspace(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 
-	gotID, gotWS, err := resumeLookup(vsID)
+	gotID, gotWS, gotProv, err := resumeLookup(vsID)
 	if err != nil {
 		t.Fatalf("resumeLookup: %v", err)
 	}
@@ -32,18 +32,51 @@ func TestResumeLookup_FindsVSAndReturnsWorkspace(t *testing.T) {
 	if gotAbs != wantAbs {
 		t.Errorf("returned workspace=%q want %q", gotAbs, wantAbs)
 	}
+	if gotProv != "claude" {
+		t.Errorf("returned lastProvider=%q want claude", gotProv)
+	}
+}
+
+// Legacy VSes written before LastProvider was tracked have an empty
+// string for the field — resumeLookup should pass it through as-is so
+// resolveStartupProvider can fall back to the saved default without
+// any extra plumbing in main.
+func TestResumeLookup_LegacyVSReturnsEmptyLastProvider(t *testing.T) {
+	isolateHome(t)
+	ws := t.TempDir()
+	store := &virtualSessionStore{
+		Version: 1,
+		Sessions: []VirtualSession{{
+			ID:           "vs-legacy",
+			Workspace:    ws,
+			CreatedAt:    time.Now().UTC(),
+			UpdatedAt:    time.Now().UTC(),
+			Preview:      "old session",
+			LastProvider: "", // pre-LastProvider VS
+		}},
+	}
+	if err := saveVirtualSessions(store); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	_, _, gotProv, err := resumeLookup("vs-legacy")
+	if err != nil {
+		t.Fatalf("resumeLookup: %v", err)
+	}
+	if gotProv != "" {
+		t.Errorf("legacy VS should return empty lastProvider, got %q", gotProv)
+	}
 }
 
 func TestResumeLookup_EmptyIDErrors(t *testing.T) {
 	isolateHome(t)
-	if _, _, err := resumeLookup(""); err == nil {
+	if _, _, _, err := resumeLookup(""); err == nil {
 		t.Fatal("empty id should error")
 	}
 }
 
 func TestResumeLookup_UnknownIDErrors(t *testing.T) {
 	isolateHome(t)
-	_, _, err := resumeLookup("vs-does-not-exist")
+	_, _, _, err := resumeLookup("vs-does-not-exist")
 	if err == nil {
 		t.Fatal("unknown vsID should error")
 	}
@@ -61,7 +94,7 @@ func TestResumeLookup_MissingWorkspaceErrors(t *testing.T) {
 	if err := saveVirtualSessions(store); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	_, _, err := resumeLookup(vsID)
+	_, _, _, err := resumeLookup(vsID)
 	if err == nil {
 		t.Fatal("missing workspace should error")
 	}
@@ -75,7 +108,7 @@ func TestResumeLookup_EmptyWorkspaceErrors(t *testing.T) {
 	if err := saveVirtualSessions(store); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	_, _, err := resumeLookup(vsID)
+	_, _, _, err := resumeLookup(vsID)
 	if err == nil {
 		t.Fatal("empty workspace should error")
 	}
@@ -128,6 +161,127 @@ func TestParseCLICommand(t *testing.T) {
 				t.Errorf("VSID=%q want %q", got.VSID, c.wantVSID)
 			}
 		})
+	}
+}
+
+// resolveStartupProvider is the heart of the #4 fix. The matrix
+// covers every override × default combination that can hit the CLI
+// resume path: legacy VS, override matches default, override differs
+// from default, override is stale (provider removed/renamed), and
+// the corner cases around an empty saved default.
+func TestResolveStartupProvider(t *testing.T) {
+	f1 := newFakeProvider()
+	f1.id = "claude"
+	f2 := newFakeProvider()
+	f2.id = "codex"
+	withRegisteredProviders(t, f1, f2)
+
+	cases := []struct {
+		name           string
+		resumeOverride string
+		savedDefault   string
+		want           string
+		wantWarn       bool
+	}{
+		{
+			name:           "legacy VS keeps saved default",
+			resumeOverride: "",
+			savedDefault:   "codex",
+			want:           "codex",
+		},
+		{
+			name:           "override differs from default — override wins (the bug fix)",
+			resumeOverride: "claude",
+			savedDefault:   "codex",
+			want:           "claude",
+		},
+		{
+			name:           "override matches default — override wins (no-op semantically)",
+			resumeOverride: "claude",
+			savedDefault:   "claude",
+			want:           "claude",
+		},
+		{
+			name:           "stale override — fall back + warn",
+			resumeOverride: "gemini-removed",
+			savedDefault:   "codex",
+			want:           "codex",
+			wantWarn:       true,
+		},
+		{
+			name:           "stale override + empty saved default — fall back to empty + warn",
+			resumeOverride: "gemini-removed",
+			savedDefault:   "",
+			want:           "",
+			wantWarn:       true,
+		},
+		{
+			name:           "valid override + unknown saved default — override still wins, no warn",
+			resumeOverride: "claude",
+			savedDefault:   "stale-default-survives",
+			want:           "claude",
+		},
+		{
+			name:           "empty override + empty default — empty out (caller's providerByID handles fallback)",
+			resumeOverride: "",
+			savedDefault:   "",
+			want:           "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var warn bytes.Buffer
+			got := resolveStartupProvider(c.resumeOverride, c.savedDefault, &warn)
+			if got != c.want {
+				t.Errorf("got %q want %q", got, c.want)
+			}
+			gotWarn := warn.Len() > 0
+			if gotWarn != c.wantWarn {
+				t.Errorf("warn=%q gotWarn=%v wantWarn=%v", warn.String(), gotWarn, c.wantWarn)
+			}
+			if c.wantWarn {
+				// Stale-id warnings must name the bad id so the
+				// user can correlate and rename or update config.
+				if !strings.Contains(warn.String(), c.resumeOverride) {
+					t.Errorf("warn should name the stale id %q; got %q",
+						c.resumeOverride, warn.String())
+				}
+			}
+		})
+	}
+}
+
+// End-to-end: a Claude VS recovered via resumeLookup, fed through
+// resolveStartupProvider with a Codex saved default, must produce a
+// resolved id equal to "claude". This is the exact data-loss bug
+// in #4 — proves the wiring across both helpers, not just each in
+// isolation.
+func TestResumeFlow_ClaudeVSUnderCodexDefaultPicksClaude(t *testing.T) {
+	f1 := newFakeProvider()
+	f1.id = "claude"
+	f2 := newFakeProvider()
+	f2.id = "codex"
+	withRegisteredProviders(t, f1, f2)
+	isolateHome(t)
+	ws := t.TempDir()
+	store := &virtualSessionStore{Version: 1}
+	vsID := upsertVirtualSession(store, "", ws, "claude", "native-1", ws,
+		"hi", time.Now().UTC())
+	if err := saveVirtualSessions(store); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	_, _, lastProv, err := resumeLookup(vsID)
+	if err != nil {
+		t.Fatalf("resumeLookup: %v", err)
+	}
+	var warn bytes.Buffer
+	resolved := resolveStartupProvider(lastProv, "codex", &warn)
+	if resolved != "claude" {
+		t.Errorf("CLI resume of a Claude VS under Codex default resolved to %q want claude — the #4 data-loss bug",
+			resolved)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("happy-path resume must not warn; got %q", warn.String())
 	}
 }
 
