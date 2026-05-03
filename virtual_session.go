@@ -521,9 +521,22 @@ func upsertVirtualSession(store *virtualSessionStore, vsID, workspace, providerI
 // refreshes LastProvider, sets the provider's ref, and fills preview
 // if it was empty. Shared by the findByID and findByProviderNative
 // update branches of upsertVirtualSession.
+//
+// Worktree non-regression guard: if the prior ref pointed inside
+// .claude/worktrees/ and the new ref does not, keep the prior Cwd
+// (still update SessionID). Without this, a recording path where
+// m.worktreeName has been cleared (cross-provider swap before first
+// fork, /config worktree toggle, etc.) would rewrite the canonical
+// worktree path with the bare project root and strand the session
+// for any later worktree-mode resume.
 func (vs *VirtualSession) applyTurn(providerID string, ref ProviderSessionRef, preview string, now time.Time) {
 	if vs.ProviderSessions == nil {
 		vs.ProviderSessions = map[string]ProviderSessionRef{}
+	}
+	if prior, ok := vs.ProviderSessions[providerID]; ok &&
+		worktreeNameFromCwd(prior.Cwd) != "" &&
+		worktreeNameFromCwd(ref.Cwd) == "" {
+		ref.Cwd = prior.Cwd
 	}
 	vs.ProviderSessions[providerID] = ref
 	vs.UpdatedAt = now

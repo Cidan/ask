@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sort"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -228,6 +229,13 @@ func (m *model) applyVSProviderSwap(oldProvName string, newProv Provider) tea.Cm
 		vs.LastProvider == newProv.ID() {
 		m.sessionID = ref.SessionID
 		m.resumeCwd = ref.Cwd
+		// Realign m.worktreeName with where the resumed session
+		// actually lived. A worktree-rooted ref hands over its name so
+		// any second swap before the first fork can translate into the
+		// same worktree; a project-root ref clears any stale name from
+		// the prior tab so we don't accidentally fork at a worktree
+		// the resumed session was never written to.
+		m.worktreeName = worktreeNameFromCwd(ref.Cwd)
 		m.history = nil
 		opts := HistoryOpts{
 			RenderDiffs: m.renderDiffs,
@@ -242,14 +250,55 @@ func (m *model) applyVSProviderSwap(oldProvName string, newProv Provider) tea.Cm
 	}
 	m.busy = true
 	m.status = "translating session…"
+	// Recover a worktree name from the last-writer ref in the VS so
+	// the translated session lands where the canonical conversation
+	// already lived. Only fall back to some other provider's worktree
+	// when the authoritative ref has lost its cwd entirely; an
+	// explicit project-root ref stays project-root.
+	worktreeName := m.worktreeName
+	if worktreeName == "" {
+		worktreeName = worktreeNameFromVS(vs, vs.LastProvider)
+	}
 	return translateVSCmd(translateVSReq{
 		tabID:       m.id,
 		target:      newProv,
 		vsID:        vs.ID,
 		workspace:   m.cwd,
-		nativeCwd:   nativeCwdForUpsert(m.cwd, m.worktreeName),
+		nativeCwd:   nativeCwdForUpsert(m.cwd, worktreeName),
 		directTurns: turns,
 	})
+}
+
+// worktreeNameFromVS resolves the worktree assignment recorded on vs.
+// When preferredProviderID has a ref, that ref is authoritative: a
+// worktree path returns its name, an explicit project-root cwd
+// returns "", and only a missing/empty cwd falls through to other
+// refs. Fallback scanning is deterministic (sorted provider ids) so
+// mixed/ref-corrupted VS rows don't produce random worktree choices.
+func worktreeNameFromVS(vs *VirtualSession, preferredProviderID string) string {
+	if vs == nil {
+		return ""
+	}
+	if preferredProviderID != "" {
+		if ref, ok := vs.ProviderSessions[preferredProviderID]; ok {
+			if name := worktreeNameFromCwd(ref.Cwd); name != "" || ref.Cwd != "" {
+				return name
+			}
+		}
+	}
+	ids := make([]string, 0, len(vs.ProviderSessions))
+	for id := range vs.ProviderSessions {
+		if id != preferredProviderID {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if name := worktreeNameFromCwd(vs.ProviderSessions[id].Cwd); name != "" {
+			return name
+		}
+	}
+	return ""
 }
 
 func (m model) viewProviderSwitch() string {

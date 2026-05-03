@@ -1627,6 +1627,12 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 		m.sessionID = ref.SessionID
 		m.sessionMinted = false
 		m.resumeCwd = ref.Cwd
+		// Realign m.worktreeName with the resumed ref's cwd so a
+		// subsequent swap-before-first-fork (Ctrl+B) doesn't translate
+		// at the wrong cwd. Worktree refs hand over their name; project
+		// -root refs clear any stale name carried over from whatever
+		// the tab held before /resume.
+		m.worktreeName = worktreeNameFromCwd(ref.Cwd)
 		m.appendHistory(outputStyle.Render(dimStyle.Render(
 			fmt.Sprintf("loading session %s…", short(vs.ID)))))
 		return m, loadHistoryCmd(m.id, m.provider, ref.SessionID, vs.ID, opts, false)
@@ -1646,6 +1652,16 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 			fmt.Sprintf("resumed %s — no prior provider history to replay", short(vs.ID)))))
 		return m, nil
 	}
+	// Recover a worktree name from the source provider's ref so the
+	// materialized native session for the current provider lands where
+	// the canonical conversation already lived. Only fall back to
+	// another provider's worktree when the source ref has lost its cwd
+	// entirely; an explicit project-root source must stay project-root.
+	worktreeName := worktreeNameFromCwd(sourceRef.Cwd)
+	if worktreeName == "" && sourceRef.Cwd == "" {
+		worktreeName = worktreeNameFromVS(vs, sourceProv.ID())
+	}
+	m.worktreeName = worktreeName
 	m.busy = true
 	m.status = "translating session…"
 	m.appendHistory(outputStyle.Render(dimStyle.Render(
@@ -1656,7 +1672,7 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 		target:          m.provider,
 		vsID:            vs.ID,
 		workspace:       m.cwd,
-		nativeCwd:       nativeCwdForUpsert(m.cwd, m.worktreeName),
+		nativeCwd:       nativeCwdForUpsert(m.cwd, worktreeName),
 		source:          sourceProv,
 		sourceSessionID: sourceRef.SessionID,
 		opts:            opts,
