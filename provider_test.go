@@ -5,6 +5,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"testing"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestProviderRegistry_ReturnsClaudeByID(t *testing.T) {
@@ -137,6 +140,54 @@ func TestProviderProc_KillClosesStdin(t *testing.T) {
 	if !tc.closed {
 		t.Errorf("kill() must call Close on stdin; close not observed")
 	}
+}
+
+// TestKillProc_DrainsStreamChannelSoWriterCanExit pins the fix for the
+// workflow-step freeze: when the model abandons a stream channel
+// (workflow advancing to the next step, /clear, provider switch),
+// the read side must keep draining until the writer's `defer close(ch)`
+// runs. Without the drainer, a writer with stdout still backlogged
+// blocks at `ch <- msg` after the 32-slot buffer fills, never reaches
+// `cmd.Wait()`, and wedges the whole pipeline.
+func TestKillProc_DrainsStreamChannelSoWriterCanExit(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	// Channel size mirrors the 32 used by readClaudeStream/readCodexStream.
+	ch := make(chan tea.Msg, 32)
+	m.proc = &providerProc{}
+	m.streamCh = ch
+
+	writerDone := make(chan struct{})
+	// Writer mimics readClaudeStream's tail: many backlogged events
+	// followed by `defer close(ch)`. With a 32-slot buffer and no
+	// reader, a non-drained channel pins this goroutine forever.
+	go func() {
+		defer close(ch)
+		defer close(writerDone)
+		for i := 0; i < 200; i++ {
+			ch <- assistantTextMsg{text: "x"}
+		}
+	}()
+
+	(&m).killProc()
+
+	select {
+	case <-writerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("writer goroutine did not exit; killProc must drain the abandoned stream channel")
+	}
+	if m.streamCh != nil {
+		t.Errorf("killProc must clear m.streamCh; got %v", m.streamCh)
+	}
+	if m.proc != nil {
+		t.Errorf("killProc must clear m.proc; got %v", m.proc)
+	}
+}
+
+// TestDrainProviderStream_NilChannelSafe guards against a nil-deref
+// regression — callers (eventually proc.go's error paths) may pass a
+// nil channel when StartSession failed before allocating one.
+func TestDrainProviderStream_NilChannelSafe(t *testing.T) {
+	drainProviderStream(nil) // must not panic
 }
 
 // trackCloser is a bufferCloser variant that records whether Close was
