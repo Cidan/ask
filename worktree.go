@@ -181,6 +181,15 @@ func findEnclosingCheckout(cwd string) string {
 // tree. Defense-in-depth on top of validateAskCwd so a stray surface
 // that bypasses the chat-facing block can't accidentally fork a
 // provider on the user's project root.
+//
+// Resume exception: a session whose recorded cwd is the project root
+// is honored even when worktree mode is on. The validator's intent is
+// "a fresh session must start in a worktree when worktree mode is
+// on" — but a session that was actually persisted at the project root
+// continues there. The user's current preference can't retroactively
+// relocate an existing session, and refusing here would strand a VS
+// row that recorded project-root cwd (e.g. via a cross-provider swap
+// from a worktree-less tab) permanently.
 func validateExecutorCwd(args ProviderSessionArgs, rootCwd string) error {
 	if !args.Worktree {
 		return nil
@@ -191,10 +200,27 @@ func validateExecutorCwd(args ProviderSessionArgs, rootCwd string) error {
 	if args.Cwd == "" {
 		return fmt.Errorf("worktree mode requires a working directory")
 	}
-	if worktreeNameFromCwd(args.Cwd) == "" {
-		return fmt.Errorf("worktree mode refuses to start outside .claude/worktrees/, got cwd %q", args.Cwd)
+	if worktreeNameFromCwd(args.Cwd) != "" {
+		return nil
 	}
-	return nil
+	if args.SessionID != "" && args.ResumeCwd != "" &&
+		samePathOrResolved(args.Cwd, args.ResumeCwd) &&
+		samePathOrResolved(args.Cwd, rootCwd) {
+		return nil
+	}
+	return fmt.Errorf("worktree mode refuses to start outside .claude/worktrees/, got cwd %q", args.Cwd)
+}
+
+func samePathOrResolved(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
 }
 
 // pruneWorktrees removes every sibling under `.claude/worktrees/`. Git uses

@@ -18,11 +18,11 @@ func TestVirtualSessions_RoundTrip(t *testing.T) {
 		Version: virtualSessionStoreVersion,
 		Sessions: []VirtualSession{
 			{
-				ID:        "vs-1",
-				Workspace: "/tmp/ws",
-				CreatedAt: now,
-				UpdatedAt: now,
-				Preview:   "hello",
+				ID:           "vs-1",
+				Workspace:    "/tmp/ws",
+				CreatedAt:    now,
+				UpdatedAt:    now,
+				Preview:      "hello",
 				LastProvider: "claude",
 				ProviderSessions: map[string]ProviderSessionRef{
 					"claude": {SessionID: "native-claude", Cwd: "/tmp/ws"},
@@ -1302,5 +1302,646 @@ func TestMutateVirtualSessions_ConcurrentUpsertsAllPersist(t *testing.T) {
 	if len(got.Sessions) != N {
 		t.Errorf("want %d sessions after concurrent upserts, got %d — locking failed to prevent lost writes",
 			N, len(got.Sessions))
+	}
+}
+
+// ---- Issue #19: worktree-cwd non-regression guard ----
+
+// applyTurn must not regress a known-good worktree-rooted Cwd to the
+// bare project root. A turn arriving with a project-root Cwd from a
+// tab where m.worktreeName has been cleared (cross-provider swap
+// before first fork, /config worktree toggle, etc.) would otherwise
+// rewrite the canonical worktree path on the VS and strand later
+// worktree-mode resumes. The SessionID still advances — it's only
+// the Cwd that's protected.
+func TestApplyTurn_KeepsWorktreeCwdWhenNewIsProjectRoot(t *testing.T) {
+	vs := &VirtualSession{
+		ProviderSessions: map[string]ProviderSessionRef{
+			"claude": {SessionID: "old-id", Cwd: "/ws/.claude/worktrees/witty-napping-peach"},
+		},
+	}
+	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	vs.applyTurn("claude",
+		ProviderSessionRef{SessionID: "new-id", Cwd: "/ws"}, "", now)
+	ref := vs.ProviderSessions["claude"]
+	if ref.Cwd != "/ws/.claude/worktrees/witty-napping-peach" {
+		t.Errorf("Cwd regressed to %q; want preserved worktree path", ref.Cwd)
+	}
+	if ref.SessionID != "new-id" {
+		t.Errorf("SessionID=%q want new-id (always advanced even when Cwd is held)", ref.SessionID)
+	}
+	if !vs.UpdatedAt.Equal(now) {
+		t.Errorf("UpdatedAt should bump even when Cwd is held; got %v", vs.UpdatedAt)
+	}
+}
+
+// The guard only fires when the new Cwd is non-worktree. A legitimate
+// worktree-to-worktree migration (the same conversation moving to a
+// different ask-managed workspace) lets the new Cwd through.
+func TestApplyTurn_WorktreeToWorktreeUpdatesNormally(t *testing.T) {
+	vs := &VirtualSession{
+		ProviderSessions: map[string]ProviderSessionRef{
+			"claude": {SessionID: "id1", Cwd: "/ws/.claude/worktrees/old"},
+		},
+	}
+	vs.applyTurn("claude",
+		ProviderSessionRef{SessionID: "id2", Cwd: "/ws/.claude/worktrees/new"},
+		"", time.Now().UTC())
+	if vs.ProviderSessions["claude"].Cwd != "/ws/.claude/worktrees/new" {
+		t.Errorf("Cwd should advance worktree→worktree, got %q",
+			vs.ProviderSessions["claude"].Cwd)
+	}
+}
+
+// Project-root → project-root is not a regression — the new Cwd is
+// applied normally so symlink resolution differences don't get stuck.
+func TestApplyTurn_ProjectRootToProjectRootUpdatesNormally(t *testing.T) {
+	vs := &VirtualSession{
+		ProviderSessions: map[string]ProviderSessionRef{
+			"claude": {SessionID: "id1", Cwd: "/ws"},
+		},
+	}
+	vs.applyTurn("claude",
+		ProviderSessionRef{SessionID: "id2", Cwd: "/private/ws"},
+		"", time.Now().UTC())
+	if vs.ProviderSessions["claude"].Cwd != "/private/ws" {
+		t.Errorf("Cwd should advance project-root→project-root, got %q",
+			vs.ProviderSessions["claude"].Cwd)
+	}
+}
+
+// First-time recording on a fresh ref (no prior entry for the
+// provider) writes the new Cwd verbatim — the guard only kicks in
+// when there's a prior ref to compare against.
+func TestApplyTurn_FirstRefWritesProjectRootNormally(t *testing.T) {
+	vs := &VirtualSession{
+		ProviderSessions: map[string]ProviderSessionRef{},
+	}
+	vs.applyTurn("claude",
+		ProviderSessionRef{SessionID: "id1", Cwd: "/ws"},
+		"", time.Now().UTC())
+	if vs.ProviderSessions["claude"].Cwd != "/ws" {
+		t.Errorf("Cwd=%q want /ws on first ref", vs.ProviderSessions["claude"].Cwd)
+	}
+}
+
+// upsertVirtualSession routes existing-VS updates through applyTurn,
+// so the recording guard must hold end-to-end through that entry too.
+// This is the public API recordVirtualSession actually calls.
+func TestUpsertVirtualSession_GuardsAgainstWorktreeRegression(t *testing.T) {
+	store := &virtualSessionStore{Version: 1}
+	t0 := time.Now().UTC()
+	id := upsertVirtualSession(store, "", "/ws", "claude", "id1",
+		"/ws/.claude/worktrees/calm-resting-otter", "hi", t0)
+	// Second turn with bare project-root cwd: simulates a turn from a
+	// tab where m.worktreeName has been cleared between turns.
+	upsertVirtualSession(store, id, "/ws", "claude", "id2", "/ws", "", t0.Add(time.Minute))
+	ref := store.Sessions[0].ProviderSessions["claude"]
+	if ref.Cwd != "/ws/.claude/worktrees/calm-resting-otter" {
+		t.Errorf("upsert regressed Cwd to %q; guard should have kept the worktree path", ref.Cwd)
+	}
+	if ref.SessionID != "id2" {
+		t.Errorf("SessionID=%q want id2 (advance even when Cwd is held)", ref.SessionID)
+	}
+}
+
+// recordVirtualSession is the in-tab entry: a tab whose
+// m.worktreeName has been cleared between turns must not cause the
+// VS row's worktree-rooted Cwd to be overwritten with the project
+// root. Mirrors the real call site at update.go (providerDoneMsg
+// handler).
+func TestRecordVirtualSession_DoesNotRegressWorktreeCwd(t *testing.T) {
+	isolateHome(t)
+	p := newFakeProvider()
+	p.id = "claude"
+	m := newTestModel(t, p)
+	m.cwd = "/ws"
+	m.worktreeName = "shimmering-flying-crow"
+	m.history = []historyEntry{{kind: histUser, text: "first"}}
+	m.recordVirtualSession("native-1")
+	vsID := m.virtualSessionID
+	if vsID == "" {
+		t.Fatal("recordVirtualSession should have created a VS")
+	}
+
+	// Now mimic the regression-causing path: m.worktreeName cleared
+	// (e.g. /config worktree toggle), then another turn completes.
+	m.worktreeName = ""
+	m.recordVirtualSession("native-2")
+
+	got, _ := loadVirtualSessions()
+	vs := got.findByID(vsID)
+	if vs == nil {
+		t.Fatalf("VS missing after second turn: %+v", got.Sessions)
+	}
+	ref := vs.ProviderSessions["claude"]
+	if ref.Cwd != "/ws/.claude/worktrees/shimmering-flying-crow" {
+		t.Errorf("Cwd=%q regressed; guard should keep the worktree path across the m.worktreeName=\"\" turn",
+			ref.Cwd)
+	}
+	if ref.SessionID != "native-2" {
+		t.Errorf("SessionID=%q want native-2", ref.SessionID)
+	}
+}
+
+// ---- Issue #19: cross-provider swap recovers worktree from VS ----
+
+// Bug-B fix at the swap site: a cross-provider swap from a tab whose
+// m.worktreeName is empty must still materialize the new provider's
+// session inside the VS's worktree, recovered from any prior ref.
+// Without recovery, the materialize would write the file at m.cwd,
+// baking project-root state into the VS for the new provider — and
+// every later resume would re-record the regression.
+func TestApplyProviderSwitch_RecoversWorktreeFromVS_OnTranslate(t *testing.T) {
+	isolateHome(t)
+	pA := newFakeProvider()
+	pA.id = "fakeA"
+	pA.displayName = "Fake A"
+	pB := newFakeProvider()
+	pB.id = "fakeB"
+	pB.displayName = "Fake B"
+	var gotCwd string
+	pB.materializeFn = func(cwd string, _ []NeutralTurn) (string, string, error) {
+		gotCwd = cwd
+		return "synth-B", cwd, nil
+	}
+	withRegisteredProviders(t, pA, pB)
+
+	store := &virtualSessionStore{Version: 1}
+	vsID := upsertVirtualSession(store, "", "/ws", "fakeA", "nat-A",
+		"/ws/.claude/worktrees/witty-napping-peach", "hi", time.Now().UTC())
+	if err := saveVirtualSessions(store); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	m := newTestModel(t, pA)
+	m.virtualSessionID = vsID
+	m.cwd = "/ws"
+	m.worktreeName = "" // mimics resume-then-swap before the first fork
+	m.history = []historyEntry{
+		{kind: histUser, text: "user-A"},
+		{kind: histResponse, text: "assistant-A"},
+	}
+	m.providerSwitchProvIdx = 1
+	newM, cmd := m.applyProviderSwitch("")
+	mm := newM.(model)
+	if mm.provider.ID() != "fakeB" {
+		t.Fatalf("swap failed: %s", mm.provider.ID())
+	}
+	msgs := drainBatch(t, cmd)
+	var mat *virtualSessionMaterializedMsg
+	for _, msg := range msgs {
+		if m, ok := msg.(virtualSessionMaterializedMsg); ok {
+			mat = &m
+		}
+	}
+	if mat == nil {
+		t.Fatal("expected virtualSessionMaterializedMsg")
+	}
+	wantCwd := "/ws/.claude/worktrees/witty-napping-peach"
+	if gotCwd != wantCwd {
+		t.Errorf("Materialize cwd=%q want %q (recovered from prior VS ref)", gotCwd, wantCwd)
+	}
+	got, _ := loadVirtualSessions()
+	if ref := got.Sessions[0].ProviderSessions["fakeB"]; ref.Cwd != wantCwd {
+		t.Errorf("VS B-mapping Cwd=%q want %q", ref.Cwd, wantCwd)
+	}
+}
+
+// When the live tab already has m.worktreeName set, the swap path
+// uses that directly and does NOT consult the VS — preserves the
+// existing fast path so the recovery logic only runs when needed.
+func TestApplyProviderSwitch_PrefersLiveWorktreeNameOverVS(t *testing.T) {
+	isolateHome(t)
+	pA := newFakeProvider()
+	pA.id = "fakeA"
+	pA.displayName = "Fake A"
+	pB := newFakeProvider()
+	pB.id = "fakeB"
+	pB.displayName = "Fake B"
+	var gotCwd string
+	pB.materializeFn = func(cwd string, _ []NeutralTurn) (string, string, error) {
+		gotCwd = cwd
+		return "synth-B", cwd, nil
+	}
+	withRegisteredProviders(t, pA, pB)
+
+	store := &virtualSessionStore{Version: 1}
+	vsID := upsertVirtualSession(store, "", "/ws", "fakeA", "nat-A",
+		"/ws/.claude/worktrees/old-from-vs", "hi", time.Now().UTC())
+	if err := saveVirtualSessions(store); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	m := newTestModel(t, pA)
+	m.virtualSessionID = vsID
+	m.cwd = "/ws"
+	m.worktreeName = "live-name" // live tab knows where it is
+	m.history = []historyEntry{
+		{kind: histUser, text: "u"},
+		{kind: histResponse, text: "a"},
+	}
+	m.providerSwitchProvIdx = 1
+	_, cmd := m.applyProviderSwitch("")
+	_ = drainBatch(t, cmd)
+	if gotCwd != "/ws/.claude/worktrees/live-name" {
+		t.Errorf("Materialize cwd=%q want /ws/.claude/worktrees/live-name (live wins over VS)", gotCwd)
+	}
+}
+
+// When the VS has only project-root refs (a genuinely worktree-less
+// conversation), swap stays at project root — recovery doesn't
+// invent a worktree out of thin air.
+func TestApplyProviderSwitch_StaysAtProjectRootWhenNoVSWorktree(t *testing.T) {
+	isolateHome(t)
+	pA := newFakeProvider()
+	pA.id = "fakeA"
+	pA.displayName = "Fake A"
+	pB := newFakeProvider()
+	pB.id = "fakeB"
+	pB.displayName = "Fake B"
+	var gotCwd string
+	pB.materializeFn = func(cwd string, _ []NeutralTurn) (string, string, error) {
+		gotCwd = cwd
+		return "synth-B", cwd, nil
+	}
+	withRegisteredProviders(t, pA, pB)
+
+	store := &virtualSessionStore{Version: 1}
+	vsID := upsertVirtualSession(store, "", "/ws", "fakeA", "nat-A",
+		"/ws", "hi", time.Now().UTC())
+	if err := saveVirtualSessions(store); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	m := newTestModel(t, pA)
+	m.virtualSessionID = vsID
+	m.cwd = "/ws"
+	m.worktreeName = ""
+	m.history = []historyEntry{
+		{kind: histUser, text: "u"},
+		{kind: histResponse, text: "a"},
+	}
+	m.providerSwitchProvIdx = 1
+	_, cmd := m.applyProviderSwitch("")
+	_ = drainBatch(t, cmd)
+	if gotCwd != "/ws" {
+		t.Errorf("Materialize cwd=%q want /ws (no VS worktree to recover)", gotCwd)
+	}
+}
+
+// A stale worktree ref on some other provider must not override the
+// last writer's explicit project-root cwd. The direct-turns swap path
+// is translating the current provider's canonical history; if that
+// provider recorded project-root cwd, the new materialized session
+// must stay at project root rather than reviving an older worktree.
+func TestApplyProviderSwitch_PrefersLastProviderProjectRootOverStaleWorktree(t *testing.T) {
+	isolateHome(t)
+	pA := newFakeProvider()
+	pA.id = "fakeA"
+	pA.displayName = "Fake A"
+	pB := newFakeProvider()
+	pB.id = "fakeB"
+	pB.displayName = "Fake B"
+	pC := newFakeProvider()
+	pC.id = "fakeC"
+	pC.displayName = "Fake C"
+	var gotCwd string
+	pC.materializeFn = func(cwd string, _ []NeutralTurn) (string, string, error) {
+		gotCwd = cwd
+		return "synth-C", cwd, nil
+	}
+	withRegisteredProviders(t, pA, pB, pC)
+
+	store := &virtualSessionStore{Version: 1}
+	vsID := upsertVirtualSession(store, "", "/ws", "fakeB", "nat-B",
+		"/ws/.claude/worktrees/stale-worktree", "hi", time.Now().UTC())
+	upsertVirtualSession(store, vsID, "/ws", "fakeA", "nat-A",
+		"/ws", "", time.Now().UTC().Add(time.Minute))
+	if err := saveVirtualSessions(store); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	m := newTestModel(t, pA)
+	m.virtualSessionID = vsID
+	m.cwd = "/ws"
+	m.worktreeName = ""
+	m.history = []historyEntry{
+		{kind: histUser, text: "u"},
+		{kind: histResponse, text: "a"},
+	}
+	m.providerSwitchProvIdx = 2 // target fakeC
+	_, cmd := m.applyProviderSwitch("")
+	_ = drainBatch(t, cmd)
+	if gotCwd != "/ws" {
+		t.Errorf("Materialize cwd=%q want /ws (last provider's explicit project-root ref must win)", gotCwd)
+	}
+	got, _ := loadVirtualSessions()
+	if ref := got.Sessions[0].ProviderSessions["fakeC"]; ref.Cwd != "/ws" {
+		t.Errorf("VS C-mapping Cwd=%q want /ws", ref.Cwd)
+	}
+}
+
+// Cached-path swap onto a worktree-rooted ref must hand the worktree
+// name to m.worktreeName so an immediate second swap-before-fork
+// translates at the right cwd. Without this, the second swap would
+// fall back to the slow VS-recovery path on every chained Ctrl+B.
+func TestApplyProviderSwitch_RealignsWorktreeNameOnCachedSwap(t *testing.T) {
+	isolateHome(t)
+	pA := newFakeProvider()
+	pA.id = "fakeA"
+	pA.displayName = "Fake A"
+	pB := newFakeProvider()
+	pB.id = "fakeB"
+	pB.displayName = "Fake B"
+	pB.loadHistoryFn = func(id string, _ HistoryOpts) ([]historyEntry, error) {
+		return []historyEntry{{kind: histResponse, text: "from B " + id}}, nil
+	}
+	withRegisteredProviders(t, pA, pB)
+
+	store := &virtualSessionStore{Version: 1}
+	vsID := upsertVirtualSession(store, "", "/ws", "fakeB", "nat-B",
+		"/ws/.claude/worktrees/blissful-skating-swan", "hi", time.Now().UTC())
+	if err := saveVirtualSessions(store); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	m := newTestModel(t, pA)
+	m.virtualSessionID = vsID
+	m.cwd = "/ws"
+	m.worktreeName = ""
+	m.providerSwitchProvIdx = 1
+	newM, _ := m.applyProviderSwitch("")
+	mm := newM.(model)
+	if mm.worktreeName != "blissful-skating-swan" {
+		t.Errorf("worktreeName=%q want blissful-skating-swan (recovered from cached B ref)",
+			mm.worktreeName)
+	}
+}
+
+// Cached-path swap onto a project-root ref MUST clear any stale
+// worktreeName from a prior tab — otherwise the next fork would
+// point at a worktree the resumed session was never written to,
+// breaking claude --resume's cwd-keyed lookup.
+func TestApplyProviderSwitch_ClearsWorktreeNameOnProjectRootCachedSwap(t *testing.T) {
+	isolateHome(t)
+	pA := newFakeProvider()
+	pA.id = "fakeA"
+	pA.displayName = "Fake A"
+	pB := newFakeProvider()
+	pB.id = "fakeB"
+	pB.displayName = "Fake B"
+	pB.loadHistoryFn = func(_ string, _ HistoryOpts) ([]historyEntry, error) {
+		return nil, nil
+	}
+	withRegisteredProviders(t, pA, pB)
+
+	store := &virtualSessionStore{Version: 1}
+	vsID := upsertVirtualSession(store, "", "/ws", "fakeB", "nat-B",
+		"/ws", "hi", time.Now().UTC())
+	if err := saveVirtualSessions(store); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	m := newTestModel(t, pA)
+	m.virtualSessionID = vsID
+	m.cwd = "/ws"
+	m.worktreeName = "stale-prior-tab-name"
+	m.providerSwitchProvIdx = 1
+	newM, _ := m.applyProviderSwitch("")
+	mm := newM.(model)
+	if mm.worktreeName != "" {
+		t.Errorf("worktreeName=%q must be cleared when swapping to a project-root ref",
+			mm.worktreeName)
+	}
+}
+
+// /resume picker landing on a worktree-rooted ref hands the worktree
+// name to m.worktreeName so a swap-before-first-turn (Ctrl+B) keeps
+// the conversation in the right workspace.
+func TestResumeVirtualSession_RealignsWorktreeNameFromCachedRef(t *testing.T) {
+	isolateHome(t)
+	p := newFakeProvider()
+	p.id = "fakeA"
+	p.loadHistoryFn = func(_ string, _ HistoryOpts) ([]historyEntry, error) {
+		return nil, nil
+	}
+	withRegisteredProviders(t, p)
+
+	store := &virtualSessionStore{Version: 1}
+	vsID := upsertVirtualSession(store, "", "/ws", "fakeA", "nat-A",
+		"/ws/.claude/worktrees/swift-dancing-glacier", "hi", time.Now().UTC())
+	if err := saveVirtualSessions(store); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	m := newTestModel(t, p)
+	m.cwd = "/ws"
+	m.worktreeName = "stale"
+	newM, _ := m.resumeVirtualSession(sessionEntry{id: vsID, virtualSessionID: vsID})
+	mm := newM.(model)
+	if mm.worktreeName != "swift-dancing-glacier" {
+		t.Errorf("worktreeName=%q want swift-dancing-glacier (from resumed ref)", mm.worktreeName)
+	}
+}
+
+// /resume picker landing on a project-root ref MUST clear any stale
+// worktreeName so the first fork honors the recorded location.
+func TestResumeVirtualSession_ClearsWorktreeNameOnProjectRootRef(t *testing.T) {
+	isolateHome(t)
+	p := newFakeProvider()
+	p.id = "fakeA"
+	p.loadHistoryFn = func(_ string, _ HistoryOpts) ([]historyEntry, error) {
+		return nil, nil
+	}
+	withRegisteredProviders(t, p)
+
+	store := &virtualSessionStore{Version: 1}
+	vsID := upsertVirtualSession(store, "", "/ws", "fakeA", "nat-A",
+		"/ws", "hi", time.Now().UTC())
+	if err := saveVirtualSessions(store); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	m := newTestModel(t, p)
+	m.cwd = "/ws"
+	m.worktreeName = "stale"
+	newM, _ := m.resumeVirtualSession(sessionEntry{id: vsID, virtualSessionID: vsID})
+	mm := newM.(model)
+	if mm.worktreeName != "" {
+		t.Errorf("worktreeName=%q must be cleared on project-root resume", mm.worktreeName)
+	}
+}
+
+// /resume into a translate path (current provider has no ref) must
+// recover a worktree name from the source provider's ref so the
+// new native session lands in the same worktree the conversation
+// already lives in.
+func TestResumeVirtualSession_TranslateRecoversWorktreeFromSourceRef(t *testing.T) {
+	isolateHome(t)
+	pA := newFakeProvider()
+	pA.id = "fakeA"
+	pA.displayName = "Fake A"
+	pA.loadHistoryFn = func(_ string, _ HistoryOpts) ([]historyEntry, error) {
+		return []historyEntry{{kind: histUser, text: "u"}}, nil
+	}
+	pB := newFakeProvider()
+	pB.id = "fakeB"
+	pB.displayName = "Fake B"
+	var gotCwd string
+	pB.materializeFn = func(cwd string, _ []NeutralTurn) (string, string, error) {
+		gotCwd = cwd
+		return "nat-B-synth", cwd, nil
+	}
+	withRegisteredProviders(t, pA, pB)
+
+	store := &virtualSessionStore{Version: 1}
+	vsID := upsertVirtualSession(store, "", "/ws", "fakeA", "nat-A",
+		"/ws/.claude/worktrees/lazy-singing-fox", "hi", time.Now().UTC())
+	if err := saveVirtualSessions(store); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	m := newTestModel(t, pB)
+	m.cwd = "/ws"
+	m.worktreeName = ""
+	newM, cmd := m.resumeVirtualSession(sessionEntry{id: vsID, virtualSessionID: vsID})
+	mm := newM.(model)
+	if cmd == nil {
+		t.Fatal("expected translate command")
+	}
+	mat, ok := cmd().(virtualSessionMaterializedMsg)
+	if !ok {
+		t.Fatalf("cmd returned %T, want virtualSessionMaterializedMsg", cmd())
+	}
+	if mat.err != nil {
+		t.Fatalf("translate err: %v", mat.err)
+	}
+	wantCwd := "/ws/.claude/worktrees/lazy-singing-fox"
+	if gotCwd != wantCwd {
+		t.Errorf("Materialize cwd=%q want %q (recovered from source ref)", gotCwd, wantCwd)
+	}
+	if mm.worktreeName != "lazy-singing-fox" {
+		t.Errorf("model worktreeName=%q want lazy-singing-fox", mm.worktreeName)
+	}
+}
+
+// A stale worktree on some other provider must not override the
+// source provider's explicit project-root cwd. The resume translate
+// path is replaying the source provider's history, so project-root is
+// authoritative here.
+func TestResumeVirtualSession_TranslateKeepsProjectRootWhenSourceRefIsProjectRoot(t *testing.T) {
+	isolateHome(t)
+	pA := newFakeProvider()
+	pA.id = "fakeA"
+	pA.displayName = "Fake A"
+	pA.loadHistoryFn = func(_ string, _ HistoryOpts) ([]historyEntry, error) {
+		return []historyEntry{{kind: histUser, text: "u"}}, nil
+	}
+	pB := newFakeProvider()
+	pB.id = "fakeB"
+	pB.displayName = "Fake B"
+	pC := newFakeProvider()
+	pC.id = "fakeC"
+	pC.displayName = "Fake C"
+	var gotCwd string
+	pC.materializeFn = func(cwd string, _ []NeutralTurn) (string, string, error) {
+		gotCwd = cwd
+		return "nat-C-synth", cwd, nil
+	}
+	withRegisteredProviders(t, pA, pB, pC)
+
+	store := &virtualSessionStore{Version: 1}
+	vsID := upsertVirtualSession(store, "", "/ws", "fakeB", "nat-B",
+		"/ws/.claude/worktrees/stale-worktree", "hi", time.Now().UTC())
+	upsertVirtualSession(store, vsID, "/ws", "fakeA", "nat-A",
+		"/ws", "", time.Now().UTC().Add(time.Minute))
+	if err := saveVirtualSessions(store); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	m := newTestModel(t, pC)
+	m.cwd = "/ws"
+	m.worktreeName = ""
+	newM, cmd := m.resumeVirtualSession(sessionEntry{id: vsID, virtualSessionID: vsID})
+	mm := newM.(model)
+	if cmd == nil {
+		t.Fatal("expected translate command")
+	}
+	mat, ok := cmd().(virtualSessionMaterializedMsg)
+	if !ok {
+		t.Fatalf("cmd returned %T, want virtualSessionMaterializedMsg", cmd())
+	}
+	if mat.err != nil {
+		t.Fatalf("translate err: %v", mat.err)
+	}
+	if gotCwd != "/ws" {
+		t.Errorf("Materialize cwd=%q want /ws (source provider's project-root ref must win)", gotCwd)
+	}
+	if mm.worktreeName != "" {
+		t.Errorf("model worktreeName=%q want empty for explicit project-root source", mm.worktreeName)
+	}
+}
+
+// worktreeNameFromVS can recover from another provider's worktree
+// when the caller has no authoritative preferred ref (or it is
+// missing from the VS).
+func TestWorktreeNameFromVS_FindsWorktreeAcrossProviderRefs(t *testing.T) {
+	vs := &VirtualSession{
+		ProviderSessions: map[string]ProviderSessionRef{
+			"a": {Cwd: "/ws"},
+			"b": {Cwd: "/ws/.claude/worktrees/merry-floating-loon"},
+		},
+	}
+	if got := worktreeNameFromVS(vs, "missing"); got != "merry-floating-loon" {
+		t.Errorf("worktreeNameFromVS=%q want merry-floating-loon", got)
+	}
+}
+
+// An explicit project-root cwd on the preferred provider is
+// authoritative and must not fall through to some other provider's
+// older worktree.
+func TestWorktreeNameFromVS_PrefersPreferredProjectRootRef(t *testing.T) {
+	vs := &VirtualSession{
+		ProviderSessions: map[string]ProviderSessionRef{
+			"a": {Cwd: "/ws"},
+			"b": {Cwd: "/ws/.claude/worktrees/merry-floating-loon"},
+		},
+	}
+	if got := worktreeNameFromVS(vs, "a"); got != "" {
+		t.Errorf("worktreeNameFromVS=%q want empty for explicit preferred project-root ref", got)
+	}
+}
+
+// Only a missing/empty preferred cwd falls through to other refs.
+func TestWorktreeNameFromVS_FallsBackWhenPreferredRefHasNoCwd(t *testing.T) {
+	vs := &VirtualSession{
+		ProviderSessions: map[string]ProviderSessionRef{
+			"a": {},
+			"b": {Cwd: "/ws/.claude/worktrees/merry-floating-loon"},
+		},
+	}
+	if got := worktreeNameFromVS(vs, "a"); got != "merry-floating-loon" {
+		t.Errorf("worktreeNameFromVS=%q want merry-floating-loon when preferred ref lost cwd", got)
+	}
+}
+
+// When no ref carries a worktree path, returns empty (the VS is a
+// genuinely project-root conversation).
+func TestWorktreeNameFromVS_EmptyWhenAllProjectRoot(t *testing.T) {
+	vs := &VirtualSession{
+		ProviderSessions: map[string]ProviderSessionRef{
+			"a": {Cwd: "/ws"},
+			"b": {Cwd: "/ws"},
+		},
+	}
+	if got := worktreeNameFromVS(vs, "missing"); got != "" {
+		t.Errorf("worktreeNameFromVS=%q want empty for all-project-root VS", got)
+	}
+}
+
+func TestWorktreeNameFromVS_NilSafe(t *testing.T) {
+	if got := worktreeNameFromVS(nil, ""); got != "" {
+		t.Errorf("worktreeNameFromVS(nil)=%q want empty", got)
 	}
 }
