@@ -1117,6 +1117,55 @@ func TestHandleCommand_ConfigEntersConfigMode(t *testing.T) {
 	}
 }
 
+func TestHandleCommand_ProviderEntersSwitcher(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m2, _ := m.handleCommand("/provider")
+	mm := m2.(model)
+	if mm.mode != modeProviderSwitch {
+		t.Errorf("/provider mode=%v want modeProviderSwitch", mm.mode)
+	}
+}
+
+// Mid-turn /provider must no-op for the same reason Ctrl+B does:
+// the stream reader is bound to the current proc and the session id
+// is about to be wiped, so swapping providers would orphan both.
+func TestHandleCommand_ProviderRefusesWhileBusy(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.busy = true
+	historyLen := len(m.history)
+	m2, _ := m.handleCommand("/provider")
+	mm := m2.(model)
+	if mm.mode == modeProviderSwitch {
+		t.Errorf("/provider should refuse while busy; entered modeProviderSwitch")
+	}
+	if len(mm.history) != historyLen {
+		t.Errorf("/provider while busy should not append history; len=%d want %d",
+			len(mm.history), historyLen)
+	}
+}
+
+// /provider from a cwd that fails the LLM-startup gate (e.g. inside
+// an ask-managed worktree) must report the same error path the
+// chat-send and Ctrl+B paths use, not silently open the switcher
+// (which would then crash on ProbeInit's first fork).
+func TestHandleCommand_ProviderRefusesFromInvalidCwd(t *testing.T) {
+	dir := t.TempDir()
+	worktreeDir := filepath.Join(dir, ".claude", "worktrees", "alpha")
+	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	m := newTestModel(t, newFakeProvider())
+	m.cwd = worktreeDir
+	m2, _ := m.handleCommand("/provider")
+	mm := m2.(model)
+	if mm.mode == modeProviderSwitch {
+		t.Errorf("/provider should refuse from worktree cwd; entered modeProviderSwitch")
+	}
+	if len(mm.history) == 0 {
+		t.Errorf("/provider should append an error from invalid cwd; history empty")
+	}
+}
+
 func TestProviderStartDone_CapturesNativeSessionID(t *testing.T) {
 	fp := newFakeProvider()
 	fp.nativeSessionFn = func(*providerProc) string { return "thread-abc" }
