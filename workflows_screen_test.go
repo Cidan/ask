@@ -1,9 +1,11 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	lipgloss "charm.land/lipgloss/v2"
 )
 
 // TestWorkflowsBuilder_AddWorkflowPersists verifies the "+ New
@@ -267,5 +269,160 @@ func TestUniqueWorkflowName_RejectsCollisions(t *testing.T) {
 	}
 	if got := b.uniqueWorkflowName(""); got != "untitled-3" {
 		t.Errorf("empty seed → untitled, then collide: got %q want untitled-3", got)
+	}
+}
+
+func TestNewWorkflowsScreenLayout_UsesAvailableSize(t *testing.T) {
+	layout := newWorkflowsScreenLayout(80, 24)
+	if layout.paneHeight != 20 {
+		t.Fatalf("paneHeight=%d want 20", layout.paneHeight)
+	}
+	if layout.hintWidth != 78 {
+		t.Fatalf("hintWidth=%d want 78", layout.hintWidth)
+	}
+	if got := layout.leftWidth + layout.rightWidth; got != layout.hintWidth {
+		t.Fatalf("pane widths should fill hint width: got %d want %d", got, layout.hintWidth)
+	}
+}
+
+func TestSplitWorkflowsPaneWidths_NarrowScreenStillFits(t *testing.T) {
+	left, right := splitWorkflowsPaneWidths(38)
+	if left < 1 || right < 1 {
+		t.Fatalf("invalid narrow split: left=%d right=%d", left, right)
+	}
+	if left+right != 38 {
+		t.Fatalf("split should preserve total width: got %d", left+right)
+	}
+}
+
+func TestComputeWorkflowStepColumns_FitsRowWidth(t *testing.T) {
+	for _, width := range []int{18, 24, 36, 52} {
+		cols := computeWorkflowStepColumns(width)
+		if got := cols.Name + cols.Provider + cols.Model + 2; got != width {
+			t.Fatalf("width=%d -> columns sum to %d", width, got)
+		}
+		if cols.Name < 1 {
+			t.Fatalf("width=%d -> invalid name column %d", width, cols.Name)
+		}
+	}
+}
+
+func TestRenderWorkflowStepRow_IsSingleLineAndFixedWidth(t *testing.T) {
+	cols := computeWorkflowStepColumns(40)
+	row := renderWorkflowStepRow(workflowStep{
+		Name:     "very-long-step-name-that-should-truncate-cleanly",
+		Provider: "claude",
+		Model:    "gpt-5.4-reasoning-high",
+	}, cols, 40, false, true)
+	if strings.Contains(row, "\n") {
+		t.Fatalf("step row should stay single-line: %q", row)
+	}
+	if got := lipgloss.Width(row); got != 40 {
+		t.Fatalf("step row width=%d want 40", got)
+	}
+}
+
+func TestWorkflowPromptPreview_StripsLineBreaks(t *testing.T) {
+	got := workflowPromptPreview("review these changes\n\nand summarize\r\nfindings")
+	if strings.Contains(got, "\n") || strings.Contains(got, "\r") {
+		t.Fatalf("preview should be single-line: %q", got)
+	}
+	if got != "review these changes and summarize findings" {
+		t.Fatalf("preview=%q", got)
+	}
+}
+
+func TestWorkflowsBuilder_StepNameStartsInlineEditOnTyping(t *testing.T) {
+	cwd := isolateHome(t)
+	resetWorkflowTrackerForTest()
+	withRegisteredProviders(t, newFakeProvider())
+	cfg, _ := loadConfig()
+	pc := loadProjectConfig(cfg, cwd)
+	pc.Workflows.Items = []workflowDef{{
+		Name: "wf",
+		Steps: []workflowStep{{
+			Name:     "old-name",
+			Provider: "claude",
+		}},
+	}}
+	cfg = upsertProjectConfig(cfg, cwd, pc)
+	if err := saveConfig(cfg); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+
+	m := newTestModel(t, newFakeProvider())
+	m.cwd = cwd
+	m.workflowsBuilder = newWorkflowsBuilderState(cwd)
+	m.workflowsBuilder.listCursor = 1
+	m.workflowsBuilder.rightMode = workflowsBuilderRightStep
+	m.workflowsBuilder.focus = workflowsBuilderFocusRight
+	m.workflowsBuilder.stepsCursor = 1
+	m.workflowsBuilder.stepFieldCursor = workflowsStepFieldName
+
+	m2, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Text: "n"})
+	if m2.workflowsBuilder.renaming != "step" {
+		t.Fatalf("expected inline step rename; got %q", m2.workflowsBuilder.renaming)
+	}
+	if m2.workflowsBuilder.renameDraft != "n" {
+		t.Fatalf("renameDraft=%q want n", m2.workflowsBuilder.renameDraft)
+	}
+}
+
+func TestWorkflowsBuilder_RenderProviderPickerOverBase(t *testing.T) {
+	b := &workflowsBuilderState{
+		items:           []workflowDef{{Name: "wf", Steps: []workflowStep{{Name: "build", Provider: "claude"}}}},
+		listCursor:      1,
+		rightMode:       workflowsBuilderRightStep,
+		focus:           workflowsBuilderFocusRight,
+		stepsCursor:     1,
+		stepFieldCursor: workflowsStepFieldProvider,
+		providerPicker:  true,
+	}
+	withRegisteredProviders(t, newFakeProvider())
+	rendered := b.render(90, 24)
+	if !strings.Contains(rendered, "Step Provider") {
+		t.Fatalf("expected provider picker overlay")
+	}
+	if got := lipgloss.Height(rendered); got != 24 {
+		t.Fatalf("rendered height=%d want 24", got)
+	}
+}
+
+func TestWorkflowsBuilder_RenderPromptOverlayOverBase(t *testing.T) {
+	ta := newPromptTextarea("review changes")
+	b := &workflowsBuilderState{
+		items:           []workflowDef{{Name: "wf", Steps: []workflowStep{{Name: "review", Provider: "claude", Prompt: "review changes"}}}},
+		listCursor:      1,
+		rightMode:       workflowsBuilderRightStep,
+		focus:           workflowsBuilderFocusRight,
+		stepsCursor:     1,
+		stepFieldCursor: workflowsStepFieldPrompt,
+		prompt:          &ta,
+	}
+	rendered := b.render(90, 24)
+	if !strings.Contains(rendered, "Step prompt") {
+		t.Fatalf("expected prompt overlay")
+	}
+	if got := lipgloss.Height(rendered); got != 24 {
+		t.Fatalf("rendered height=%d want 24", got)
+	}
+}
+
+func TestWorkflowsBuilder_RenderRenameOverlayOverBase(t *testing.T) {
+	b := &workflowsBuilderState{
+		items:       []workflowDef{{Name: "wf", Steps: []workflowStep{{Name: "build", Provider: "claude"}}}},
+		listCursor:  1,
+		rightMode:   workflowsBuilderRightStep,
+		focus:       workflowsBuilderFocusRight,
+		stepsCursor: 1,
+		renaming:    "step",
+		renameDraft: "new-name",
+	}
+	rendered := b.render(90, 24)
+	if !strings.Contains(rendered, "Rename step") {
+		t.Fatalf("expected rename overlay")
+	}
+	if got := lipgloss.Height(rendered); got != 24 {
+		t.Fatalf("rendered height=%d want 24", got)
 	}
 }

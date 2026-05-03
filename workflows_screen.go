@@ -2,12 +2,14 @@ package main
 
 import (
 	"fmt"
+	"image"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
@@ -522,6 +524,26 @@ func (m model) workflowsBuilderUpdateRightStep(msg tea.KeyPressMsg) (model, tea.
 		}
 		return m, nil, true
 	}
+	if b.stepFieldCursor == workflowsStepFieldName && msg.Mod&^tea.ModShift == 0 {
+		if guard := b.runningGuard(); guard != "" {
+			b.toast = guard
+			return m, nil, true
+		}
+		switch {
+		case msg.Text != "":
+			b.renaming = "step"
+			b.renameDraft = msg.Text
+			return m, nil, true
+		case msg.Code == tea.KeyBackspace:
+			r := []rune(b.items[wIdx].Steps[sIdx].Name)
+			if len(r) > 0 {
+				r = r[:len(r)-1]
+			}
+			b.renaming = "step"
+			b.renameDraft = string(r)
+			return m, nil, true
+		}
+	}
 	return m, nil, true
 }
 
@@ -820,12 +842,15 @@ func (m model) workflowsBuilderUpdateConfirm(msg tea.KeyPressMsg) (model, tea.Cm
 
 // ----- Render (split-screen) -----
 
-// workflowsLeftPaneMinWidth / MaxWidth bound the left pane so a very
-// narrow terminal still works and a very wide one doesn't waste
-// space.
+// workflowsLeftPaneMinWidth / MaxWidth bound the left pane so a wide
+// terminal doesn't let the workflows list sprawl too far, while a
+// narrow terminal still degrades without forcing the layout past the
+// actual terminal size.
 const (
-	workflowsLeftPaneMinWidth = 28
-	workflowsLeftPaneMaxWidth = 48
+	workflowsLeftPaneMinWidth  = 28
+	workflowsLeftPaneMaxWidth  = 44
+	workflowsRightPaneMinWidth = 32
+	workflowsPanePadX          = 2
 	// workflowsScreenMargin is the 1-cell empty frame around the
 	// split-screen body — top, bottom, left, right. Matches the
 	// chrome the issues screen uses so the two surfaces feel
@@ -833,7 +858,48 @@ const (
 	workflowsScreenMargin = 1
 )
 
+type workflowsScreenLayout struct {
+	paneHeight int
+	leftWidth  int
+	rightWidth int
+	hintWidth  int
+}
+
+type workflowStepColumns struct {
+	Name     int
+	Provider int
+	Model    int
+}
+
 func (b *workflowsBuilderState) render(width, height int) string {
+	base := b.renderBase(width, height)
+	overlay := b.renderOverlay(width, height)
+	if overlay == "" || width <= 0 || height <= 0 {
+		return base
+	}
+	canvas := uv.NewScreenBuffer(width, height)
+	uv.NewStyledString(base).Draw(canvas, image.Rectangle{
+		Min: image.Pt(0, 0),
+		Max: image.Pt(width, height),
+	})
+	oW := lipgloss.Width(overlay)
+	oH := lipgloss.Height(overlay)
+	oX := (width - oW) / 2
+	oY := (height - oH) / 2
+	if oX < 0 {
+		oX = 0
+	}
+	if oY < 0 {
+		oY = 0
+	}
+	uv.NewStyledString(overlay).Draw(canvas, image.Rectangle{
+		Min: image.Pt(oX, oY),
+		Max: image.Pt(oX+oW, oY+oH),
+	})
+	return canvas.Render()
+}
+
+func (b *workflowsBuilderState) renderOverlay(width, height int) string {
 	switch {
 	case b.confirming != "":
 		return b.renderConfirm(width, height)
@@ -846,34 +912,13 @@ func (b *workflowsBuilderState) render(width, height int) string {
 	case b.modelPicker:
 		return b.renderModelPicker(width, height)
 	}
-	// Layout (top → bottom):
-	//   row 0:                empty (top margin)
-	//   rows 1..1+paneH:      boxes
-	//   row 1+paneH:          empty (gap between boxes and hint)
-	//   row 2+paneH:          hint line
-	//   row 3+paneH:          empty (bottom margin)
-	// total = paneH + 4 = height ⇒ paneH = height - 4.
-	paneH := height - 4
-	if paneH < 6 {
-		paneH = 6
-	}
-	innerW := width - 2*workflowsScreenMargin
-	if innerW < workflowsLeftPaneMinWidth*2 {
-		innerW = workflowsLeftPaneMinWidth * 2
-	}
-	leftW := innerW / 3
-	if leftW < workflowsLeftPaneMinWidth {
-		leftW = workflowsLeftPaneMinWidth
-	}
-	if leftW > workflowsLeftPaneMaxWidth {
-		leftW = workflowsLeftPaneMaxWidth
-	}
-	if leftW > innerW-workflowsLeftPaneMinWidth {
-		leftW = innerW / 2
-	}
-	rightW := innerW - leftW
-	left := b.renderLeftPane(leftW, paneH)
-	right := b.renderRightPane(rightW, paneH)
+	return ""
+}
+
+func (b *workflowsBuilderState) renderBase(width, height int) string {
+	layout := newWorkflowsScreenLayout(width, height)
+	left := b.renderLeftPane(layout.leftWidth, layout.paneHeight)
+	right := b.renderRightPane(layout.rightWidth, layout.paneHeight)
 	boxes := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	boxes = indentLines(boxes, workflowsScreenMargin)
 
@@ -882,7 +927,7 @@ func (b *workflowsBuilderState) render(width, height int) string {
 		hint = t + " · " + hint
 	}
 	hintLine := strings.Repeat(" ", workflowsScreenMargin) +
-		configHelpStyle.Render(truncateForRow(hint, innerW))
+		configHelpStyle.Render(truncateForRow(hint, layout.hintWidth))
 
 	var sb strings.Builder
 	sb.WriteString("\n") // top margin
@@ -917,11 +962,12 @@ func (b *workflowsBuilderState) activeHint() string {
 // pane's subtitle so the left pane stays narrow without wrapping
 // names against trailing metadata.
 func (b *workflowsBuilderState) renderLeftPane(width, height int) string {
-	rows := []configItem{
-		{name: "+ New workflow", key: ""},
+	innerW := workflowsPaneInnerWidth(width)
+	rows := []string{
+		renderWorkflowsListRow("+ New workflow", innerW, b.listCursor == 0, b.focus == workflowsBuilderFocusLeft),
 	}
 	for _, w := range b.items {
-		rows = append(rows, configItem{name: w.Name, key: ""})
+		rows = append(rows, renderWorkflowsListRow(w.Name, innerW, len(rows) == b.listCursor, b.focus == workflowsBuilderFocusLeft))
 	}
 	return renderWorkflowsPane(workflowsPaneArgs{
 		width:    width,
@@ -949,12 +995,13 @@ func (b *workflowsBuilderState) renderRightPane(width, height int) string {
 }
 
 func (b *workflowsBuilderState) renderRightEmpty(width, height int) string {
+	innerW := workflowsPaneInnerWidth(width)
 	return renderWorkflowsPane(workflowsPaneArgs{
 		width:    width,
 		height:   height,
 		title:    "Steps",
 		subtitle: "Pick a workflow on the left to view its steps",
-		rows:     nil,
+		rows:     []string{strings.Repeat(" ", innerW)},
 		cursor:   0,
 		active:   b.focus == workflowsBuilderFocusRight,
 	})
@@ -966,21 +1013,26 @@ func (b *workflowsBuilderState) renderRightSteps(width, height int) string {
 		return b.renderRightEmpty(width, height)
 	}
 	wf := b.items[wIdx]
-	rows := []configItem{
-		{name: "+ New step", key: ""},
+	innerW := workflowsPaneInnerWidth(width)
+	cols := computeWorkflowStepColumns(innerW)
+	rows := []string{
+		renderWorkflowsListRow("+ New step", innerW, b.stepsCursor == 0, b.focus == workflowsBuilderFocusRight),
 	}
 	for _, s := range wf.Steps {
-		desc := s.Provider
-		if s.Model != "" {
-			desc += " · " + s.Model
-		}
-		rows = append(rows, configItem{name: s.Name, key: desc})
+		rows = append(rows, renderWorkflowStepRow(
+			s,
+			cols,
+			innerW,
+			len(rows) == b.stepsCursor,
+			b.focus == workflowsBuilderFocusRight,
+		))
 	}
 	return renderWorkflowsPane(workflowsPaneArgs{
 		width:    width,
 		height:   height,
 		title:    "Workflow · " + wf.Name,
 		subtitle: fmt.Sprintf("%s — runs sequentially", stepsCount(len(wf.Steps))),
+		header:   renderWorkflowStepHeader(cols, innerW),
 		rows:     rows,
 		cursor:   b.stepsCursor,
 		active:   b.focus == workflowsBuilderFocusRight,
@@ -997,23 +1049,11 @@ func (b *workflowsBuilderState) renderRightStep(width, height int) string {
 	if len(promptPreview) > 60 {
 		promptPreview = promptPreview[:57] + "…"
 	}
-	if promptPreview == "" {
-		promptPreview = "(empty)"
-	}
-	promptPreview = strings.ReplaceAll(promptPreview, "\n", " ⏎ ")
-	provDisplay := step.Provider
-	if provDisplay == "" {
-		provDisplay = "(none)"
-	}
-	modelDisplay := step.Model
-	if modelDisplay == "" {
-		modelDisplay = "(provider default)"
-	}
-	rows := []configItem{
-		{name: "Name", key: step.Name},
-		{name: "Provider", key: provDisplay},
-		{name: "Model", key: modelDisplay},
-		{name: "Prompt", key: promptPreview},
+	rows := []string{
+		renderWorkflowDetailRow("Name", step.Name, workflowsPaneInnerWidth(width), int(b.stepFieldCursor) == 0, b.focus == workflowsBuilderFocusRight),
+		renderWorkflowDetailRow("Provider", workflowProviderDisplay(step.Provider), workflowsPaneInnerWidth(width), int(b.stepFieldCursor) == 1, b.focus == workflowsBuilderFocusRight),
+		renderWorkflowDetailRow("Model", workflowModelDisplay(step.Model), workflowsPaneInnerWidth(width), int(b.stepFieldCursor) == 2, b.focus == workflowsBuilderFocusRight),
+		renderWorkflowDetailRow("Prompt", workflowPromptPreview(promptPreview), workflowsPaneInnerWidth(width), int(b.stepFieldCursor) == 3, b.focus == workflowsBuilderFocusRight),
 	}
 	return renderWorkflowsPane(workflowsPaneArgs{
 		width:    width,
@@ -1046,7 +1086,8 @@ type workflowsPaneArgs struct {
 	width, height int
 	title         string
 	subtitle      string
-	rows          []configItem
+	header        string
+	rows          []string
 	cursor        int
 	active        bool
 }
@@ -1073,130 +1114,41 @@ func renderWorkflowsPane(a workflowsPaneArgs) string {
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
-		Padding(0, 2)
+		Padding(0, workflowsPanePadX)
 
-	innerW := a.width - 6 // 2 border + 4 horizontal padding
-	if innerW < 10 {
-		innerW = 10
-	}
-	innerH := a.height - 2 // 2 border (no vertical padding)
-	if innerH < 6 {
-		innerH = 6
-	}
+	innerW := workflowsPaneInnerWidth(a.width)
+	innerH := workflowsPaneInnerHeight(a.height)
 
-	// Truncate raw text before applying styles so the styled output
-	// stays at the right cell width (lipgloss.Width is escape-aware).
-	title := configTitleStyle.Render(truncateForRow(a.title, innerW))
+	title := padRight(configTitleStyle.Render(truncateForRow(a.title, innerW)), innerW)
 	subtitlePrefix := configPromptStyle.Render("> ")
 	subtitleW := innerW - lipgloss.Width(subtitlePrefix)
 	if subtitleW < 1 {
 		subtitleW = 1
 	}
-	subtitle := subtitlePrefix + dimStyle.Render(truncateForRow(a.subtitle, subtitleW))
+	subtitle := padRight(subtitlePrefix+dimStyle.Render(truncateForRow(a.subtitle, subtitleW)), innerW)
 
-	// Body lines: title + blank + subtitle + blank + listH rows.
-	// Total = listH + 4.
-	listH := innerH - 4
-	if listH < 1 {
-		listH = 1
-	}
-
-	cursor := a.cursor
-	if cursor >= len(a.rows) {
-		cursor = len(a.rows) - 1
-	}
-	if cursor < 0 {
-		cursor = 0
-	}
-	start := 0
-	if cursor >= listH {
-		start = cursor - listH + 1
-	}
-	end := start + listH
-	if end > len(a.rows) {
-		end = len(a.rows)
-	}
-	rendered := make([]string, 0, listH)
-	for i := start; i < end; i++ {
-		row := renderWorkflowsRow(a.rows[i], innerW, i == cursor, a.active)
-		rendered = append(rendered, row)
-	}
-	for len(rendered) < listH {
-		rendered = append(rendered, strings.Repeat(" ", innerW))
+	lines := make([]string, 0, innerH)
+	appendLine := func(line string) {
+		if len(lines) >= innerH {
+			return
+		}
+		lines = append(lines, padRight(line, innerW))
 	}
 
-	body := strings.Join([]string{
-		title,
-		strings.Repeat(" ", innerW),
-		subtitle,
-		strings.Repeat(" ", innerW),
-		strings.Join(rendered, "\n"),
-	}, "\n")
-	return box.Width(innerW).Render(body)
-}
-
-// renderWorkflowsRow draws one list row inside a pane. activePane
-// controls which highlight style to use on the cursor row: the
-// active pane uses the bright accent style; the inactive pane uses
-// a dim selection so the user can still see where their cursor is
-// when they tab back.
-//
-// Long content is truncated rather than allowed to wrap: lipgloss
-// wraps any line wider than its container's content width, which
-// breaks the column alignment the user expects (a row that wraps
-// onto a second line throws the cursor / next row out of register).
-// The name column reserves a max half of `width`; the key column
-// fills the rest.
-func renderWorkflowsRow(it configItem, width int, selected, activePane bool) string {
-	if width < 4 {
-		width = 4
+	appendLine(title)
+	appendLine("")
+	appendLine(subtitle)
+	appendLine("")
+	if a.header != "" {
+		appendLine(a.header)
 	}
-	name := it.name
-	keyText := it.key
-	nameW := lipgloss.Width(name)
-	keyW := lipgloss.Width(keyText)
-	// First budget: leave at least one space between name and key.
-	if nameW+keyW+1 > width {
-		// Try truncating the key only — it's the secondary signal.
-		maxKey := width - nameW - 1
-		if maxKey < 0 {
-			maxKey = 0
-		}
-		if maxKey > 0 {
-			keyText = truncateForRow(keyText, maxKey)
-		} else {
-			keyText = ""
-		}
-		keyW = lipgloss.Width(keyText)
+	for _, row := range visibleWorkflowRows(a.rows, a.cursor, innerH-len(lines)) {
+		appendLine(row)
 	}
-	if nameW+keyW+1 > width {
-		// Still too wide → truncate the name.
-		maxName := width - keyW - 1
-		if maxName < 1 {
-			maxName = 1
-		}
-		name = truncateForRow(name, maxName)
-		nameW = lipgloss.Width(name)
+	for len(lines) < innerH {
+		lines = append(lines, strings.Repeat(" ", innerW))
 	}
-	pad := width - nameW - keyW
-	if pad < 1 {
-		pad = 1
-	}
-	if selected {
-		plain := name + strings.Repeat(" ", pad) + keyText
-		if w := lipgloss.Width(plain); w < width {
-			plain += strings.Repeat(" ", width-w)
-		}
-		if activePane {
-			return configSelectedRowStyle.Render(plain)
-		}
-		return dimStyle.Render(plain)
-	}
-	line := name + strings.Repeat(" ", pad)
-	if keyText != "" {
-		line += configKeyDimStyle.Render(keyText)
-	}
-	return padRight(line, width)
+	return box.Render(strings.Join(lines, "\n"))
 }
 
 // truncateForRow caps `s` to at most `max` cells, appending a "…"
@@ -1222,6 +1174,205 @@ func truncateForRow(s string, max int) string {
 		return string(runes[:1])
 	}
 	return xansi.Truncate(s, max, "…")
+}
+
+func newWorkflowsScreenLayout(width, height int) workflowsScreenLayout {
+	outerW := width - 2*workflowsScreenMargin
+	if outerW < 2 {
+		outerW = 2
+	}
+	paneH := height - 4
+	if paneH < 1 {
+		paneH = 1
+	}
+	leftW, rightW := splitWorkflowsPaneWidths(outerW)
+	return workflowsScreenLayout{
+		paneHeight: paneH,
+		leftWidth:  leftW,
+		rightWidth: rightW,
+		hintWidth:  outerW,
+	}
+}
+
+func splitWorkflowsPaneWidths(total int) (left, right int) {
+	if total <= 2 {
+		return 1, max(1, total-1)
+	}
+	if total >= workflowsLeftPaneMinWidth+workflowsRightPaneMinWidth {
+		left = total / 3
+		if left < workflowsLeftPaneMinWidth {
+			left = workflowsLeftPaneMinWidth
+		}
+		if left > workflowsLeftPaneMaxWidth {
+			left = workflowsLeftPaneMaxWidth
+		}
+		right = total - left
+		if right < workflowsRightPaneMinWidth {
+			right = workflowsRightPaneMinWidth
+			left = total - right
+		}
+		return left, right
+	}
+	left = total / 2
+	if left > workflowsLeftPaneMaxWidth {
+		left = workflowsLeftPaneMaxWidth
+	}
+	if left < 1 {
+		left = 1
+	}
+	right = total - left
+	if right < 1 {
+		right = 1
+		left = total - right
+	}
+	return left, right
+}
+
+func workflowsPaneInnerWidth(total int) int {
+	inner := total - 2 - 2*workflowsPanePadX
+	if inner < 1 {
+		return 1
+	}
+	return inner
+}
+
+func workflowsPaneInnerHeight(total int) int {
+	inner := total - 2
+	if inner < 1 {
+		return 1
+	}
+	return inner
+}
+
+func visibleWorkflowRows(rows []string, cursor, height int) []string {
+	if height <= 0 || len(rows) == 0 {
+		return nil
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= len(rows) {
+		cursor = len(rows) - 1
+	}
+	start := 0
+	if cursor >= height {
+		start = cursor - height + 1
+	}
+	end := start + height
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[start:end]
+}
+
+func renderWorkflowsListRow(label string, width int, selected, activePane bool) string {
+	line := padRight(truncateForRow(label, width), width)
+	if !selected {
+		return line
+	}
+	if activePane {
+		return configSelectedRowStyle.Render(line)
+	}
+	return dimStyle.Render(line)
+}
+
+func computeWorkflowStepColumns(width int) workflowStepColumns {
+	if width < 7 {
+		return workflowStepColumns{Name: max(1, width)}
+	}
+	providerW := 10
+	modelW := 14
+	if width < providerW+modelW+10 {
+		providerW = max(4, width/4)
+		modelW = max(6, width/3)
+	}
+	nameW := width - providerW - modelW - 2
+	if nameW < 8 {
+		deficit := 8 - nameW
+		shrinkModel := min(deficit, max(0, modelW-6))
+		modelW -= shrinkModel
+		deficit -= shrinkModel
+		shrinkProvider := min(deficit, max(0, providerW-4))
+		providerW -= shrinkProvider
+		nameW = width - providerW - modelW - 2
+	}
+	if nameW < 1 {
+		nameW = 1
+	}
+	return workflowStepColumns{
+		Name:     nameW,
+		Provider: providerW,
+		Model:    max(0, width-nameW-providerW-2),
+	}
+}
+
+func renderWorkflowStepHeader(cols workflowStepColumns, width int) string {
+	line := strings.Join([]string{
+		padRight(truncateForRow("Name", cols.Name), cols.Name),
+		padRight(truncateForRow("Provider", cols.Provider), cols.Provider),
+		padRight(truncateForRow("Model", cols.Model), cols.Model),
+	}, " ")
+	return configKeyDimStyle.Render(padRight(line, width))
+}
+
+func renderWorkflowStepRow(step workflowStep, cols workflowStepColumns, width int, selected, activePane bool) string {
+	line := strings.Join([]string{
+		padRight(truncateForRow(step.Name, cols.Name), cols.Name),
+		padRight(truncateForRow(workflowProviderDisplay(step.Provider), cols.Provider), cols.Provider),
+		padRight(truncateForRow(workflowModelDisplay(step.Model), cols.Model), cols.Model),
+	}, " ")
+	line = padRight(line, width)
+	if !selected {
+		return line
+	}
+	if activePane {
+		return configSelectedRowStyle.Render(line)
+	}
+	return dimStyle.Render(line)
+}
+
+func renderWorkflowDetailRow(label, value string, width int, selected, activePane bool) string {
+	labelW := 10
+	if labelW > width/2 {
+		labelW = max(1, width/3)
+	}
+	valueW := width - labelW - 2
+	if valueW < 1 {
+		valueW = 1
+		labelW = max(1, width-valueW-2)
+	}
+	labelText := padRight(truncateForRow(label, labelW), labelW)
+	valueText := padRight(truncateForRow(value, valueW), valueW)
+	plain := labelText + "  " + valueText
+	if selected {
+		if activePane {
+			return configSelectedRowStyle.Render(plain)
+		}
+		return dimStyle.Render(plain)
+	}
+	return configKeyDimStyle.Render(labelText) + "  " + valueText
+}
+
+func workflowProviderDisplay(provider string) string {
+	if strings.TrimSpace(provider) == "" {
+		return "(none)"
+	}
+	return provider
+}
+
+func workflowModelDisplay(model string) string {
+	if strings.TrimSpace(model) == "" {
+		return "(default)"
+	}
+	return model
+}
+
+func workflowPromptPreview(prompt string) string {
+	flat := strings.Join(strings.Fields(strings.ReplaceAll(prompt, "\r", "")), " ")
+	if flat == "" {
+		return "(empty)"
+	}
+	return flat
 }
 
 func (b *workflowsBuilderState) renderProviderPicker(width, height int) string {
@@ -1267,15 +1418,26 @@ func (b *workflowsBuilderState) renderRename(width, height int) string {
 	} else if b.renaming == "workflow" {
 		title = "Rename workflow"
 	}
-	return renderLayeredConfigBox(layeredConfigBoxArgs{
-		width:      width,
-		height:     height,
-		title:      title,
-		promptLine: filterPromptLine(b.renameDraft, hint),
-		items:      nil,
-		cursor:     0,
-		helpText:   "enter save · esc cancel",
-	})
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(activeTheme.accent).
+		Padding(1, 2)
+	contentW := max(30, lipgloss.Width(b.renameDraft)+2)
+	if contentW > 50 {
+		contentW = 50
+	}
+	if contentW > width-10 {
+		contentW = max(20, width-10)
+	}
+	promptLine := filterPromptLine(b.renameDraft, hint)
+	body := strings.Join([]string{
+		configTitleStyle.Render(title),
+		"",
+		configPromptStyle.Render("> ") + padRight(promptLine, contentW),
+		"",
+		configHelpStyle.Render("enter save · esc cancel"),
+	}, "\n")
+	return box.Render(body)
 }
 
 func (b *workflowsBuilderState) renderPromptEditor(width, height int) string {
@@ -1300,7 +1462,7 @@ func (b *workflowsBuilderState) renderPromptEditor(width, height int) string {
 		"",
 		hint,
 	}, "\n")
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box.Render(body))
+	return box.Render(body)
 }
 
 func (b *workflowsBuilderState) renderConfirm(width, height int) string {
@@ -1334,5 +1496,5 @@ func (b *workflowsBuilderState) renderConfirm(width, height int) string {
 		"",
 		dimStyle.Render("←/→/tab choose · enter confirm · esc cancel"),
 	}, "\n")
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box.Render(rendered))
+	return box.Render(rendered)
 }
