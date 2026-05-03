@@ -1911,6 +1911,8 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 	case "/effort":
 		m = m.startEffortPicker()
 		return m, nil
+	case "/compact":
+		return m.handleCodexCompact()
 	case "/config":
 		m = m.startConfigModal()
 		return m, nil
