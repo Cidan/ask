@@ -21,11 +21,11 @@ func TestAdvanceWorkflowStep_AdvancesToNextStep(t *testing.T) {
 				{Name: "first"}, {Name: "second"},
 			},
 		},
-		Issue:   issueRef{Provider: "github", Project: "ow/r", Number: 1},
+		Source:  issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1}),
 		StepIdx: 0,
 	}
 	m.workflowRun.currentStep.WriteString("first step output text")
-	workflowTracker().markWorking(cwd, m.workflowRun.Issue.Key(), "wf", m.id)
+	workflowTracker().markWorking(cwd, m.workflowRun.Source.Key(), "wf", m.id)
 
 	newM, cmd := m.advanceWorkflowStep(nil)
 	mm := newM.(model)
@@ -61,7 +61,7 @@ func TestAdvanceWorkflowStep_FinalisesOnLastStep(t *testing.T) {
 			Name:  "single",
 			Steps: []workflowStep{{Name: "only"}},
 		},
-		Issue:   issue,
+		Source:  issueWorkflowSource(issue),
 		StepIdx: 0,
 	}
 	workflowTracker().markWorking(cwd, issue.Key(), "single", m.id)
@@ -96,7 +96,7 @@ func TestAdvanceWorkflowStep_FailsOnError(t *testing.T) {
 			Name:  "wf",
 			Steps: []workflowStep{{Name: "step1"}, {Name: "step2"}},
 		},
-		Issue:   issue,
+		Source:  issueWorkflowSource(issue),
 		StepIdx: 0,
 	}
 	workflowTracker().markWorking(cwd, issue.Key(), "wf", m.id)
@@ -131,7 +131,7 @@ func TestWorkflowFinalize_IsIdempotent(t *testing.T) {
 	issue := issueRef{Provider: "github", Project: "ow/r", Number: 11}
 	m.workflowRun = &workflowRunState{
 		Workflow: workflowDef{Name: "wf", Steps: []workflowStep{{Name: "only"}}},
-		Issue:    issue,
+		Source:   issueWorkflowSource(issue),
 	}
 	workflowTracker().markWorking(cwd, issue.Key(), "wf", m.id)
 	newM, _ := m.workflowFinalize(true, "")
@@ -190,7 +190,7 @@ func TestStartWorkflowStep_UnknownProviderFails(t *testing.T) {
 				{Name: "ghost", Provider: "no-such-provider"},
 			},
 		},
-		Issue: issue,
+		Source: issueWorkflowSource(issue),
 	}
 	workflowTracker().markWorking(cwd, issue.Key(), "wf", m.id)
 	newM, _ := m.startWorkflowStep()

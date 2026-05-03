@@ -8,17 +8,17 @@ import (
 )
 
 // openWorkflowPicker stages the small centred modal the issues screen
-// pops on `f`. Always shows the picker, even with one workflow — `f`
-// is destructive (spawns a new tab + agent run) and the picker
-// doubles as a confirm step. Caller should also dispatch the toast
-// and bail when the underlying workflow list is empty (the picker
-// renders an "(empty)" row but Enter does nothing useful in that
-// state).
-func (m model) openWorkflowPicker(items []workflowDef, issue issueRef) model {
+// pops on `f` (and the chat screen pops on Ctrl+F). Always shows the
+// picker, even with one workflow — the trigger is destructive (spawns
+// a new tab + agent run) and the picker doubles as a confirm step.
+// Caller should also dispatch the toast and bail when the underlying
+// workflow list is empty (the picker renders an "(empty)" row but
+// Enter does nothing useful in that state).
+func (m model) openWorkflowPicker(items []workflowDef, source workflowSource) model {
 	m.workflowPicker = &workflowPickerState{
 		Items:  append([]workflowDef(nil), items...),
 		Cursor: 0,
-		Issue:  issue,
+		Source: source,
 	}
 	return m
 }
@@ -60,7 +60,7 @@ func (m model) updateWorkflowPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		picked := pkr.Items[pkr.Cursor]
-		issue := pkr.Issue
+		source := pkr.Source
 		cwd := m.cwd
 		originTab := m.id
 		m = m.closeWorkflowPicker()
@@ -71,7 +71,7 @@ func (m model) updateWorkflowPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				OriginTabID: originTab,
 				Cwd:         cwd,
 				Workflow:    picked,
-				Issue:       issue,
+				Source:      source,
 			}
 		}
 	}
@@ -99,7 +99,7 @@ func (m model) renderWorkflowPicker() string {
 		BorderForeground(activeTheme.accent).
 		Padding(1, 2)
 
-	title := configTitleStyle.Render("Run workflow on " + pkr.Issue.Display())
+	title := configTitleStyle.Render("Run workflow on " + pkr.Source.Display())
 
 	rows := make([]string, 0, max(1, len(pkr.Items)))
 	if len(pkr.Items) == 0 {

@@ -1065,6 +1065,9 @@ func (m model) viewBody() string {
 // handler can call it without reaching into m's private rendering
 // helpers from another package.
 func (m model) viewAskBody() string {
+	if m.workflowPicker != nil {
+		return m.renderWorkflowPicker()
+	}
 	var b strings.Builder
 	vs := time.Now()
 	b.WriteString(m.viewportWithScrollbar())
@@ -1142,6 +1145,19 @@ func (m model) inputAreaHeight() int {
 // agree without each one re-measuring lipgloss output.
 const workflowBannerHeight = 4
 
+// workflowBannerSourceLabel returns the per-source string the banner
+// prepends to its second line. Issue sources get the historical
+// "issue <project>#<n>" prefix; chat sources fall through to their
+// own pre-formatted display label so the banner reads "chat (N
+// turns) · …" without an extra prefix.
+func workflowBannerSourceLabel(s workflowSource) string {
+	switch s.Kind {
+	case workflowSourceIssue:
+		return "issue " + s.Display()
+	}
+	return s.Display()
+}
+
 // renderWorkflowBanner renders the read-only stripe that replaces the
 // chat input on a workflow tab. While the chain runs the banner shows
 // the current step; on completion it swaps to a "complete" message;
@@ -1161,6 +1177,7 @@ func (m model) renderWorkflowBanner() string {
 		Padding(0, 1).
 		Width(width)
 	var title, line2 string
+	sourceLabel := workflowBannerSourceLabel(r.Source)
 	switch {
 	case r.failed:
 		box = box.BorderForeground(activeTheme.errorFG)
@@ -1169,13 +1186,13 @@ func (m model) renderWorkflowBanner() string {
 		if reason == "" {
 			reason = "step error"
 		}
-		line2 = dimStyle.Render(fmt.Sprintf("issue %s · step %d · %s · ctrl+d to close",
-			r.Issue.Display(), r.StepIdx+1, reason))
+		line2 = dimStyle.Render(fmt.Sprintf("%s · step %d · %s · ctrl+d to close",
+			sourceLabel, r.StepIdx+1, reason))
 	case r.done:
 		box = box.BorderForeground(activeTheme.accent)
 		title = promptStyle.Render("✓ workflow complete: ") + r.Workflow.Name
-		line2 = dimStyle.Render(fmt.Sprintf("issue %s · %d step(s) · ctrl+d to close",
-			r.Issue.Display(), len(r.Workflow.Steps)))
+		line2 = dimStyle.Render(fmt.Sprintf("%s · %d step(s) · ctrl+d to close",
+			sourceLabel, len(r.Workflow.Steps)))
 	default:
 		box = box.BorderForeground(activeTheme.accent)
 		stepName := "(unnamed)"
@@ -1195,8 +1212,8 @@ func (m model) renderWorkflowBanner() string {
 		}
 		title = promptStyle.Render("▸ workflow ") + r.Workflow.Name +
 			dimStyle.Render(fmt.Sprintf(" · step %d/%d: %s", r.StepIdx+1, len(r.Workflow.Steps), stepName))
-		line2 = dimStyle.Render(fmt.Sprintf("issue %s · %s · ctrl+d cancel",
-			r.Issue.Display(), runMeta))
+		line2 = dimStyle.Render(fmt.Sprintf("%s · %s · ctrl+d cancel",
+			sourceLabel, runMeta))
 	}
 	return box.Render(title + "\n" + line2)
 }

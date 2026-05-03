@@ -90,8 +90,8 @@ func (m model) startWorkflowStep() (tea.Model, tea.Cmd) {
 	// chain (the tab can't surface ask/approval modals — see the
 	// askToolRequestMsg/approvalRequestMsg auto-cancel branches).
 	m.skipAllPermissions = true
-	workflowTracker().markStep(r.Issue.Key(), r.StepIdx)
-	prompt := buildWorkflowStepPrompt(step, r.Issue, r.stepLog)
+	workflowTracker().markStep(r.Source.Key(), r.StepIdx)
+	prompt := buildWorkflowStepPrompt(step, r.Source, r.stepLog)
 	return m.sendToProvider(prompt)
 }
 
@@ -108,12 +108,12 @@ func (m model) workflowFinalize(ok bool, reason string) (tea.Model, tea.Cmd) {
 	m.killProc()
 	if ok {
 		r.done = true
-		workflowTracker().markFinal(m.cwd, r.Issue.Key(), r.Workflow.Name, workflowStatusDone, r.StepIdx)
+		workflowTracker().markFinal(m.cwd, r.Source.Key(), r.Workflow.Name, workflowStatusDone, r.StepIdx)
 		m.appendHistory(outputStyle.Render(promptStyle.Render("✓ workflow complete: " + r.Workflow.Name)))
 	} else {
 		r.failed = true
 		r.failedReason = reason
-		workflowTracker().markFinal(m.cwd, r.Issue.Key(), r.Workflow.Name, workflowStatusFailed, r.StepIdx)
+		workflowTracker().markFinal(m.cwd, r.Source.Key(), r.Workflow.Name, workflowStatusFailed, r.StepIdx)
 		out := "✗ workflow failed: " + r.Workflow.Name
 		if reason != "" {
 			out += " — " + reason
@@ -154,7 +154,7 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 //
 //	<step.Prompt>
 //
-//	Reference: <owner/repo#N>
+//	<source.RefBlock()>          (skipped when RefBlock is empty)
 //
 //	Previous step output:        (only when log is non-empty)
 //	<log[0]>
@@ -162,14 +162,17 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 //	<log[1]>
 //	...
 //
-// Whitespace at the head and tail is trimmed; the body is left as
-// the user wrote it.
-func buildWorkflowStepPrompt(step workflowStep, issue issueRef, log []string) string {
+// Issue sources produce a single "Reference: <project>#<n>" line;
+// chat sources produce a multi-line "Reference (chat transcript):"
+// block. Whitespace at the head and tail is trimmed; the body is
+// left as the user wrote it.
+func buildWorkflowStepPrompt(step workflowStep, source workflowSource, log []string) string {
 	var b strings.Builder
 	b.WriteString(strings.TrimSpace(step.Prompt))
-	b.WriteString("\n\n")
-	b.WriteString("Reference: ")
-	b.WriteString(issue.Display())
+	if ref := source.RefBlock(); ref != "" {
+		b.WriteString("\n\n")
+		b.WriteString(ref)
+	}
 	if len(log) > 0 {
 		b.WriteString("\n\nPrevious step output:\n")
 		for i, entry := range log {
