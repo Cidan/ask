@@ -427,6 +427,11 @@ func githubBuildMoveIssueArgs(owner, repo string, issueNumber int, target *githu
 	return githubToolIssueWrite, args
 }
 
+// SupportsCarry returns true: GitHub issues drag between Open /
+// Closed reason columns via the kanban carry-and-drop status
+// switcher, mapping to issue_write state mutations.
+func (p *githubIssueProvider) SupportsCarry() bool { return true }
+
 // IssueRef resolves cwd to "owner/repo" via the same mechanism the
 // rest of the github provider uses (`git remote get-url origin`),
 // then assembles the canonical issueRef for `it`. Returns
@@ -482,24 +487,37 @@ func (p *githubIssueProvider) connect(ctx context.Context, cfg githubMCPConfig) 
 		_ = p.session.Close()
 		p.session = nil
 	}
+	cs, err := dialGitHubMCP(ctx, endpoint, cfg.Token, githubMCPInitTimeout)
+	if err != nil {
+		return nil, err
+	}
+	p.session = cs
+	p.cachedEndpoint = endpoint
+	p.cachedToken = cfg.Token
+	return cs, nil
+}
+
+// dialGitHubMCP performs the bearer-auth Streamable HTTP handshake
+// shared by every GitHub-backed provider (issues, PRs, future). The
+// per-provider connect methods cache the returned session keyed on
+// (endpoint, token); this helper just owns the transport setup so
+// the auth/round-tripper wiring lives in one place.
+func dialGitHubMCP(ctx context.Context, endpoint, token string, timeout time.Duration) (*mcp.ClientSession, error) {
 	httpClient := &http.Client{
-		Transport: &bearerRoundTripper{base: http.DefaultTransport, token: cfg.Token},
-		Timeout:   githubMCPInitTimeout,
+		Transport: &bearerRoundTripper{base: http.DefaultTransport, token: token},
+		Timeout:   timeout,
 	}
 	transport := &mcp.StreamableClientTransport{
 		Endpoint:   endpoint,
 		HTTPClient: httpClient,
 	}
 	cli := mcp.NewClient(&mcp.Implementation{Name: "ask", Version: askIssueClientVersion}, nil)
-	cctx, cancel := context.WithTimeout(ctx, githubMCPInitTimeout)
+	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cs, err := cli.Connect(cctx, transport, nil)
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", endpoint, err)
 	}
-	p.session = cs
-	p.cachedEndpoint = endpoint
-	p.cachedToken = cfg.Token
 	return cs, nil
 }
 

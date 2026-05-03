@@ -171,12 +171,12 @@ func (m *model) contentFingerprint() string {
 	// animation isn't masked by the cache while the modal is up.
 	issueCursor := -1
 	loadingFrame := 0
-	if m.issues != nil {
-		if v, ok := m.issues.view.(*kanbanIssueView); ok {
+	if s := m.activeIssueState(); s != nil {
+		if v, ok := s.view.(*kanbanIssueView); ok {
 			issueCursor = v.selColIdx*1_000_000 + v.selRowIdx
 		}
-		if m.issues.loading {
-			loadingFrame = m.issues.loadingFrame + 1
+		if s.loading {
+			loadingFrame = s.loadingFrame + 1
 		}
 	}
 	return fmt.Sprintf("%d|%d|%d|%d|%d|%d", len(m.history), m.width, shellLen, int(m.screen), issueCursor, loadingFrame)
@@ -584,8 +584,9 @@ func (m model) View() tea.View {
 	needSwitch := m.mode == modeProviderSwitch
 	needCancelConfirm := m.cancelTurnConfirming && m.mode == modeInput
 	needCloseTabConfirm := m.closeTabConfirming && m.mode == modeInput
+	needMergeConfirm := m.mergePRConfirming && m.mode == modeInput
 
-	if (needBox || needModal || needApproval || needConfig || needSwitch || needCancelConfirm || needCloseTabConfirm) && m.width > 0 && m.height > 0 {
+	if (needBox || needModal || needApproval || needConfig || needSwitch || needCancelConfirm || needCloseTabConfirm || needMergeConfirm) && m.width > 0 && m.height > 0 {
 		cbStart := time.Now()
 		canvas := uv.NewScreenBuffer(m.width, m.height)
 		uv.NewStyledString(body).Draw(canvas, image.Rectangle{
@@ -830,6 +831,23 @@ func (m model) View() tea.View {
 		}
 		if needCloseTabConfirm {
 			confirm := m.viewCloseTabConfirm()
+			cW := lipgloss.Width(confirm)
+			cH := lipgloss.Height(confirm)
+			cX := (m.width - cW) / 2
+			cY := (m.height - cH) / 2
+			if cX < 0 {
+				cX = 0
+			}
+			if cY < 0 {
+				cY = 0
+			}
+			uv.NewStyledString(confirm).Draw(canvas, image.Rectangle{
+				Min: image.Pt(cX, cY),
+				Max: image.Pt(cX+cW, cY+cH),
+			})
+		}
+		if needMergeConfirm {
+			confirm := m.viewMergePRConfirm()
 			cW := lipgloss.Width(confirm)
 			cH := lipgloss.Height(confirm)
 			cX := (m.width - cW) / 2

@@ -1114,6 +1114,7 @@ func TestIssues_PageLoadedMsgWithErrorPopulatesLoadErr(t *testing.T) {
 	loadErr := fmt.Errorf("503 service unavailable")
 	m, _ = runUpdate(t, m, issuePageLoadedMsg{
 		tabID:           m.id,
+		screen:          screenIssues,
 		gen:             m.issues.queryGen,
 		query:           nil,
 		requestedCursor: "",
@@ -1134,6 +1135,7 @@ func TestIssues_PageLoadedMsgWithSuccessClearsBothFlags(t *testing.T) {
 	m.issues.loadErr = fmt.Errorf("stale")
 	m, _ = runUpdate(t, m, issuePageLoadedMsg{
 		tabID:           m.id,
+		screen:          screenIssues,
 		gen:             m.issues.queryGen,
 		query:           nil,
 		requestedCursor: "",

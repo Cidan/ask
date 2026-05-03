@@ -372,6 +372,34 @@ type model struct {
 	// render correctly.
 	issues *issuesState
 
+	// prs holds the per-tab state for the PR screen. Same shape as
+	// `issues` (issuesState is provider-agnostic — the kanban view
+	// only consults the IssueProvider interface) but installs
+	// githubPRProvider, draws against m.prs in the screen handler,
+	// and gates the `m` merge keybind on the IssueMerger capability
+	// interface. Splitting the state field means flipping between
+	// Ctrl+I and Ctrl+P preserves each screen's filter / cursor /
+	// page cache independently.
+	prs *issuesState
+
+	// mergePRConfirming gates the merge confirmation modal on the
+	// PR screen. Same mode-gated pattern as cancelTurnConfirming:
+	// modalOpen() returns true while it's set; the screen handler
+	// only opens the modal after a successful Mergeable() pre-flight
+	// reports canMerge=true.
+	mergePRConfirming bool
+	// mergePRChoice is the selection cursor in the modal. 0=No
+	// (default — merge is destructive), 1=Yes.
+	mergePRChoice int
+	// mergePRItem snapshots the PR being merged at confirm time so
+	// the dispatched Merge() call doesn't re-read a possibly-mutated
+	// row from the cache. Cleared once the action resolves.
+	mergePRItem issue
+	// mergePRReason carries the optional pre-flight warning shown
+	// in the confirm modal subtitle (e.g. "checks failing but
+	// mergeable" for unstable). Empty when the state is clean.
+	mergePRReason string
+
 	pathMatches []string
 	pathIdx     int
 
@@ -634,7 +662,7 @@ type workflowRunState struct {
 
 	// failed flips true if any step errors out. The banner shows the
 	// error and the chain aborts at this step.
-	failed bool
+	failed       bool
 	failedReason string
 }
 

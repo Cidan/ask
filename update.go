@@ -62,26 +62,27 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if msg.tabID != m.id {
 			return m, nil
 		}
-		if m.issues == nil || !m.issues.loading {
+		s := m.issueStateForScreen(msg.screen)
+		if s == nil || !s.loading {
 			return m, nil
 		}
-		m.issues.loadingFrame++
-		return m, issueLoadingTickCmd(m.id)
+		s.loadingFrame++
+		return m, issueLoadingTickCmd(m.id, msg.screen)
 
 	case issuePageLoadedMsg:
 		if msg.tabID != m.id {
 			return m, nil
 		}
-		if m.issues == nil {
-			m.issues = newIssuesState()
+		s := m.issueStateForScreen(msg.screen)
+		if s == nil {
+			return m, nil
 		}
 		// Stale-gen drop: the user changed the query while this fetch
 		// was in flight. Silently discard so the new query's data
 		// can't be polluted by the old one.
-		if msg.gen != m.issues.queryGen {
+		if msg.gen != s.queryGen {
 			return m, nil
 		}
-		s := m.issues
 		// requestedCursor=="" is the first-chunk sentinel; reading
 		// it (not msg.page) means error paths still clear loading.
 		isFirstChunk := msg.requestedCursor == ""
@@ -136,16 +137,19 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case issueMoveDoneMsg:
-		if msg.tabID != m.id || m.issues == nil {
+		if msg.tabID != m.id {
 			return m, nil
 		}
 		if msg.err == nil {
 			return m, nil
 		}
-		s := m.issues
+		s := m.issueStateForScreen(msg.screen)
+		if s == nil {
+			return m, nil
+		}
 		kv, ok := s.view.(*kanbanIssueView)
 		if !ok {
-			return m, m.toast.show("issues: move failed: " + msg.err.Error())
+			return m, m.toast.show(s.titleLower() + ": move failed: " + msg.err.Error())
 		}
 		// Defensive rollback: locate the issue by number rather than
 		// blindly indexing the target column. A reload between drop
@@ -186,7 +190,73 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 		}
 		kv.clampSelection()
-		return m, m.toast.show("issues: move failed: " + msg.err.Error())
+		return m, m.toast.show(s.titleLower() + ": move failed: " + msg.err.Error())
+
+	case issueDetailLoadedMsg:
+		if msg.tabID != m.id {
+			return m, nil
+		}
+		s := m.issueStateForScreen(msg.screen)
+		if s == nil {
+			return m, nil
+		}
+		s.finishIssueHydration(msg.number)
+		if msg.err != nil {
+			if dv, ok := s.view.(*issueDetailView); ok && dv.issue.number == msg.number {
+				return m, m.toast.show("could not load " + s.titleLower() + " details: " + msg.err.Error())
+			}
+			return m, nil
+		}
+		s.replaceIssueSnapshots(msg.item)
+		return m, nil
+
+	case issueMergeCheckDoneMsg:
+		if msg.tabID != m.id {
+			return m, nil
+		}
+		s := m.issueStateForScreen(msg.screen)
+		if s == nil || !s.loading {
+			return m, nil
+		}
+		s.loading = false
+		if msg.err != nil {
+			return m, m.toast.show("merge check failed: " + msg.err.Error())
+		}
+		if !msg.state.canMerge {
+			reason := msg.state.reason
+			if reason == "" {
+				reason = "merge refused"
+			}
+			return m, m.toast.show(reason)
+		}
+		m.mergePRConfirming = true
+		m.mergePRChoice = 0
+		m.mergePRItem = msg.item
+		m.mergePRReason = msg.state.reason
+		return m, nil
+
+	case issueMergeDoneMsg:
+		if msg.tabID != m.id {
+			return m, nil
+		}
+		s := m.issueStateForScreen(msg.screen)
+		if s == nil || !s.loading {
+			return m, nil
+		}
+		s.loading = false
+		if msg.err != nil {
+			return m, m.toast.show("merge failed: " + msg.err.Error())
+		}
+		s.view = issueViewLayers[0].builder(s)
+		reload := s.reloadCurrentQuery()
+		toast := m.toast.show(fmt.Sprintf("%s #%d merged", s.mergeLabel(), msg.item.number))
+		if reload != nil && toast != nil {
+			return m, tea.Batch(reload, toast)
+		}
+		if reload != nil {
+			return m, reload
+		}
+		return m, toast
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -199,7 +269,11 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		// wrappedFor != width inside ensureEntryWrapped, which also
 		// owns rebuilding m.renderer at the new width.
 		m.lastContentFP = ""
-		if m.screen == screenIssues && m.issues != nil {
+		if isIssueScreen(m.screen) {
+			s := m.activeIssueState()
+			if s == nil {
+				return m, nil
+			}
 			width := msg.Width
 			height := msg.Height
 			if width <= 0 {
@@ -209,10 +283,10 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 				height = 24
 			}
 			contentW := max(20, width-issueScreenIndent-1)
-			contentH := max(4, height-issueScreenChromeHeight(m.issues))
-			m.issues.view.resize(contentW, contentH)
-			if kv, ok := m.issues.view.(*kanbanIssueView); ok {
-				return m, kv.maybeFetchToFillViewport(m.issues)
+			contentH := max(4, height-issueScreenChromeHeight(s))
+			s.view.resize(contentW, contentH)
+			if kv, ok := s.view.(*kanbanIssueView); ok {
+				return m, kv.maybeFetchToFillViewport(s)
 			}
 		}
 		return m, nil
@@ -798,7 +872,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			m.chat, cmd = m.chat.Update(msg)
 			m.lastContentFP = ""
 			return m, cmd
-		case screenIssues:
+		case screenIssues, screenPRs:
 			return m.issuesHandleMouse(msg)
 		}
 		return m, nil
@@ -807,7 +881,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.mode != modeInput {
 			return m, nil
 		}
-		if m.screen == screenIssues {
+		if isIssueScreen(m.screen) {
 			return m.issuesHandleMouse(msg)
 		}
 		if m.screen != screenAsk {
@@ -840,7 +914,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMotionMsg:
-		if m.screen == screenIssues {
+		if isIssueScreen(m.screen) {
 			return m.issuesHandleMouse(msg)
 		}
 		if m.scrollbarDragging {
@@ -857,7 +931,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case tea.MouseReleaseMsg:
-		if m.screen == screenIssues {
+		if isIssueScreen(m.screen) {
 			return m.issuesHandleMouse(msg)
 		}
 		if m.scrollbarDragging {
@@ -901,7 +975,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		// Inline confirms overlay the input area and intercept typed
 		// keys so they don't bleed into the textarea — paste must
 		// follow the same rule or it becomes a side-channel write.
-		if m.cancelTurnConfirming || m.closeTabConfirming {
+		if m.cancelTurnConfirming || m.closeTabConfirming || m.mergePRConfirming {
 			return m, nil
 		}
 		// No !m.busy gate: typed keys, image pastes, and shell-mode
@@ -999,7 +1073,11 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.workflowRun != nil {
 			return m.workflowTabHandleKey(msg)
 		}
-		// Screen-switching keys (Ctrl+I → issues, Ctrl+O → ask) are
+		if m.mergePRConfirming {
+			return m.updateMergePRConfirm(msg)
+		}
+		// Screen-switching keys (Ctrl+I → issues, Ctrl+P → PRs,
+		// Ctrl+O → ask) are
 		// global within a tab but blocked while a modal/confirm overlay
 		// is up. They must run before the active screen's updateKey so a
 		// screen handler can't shadow them by accident. Background work
@@ -1015,15 +1093,15 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		// surprising a user mid-read.
 		if msg.Mod == tea.ModCtrl && msg.Code == 'i' && !m.modalOpen() {
 			if m.screen == screenIssues {
-				if m.issues != nil {
-					m.issues.cycleView()
+				if s := m.issueStateForScreen(screenIssues); s != nil {
+					s.cycleView()
 					// Landing on kanban kicks off N parallel column
 					// loads if columns are empty. The same call is a
 					// no-op when columns are already loaded (returning
 					// to kanban after a previous fetch shows the
 					// cached data immediately).
-					if kv, ok := m.issues.view.(*kanbanIssueView); ok {
-						return m, kv.initialLoad(m.issues)
+					if kv, ok := s.view.(*kanbanIssueView); ok {
+						return m, kv.initialLoad(s)
 					}
 				}
 				return m, nil
@@ -1040,69 +1118,33 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 				return m, m.toast.show(
 					"Issues not configured for this project: " + shortCwdOf(projectKey(m.cwd)))
 			}
-			m = m.switchScreen(screenIssues)
-			// Flip the loading flag and pick a fun message before
-			// dispatching the provider call. The screen renders a
-			// centered animated modal whenever loading is true, so
-			// the user sees activity instead of a blank kanban
-			// during the network round-trip. Any prior loadErr is
-			// cleared so the new attempt starts fresh.
-			if m.issues == nil {
-				m.issues = newIssuesState()
-			}
-			// Install the resolved provider so query fingerprinting
-			// and kanban column lookups operate against the right
-			// backend. Resetting the active sub-view rebuilds it
-			// against the freshly-installed provider (which the
-			// kanban view needs to construct columns).
-			m.issues.provider = provider
-			m.issues.projectCfg = pc
-			m.issues.cwd = m.cwd
-			m.issues.tabID = m.id
-			m.issues.view = issueViewLayers[0].builder(m.issues)
-			kv, _ := m.issues.view.(*kanbanIssueView)
-			// Show the loader modal on first entry — when no kanban
-			// column has data yet. Re-entry after a previous load
-			// (cache hit) skips the modal so the user sees content
-			// immediately.
-			anyLoaded := false
-			if kv != nil {
-				for _, c := range kv.columns {
-					if len(c.loaded) > 0 {
-						anyLoaded = true
-						break
+			return m.enterIssueScreen(screenIssues, provider, pc)
+		}
+		if msg.Mod == tea.ModCtrl && msg.Code == 'p' && !m.modalOpen() {
+			if m.screen == screenPRs {
+				if s := m.issueStateForScreen(screenPRs); s != nil {
+					s.cycleView()
+					if kv, ok := s.view.(*kanbanIssueView); ok {
+						return m, kv.initialLoad(s)
 					}
 				}
-			}
-			cmds := []tea.Cmd{}
-			if !anyLoaded {
-				m.issues.loading = true
-				m.issues.loadingMessage = pickLoadingMessage()
-				m.issues.loadingFrame = 0
-				m.issues.loadErr = nil
-				cmds = append(cmds, issueLoadingTickCmd(m.id))
-			}
-			_ = m.issues.beginLoad()
-			if kv != nil {
-				if c := kv.initialLoad(m.issues); c != nil {
-					cmds = append(cmds, c)
-				}
-			}
-			if len(cmds) == 0 {
 				return m, nil
 			}
-			return m, tea.Batch(cmds...)
+			cfg, _ := loadConfig()
+			provider, pc := activePRProvider(cfg, m.cwd)
+			if !provider.Configured(pc, m.cwd) {
+				return m, m.toast.show(
+					"Pull requests not configured for this project: " + shortCwdOf(projectKey(m.cwd)))
+			}
+			return m.enterIssueScreen(screenPRs, provider, pc)
 		}
 		if msg.Mod == tea.ModCtrl && msg.Code == 'w' && !m.modalOpen() {
 			// Ctrl+W opens the workflows builder. Going to the
 			// builder from the issues screen mirrors Ctrl+I's
 			// "drop the cache + cancel in-flight" hygiene so a
 			// later return to issues re-fetches cleanly.
-			if m.screen == screenIssues && m.issues != nil {
-				if kv, ok := m.issues.view.(*kanbanIssueView); ok {
-					kv.cancelCarry(m.issues)
-				}
-				m.issues.discardOnLeave()
+			if isIssueScreen(m.screen) {
+				m.discardIssueScreenState(m.screen)
 			}
 			m = m.switchScreen(screenWorkflows)
 			if m.workflowsBuilder == nil {
@@ -1118,11 +1160,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			// state lives on the kanban view, so we re-insert the
 			// in-flight card before discardOnLeave wipes the cache —
 			// otherwise the row would silently disappear next entry.
-			if m.screen == screenIssues && m.issues != nil {
-				if kv, ok := m.issues.view.(*kanbanIssueView); ok {
-					kv.cancelCarry(m.issues)
-				}
-				m.issues.discardOnLeave()
+			if isIssueScreen(m.screen) {
+				m.discardIssueScreenState(m.screen)
 			}
 			return m.switchScreen(screenAsk), nil
 		}
@@ -1158,6 +1197,9 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.closeTabConfirming {
 		return m.updateCloseTabConfirm(msg)
+	}
+	if m.mergePRConfirming {
+		return m.updateMergePRConfirm(msg)
 	}
 	isCtrlC := msg.Mod == tea.ModCtrl && msg.Code == 'c'
 	if !isCtrlC {
@@ -1580,6 +1622,71 @@ func (m model) updateCloseTabConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) updateMergePRConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case msg.Code == tea.KeyEsc, msg.Code == 'n' && msg.Mod == 0:
+		m.mergePRConfirming = false
+		m.mergePRChoice = 0
+		m.mergePRReason = ""
+		m.mergePRItem = issue{}
+		return m, nil
+	case msg.Code == 'y' && msg.Mod == 0:
+		return m.applyPRMergeConfirm()
+	case msg.Code == tea.KeyLeft, msg.Code == 'h' && msg.Mod == 0:
+		m.mergePRChoice = 0
+		return m, nil
+	case msg.Code == tea.KeyRight, msg.Code == 'l' && msg.Mod == 0:
+		m.mergePRChoice = 1
+		return m, nil
+	case msg.Code == tea.KeyTab:
+		m.mergePRChoice = 1 - m.mergePRChoice
+		return m, nil
+	case msg.Code == tea.KeyEnter:
+		if m.mergePRChoice == 1 {
+			return m.applyPRMergeConfirm()
+		}
+		m.mergePRConfirming = false
+		m.mergePRChoice = 0
+		m.mergePRReason = ""
+		m.mergePRItem = issue{}
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m model) applyPRMergeConfirm() (tea.Model, tea.Cmd) {
+	s := m.issueStateForScreen(screenPRs)
+	m.mergePRConfirming = false
+	m.mergePRChoice = 0
+	reason := m.mergePRReason
+	m.mergePRReason = ""
+	it := m.mergePRItem
+	m.mergePRItem = issue{}
+	if s == nil {
+		return m, nil
+	}
+	merger, ok := s.provider.(IssueMerger)
+	if !ok {
+		return m, m.toast.show("merge not supported for this provider")
+	}
+	_ = reason
+	ctx := s.beginLoad()
+	s.loading = true
+	s.loadingMessage = fmt.Sprintf("Merging %s #%d...", s.mergeLabel(), it.number)
+	s.loadingFrame = 0
+	s.loadErr = nil
+	cmd := func() tea.Msg {
+		err := merger.Merge(ctx, s.projectCfg, s.cwd, it)
+		return issueMergeDoneMsg{
+			tabID:  m.id,
+			screen: s.screen,
+			item:   it,
+			err:    err,
+		}
+	}
+	return m, tea.Batch(issueLoadingTickCmd(m.id, s.screen), cmd)
+}
+
 func (m model) updatePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
 		return m, closeTabCmd(m.id)
@@ -1811,11 +1918,8 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		// /workflows opens the builder. Same flow as Ctrl+W: drop
 		// any in-flight issues query so re-entry to the issues
 		// screen later doesn't stack chunks.
-		if m.screen == screenIssues && m.issues != nil {
-			if kv, ok := m.issues.view.(*kanbanIssueView); ok {
-				kv.cancelCarry(m.issues)
-			}
-			m.issues.discardOnLeave()
+		if isIssueScreen(m.screen) {
+			m.discardIssueScreenState(m.screen)
 		}
 		m = m.switchScreen(screenWorkflows)
 		if m.workflowsBuilder == nil {

@@ -61,18 +61,22 @@ var issueLoadingSpinnerFrames = []string{
 
 // issueLoadingTickMsg fires every issueLoadingTickInterval while
 // the loader modal is up. tabID lets the handler ignore ticks
-// targeting a different tab; the handler also drops the tick
-// silently when s.loading is false so the animation cleanly stops
-// once the first chunk arrives.
-type issueLoadingTickMsg struct{ tabID int }
+// targeting a different tab; screen lets the handler route to the
+// right state field (m.issues vs m.prs) on a tab that owns both.
+// The handler also drops the tick silently when s.loading is false
+// so the animation cleanly stops once the first chunk arrives.
+type issueLoadingTickMsg struct {
+	tabID  int
+	screen screenID
+}
 
 // issueLoadingTickCmd schedules the next loader animation tick.
-// Returned by every entry path that flips s.loading=true (Ctrl+I
-// screen entry, search-box submit, reloadCurrentQuery) and
+// Returned by every entry path that flips s.loading=true (Ctrl+I /
+// Ctrl+P screen entry, search-box submit, reloadCurrentQuery) and
 // re-emitted by the handler as long as loading is still true.
-func issueLoadingTickCmd(tabID int) tea.Cmd {
+func issueLoadingTickCmd(tabID int, screen screenID) tea.Cmd {
 	return tea.Tick(issueLoadingTickInterval, func(time.Time) tea.Msg {
-		return issueLoadingTickMsg{tabID: tabID}
+		return issueLoadingTickMsg{tabID: tabID, screen: screen}
 	})
 }
 
@@ -163,14 +167,39 @@ func viewIndexForName(name string) int {
 // handler drops the message when gen != s.queryGen (stale
 // supersede) and reads requestedCursor (not page.NextCursor)
 // to identify first-chunk-of-query, since page is zero-valued
-// on error paths.
+// on error paths. screen routes the message to the right state
+// field on a tab that owns both screens (m.issues vs m.prs).
 type issuePageLoadedMsg struct {
 	tabID           int
+	screen          screenID
 	gen             int
 	query           IssueQuery
 	requestedCursor string
 	page            IssueListPage
 	err             error
+}
+
+type issueMergeCheckDoneMsg struct {
+	tabID  int
+	screen screenID
+	item   issue
+	state  mergeableState
+	err    error
+}
+
+type issueMergeDoneMsg struct {
+	tabID  int
+	screen screenID
+	item   issue
+	err    error
+}
+
+type issueDetailLoadedMsg struct {
+	tabID  int
+	screen screenID
+	number int
+	item   issue
+	err    error
 }
 
 // loadIssuesPageCmd dispatches a cursor-based provider call off
@@ -181,14 +210,17 @@ type issuePageLoadedMsg struct {
 //
 // ctx allows the screen to cancel an in-flight request when a
 // new query supersedes it. Pass context.Background() for one-off
-// loads where cancellation isn't needed.
-func loadIssuesPageCmd(ctx context.Context, tabID int, p IssueProvider, pc projectConfig, cwd string, query IssueQuery, pagination IssuePagination, gen int) tea.Cmd {
+// loads where cancellation isn't needed. screen labels the
+// message so the dispatcher routes it back to the originating
+// state (issues or PRs).
+func loadIssuesPageCmd(ctx context.Context, tabID int, screen screenID, p IssueProvider, pc projectConfig, cwd string, query IssueQuery, pagination IssuePagination, gen int) tea.Cmd {
 	return func() tea.Msg {
 		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		page, err := p.ListIssues(cctx, pc, cwd, query, pagination)
 		return issuePageLoadedMsg{
 			tabID:           tabID,
+			screen:          screen,
 			gen:             gen,
 			query:           query,
 			requestedCursor: pagination.Cursor,
@@ -198,10 +230,35 @@ func loadIssuesPageCmd(ctx context.Context, tabID int, p IssueProvider, pc proje
 	}
 }
 
+func loadIssueDetailCmd(tabID int, screen screenID, provider IssueProvider, cfg projectConfig, cwd string, number int) tea.Cmd {
+	if provider == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		it, err := provider.GetIssue(context.Background(), cfg, cwd, number)
+		return issueDetailLoadedMsg{
+			tabID:  tabID,
+			screen: screen,
+			number: number,
+			item:   it,
+			err:    err,
+		}
+	}
+}
+
 type issuesState struct {
 	sort issueSort
 
 	view issueView
+
+	// screen names which top-level surface this state belongs to —
+	// screenIssues for the issues kanban, screenPRs for the PR
+	// kanban. Stamped at construction (newIssuesState / newPRsState)
+	// and read by the message routing in update.go to dispatch
+	// loaded-page / merge / loading-tick messages back to the right
+	// state field on model. Without this discriminator a message
+	// fired by the PR screen would clobber m.issues and vice-versa.
+	screen screenID
 
 	// provider is the active IssueProvider for this tab/cwd.
 	// Captured on screen entry so query fingerprinting and
@@ -369,14 +426,69 @@ type issueView interface {
 // it's resolved which provider the project uses; tests can
 // install a fake provider directly.
 func newIssuesState() *issuesState {
+	return newKanbanState(screenIssues)
+}
+
+// newPRsState builds an empty kanban state for the PR screen. The
+// provider is installed by the Ctrl+P screen-entry path in update.go
+// once the GitHub MCP token is verified configured. The screen
+// discriminator is the only difference from newIssuesState — it
+// drives the message-routing pick-up in update.go.
+func newPRsState() *issuesState {
+	return newKanbanState(screenPRs)
+}
+
+// newKanbanState is the shared constructor for the issues and PRs
+// kanban surfaces. It seeds an empty state with the noneIssueProvider
+// so a render before screen entry doesn't panic; the per-screen
+// dispatch path (Ctrl+I / Ctrl+P) installs the real provider once
+// configuration has been verified.
+func newKanbanState(screen screenID) *issuesState {
 	s := &issuesState{
 		sort:      issueSortByNumber,
 		pageCache: map[string][]issuePageChunk{},
 		provider:  noneIssueProvider{},
 		loadCtx:   context.Background(),
+		screen:    screen,
 	}
 	s.view = issueViewLayers[0].builder(s)
 	return s
+}
+
+func (s *issuesState) title() string {
+	switch s.screen {
+	case screenPRs:
+		return "Pull Requests"
+	default:
+		return "Issues"
+	}
+}
+
+func (s *issuesState) titleLower() string {
+	switch s.screen {
+	case screenPRs:
+		return "pull requests"
+	default:
+		return "issues"
+	}
+}
+
+func (s *issuesState) detailLabel() string {
+	switch s.screen {
+	case screenPRs:
+		return "PR"
+	default:
+		return "Issue"
+	}
+}
+
+func (s *issuesState) mergeLabel() string {
+	switch s.screen {
+	case screenPRs:
+		return "PR"
+	default:
+		return "item"
+	}
 }
 
 // issuePageChunk is one chunk in a query's fetched chain.
@@ -499,8 +611,55 @@ func (s *issuesState) insertIssueIntoCache(q IssueQuery, it issue, index int) {
 	s.pageCache[fp] = chain
 }
 
+func (s *issuesState) replaceIssueSnapshots(updated issue) {
+	if s.pageCache != nil {
+		for fp, chain := range s.pageCache {
+			for ci := range chain {
+				for ii := range chain[ci].issues {
+					if chain[ci].issues[ii].number == updated.number {
+						chain[ci].issues[ii] = updated
+					}
+				}
+			}
+			s.pageCache[fp] = chain
+		}
+	}
+	if kv, ok := s.view.(*kanbanIssueView); ok {
+		replaceKanbanIssueRows(kv, updated)
+		return
+	}
+	if dv, ok := s.view.(*issueDetailView); ok {
+		if dv.issue.number == updated.number {
+			dv.setIssue(updated)
+		}
+		if kv, ok := dv.parent.(*kanbanIssueView); ok {
+			replaceKanbanIssueRows(kv, updated)
+		}
+	}
+}
+
+func (s *issuesState) finishIssueHydration(issueNumber int) {
+	if dv, ok := s.view.(*issueDetailView); ok && dv.issue.number == issueNumber {
+		dv.setHydrating(false)
+	}
+}
+
+func replaceKanbanIssueRows(kv *kanbanIssueView, updated issue) {
+	for ci := range kv.columns {
+		for ii := range kv.columns[ci].loaded {
+			if kv.columns[ci].loaded[ii].number == updated.number {
+				kv.columns[ci].loaded[ii] = updated
+			}
+		}
+	}
+}
+
 func (s *issuesState) hasAnyCachedPage(q IssueQuery) bool {
 	return len(s.cachedChunks(q)) > 0
+}
+
+func shouldHydrateIssueDetail(it issue) bool {
+	return strings.TrimSpace(it.description) == "" || len(it.comments) == 0
 }
 
 // beginLoad cancels any in-flight load and installs a fresh
@@ -579,7 +738,7 @@ func (s *issuesState) reloadCurrentQuery() tea.Cmd {
 		}
 		nv := newKanbanIssueView(s)
 		s.view = nv
-		return tea.Batch(nv.initialLoad(s), issueLoadingTickCmd(s.tabID))
+		return tea.Batch(nv.initialLoad(s), issueLoadingTickCmd(s.tabID, s.screen))
 	}
 	return nil
 }
@@ -870,9 +1029,27 @@ type issuesScreen struct{}
 func (issuesScreen) id() screenID { return screenIssues }
 
 func (issuesScreen) updateKey(m model, msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
-	if m.issues == nil {
-		m.issues = newIssuesState()
-	}
+	return updateIssueScreenKey(m, msg, screenIssues)
+}
+
+func (issuesScreen) view(m model) string {
+	return viewIssueScreen(m, screenIssues)
+}
+
+type prsScreen struct{}
+
+func (prsScreen) id() screenID { return screenPRs }
+
+func (prsScreen) updateKey(m model, msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
+	return updateIssueScreenKey(m, msg, screenPRs)
+}
+
+func (prsScreen) view(m model) string {
+	return viewIssueScreen(m, screenPRs)
+}
+
+func updateIssueScreenKey(m model, msg tea.KeyPressMsg, screen screenID) (model, tea.Cmd, bool) {
+	s := m.ensureIssueState(screen)
 	// Ctrl+D closes the current tab from any screen — keep parity with
 	// askScreen so the user isn't trapped in issues.
 	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
@@ -911,49 +1088,49 @@ func (issuesScreen) updateKey(m model, msg tea.KeyPressMsg) (model, tea.Cmd, boo
 	// load), and every other key is consumed so a stray press can't
 	// whisk the user past the failure without acknowledgment.
 	isCtrlR := msg.Mod == tea.ModCtrl && msg.Code == 'r'
-	if m.issues.loading {
+	if s.loading {
 		if isCtrlR {
-			return m, m.issues.reloadCurrentQuery(), true
+			return m, s.reloadCurrentQuery(), true
 		}
 		return m, nil, true
 	}
-	if m.issues.loadErr != nil {
+	if s.loadErr != nil {
 		if msg.Mod == 0 && (msg.Code == tea.KeyEnter || msg.Code == tea.KeyEsc) {
 			// Same hygiene as the Ctrl+O path: drop the cache + cancel
 			// in-flight on screen-leave so re-entry doesn't stack
 			// duplicate chunks onto the chain.
-			m.issues.discardOnLeave()
+			s.discardOnLeave()
 			return m.switchScreen(screenAsk), nil, true
 		}
 		if isCtrlR {
 			// Reload from error: clear the error first so
 			// reloadCurrentQuery's loading-modal swap is the active
 			// overlay, not the persistent error modal.
-			m.issues.loadErr = nil
-			return m, m.issues.reloadCurrentQuery(), true
+			s.loadErr = nil
+			return m, s.reloadCurrentQuery(), true
 		}
 		return m, nil, true
 	}
 	// Search box has top-level priority when open: it owns every
 	// keypress until Esc / empty-backspace closes it. Routes the
 	// dispatched search via cmd back through Update.
-	if m.issues.search != nil {
-		closed, cmd := m.issues.search.updateKey(m.issues, msg)
+	if s.search != nil {
+		closed, cmd := s.search.updateKey(s, msg)
 		if closed {
-			m.issues.search = nil
+			s.search = nil
 			// First-page-of-this-query → modal + animation tick.
 			// Subsequent re-fetches of an already-cached query
 			// stay inline.
-			if cmd != nil && !m.issues.hasAnyCachedPage(m.issues.currentQuery) {
-				m.issues.loading = true
-				m.issues.loadingMessage = pickLoadingMessage()
-				m.issues.loadingFrame = 0
-				m.issues.loadErr = nil
-				cmd = tea.Batch(cmd, issueLoadingTickCmd(m.issues.tabID))
+			if cmd != nil && !s.hasAnyCachedPage(s.currentQuery) {
+				s.loading = true
+				s.loadingMessage = pickLoadingMessage()
+				s.loadingFrame = 0
+				s.loadErr = nil
+				cmd = tea.Batch(cmd, issueLoadingTickCmd(s.tabID, s.screen))
 			}
 			// Rebuild the active view against the new query so
 			// kanban columns pick up the new spec query targets.
-			m.issues.view = issueViewLayers[viewIndexForName(m.issues.view.name())].builder(m.issues)
+			s.view = issueViewLayers[viewIndexForName(s.view.name())].builder(s)
 		}
 		return m, cmd, true
 	}
@@ -964,9 +1141,9 @@ func (issuesScreen) updateKey(m model, msg tea.KeyPressMsg) (model, tea.Cmd, boo
 	// so the user can keep editing without the reload yanking the
 	// screen out from under them.
 	if isCtrlR {
-		if kv, ok := m.issues.view.(*kanbanIssueView); ok {
-			kv.cancelCarry(m.issues)
-			return m, m.issues.reloadCurrentQuery(), true
+		if kv, ok := s.view.(*kanbanIssueView); ok {
+			kv.cancelCarry(s)
+			return m, s.reloadCurrentQuery(), true
 		}
 	}
 	// "/" opens the search overlay from kanban (not detail, not
@@ -974,15 +1151,18 @@ func (issuesScreen) updateKey(m model, msg tea.KeyPressMsg) (model, tea.Cmd, boo
 	// the typed "/" doesn't bleed into the kanban layer behind
 	// the box.
 	if msg.Mod == 0 && msg.Code == '/' {
-		if kv, ok := m.issues.view.(*kanbanIssueView); ok {
-			kv.cancelCarry(m.issues)
+		if kv, ok := s.view.(*kanbanIssueView); ok {
+			kv.cancelCarry(s)
 			help := ""
-			if m.issues.provider != nil {
-				help = m.issues.provider.QuerySyntaxHelp()
+			if s.provider != nil {
+				help = s.provider.QuerySyntaxHelp()
 			}
-			m.issues.search = newIssueSearchBox(help)
+			s.search = newIssueSearchBox(help)
 			return m, nil, true
 		}
+	}
+	if screen == screenPRs && msg.Mod == 0 && msg.Code == 'm' {
+		return m.startPRMergeFlow()
 	}
 	// "f" dispatches a workflow run against the focused issue. Works
 	// from kanban (focused card) and the detail view; ignored on any
@@ -991,33 +1171,183 @@ func (issuesScreen) updateKey(m model, msg tea.KeyPressMsg) (model, tea.Cmd, boo
 	// modifier-naked 'f' can never get consumed by something else
 	// downstream (e.g. a future fuzzy-find keybind on a card list).
 	if msg.Mod == 0 && msg.Code == 'f' {
-		return m.dispatchIssueWorkflow()
+		return m.dispatchIssueWorkflow(screen)
 	}
-	v, cmd, handled := m.issues.view.updateKey(m.issues, msg)
+	v, cmd, handled := s.view.updateKey(s, msg)
 	if handled {
-		m.issues.setView(v)
+		s.setView(v)
 	}
 	return m, cmd, handled
+}
+
+func viewIssueScreen(m model, screen screenID) string {
+	s := m.issueStateForScreen(screen)
+	if s == nil {
+		if screen == screenIssues {
+			s = newIssuesState()
+			m.issues = s
+		} else {
+			s = newPRsState()
+			m.prs = s
+		}
+	}
+	width := m.width
+	height := m.height
+	if width <= 0 {
+		width = 80
+	}
+	if height <= 0 {
+		height = 24
+	}
+	if s.loading || s.loadErr != nil {
+		return renderIssuesOverlay(s, width, height)
+	}
+	if m.workflowPicker != nil {
+		return m.renderWorkflowPicker()
+	}
+	contentW := max(20, width-issueScreenIndent-1)
+	contentH := max(4, height-issueScreenChromeHeight(s))
+	s.view.resize(contentW, contentH)
+
+	bodyView := s.view.view(s)
+	bodyLines := strings.Split(bodyView, "\n")
+
+	bodyTopRow := 2
+	if s.search != nil {
+		bodyTopRow++
+	}
+	s.bodyTopRow = bodyTopRow
+	s.bodyContentH = len(bodyLines)
+	s.bodyLeftCol = issueScreenIndent
+	s.scrollbarCol = width - 1
+
+	bodyLines = applyIssuesSelectionHighlight(s, bodyLines)
+
+	yOff, total, viewH := s.view.scroll()
+	if total > viewH {
+		bar := renderIssuesScrollbar(viewH, total, yOff)
+		for i := range bodyLines {
+			if i < len(bar) {
+				bodyLines[i] += bar[i]
+			}
+		}
+	}
+
+	hint := s.view.hint()
+	if kv, ok := s.view.(*kanbanIssueView); ok {
+		hint = kv.hintFor(s)
+	}
+	if dv, ok := s.view.(*issueDetailView); ok {
+		hint = dv.hintFor(s)
+	}
+	if m.exitArmed {
+		hint = dimStyle.Render("Press ctrl+c again to exit")
+	}
+
+	var b strings.Builder
+	b.WriteString(s.view.header(s))
+	b.WriteString("\n\n")
+	if s.search != nil {
+		s.search.resize(width - issueScreenIndent)
+		b.WriteString(s.search.view())
+		b.WriteString("\n")
+	}
+	b.WriteString(strings.Join(bodyLines, "\n"))
+	b.WriteString("\n")
+	b.WriteString(hint)
+	return indentLines(b.String(), issueScreenIndent)
+}
+
+func (m model) enterIssueScreen(screen screenID, provider IssueProvider, pc projectConfig) (model, tea.Cmd) {
+	m = m.switchScreen(screen)
+	s := m.ensureIssueState(screen)
+	s.provider = provider
+	s.projectCfg = pc
+	s.cwd = m.cwd
+	s.tabID = m.id
+	s.view = issueViewLayers[0].builder(s)
+	kv, _ := s.view.(*kanbanIssueView)
+
+	anyLoaded := false
+	if kv != nil {
+		for _, c := range kv.columns {
+			if len(c.loaded) > 0 {
+				anyLoaded = true
+				break
+			}
+		}
+	}
+
+	var cmds []tea.Cmd
+	if !anyLoaded {
+		s.loading = true
+		s.loadingMessage = pickLoadingMessage()
+		s.loadingFrame = 0
+		s.loadErr = nil
+		cmds = append(cmds, issueLoadingTickCmd(m.id, screen))
+	}
+	_ = s.beginLoad()
+	if kv != nil {
+		if c := kv.initialLoad(s); c != nil {
+			cmds = append(cmds, c)
+		}
+	}
+	if len(cmds) == 0 {
+		return m, nil
+	}
+	return m, tea.Batch(cmds...)
+}
+
+func (m model) startPRMergeFlow() (model, tea.Cmd, bool) {
+	s := m.issueStateForScreen(screenPRs)
+	if s == nil {
+		return m, nil, true
+	}
+	merger, ok := s.provider.(IssueMerger)
+	if !ok {
+		return m, m.toast.show("merge not supported for this provider"), true
+	}
+	it, ok := focusedIssue(s.view)
+	if !ok {
+		return m, nil, true
+	}
+	ctx := s.beginLoad()
+	s.loading = true
+	s.loadingMessage = fmt.Sprintf("Checking whether %s #%d can be merged...", s.mergeLabel(), it.number)
+	s.loadingFrame = 0
+	s.loadErr = nil
+	cmd := func() tea.Msg {
+		state, err := merger.Mergeable(ctx, s.projectCfg, s.cwd, it)
+		return issueMergeCheckDoneMsg{
+			tabID:  m.id,
+			screen: s.screen,
+			item:   it,
+			state:  state,
+			err:    err,
+		}
+	}
+	return m, tea.Batch(issueLoadingTickCmd(m.id, s.screen), cmd), true
 }
 
 // dispatchIssueWorkflow resolves the issue currently in focus on the
 // issues screen, then either focuses an existing workflow tab for
 // that issue or pops the workflow picker. Returns (model, cmd,
 // handled=true) — the screen handler always treats `f` as consumed.
-func (m model) dispatchIssueWorkflow() (model, tea.Cmd, bool) {
-	if m.issues == nil {
+func (m model) dispatchIssueWorkflow(screen screenID) (model, tea.Cmd, bool) {
+	s := m.issueStateForScreen(screen)
+	if s == nil {
 		return m, nil, true
 	}
-	it, ok := focusedIssue(m.issues.view)
+	it, ok := focusedIssue(s.view)
 	if !ok {
 		return m, nil, true
 	}
-	if m.issues.provider == nil {
-		return m, m.toast.show("issues provider not configured"), true
+	if s.provider == nil {
+		return m, m.toast.show(s.titleLower() + " provider not configured"), true
 	}
-	ref, err := m.issues.provider.IssueRef(m.issues.projectCfg, m.cwd, it)
+	ref, err := s.provider.IssueRef(s.projectCfg, m.cwd, it)
 	if err != nil {
-		return m, m.toast.show("could not resolve issue ref: " + err.Error()), true
+		return m, m.toast.show("could not resolve " + s.titleLower() + " ref: " + err.Error()), true
 	}
 	if tabID, alive := workflowTracker().activeTabFor(ref.Key()); alive {
 		// A workflow run is already in flight for this issue. Focus
@@ -1066,100 +1396,6 @@ func focusTabCmd(tabID int) tea.Cmd {
 	return func() tea.Msg { return focusTabMsg{tabID: tabID} }
 }
 
-func (issuesScreen) view(m model) string {
-	if m.issues == nil {
-		// Shouldn't happen under normal flow (newTab/newTestModel seed
-		// the state on construction), but a defensive lazy-init keeps
-		// the screen renderable from any entry point.
-		m.issues = newIssuesState()
-	}
-	width := m.width
-	height := m.height
-	if width <= 0 {
-		width = 80
-	}
-	if height <= 0 {
-		height = 24
-	}
-	// Loading or error: replace the whole body area with a centered
-	// modal. The chrome (header + hint) is suppressed too — there is
-	// nothing meaningful to advertise above an unpopulated list, and
-	// the modal carries its own dismissal hint when in error state.
-	if m.issues.loading || m.issues.loadErr != nil {
-		return renderIssuesOverlay(m.issues, width, height)
-	}
-	// Workflow picker takes the whole body on `f`. Same trick as the
-	// loading overlay: replace the body, keep the user's context in
-	// their head. The picker is small (one screen of pipeline names)
-	// and confirm-driven so they always know where they are.
-	if m.workflowPicker != nil {
-		return m.renderWorkflowPicker()
-	}
-	// Reserve one column on the right for the scrollbar — fixed
-	// allocation, even when there's no overflow, so selection /
-	// click-routing math stays stable as content grows or shrinks.
-	contentW := max(20, width-issueScreenIndent-1)
-	contentH := max(4, height-issueScreenChromeHeight(m.issues))
-	m.issues.view.resize(contentW, contentH)
-
-	bodyView := m.issues.view.view(m.issues)
-	bodyLines := strings.Split(bodyView, "\n")
-
-	// Track the screen footprint of the body so mouse handlers can
-	// translate clicks back to (sub-view content row, column). Header
-	// is one line, then a blank; the optional search row sits between
-	// that chrome and the body when active.
-	bodyTopRow := 2
-	if m.issues.search != nil {
-		bodyTopRow++
-	}
-	s := m.issues
-	s.bodyTopRow = bodyTopRow
-	s.bodyContentH = len(bodyLines)
-	s.bodyLeftCol = issueScreenIndent
-	s.scrollbarCol = width - 1
-
-	bodyLines = applyIssuesSelectionHighlight(s, bodyLines)
-
-	yOff, total, viewH := m.issues.view.scroll()
-	if total > viewH {
-		bar := renderIssuesScrollbar(viewH, total, yOff)
-		for i := range bodyLines {
-			if i < len(bar) {
-				bodyLines[i] += bar[i]
-			}
-		}
-	}
-
-	hint := m.issues.view.hint()
-	if m.exitArmed {
-		// Mirror ask's "press ctrl+c again to exit" affordance, but
-		// swap the hint line in place since the issues screen has no
-		// chat history to append a transient message to. The next
-		// keypress disarms (handled in updateKey) and the hint
-		// switches back automatically on the following render.
-		hint = dimStyle.Render("Press ctrl+c again to exit")
-	}
-
-	var b strings.Builder
-	b.WriteString(m.issues.view.header(m.issues))
-	b.WriteString("\n\n")
-	if m.issues.search != nil {
-		m.issues.search.resize(width - issueScreenIndent)
-		b.WriteString(m.issues.search.view())
-		b.WriteString("\n")
-	}
-	b.WriteString(strings.Join(bodyLines, "\n"))
-	b.WriteString("\n")
-	b.WriteString(hint)
-	// Single, uniform left indent applied at the screen level so the
-	// table widget, viewport content, header, and hint all sit at the
-	// same column. Doing it per-piece (outputStyle on each fragment)
-	// produced inconsistent margins where bubbles' table/viewport
-	// rendered flush-left while the header lines were indented.
-	return indentLines(b.String(), issueScreenIndent)
-}
-
 // renderIssuesOverlay draws a centered loading-or-error modal in
 // place of the list/kanban body. The error variant uses an
 // errorFG-tinted border and carries a dismissal hint so a network
@@ -1172,7 +1408,7 @@ func renderIssuesOverlay(s *issuesState, width, height int) string {
 	var box string
 	if s.loadErr != nil {
 		wrapW := max(width-10, 16)
-		title := errStyle.Bold(true).Render("Failed to load issues")
+		title := errStyle.Bold(true).Render("Failed to load " + s.titleLower())
 		wrapped := lipgloss.NewStyle().Width(wrapW).Render(s.loadErr.Error())
 		hint := dimStyle.Render("press enter to go back · esc dismiss")
 		body := lipgloss.JoinVertical(lipgloss.Left, title, "", wrapped, "", hint)
@@ -1180,7 +1416,7 @@ func renderIssuesOverlay(s *issuesState, width, height int) string {
 	} else {
 		msg := s.loadingMessage
 		if msg == "" {
-			msg = "Loading issues..."
+			msg = "Loading " + s.titleLower() + "..."
 		}
 		// Single line: braille glyph + 2 spaces + fun message. The
 		// glyph cycles every tick for the high-FPS "still alive"
@@ -1199,10 +1435,10 @@ func renderIssuesOverlay(s *issuesState, width, height int) string {
 // Returning the model and a tea.Cmd matches the rest of the Update
 // dispatch shape so the routing in update.go is uniform across screens.
 func (m model) issuesHandleMouse(msg tea.Msg) (model, tea.Cmd) {
-	if m.issues == nil {
+	s := m.activeIssueState()
+	if s == nil {
 		return m, nil
 	}
-	s := m.issues
 	// Loading and error states cover the body; mouse events targeting
 	// the (suppressed) list/kanban underneath should be no-ops so the
 	// user can't drag-select against an empty surface or wheel-scroll
@@ -1291,11 +1527,12 @@ func (m model) issuesHandleMouse(msg tea.Msg) (model, tea.Cmd) {
 // highlight, and dispatches the async clipboard write + toast through
 // the same copyTextCmd the chat side uses.
 func (m model) issuesCopySelectionAndClear() (model, tea.Cmd) {
-	if m.issues == nil {
+	s := m.activeIssueState()
+	if s == nil {
 		return m, nil
 	}
-	text := m.issues.buildCopyText()
-	m.issues.clearSelection()
+	text := s.buildCopyText()
+	s.clearSelection()
 	if text == "" {
 		return m, nil
 	}
@@ -1359,6 +1596,7 @@ type issueDetailView struct {
 
 	rendered    string
 	renderedFor int
+	hydrating   bool
 }
 
 func newIssueDetailView(parent issueView, it issue, width, height int) *issueDetailView {
@@ -1369,6 +1607,19 @@ func newIssueDetailView(parent issueView, it issue, width, height int) *issueDet
 	}
 	v.resize(width, height)
 	return v
+}
+
+func (v *issueDetailView) setIssue(it issue) {
+	offset := v.vp.YOffset()
+	v.issue = it
+	v.rendered = ""
+	v.renderedFor = 0
+	v.resize(v.width, v.height)
+	v.vp.SetYOffset(offset)
+}
+
+func (v *issueDetailView) setHydrating(hydrating bool) {
+	v.hydrating = hydrating
 }
 
 func (v *issueDetailView) name() string { return "detail" }
@@ -1464,17 +1715,30 @@ func (v *issueDetailView) view(s *issuesState) string {
 func (v *issueDetailView) header(s *issuesState) string {
 	prefix, hasPrefix := workflowKeyPrefix(s)
 	glyph := workflowStatusForIssue(s, prefix, hasPrefix, v.issue.number)
-	header := promptStyle.Render(fmt.Sprintf("Issue #%d", v.issue.number))
+	header := promptStyle.Render(fmt.Sprintf("%s #%d", s.detailLabel(), v.issue.number))
 	if glyph != "" {
 		header = glyph + " " + header
 	}
-	return header + dimStyle.Render("  · ") + v.issue.title
+	header += dimStyle.Render("  · ") + v.issue.title
+	if v.hydrating {
+		header += dimStyle.Render("  · loading…")
+	}
+	return header
 }
 
 func (v *issueDetailView) hint() string {
 	return dimStyle.Render(
 		"↑/↓ scroll · pgup/pgdn page · f run workflow · esc/backspace back · ctrl+o back to ask",
 	)
+}
+
+func (v *issueDetailView) hintFor(s *issuesState) string {
+	if s != nil && s.screen == screenPRs {
+		return dimStyle.Render(
+			"↑/↓ scroll · pgup/pgdn page · m merge · f run workflow · esc/backspace back · ctrl+o back to ask",
+		)
+	}
+	return v.hint()
 }
 
 func (v *issueDetailView) scroll() (int, int, int) {
@@ -1711,6 +1975,7 @@ func (v *kanbanIssueView) dropCarry(s *issuesState, tabID int) (tea.Cmd, bool) {
 		err := provider.MoveIssue(ctx, pc, cwd, originalSnapshot, target)
 		return issueMoveDoneMsg{
 			tabID:        tabID,
+			screen:       s.screen,
 			issueNumber:  originalSnapshot.number,
 			originSnap:   originalSnapshot,
 			originColIdx: originIdx,
@@ -1761,6 +2026,7 @@ func (v *kanbanIssueView) cancelCarry(s *issuesState) {
 // the underlying provider error.
 type issueMoveDoneMsg struct {
 	tabID        int
+	screen       screenID
 	issueNumber  int
 	originSnap   issue
 	originColIdx int
@@ -1829,7 +2095,7 @@ func (v *kanbanIssueView) initialLoad(s *issuesState) tea.Cmd {
 		}
 		col.fetching = true
 		cmds = append(cmds, loadIssuesPageCmd(
-			s.loadCtx, s.tabID, s.provider, s.projectCfg, s.cwd,
+			s.loadCtx, s.tabID, s.screen, s.provider, s.projectCfg, s.cwd,
 			col.spec.Query, IssuePagination{Cursor: "", PerPage: githubDefaultPerPage},
 			s.queryGen,
 		))
@@ -1854,7 +2120,7 @@ func (v *kanbanIssueView) maybeFetchNextPage(s *issuesState) tea.Cmd {
 	cursor := col.nextCursor
 	col.fetching = true
 	return loadIssuesPageCmd(
-		s.loadCtx, s.tabID, s.provider, s.projectCfg, s.cwd,
+		s.loadCtx, s.tabID, s.screen, s.provider, s.projectCfg, s.cwd,
 		col.spec.Query, IssuePagination{Cursor: cursor, PerPage: githubDefaultPerPage},
 		s.queryGen,
 	)
@@ -1977,7 +2243,7 @@ func (v *kanbanIssueView) maybeFetchToFillViewport(s *issuesState) tea.Cmd {
 	cursor := col.nextCursor
 	col.fetching = true
 	return loadIssuesPageCmd(
-		s.loadCtx, s.tabID, s.provider, s.projectCfg, s.cwd,
+		s.loadCtx, s.tabID, s.screen, s.provider, s.projectCfg, s.cwd,
 		col.spec.Query, IssuePagination{Cursor: cursor, PerPage: githubDefaultPerPage},
 		s.queryGen,
 	)
@@ -2005,17 +2271,31 @@ func (v *kanbanIssueView) header(s *issuesState) string {
 	for _, c := range v.columns {
 		total += len(c.loaded)
 	}
-	return promptStyle.Render("Issues") +
+	return promptStyle.Render(s.title()) +
 		dimStyle.Render(fmt.Sprintf("  (%d) — kanban view", total))
 }
 
-func (v *kanbanIssueView) hint() string {
+func (v *kanbanIssueView) hintFor(s *issuesState) string {
 	if v.carry.active {
 		return dimStyle.Render("space drop · ←/→/tab change column · esc cancel · other keys disabled while carrying")
+	}
+	if s != nil && s.provider != nil && !s.provider.SupportsCarry() {
+		if _, ok := s.provider.(IssueMerger); ok {
+			return dimStyle.Render(
+				"↑/↓ row · pgup/pgdn page · ←/→/tab column · enter open · m merge · f run workflow · / search · ctrl+r reload · ctrl+o back",
+			)
+		}
+		return dimStyle.Render(
+			"↑/↓ row · pgup/pgdn page · ←/→/tab column · enter open · f run workflow · / search · ctrl+r reload · ctrl+o back",
+		)
 	}
 	return dimStyle.Render(
 		"↑/↓ row · pgup/pgdn page · ←/→/tab column · enter open · space pick up · f run workflow · / search · ctrl+r reload · ctrl+o back",
 	)
+}
+
+func (v *kanbanIssueView) hint() string {
+	return v.hintFor(nil)
 }
 
 func (v *kanbanIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueView, tea.Cmd, bool) {
@@ -2025,7 +2305,7 @@ func (v *kanbanIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueV
 	// Selection is screen-relative on kanban; any nav key drops the
 	// drag-select highlight so the new layout doesn't keep painting
 	// the old rectangle.
-	if isKanbanNav(msg) {
+	if isKanbanNavForState(s, v.carry.active, msg) {
 		s.clearSelection()
 	}
 	if v.carry.active {
@@ -2033,6 +2313,9 @@ func (v *kanbanIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueV
 	}
 	switch msg.Code {
 	case ' ':
+		if s.provider == nil || !s.provider.SupportsCarry() {
+			return v, nil, true
+		}
 		v.pickupCarry(s)
 		return v, nil, true
 	case tea.KeyEnter:
@@ -2043,7 +2326,13 @@ func (v *kanbanIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueV
 		if v.selRowIdx >= len(col.loaded) {
 			return v, nil, true
 		}
-		return newIssueDetailView(v, col.loaded[v.selRowIdx], v.width, v.height), nil, true
+		it := col.loaded[v.selRowIdx]
+		detail := newIssueDetailView(v, it, v.width, v.height)
+		if shouldHydrateIssueDetail(it) {
+			detail.setHydrating(true)
+			return detail, loadIssueDetailCmd(s.tabID, s.screen, s.provider, s.projectCfg, s.cwd, it.number), true
+		}
+		return detail, nil, true
 	case tea.KeyUp, 'k':
 		if v.selRowIdx > 0 {
 			v.selRowIdx--
@@ -2161,12 +2450,18 @@ func (v *kanbanIssueView) updateKeyCarrying(s *issuesState, msg tea.KeyPressMsg)
 // the view's focus state in a way that supersedes any active text
 // selection rectangle.
 func isKanbanNav(msg tea.KeyPressMsg) bool {
+	return isKanbanNavForState(nil, false, msg)
+}
+
+func isKanbanNavForState(s *issuesState, carrying bool, msg tea.KeyPressMsg) bool {
 	switch msg.Code {
 	case tea.KeyUp, tea.KeyDown, tea.KeyLeft, tea.KeyRight,
 		tea.KeyTab, tea.KeyEnter, tea.KeyEsc,
 		tea.KeyPgUp, tea.KeyPgDown,
-		' ', 'h', 'j', 'k', 'l', 'g', 'G':
+		'h', 'j', 'k', 'l', 'g', 'G':
 		return true
+	case ' ':
+		return carrying || (s != nil && s.provider != nil && s.provider.SupportsCarry())
 	}
 	return false
 }

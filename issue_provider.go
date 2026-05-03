@@ -134,6 +134,49 @@ type IssueProvider interface {
 	// resolve to a valid backend project (e.g. github needs
 	// owner/repo from `git remote get-url origin`).
 	IssueRef(cfg projectConfig, cwd string, it issue) (issueRef, error)
+	// SupportsCarry reports whether this provider participates in the
+	// kanban carry-and-drop status switcher (Space pickup, Tab move,
+	// Space drop). Issue providers typically return true so users can
+	// move cards between Open / Closed columns; PR providers return
+	// false because PRs don't drag — Open → Merged is an explicit
+	// merge action, not a column drag.
+	SupportsCarry() bool
+}
+
+// IssueMerger is an optional capability interface providers can
+// implement when their items support a merge action (PRs in
+// practice). The PR kanban screen probes the active provider via
+// type assertion: when it's an IssueMerger the `m` keybind on a
+// focused card runs the two-step flow (Mergeable pre-flight, then
+// Merge once the user confirms).
+//
+// Mergeable is a pre-flight check — providers consult their backend
+// for the latest "can this be merged" signal and return a
+// mergeableState that the screen translates into either a confirmation
+// modal (canMerge=true) or a refusal toast carrying the reason
+// (canMerge=false).
+//
+// Merge attempts the actual merge. On success the screen reloads the
+// affected columns; on error the screen surfaces the error verbatim
+// and leaves the row in place.
+type IssueMerger interface {
+	Mergeable(ctx context.Context, cfg projectConfig, cwd string, it issue) (mergeableState, error)
+	Merge(ctx context.Context, cfg projectConfig, cwd string, it issue) error
+}
+
+// mergeableState captures the pre-flight result returned by
+// IssueMerger.Mergeable. canMerge=true means the merge can be
+// attempted; canMerge=false means reason carries a human-readable
+// explanation (merge conflict, draft, blocked by branch protection,
+// behind base, …) the UI surfaces verbatim in a toast.
+//
+// state is the raw provider-side label (github's mergeable_state
+// string) preserved so tests and future renderers can branch on the
+// canonical token instead of the human-readable reason.
+type mergeableState struct {
+	canMerge bool
+	reason   string
+	state    string
 }
 
 // issueMCPServer is the MCP server descriptor ask injects into the
@@ -208,6 +251,8 @@ var issueProviderRegistry = []IssueProvider{
 	&githubIssueProvider{},
 }
 
+var githubPRScreenProvider IssueProvider = &githubPRProvider{}
+
 // issueProviderByID returns the registered provider with the given
 // id, or noneIssueProvider when nothing matches (including the
 // empty string for unconfigured projects). Never returns nil — the
@@ -227,6 +272,11 @@ func issueProviderByID(id string) IssueProvider {
 func activeIssueProvider(cfg askConfig, cwd string) (IssueProvider, projectConfig) {
 	pc := loadProjectConfig(cfg, cwd)
 	return issueProviderByID(pc.Issues.Provider), pc
+}
+
+func activePRProvider(cfg askConfig, cwd string) (IssueProvider, projectConfig) {
+	pc := loadProjectConfig(cfg, cwd)
+	return githubPRScreenProvider, pc
 }
 
 // noneIssueProvider is the explicit "issues are not configured"
@@ -255,3 +305,4 @@ func (noneIssueProvider) KanbanIssueStatus(KanbanColumnSpec) string { return "" 
 func (noneIssueProvider) IssueRef(projectConfig, string, issue) (issueRef, error) {
 	return issueRef{}, errIssueProviderNotConfigured
 }
+func (noneIssueProvider) SupportsCarry() bool { return false }
