@@ -846,13 +846,20 @@ func (b *workflowsBuilderState) render(width, height int) string {
 	case b.modelPicker:
 		return b.renderModelPicker(width, height)
 	}
+	// Layout (top → bottom):
+	//   row 0:                empty (top margin)
+	//   rows 1..1+paneH:      boxes
+	//   row 1+paneH:          empty (gap between boxes and hint)
+	//   row 2+paneH:          hint line
+	//   row 3+paneH:          empty (bottom margin)
+	// total = paneH + 4 = height ⇒ paneH = height - 4.
+	paneH := height - 4
+	if paneH < 6 {
+		paneH = 6
+	}
 	innerW := width - 2*workflowsScreenMargin
-	innerH := height - 2*workflowsScreenMargin
 	if innerW < workflowsLeftPaneMinWidth*2 {
 		innerW = workflowsLeftPaneMinWidth * 2
-	}
-	if innerH < 8 {
-		innerH = 8
 	}
 	leftW := innerW / 3
 	if leftW < workflowsLeftPaneMinWidth {
@@ -865,28 +872,43 @@ func (b *workflowsBuilderState) render(width, height int) string {
 		leftW = innerW / 2
 	}
 	rightW := innerW - leftW
-	left := b.renderLeftPane(leftW, innerH)
-	right := b.renderRightPane(rightW, innerH)
-	joined := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
-	return frameWithMargin(joined, workflowsScreenMargin)
+	left := b.renderLeftPane(leftW, paneH)
+	right := b.renderRightPane(rightW, paneH)
+	boxes := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	boxes = indentLines(boxes, workflowsScreenMargin)
+
+	hint := b.activeHint()
+	if t := b.consumeToast(); t != "" {
+		hint = t + " · " + hint
+	}
+	hintLine := strings.Repeat(" ", workflowsScreenMargin) +
+		configHelpStyle.Render(truncateForRow(hint, innerW))
+
+	var sb strings.Builder
+	sb.WriteString("\n") // top margin
+	sb.WriteString(boxes)
+	sb.WriteString("\n\n") // gap between boxes and hint
+	sb.WriteString(hintLine)
+	sb.WriteString("\n") // bottom margin
+	return sb.String()
 }
 
-// frameWithMargin wraps `body` with `m` rows of empty top/bottom
-// margin and `m` columns of empty left/right margin, producing a
-// uniformly-padded frame. Used by the workflows screen so the
-// split-screen content has the same chrome on all four sides.
-func frameWithMargin(body string, m int) string {
-	if m <= 0 {
-		return body
+// activeHint returns the help text shown on the screen-level hint
+// row at the bottom. Pulled from the focused pane so the user sees
+// keys relevant to where they are. The hint sits outside the box
+// chrome (per UX request) so a long string never wraps inside a
+// narrow pane.
+func (b *workflowsBuilderState) activeHint() string {
+	if b.focus == workflowsBuilderFocusLeft {
+		return "↑/↓ navigate · enter open · r rename · d delete · esc back"
 	}
-	pad := strings.Repeat(" ", m)
-	lines := strings.Split(body, "\n")
-	for i := range lines {
-		lines[i] = pad + lines[i]
+	switch b.rightMode {
+	case workflowsBuilderRightSteps:
+		return "↑/↓ navigate · enter edit · d delete · tab focus left · esc back"
+	case workflowsBuilderRightStep:
+		return "↑/↓ navigate · enter edit · esc back · tab focus left"
 	}
-	top := strings.Repeat("\n", m)
-	bottom := strings.Repeat("\n", m)
-	return top + strings.Join(lines, "\n") + bottom
+	return "tab focus left"
 }
 
 // renderLeftPane draws the workflow list. "+ New workflow" is row 0
@@ -901,11 +923,6 @@ func (b *workflowsBuilderState) renderLeftPane(width, height int) string {
 	for _, w := range b.items {
 		rows = append(rows, configItem{name: w.Name, key: ""})
 	}
-	hint := "↑/↓ navigate · enter open · r rename · d delete · esc back"
-	toast := b.consumeToast()
-	if toast != "" {
-		hint = toast + " · " + hint
-	}
 	return renderWorkflowsPane(workflowsPaneArgs{
 		width:    width,
 		height:   height,
@@ -914,7 +931,6 @@ func (b *workflowsBuilderState) renderLeftPane(width, height int) string {
 		rows:     rows,
 		cursor:   b.listCursor,
 		active:   b.focus == workflowsBuilderFocusLeft,
-		hint:     hint,
 	})
 }
 
@@ -941,7 +957,6 @@ func (b *workflowsBuilderState) renderRightEmpty(width, height int) string {
 		rows:     nil,
 		cursor:   0,
 		active:   b.focus == workflowsBuilderFocusRight,
-		hint:     "tab focus left",
 	})
 }
 
@@ -961,11 +976,6 @@ func (b *workflowsBuilderState) renderRightSteps(width, height int) string {
 		}
 		rows = append(rows, configItem{name: s.Name, key: desc})
 	}
-	hint := "↑/↓ navigate · enter edit · d delete · tab focus left · esc back"
-	toast := b.consumeToast()
-	if toast != "" {
-		hint = toast + " · " + hint
-	}
 	return renderWorkflowsPane(workflowsPaneArgs{
 		width:    width,
 		height:   height,
@@ -974,7 +984,6 @@ func (b *workflowsBuilderState) renderRightSteps(width, height int) string {
 		rows:     rows,
 		cursor:   b.stepsCursor,
 		active:   b.focus == workflowsBuilderFocusRight,
-		hint:     hint,
 	})
 }
 
@@ -1006,11 +1015,6 @@ func (b *workflowsBuilderState) renderRightStep(width, height int) string {
 		{name: "Model", key: modelDisplay},
 		{name: "Prompt", key: promptPreview},
 	}
-	hint := "↑/↓ navigate · enter edit · esc back · tab focus left"
-	toast := b.consumeToast()
-	if toast != "" {
-		hint = toast + " · " + hint
-	}
 	return renderWorkflowsPane(workflowsPaneArgs{
 		width:    width,
 		height:   height,
@@ -1019,7 +1023,6 @@ func (b *workflowsBuilderState) renderRightStep(width, height int) string {
 		rows:     rows,
 		cursor:   int(b.stepFieldCursor),
 		active:   b.focus == workflowsBuilderFocusRight,
-		hint:     hint,
 	})
 }
 
@@ -1035,6 +1038,10 @@ func (b *workflowsBuilderState) consumeToast() string {
 // workflowsPaneArgs is the shape of one pane in the split-screen
 // builder. Centralising the chrome means the two panes stay
 // pixel-aligned without each renderer eyeballing widths.
+//
+// Help text is NOT carried here — the screen-level renderer draws
+// a single hint row outside both boxes so a narrow pane can never
+// push it onto a second line and bleed into the bottom margin.
 type workflowsPaneArgs struct {
 	width, height int
 	title         string
@@ -1042,7 +1049,6 @@ type workflowsPaneArgs struct {
 	rows          []configItem
 	cursor        int
 	active        bool
-	hint          string
 }
 
 // renderWorkflowsPane renders a single side of the split-screen
@@ -1051,15 +1057,14 @@ type workflowsPaneArgs struct {
 // the dim border style.
 //
 // Vertical padding inside the box is zero — the only empty space
-// above the title and below the hint comes from the outer margin
-// applied by frameWithMargin. Horizontal padding stays so titles /
-// rows breathe inside the border.
+// above the title comes from the outer margin applied by the screen
+// renderer. Horizontal padding stays so titles / rows breathe
+// inside the border.
 //
-// The body is built to exactly fill the box's content area: `listH`
-// rows of list content plus a fixed-count chrome (title, two
-// blanks, hint) sums to `innerH`. The hint is truncated to a single
-// line so a narrow pane doesn't push the bottom border off-screen
-// via lipgloss's text-wrapping behaviour.
+// The body is built to exactly fill the box's content area: a fixed
+// 4-line chrome (title + blank + subtitle + blank) plus listH rows
+// sums to innerH. No hint inside the box — the screen-level
+// renderer draws a single hint row underneath.
 func renderWorkflowsPane(a workflowsPaneArgs) string {
 	borderColor := activeTheme.dim
 	if a.active {
@@ -1088,11 +1093,10 @@ func renderWorkflowsPane(a workflowsPaneArgs) string {
 		subtitleW = 1
 	}
 	subtitle := subtitlePrefix + dimStyle.Render(truncateForRow(a.subtitle, subtitleW))
-	hint := configHelpStyle.Render(truncateForRow(a.hint, innerW))
 
-	// Body lines: title + blank + subtitle + blank + listH rows +
-	// blank + hint = listH + 6.
-	listH := innerH - 6
+	// Body lines: title + blank + subtitle + blank + listH rows.
+	// Total = listH + 4.
+	listH := innerH - 4
 	if listH < 1 {
 		listH = 1
 	}
@@ -1127,8 +1131,6 @@ func renderWorkflowsPane(a workflowsPaneArgs) string {
 		subtitle,
 		strings.Repeat(" ", innerW),
 		strings.Join(rendered, "\n"),
-		strings.Repeat(" ", innerW),
-		hint,
 	}, "\n")
 	return box.Width(innerW).Render(body)
 }
