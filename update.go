@@ -1914,6 +1914,20 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 	case "/config":
 		m = m.startConfigModal()
 		return m, nil
+	case "/provider":
+		// Mirror the Ctrl+B guards — refuse mid-turn (the stream
+		// reader is tied to the current proc and the session id is
+		// about to be wiped) and refuse from a cwd that fails the
+		// LLM-startup gate (provider switch ends up calling ProbeInit
+		// which forks the new provider).
+		if m.busy {
+			return m, nil
+		}
+		if invalid := validateAskCwd(m.cwd); invalid.Msg != "" {
+			m.appendHistory(outputStyle.Render(errStyle.Render(invalid.Msg)))
+			return m, nil
+		}
+		return m.openProviderSwitch(), nil
 	case "/workflows":
 		// /workflows opens the builder. Same flow as Ctrl+W: drop
 		// any in-flight issues query so re-entry to the issues

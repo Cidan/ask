@@ -325,5 +325,6 @@ func (p *providerProc) kill() {
 // provider (they configure the app itself).
 var appBuiltinSlashCmds = []slashCmd{
 	{"/config", "configure ask"},
+	{"/provider", "switch provider for this tab"},
 	{"/workflows", "edit workflow pipelines"},
 }
