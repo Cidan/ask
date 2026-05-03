@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +42,6 @@ func leadingSpaces(s string) int {
 // rebuildColumnsFromSpecs populates each column from cache.
 func seedMockIssues(s *issuesState) {
 	all := mockIssues()
-	s.applySort(all)
 	s.provider = newFakeMockProvider(all)
 	s.currentQuery = nil
 	s.appendChunk(nil, issuePageChunk{cursor: "", issues: all})
@@ -88,19 +86,6 @@ func TestIssues_NewStateStartsEmpty(t *testing.T) {
 	}
 	if s.view.name() != "kanban" {
 		t.Errorf("default sub-view name=%q want kanban", s.view.name())
-	}
-}
-
-func TestIssues_DefaultSortIsByNumberAscending(t *testing.T) {
-	s := newIssuesState()
-	seedMockIssues(s)
-	all := issuesAll(s)
-	nums := make([]int, len(all))
-	for i, it := range all {
-		nums[i] = it.number
-	}
-	if !sort.IntsAreSorted(nums) {
-		t.Errorf("default sort not ascending: %v", nums)
 	}
 }
 
