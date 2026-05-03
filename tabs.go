@@ -469,6 +469,16 @@ func (a app) closeTab(tabID int) (tea.Model, tea.Cmd) {
 }
 
 // shutdown is called from main() once the tea.Program has stopped running.
+//
+// Order matters here: every per-tab mcpBridge must be fully stopped
+// (which now drains in-flight HTTP handlers via http.Server.Shutdown)
+// BEFORE closeMemoryService runs. Otherwise a still-executing memory
+// hook handler can race the neo4j driver being nilled out from under
+// it, which is the panic at neo4j/db.go:135 we previously hit on
+// Ctrl+C with an in-flight SessionStart hook. closeMemoryService also
+// holds the memory write lock until it returns, so even if a bridge
+// drain were to time out, an in-flight memoryRecall/Write would still
+// finish before the close completes — defense in depth.
 func (a app) shutdown() {
 	for _, t := range a.tabs {
 		t.drainPendingReplies()
@@ -480,8 +490,6 @@ func (a app) shutdown() {
 	}
 	// closeMemoryService is idempotent and safe to call when memory was
 	// never enabled this run, so we don't gate it on cfg.Memory.Enabled.
-	// This releases the bbolt file lock so a subsequent ask invocation
-	// can open the same DB without timing out.
 	if err := closeMemoryService(); err != nil {
 		debugLog("memory close at shutdown: %v", err)
 	}

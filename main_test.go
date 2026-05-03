@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -221,6 +223,71 @@ func TestCloseTab_NonLastTabDoesNotArmQuitting(t *testing.T) {
 	}
 	if a2.quittingVID != "" {
 		t.Errorf("quittingVID should stay empty, got %q", a2.quittingVID)
+	}
+}
+
+// app.shutdown must not close the memory singleton until every tab's
+// bridge has drained in-flight HTTP handlers. This covers the full
+// Ctrl+C path end-to-end: if shutdown reordered the calls and closed
+// memory first, the closer would run while the hook request below is
+// still mid-body-read.
+func TestAppShutdown_DrainsBridgeBeforeClosingMemory(t *testing.T) {
+	isolateHome(t)
+	closer := newTestCloser()
+	installMemoryServiceForTest(t, testMemoryService{}, closer)
+
+	bridge, err := newMCPBridge(1)
+	if err != nil {
+		t.Fatalf("newMCPBridge: %v", err)
+	}
+
+	m := newTestModel(t, newFakeProvider())
+	m.mcpBridge = bridge
+	a := app{tabs: []*model{&m}, active: 0}
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", bridge.port))
+	if err != nil {
+		t.Fatalf("dial bridge: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	req := "POST /hooks/session-start HTTP/1.1\r\n" +
+		"Host: 127.0.0.1\r\n" +
+		"Content-Length: 4096\r\n" +
+		"Content-Type: application/json\r\n" +
+		"\r\n" +
+		`{"source":"startup"`
+	if _, err := conn.Write([]byte(req)); err != nil {
+		t.Fatalf("write partial request: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		a.shutdown()
+		close(shutdownDone)
+	}()
+
+	select {
+	case <-closer.called:
+		t.Fatal("memory closed before bridge drained the in-flight hook")
+	case <-shutdownDone:
+		t.Fatal("shutdown returned before the in-flight hook finished")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	_ = conn.Close()
+
+	select {
+	case <-shutdownDone:
+	case <-time.After(bridgeShutdownTimeout + time.Second):
+		t.Fatal("shutdown did not complete after hook connection closed")
+	}
+
+	select {
+	case <-closer.called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("memory closer was never invoked during shutdown")
 	}
 }
 
