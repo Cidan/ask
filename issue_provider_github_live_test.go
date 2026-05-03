@@ -48,7 +48,7 @@ func TestGitHubProvider_LiveDumpToolNames(t *testing.T) {
 	defer cancel()
 	cli := mcp.NewClient(&mcp.Implementation{Name: "ask-debug", Version: "0.1"}, nil)
 	transport := &mcp.StreamableClientTransport{
-		Endpoint: githubIssuesDefaultEndpoint,
+		Endpoint: githubMCPDefaultEndpoint,
 		HTTPClient: &http.Client{
 			Transport: &bearerRoundTripper{base: http.DefaultTransport, token: token},
 			Timeout:   30 * time.Second,
@@ -81,7 +81,7 @@ func TestGitHubProvider_LiveDumpIssueRead(t *testing.T) {
 	defer cancel()
 	cli := mcp.NewClient(&mcp.Implementation{Name: "ask-debug", Version: "0.1"}, nil)
 	transport := &mcp.StreamableClientTransport{
-		Endpoint: githubIssuesDefaultEndpoint,
+		Endpoint: githubMCPDefaultEndpoint,
 		HTTPClient: &http.Client{
 			Transport: &bearerRoundTripper{base: http.DefaultTransport, token: token},
 			Timeout:   30 * time.Second,
@@ -131,7 +131,7 @@ func TestGitHubProvider_LiveDumpListIssuesPayload(t *testing.T) {
 	defer cancel()
 	cli := mcp.NewClient(&mcp.Implementation{Name: "ask-debug", Version: "0.1"}, nil)
 	transport := &mcp.StreamableClientTransport{
-		Endpoint: githubIssuesDefaultEndpoint,
+		Endpoint: githubMCPDefaultEndpoint,
 		HTTPClient: &http.Client{
 			Transport: &bearerRoundTripper{base: http.DefaultTransport, token: token},
 			Timeout:   30 * time.Second,
@@ -196,10 +196,8 @@ func TestGitHubProvider_LiveListIssues(t *testing.T) {
 	}
 	p := &githubIssueProvider{}
 	pc := projectConfig{
-		Issues: issuesConfig{
-			Provider: "github",
-			GitHub:   githubIssuesConfig{Token: token},
-		},
+		Issues: issuesConfig{Provider: "github"},
+		MCP:    projectMCPConfig{GitHub: githubMCPConfig{Token: token}},
 	}
 	if !p.Configured(pc, cwd) {
 		t.Fatalf("Configured returned false for cwd=%q — origin not on github.com?", cwd)
@@ -246,10 +244,8 @@ func TestGitHubProvider_LiveGetIssue(t *testing.T) {
 	}
 	p := &githubIssueProvider{}
 	pc := projectConfig{
-		Issues: issuesConfig{
-			Provider: "github",
-			GitHub:   githubIssuesConfig{Token: token},
-		},
+		Issues: issuesConfig{Provider: "github"},
+		MCP:    projectMCPConfig{GitHub: githubMCPConfig{Token: token}},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

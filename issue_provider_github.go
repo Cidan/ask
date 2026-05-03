@@ -64,14 +64,16 @@ func (p *githubIssueProvider) ID() string          { return "github" }
 func (p *githubIssueProvider) DisplayName() string { return "GitHub Issues" }
 
 // Configured reports whether the provider can dispatch a request.
-// Three things must line up: provider selected, token set, and
-// cwd resolves to a github.com remote. Endpoint is allowed to be
-// empty — it falls through to the documented default.
+// Three things must line up: provider selected, MCP token set
+// (cfg.MCP.GitHub — the issue provider piggybacks on the project's
+// GitHub MCP slot), and cwd resolves to a github.com remote.
+// Endpoint is allowed to be empty — it falls through to the
+// documented default.
 func (p *githubIssueProvider) Configured(cfg projectConfig, cwd string) bool {
 	if cfg.Issues.Provider != p.ID() {
 		return false
 	}
-	if cfg.Issues.GitHub.Token == "" {
+	if cfg.MCP.GitHub.Token == "" {
 		return false
 	}
 	if _, _, err := resolveGitHubRepo(cwd); err != nil {
@@ -250,7 +252,7 @@ func (p *githubIssueProvider) KanbanColumns() []KanbanColumnSpec {
 // array (older shape) we fall back to HasMore = (len(issues) ==
 // perPage) and leave NextCursor blank.
 func (p *githubIssueProvider) ListIssues(ctx context.Context, cfg projectConfig, cwd string, query IssueQuery, page IssuePagination) (IssueListPage, error) {
-	if cfg.Issues.GitHub.Token == "" {
+	if cfg.MCP.GitHub.Token == "" {
 		return IssueListPage{}, errIssueProviderNotConfigured
 	}
 	owner, repo, err := resolveGitHubRepo(cwd)
@@ -260,7 +262,7 @@ func (p *githubIssueProvider) ListIssues(ctx context.Context, cfg projectConfig,
 	if page.PerPage <= 0 {
 		page.PerPage = githubDefaultPerPage
 	}
-	cs, err := p.connect(ctx, cfg.Issues.GitHub)
+	cs, err := p.connect(ctx, cfg.MCP.GitHub)
 	if err != nil {
 		return IssueListPage{}, err
 	}
@@ -309,14 +311,14 @@ func (p *githubIssueProvider) ListIssues(ctx context.Context, cfg projectConfig,
 // calls and merge; comments are best-effort since the description
 // alone is still a useful detail page if the second call fails.
 func (p *githubIssueProvider) GetIssue(ctx context.Context, cfg projectConfig, cwd string, number int) (issue, error) {
-	if cfg.Issues.GitHub.Token == "" {
+	if cfg.MCP.GitHub.Token == "" {
 		return issue{}, errIssueProviderNotConfigured
 	}
 	owner, repo, err := resolveGitHubRepo(cwd)
 	if err != nil {
 		return issue{}, fmt.Errorf("resolve repo: %w", err)
 	}
-	cs, err := p.connect(ctx, cfg.Issues.GitHub)
+	cs, err := p.connect(ctx, cfg.MCP.GitHub)
 	if err != nil {
 		return issue{}, err
 	}
@@ -357,7 +359,7 @@ func (p *githubIssueProvider) GetIssue(ctx context.Context, cfg projectConfig, c
 // drops are short-circuited at the kanban layer and never reach
 // this method.
 func (p *githubIssueProvider) MoveIssue(ctx context.Context, cfg projectConfig, cwd string, it issue, target KanbanColumnSpec) error {
-	if cfg.Issues.GitHub.Token == "" {
+	if cfg.MCP.GitHub.Token == "" {
 		return errIssueProviderNotConfigured
 	}
 	owner, repo, err := resolveGitHubRepo(cwd)
@@ -368,7 +370,7 @@ func (p *githubIssueProvider) MoveIssue(ctx context.Context, cfg projectConfig, 
 	if !ok || gq == nil {
 		return fmt.Errorf("move: target column has no github query")
 	}
-	cs, err := p.connect(ctx, cfg.Issues.GitHub)
+	cs, err := p.connect(ctx, cfg.MCP.GitHub)
 	if err != nil {
 		return err
 	}
@@ -425,28 +427,6 @@ func githubBuildMoveIssueArgs(owner, repo string, issueNumber int, target *githu
 	return githubToolIssueWrite, args
 }
 
-// MCPServer returns the github MCP server descriptor for injection
-// into the chat agent's --mcp-config. Returns nil when the project
-// isn't fully configured (no PAT, or cwd doesn't resolve to a github
-// remote) — letting the chat agent see a half-wired github tool that
-// errors on every call would be worse than not exposing it at all.
-//
-// The Authorization header carries the user's PAT verbatim. Keep the
-// Headers field out of any debug log; the bearerRoundTripper warning
-// in this file applies here too.
-func (p *githubIssueProvider) MCPServer(cfg projectConfig, cwd string) *issueMCPServer {
-	if !p.Configured(cfg, cwd) {
-		return nil
-	}
-	return &issueMCPServer{
-		Name: "github",
-		URL:  githubEndpointOrDefault(cfg.Issues.GitHub),
-		Headers: map[string]string{
-			"Authorization": "Bearer " + cfg.Issues.GitHub.Token,
-		},
-	}
-}
-
 // IssueRef resolves cwd to "owner/repo" via the same mechanism the
 // rest of the github provider uses (`git remote get-url origin`),
 // then assembles the canonical issueRef for `it`. Returns
@@ -491,8 +471,8 @@ func (p *githubIssueProvider) fetchComments(ctx context.Context, cs *mcp.ClientS
 // in either field tears down the old session and spins up a fresh
 // one against the new credentials. Concurrent callers serialise on
 // p.mu so a flurry of issues-screen renders only handshakes once.
-func (p *githubIssueProvider) connect(ctx context.Context, cfg githubIssuesConfig) (*mcp.ClientSession, error) {
-	endpoint := githubEndpointOrDefault(cfg)
+func (p *githubIssueProvider) connect(ctx context.Context, cfg githubMCPConfig) (*mcp.ClientSession, error) {
+	endpoint := githubMCPEndpointOrDefault(cfg)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.session != nil && p.cachedEndpoint == endpoint && p.cachedToken == cfg.Token {

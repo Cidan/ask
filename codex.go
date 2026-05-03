@@ -210,9 +210,9 @@ type codexState struct {
 // flag writes to). Each path is strconv.Quote'd so spaces or quotes
 // don't break codex's TOML parser.
 //
-// IssueMCP translates to a -c mcp_servers.<name>.url override pair.
+// ProjectMCP translates to a -c mcp_servers.<name>.url override pair.
 // Codex pulls the bearer token from an env var (not from config), so
-// we point it at codexIssueMCPBearerEnv and codexEnv exports the
+// we point it at codexProjectMCPBearerEnv and codexEnv exports the
 // matching key.
 func codexCLIArgs(args ProviderSessionArgs) []string {
 	out := []string{"app-server", "--listen", "stdio://"}
@@ -224,29 +224,30 @@ func codexCLIArgs(args ProviderSessionArgs) []string {
 		out = append(out, "-c",
 			"sandbox_workspace_write.writable_roots=["+strings.Join(quoted, ",")+"]")
 	}
-	if mcp := args.IssueMCP; mcp != nil && mcp.Name != "" && mcp.URL != "" {
+	if mcp := args.ProjectMCP; mcp != nil && mcp.Name != "" && mcp.URL != "" {
 		base := "mcp_servers." + mcp.Name
 		out = append(out, "-c", base+".url="+strconv.Quote(mcp.URL))
-		if codexIssueBearerToken(mcp) != "" {
+		if codexProjectMCPBearerToken(mcp) != "" {
 			out = append(out, "-c",
-				base+".bearer_token_env_var="+strconv.Quote(codexIssueMCPBearerEnv))
+				base+".bearer_token_env_var="+strconv.Quote(codexProjectMCPBearerEnv))
 		}
 	}
 	return out
 }
 
-// codexIssueMCPBearerEnv is the env-var name codex reads for the
+// codexProjectMCPBearerEnv is the env-var name codex reads for the
 // streamable-HTTP bearer token. Hard-coded — codex's MCP config takes
-// only one bearer slot per server and ask only injects one issue MCP
-// per session, so a single well-known env var is enough.
-const codexIssueMCPBearerEnv = "ASK_ISSUE_MCP_BEARER"
+// only one bearer slot per server and ask only injects one project
+// MCP per session, so a single well-known env var is enough.
+const codexProjectMCPBearerEnv = "ASK_PROJECT_MCP_BEARER"
 
-// codexIssueBearerToken extracts the raw bearer token from an issue
-// MCP descriptor's Authorization header (`Bearer <token>`). Returns
-// empty string when the descriptor has no Authorization header — the
-// caller then omits the bearer_token_env_var override, leaving the
-// MCP server unauthenticated (which is fine for public servers).
-func codexIssueBearerToken(mcp *issueMCPServer) string {
+// codexProjectMCPBearerToken extracts the raw bearer token from a
+// project MCP descriptor's Authorization header (`Bearer <token>`).
+// Returns empty string when the descriptor has no Authorization
+// header — the caller then omits the bearer_token_env_var override,
+// leaving the MCP server unauthenticated (which is fine for public
+// servers).
+func codexProjectMCPBearerToken(mcp *issueMCPServer) string {
 	if mcp == nil {
 		return ""
 	}
@@ -260,18 +261,18 @@ func codexIssueBearerToken(mcp *issueMCPServer) string {
 
 // codexEnv returns the env block for the codex subprocess. Inherits
 // the parent process env and layers on the bearer-token env var when
-// an issue MCP with auth is configured. Pulled out so tests assert
+// a project MCP with auth is configured. Pulled out so tests assert
 // the env without spawning a process.
 func codexEnv(args ProviderSessionArgs) []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, codexIssueMCPBearerEnv+"=") {
+		if strings.HasPrefix(e, codexProjectMCPBearerEnv+"=") {
 			continue
 		}
 		env = append(env, e)
 	}
-	if tok := codexIssueBearerToken(args.IssueMCP); tok != "" {
-		env = append(env, codexIssueMCPBearerEnv+"="+tok)
+	if tok := codexProjectMCPBearerToken(args.ProjectMCP); tok != "" {
+		env = append(env, codexProjectMCPBearerEnv+"="+tok)
 	}
 	return env
 }

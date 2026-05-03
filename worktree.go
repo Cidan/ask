@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -25,6 +26,11 @@ const (
 	workspaceBackendNone workspaceBackend = iota
 	workspaceBackendGit
 	workspaceBackendJJ
+)
+
+var (
+	worktreeNameMu        sync.Mutex
+	reservedWorktreeNames = map[string]map[string]struct{}{}
 )
 
 // ensureWorktreeGitignore makes sure the repo at cwd ignores
@@ -569,9 +575,15 @@ func createWorktree() (path, name string, err error) {
 }
 
 func createWorktreeAt(cwd string) (path, name string, err error) {
+	parent := filepath.Join(cwd, ".claude", "worktrees")
 	name = newWorktreeName(cwd)
+	defer func() {
+		if err != nil && name != "" {
+			releaseWorktreeName(parent, name)
+		}
+	}()
 	path = worktreePath(cwd, name)
-	if err := os.MkdirAll(filepath.Join(cwd, ".claude", "worktrees"), 0o755); err != nil {
+	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return "", "", fmt.Errorf("prepare worktrees dir: %w", err)
 	}
 	switch worktreeBackendAt(cwd) {
@@ -608,19 +620,62 @@ func worktreePath(cwd, name string) string {
 
 // newWorktreeName returns a fresh worktree directory name as an
 // `<adjective>-<verb>-<noun>` triple drawn uniformly from the curated lists in
-// worktree_words.go (125,000 combinations). A stat-based collision check
-// retries the triple if the directory happens to exist; after eight draws we
-// fall back to the same triple plus a 6-char alphanumeric tail so the function
-// can't spin forever even in pathological repos.
+// worktree_words.go (125,000 combinations). It rejects both names that already
+// exist on disk and names the current process has already handed out for the
+// same repo root, so back-to-back calls stay unique even before createWorktree
+// has created the directory. After eight triple-only draws we fall back to the
+// same triple plus a 6-char alphanumeric tail so the function can't spin
+// forever even in pathological repos.
 func newWorktreeName(cwd string) string {
 	parent := filepath.Join(cwd, ".claude", "worktrees")
 	for attempt := 0; attempt < 8; attempt++ {
 		name := randomWhimsy()
+		if !reserveWorktreeName(parent, name) {
+			continue
+		}
 		if _, err := os.Stat(filepath.Join(parent, name)); os.IsNotExist(err) {
 			return name
 		}
+		releaseWorktreeName(parent, name)
 	}
-	return randomWhimsy() + "-" + randomAlphanum(6)
+	for {
+		name := randomWhimsy() + "-" + randomAlphanum(6)
+		if !reserveWorktreeName(parent, name) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(parent, name)); os.IsNotExist(err) {
+			return name
+		}
+		releaseWorktreeName(parent, name)
+	}
+}
+
+func reserveWorktreeName(parent, name string) bool {
+	worktreeNameMu.Lock()
+	defer worktreeNameMu.Unlock()
+	used := reservedWorktreeNames[parent]
+	if used == nil {
+		used = map[string]struct{}{}
+		reservedWorktreeNames[parent] = used
+	}
+	if _, exists := used[name]; exists {
+		return false
+	}
+	used[name] = struct{}{}
+	return true
+}
+
+func releaseWorktreeName(parent, name string) {
+	worktreeNameMu.Lock()
+	defer worktreeNameMu.Unlock()
+	used := reservedWorktreeNames[parent]
+	if used == nil {
+		return
+	}
+	delete(used, name)
+	if len(used) == 0 {
+		delete(reservedWorktreeNames, parent)
+	}
 }
 
 // randomWhimsy picks one adjective, one verb, one noun from the curated lists

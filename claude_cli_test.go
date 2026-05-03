@@ -219,15 +219,15 @@ func TestClaudeCLIArgs_ExplicitModelPassesThrough(t *testing.T) {
 	}
 }
 
-// When the project has a configured issue provider, its MCP entry
-// must land in --mcp-config alongside the loopback "ask" bridge so
-// the chat agent has the same issue-tracker access ask uses for
-// ctrl+i. Auth headers go on the entry verbatim — the chat agent's
-// MCP client reads them and attaches Authorization: Bearer …
-func TestClaudeCLIArgs_IssueMCPInjectedIntoMCPConfig(t *testing.T) {
+// When the project has a configured GitHub MCP slot, its entry must
+// land in --mcp-config alongside the loopback "ask" bridge so the
+// chat agent has the same MCP access ask uses for ctrl+i. Auth
+// headers go on the entry verbatim — the chat agent's MCP client
+// reads them and attaches Authorization: Bearer …
+func TestClaudeCLIArgs_ProjectMCPInjectedIntoMCPConfig(t *testing.T) {
 	args := claudeCLIArgs(ProviderSessionArgs{
 		MCPPort: 4321,
-		IssueMCP: &issueMCPServer{
+		ProjectMCP: &issueMCPServer{
 			Name:    "github",
 			URL:     "https://api.githubcopilot.com/mcp",
 			Headers: map[string]string{"Authorization": "Bearer ghp_secret"},
@@ -263,7 +263,51 @@ func TestClaudeCLIArgs_IssueMCPInjectedIntoMCPConfig(t *testing.T) {
 	}
 }
 
-func TestClaudeCLIArgs_NoIssueMCP_OnlyAskEntry(t *testing.T) {
+// The end-to-end inversion: with Issues.Provider == "" but a
+// project-level MCP token populated, the chat agent must still
+// receive the github MCP entry via projectGitHubMCP →
+// ProviderSessionArgs.ProjectMCP → claudeMCPConfig. This is the whole
+// point of decoupling the MCP slot from the issues provider — chat
+// access without forcing the user into the issues UI.
+func TestClaudeCLIArgs_ProjectMCPIndependentOfIssueProvider(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	cfg, _ := loadConfig()
+	cfg = upsertProjectConfig(cfg, cwd, projectConfig{
+		MCP: projectMCPConfig{GitHub: githubMCPConfig{Token: "ghp_secret"}},
+		// Issues.Provider deliberately left empty.
+	})
+	if err := saveConfig(cfg); err != nil {
+		t.Fatalf("seed saveConfig: %v", err)
+	}
+	args := claudeCLIArgs(ProviderSessionArgs{
+		MCPPort:    4321,
+		ProjectMCP: projectGitHubMCP(cwd),
+	}, false)
+	cfgRaw := argAfter(args, "--mcp-config")
+	if cfgRaw == "" {
+		t.Fatalf("--mcp-config missing: %v", args)
+	}
+	var parsed struct {
+		MCPServers map[string]struct {
+			Type    string            `json:"type"`
+			URL     string            `json:"url"`
+			Headers map[string]string `json:"headers"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(cfgRaw), &parsed); err != nil {
+		t.Fatalf("--mcp-config not JSON (%v): %s", err, cfgRaw)
+	}
+	gh, ok := parsed.MCPServers["github"]
+	if !ok {
+		t.Fatalf("github MCP entry must be injected when MCP token is set even without an issue provider; got %s", cfgRaw)
+	}
+	if gh.Headers["Authorization"] != "Bearer ghp_secret" {
+		t.Errorf("Authorization header missing or wrong: %+v", gh.Headers)
+	}
+}
+
+func TestClaudeCLIArgs_NoProjectMCP_OnlyAskEntry(t *testing.T) {
 	args := claudeCLIArgs(ProviderSessionArgs{MCPPort: 4321}, false)
 	cfg := argAfter(args, "--mcp-config")
 	var parsed struct {
@@ -276,7 +320,7 @@ func TestClaudeCLIArgs_NoIssueMCP_OnlyAskEntry(t *testing.T) {
 		t.Errorf("ask entry should always exist: %s", cfg)
 	}
 	if len(parsed.MCPServers) != 1 {
-		t.Errorf("only ask should be present without IssueMCP, got %d entries: %s",
+		t.Errorf("only ask should be present without ProjectMCP, got %d entries: %s",
 			len(parsed.MCPServers), cfg)
 	}
 }

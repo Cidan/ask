@@ -48,7 +48,33 @@ type askConfig struct {
 // absent, so callers don't have to nil-check.
 type projectConfig struct {
 	Issues    issuesConfig    `json:"issues,omitempty"`
+	MCP       projectMCPConfig `json:"mcp,omitempty"`
 	Workflows workflowsConfig `json:"workflows,omitempty"`
+}
+
+// projectMCPConfig holds the per-project MCP server credentials that
+// get injected into the chat agent's --mcp-config and reused by issue
+// providers that piggyback on the same backend (e.g. github issues
+// share the GitHub MCP). Today there's a single GitHub slot; future
+// MCP backends sit alongside as sibling fields.
+//
+// Decoupled from issuesConfig so the chat agent can have GitHub MCP
+// access without the issues UI being wired up — and conversely so a
+// user enabling github issues is forced to configure the MCP first
+// (the issue provider piggybacks on this slot, not the other way
+// around).
+type projectMCPConfig struct {
+	GitHub githubMCPConfig `json:"github,omitempty"`
+}
+
+// githubMCPConfig wires the GitHub MCP server. Endpoint defaults to
+// the official Copilot MCP host when blank; Token is the user's PAT.
+// Token is held in 0600 config — the user explicitly rejected env-var
+// indirection ("just config file for that specific project setting"),
+// so it lives here.
+type githubMCPConfig struct {
+	Endpoint string `json:"endpoint,omitempty"`
+	Token    string `json:"token,omitempty"`
 }
 
 // workflowsConfig holds the per-project workflows definition list and
@@ -113,9 +139,12 @@ type workflowSession struct {
 // issuesConfig is the per-project issue-tracking configuration.
 // Provider names which IssueProvider implementation to dispatch to;
 // the rest of the fields are provider-specific and only consulted
-// when the matching Provider is selected. This shape lets us add a
-// ClickUp / Linear / GitLab block as siblings to GitHub without
-// migrating the existing on-disk config.
+// when the matching Provider is selected. Backends that need a
+// network credential read it from projectConfig.MCP rather than
+// duplicating it here — e.g. github issues piggyback on
+// projectConfig.MCP.GitHub. This shape lets us add a ClickUp /
+// Linear / GitLab block as siblings to GitHub without migrating the
+// existing on-disk config.
 type issuesConfig struct {
 	// Provider is the IssueProvider id ("github", "clickup", …) or
 	// "" for "issues not configured for this project". The default
@@ -123,29 +152,17 @@ type issuesConfig struct {
 	// configured for this project" toast when the user opens the
 	// issues screen.
 	Provider string `json:"provider,omitempty"`
-
-	GitHub githubIssuesConfig `json:"github,omitempty"`
 }
 
-// githubIssuesConfig wires the GitHub MCP server. Endpoint defaults
-// to the official Copilot MCP host when blank; Token is the user's
-// PAT. Token is held in 0600 config — the user explicitly rejected
-// env-var indirection ("just config file for that specific project
-// setting"), so it lives here.
-type githubIssuesConfig struct {
-	Endpoint string `json:"endpoint,omitempty"`
-	Token    string `json:"token,omitempty"`
-}
+// githubMCPDefaultEndpoint is the official GitHub Copilot-hosted MCP
+// server. Used when githubMCPConfig.Endpoint is empty.
+const githubMCPDefaultEndpoint = "https://api.githubcopilot.com/mcp"
 
-// githubIssuesDefaultEndpoint is the official GitHub Copilot-hosted
-// MCP server. Used when githubIssuesConfig.Endpoint is empty.
-const githubIssuesDefaultEndpoint = "https://api.githubcopilot.com/mcp"
-
-// githubEndpointOrDefault applies the documented fallback so callers
+// githubMCPEndpointOrDefault applies the documented fallback so callers
 // don't have to remember the constant.
-func githubEndpointOrDefault(c githubIssuesConfig) string {
+func githubMCPEndpointOrDefault(c githubMCPConfig) string {
 	if c.Endpoint == "" {
-		return githubIssuesDefaultEndpoint
+		return githubMCPDefaultEndpoint
 	}
 	return c.Endpoint
 }
@@ -246,6 +263,9 @@ func upsertProjectConfig(cfg askConfig, cwd string, pc projectConfig) askConfig 
 // equality check that broke when workflowsConfig added a map field.
 func isProjectConfigEmpty(pc projectConfig) bool {
 	if pc.Issues != (issuesConfig{}) {
+		return false
+	}
+	if pc.MCP != (projectMCPConfig{}) {
 		return false
 	}
 	if len(pc.Workflows.Items) > 0 || len(pc.Workflows.Sessions) > 0 {
@@ -416,6 +436,7 @@ func loadConfig() (askConfig, error) {
 	}
 	_ = json.Unmarshal(data, &cfg)
 	migrateLegacyToolOutput(&cfg, data)
+	migrateLegacyIssuesGitHub(&cfg, data)
 	return cfg, nil
 }
 
@@ -442,6 +463,47 @@ func migrateLegacyToolOutput(cfg *askConfig, data []byte) {
 		cfg.UI.ToolOutput = string(toolOutputShort)
 	} else {
 		cfg.UI.ToolOutput = string(toolOutputOff)
+	}
+}
+
+// migrateLegacyIssuesGitHub lifts the old per-project
+// `issues.github.{endpoint,token}` block into the new
+// `mcp.github.{endpoint,token}` slot. The github MCP credentials used
+// to be tucked under the issue provider's own config; we inverted that
+// so the chat agent can have GitHub MCP access without issues being
+// wired up, and so enabling github issues piggybacks on a real MCP
+// configuration. For each project entry that has the legacy block, we
+// preserve a populated endpoint/token unless the new slot already
+// carries a non-empty value (an explicit new value always wins).
+func migrateLegacyIssuesGitHub(cfg *askConfig, data []byte) {
+	if len(cfg.Projects) == 0 {
+		return
+	}
+	var legacy struct {
+		Projects map[string]struct {
+			Issues struct {
+				GitHub struct {
+					Endpoint string `json:"endpoint,omitempty"`
+					Token    string `json:"token,omitempty"`
+				} `json:"github,omitempty"`
+			} `json:"issues,omitempty"`
+		} `json:"projects,omitempty"`
+	}
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return
+	}
+	for key, lp := range legacy.Projects {
+		pc, ok := cfg.Projects[key]
+		if !ok {
+			continue
+		}
+		if pc.MCP.GitHub.Endpoint == "" && lp.Issues.GitHub.Endpoint != "" {
+			pc.MCP.GitHub.Endpoint = lp.Issues.GitHub.Endpoint
+		}
+		if pc.MCP.GitHub.Token == "" && lp.Issues.GitHub.Token != "" {
+			pc.MCP.GitHub.Token = lp.Issues.GitHub.Token
+		}
+		cfg.Projects[key] = pc
 	}
 }
 

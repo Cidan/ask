@@ -134,19 +134,10 @@ type IssueProvider interface {
 	// resolve to a valid backend project (e.g. github needs
 	// owner/repo from `git remote get-url origin`).
 	IssueRef(cfg projectConfig, cwd string, it issue) (issueRef, error)
-
-	// MCPServer returns the MCP server descriptor that should be
-	// injected into the chat agent's --mcp-config when this project
-	// uses the provider, so the chat agent has the same issue-tracker
-	// access ask itself uses for ctrl+i. nil means "don't inject" —
-	// either the provider is unconfigured (token missing, cwd doesn't
-	// resolve to a valid backend) or the provider has no MCP surface
-	// to share. The returned spec is consumed verbatim by claudeCLIArgs.
-	MCPServer(cfg projectConfig, cwd string) *issueMCPServer
 }
 
-// issueMCPServer is the MCP server descriptor an IssueProvider exposes
-// to the chat agent. Name is the key that appears under mcpServers in
+// issueMCPServer is the MCP server descriptor ask injects into the
+// chat agent. Name is the key that appears under mcpServers in
 // claude's --mcp-config (and the prefix the agent sees for tools, e.g.
 // `mcp__github__list_issues`). URL is the streamable HTTP endpoint;
 // Headers carries any auth headers the server needs (typically
@@ -264,4 +255,3 @@ func (noneIssueProvider) KanbanIssueStatus(KanbanColumnSpec) string { return "" 
 func (noneIssueProvider) IssueRef(projectConfig, string, issue) (issueRef, error) {
 	return issueRef{}, errIssueProviderNotConfigured
 }
-func (noneIssueProvider) MCPServer(projectConfig, string) *issueMCPServer { return nil }

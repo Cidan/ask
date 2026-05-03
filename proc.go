@@ -36,7 +36,7 @@ func (m model) sessionArgs() ProviderSessionArgs {
 		ResumeCwd:          m.resumeCwd,
 		PluginDir:          usagePluginDir,
 		AddedDirs:          append([]string(nil), m.addedDirs...),
-		IssueMCP:           projectIssueMCP(m.cwd),
+		ProjectMCP:         projectGitHubMCP(m.cwd),
 	}
 	if m.sessionMinted {
 		args.NewSessionID = m.sessionID
@@ -46,14 +46,17 @@ func (m model) sessionArgs() ProviderSessionArgs {
 	return args
 }
 
-// projectIssueMCP resolves the configured issue provider for cwd to
-// its MCP server descriptor, or nil when no provider is configured
-// (or the one selected isn't fully configured). Pulled out of
-// sessionArgs so the prepareProviderSession path — which also rebuilds
-// args from disk-backed config inside startAndSendProviderCmd — can
-// pick up the latest issue config after the user edits it without
-// having to re-thread state through every caller.
-func projectIssueMCP(cwd string) *issueMCPServer {
+// projectGitHubMCP resolves the project-level GitHub MCP credentials
+// for cwd into a wire-shape descriptor, or nil when the project hasn't
+// configured a token. Independent of the issue provider — the chat
+// agent receives the GitHub MCP whenever the user has populated
+// MCP.GitHub.Token, even if the issues backend is "" / disabled.
+// Pulled out of sessionArgs so the prepareProviderSession path — which
+// also rebuilds args from disk-backed config inside
+// startAndSendProviderCmd — can pick up the latest MCP config after
+// the user edits it without having to re-thread state through every
+// caller.
+func projectGitHubMCP(cwd string) *issueMCPServer {
 	if cwd == "" {
 		return nil
 	}
@@ -61,8 +64,17 @@ func projectIssueMCP(cwd string) *issueMCPServer {
 	if err != nil {
 		return nil
 	}
-	provider, pc := activeIssueProvider(cfg, cwd)
-	return provider.MCPServer(pc, cwd)
+	pc := loadProjectConfig(cfg, cwd)
+	if pc.MCP.GitHub.Token == "" {
+		return nil
+	}
+	return &issueMCPServer{
+		Name: "github",
+		URL:  githubMCPEndpointOrDefault(pc.MCP.GitHub),
+		Headers: map[string]string{
+			"Authorization": "Bearer " + pc.MCP.GitHub.Token,
+		},
+	}
 }
 
 // ensureProc lazily starts a provider session on first send in a turn.
