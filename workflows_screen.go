@@ -1049,6 +1049,17 @@ type workflowsPaneArgs struct {
 // builder. The active pane gets an accent border so the user can
 // tell at a glance which side has focus; the inactive pane uses
 // the dim border style.
+//
+// Vertical padding inside the box is zero — the only empty space
+// above the title and below the hint comes from the outer margin
+// applied by frameWithMargin. Horizontal padding stays so titles /
+// rows breathe inside the border.
+//
+// The body is built to exactly fill the box's content area: `listH`
+// rows of list content plus a fixed-count chrome (title, two
+// blanks, hint) sums to `innerH`. The hint is truncated to a single
+// line so a narrow pane doesn't push the bottom border off-screen
+// via lipgloss's text-wrapping behaviour.
 func renderWorkflowsPane(a workflowsPaneArgs) string {
 	borderColor := activeTheme.dim
 	if a.active {
@@ -1057,24 +1068,31 @@ func renderWorkflowsPane(a workflowsPaneArgs) string {
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
-		Padding(1, 2)
+		Padding(0, 2)
 
-	innerW := a.width - 6 // 2 border + 4 padding
+	innerW := a.width - 6 // 2 border + 4 horizontal padding
 	if innerW < 10 {
 		innerW = 10
 	}
-	innerH := a.height - 4 // 2 border + 2 padding
+	innerH := a.height - 2 // 2 border (no vertical padding)
 	if innerH < 6 {
 		innerH = 6
 	}
 
-	title := configTitleStyle.Render(a.title)
-	subtitle := configPromptStyle.Render("> ") + dimStyle.Render(a.subtitle)
-	hint := configHelpStyle.Render(a.hint)
+	// Truncate raw text before applying styles so the styled output
+	// stays at the right cell width (lipgloss.Width is escape-aware).
+	title := configTitleStyle.Render(truncateForRow(a.title, innerW))
+	subtitlePrefix := configPromptStyle.Render("> ")
+	subtitleW := innerW - lipgloss.Width(subtitlePrefix)
+	if subtitleW < 1 {
+		subtitleW = 1
+	}
+	subtitle := subtitlePrefix + dimStyle.Render(truncateForRow(a.subtitle, subtitleW))
+	hint := configHelpStyle.Render(truncateForRow(a.hint, innerW))
 
-	// Available rows for the row list = innerH - title - blank -
-	// subtitle - blank - blank-before-hint - hint = innerH-5.
-	listH := innerH - 5
+	// Body lines: title + blank + subtitle + blank + listH rows +
+	// blank + hint = listH + 6.
+	listH := innerH - 6
 	if listH < 1 {
 		listH = 1
 	}
@@ -1096,9 +1114,6 @@ func renderWorkflowsPane(a workflowsPaneArgs) string {
 	}
 	rendered := make([]string, 0, listH)
 	for i := start; i < end; i++ {
-		// On an inactive pane, render the cursor row dimmed so the
-		// user still sees their position without it competing with
-		// the active pane's accent highlight.
 		row := renderWorkflowsRow(a.rows[i], innerW, i == cursor, a.active)
 		rendered = append(rendered, row)
 	}
@@ -1108,14 +1123,14 @@ func renderWorkflowsPane(a workflowsPaneArgs) string {
 
 	body := strings.Join([]string{
 		title,
-		"",
+		strings.Repeat(" ", innerW),
 		subtitle,
-		"",
+		strings.Repeat(" ", innerW),
 		strings.Join(rendered, "\n"),
-		"",
+		strings.Repeat(" ", innerW),
 		hint,
 	}, "\n")
-	return box.Width(innerW).Height(innerH).Render(body)
+	return box.Width(innerW).Render(body)
 }
 
 // renderWorkflowsRow draws one list row inside a pane. activePane
