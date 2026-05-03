@@ -1224,6 +1224,9 @@ func (m model) issuesHandleMouse(msg tea.Msg) (model, tea.Cmd) {
 		// confusing if the drag was still in flight. Drop and start
 		// fresh.
 		s.clearSelection()
+		if kv, ok := s.view.(*kanbanIssueView); ok {
+			return m, kv.maybeFetchVisibleWork(s)
+		}
 		return m, nil
 
 	case tea.MouseClickMsg:
@@ -1862,6 +1865,75 @@ func (v *kanbanIssueView) shouldFetchNextPageForColumn(idx int) bool {
 	return true
 }
 
+func (v *kanbanIssueView) fixedRows() int {
+	rows := 2 // tabs + separator
+	if v.carry.active {
+		rows++
+	}
+	return rows
+}
+
+func (v *kanbanIssueView) visibleCardRows() int {
+	return max(1, v.height-v.fixedRows())
+}
+
+func (v *kanbanIssueView) cardYOffsetForColumn(idx int) int {
+	if idx < 0 || idx >= len(v.columns) {
+		return 0
+	}
+	col := v.columns[idx]
+	visible := v.visibleCardRows()
+	if len(col.loaded) <= visible || v.selRowIdx < visible {
+		return 0
+	}
+	maxOffset := len(col.loaded) - visible
+	offset := v.selRowIdx - visible + 1
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return offset
+}
+
+func (v *kanbanIssueView) cardYOffset() int {
+	return v.cardYOffsetForColumn(v.selColIdx)
+}
+
+func (v *kanbanIssueView) shouldFetchToFillViewportForColumn(idx int) bool {
+	if idx < 0 || idx >= len(v.columns) {
+		return false
+	}
+	col := v.columns[idx]
+	if !col.hasMore || col.fetching || col.nextCursor == "" {
+		return false
+	}
+	return len(col.loaded) < v.visibleCardRows()
+}
+
+func (v *kanbanIssueView) maybeFetchToFillViewport(s *issuesState) tea.Cmd {
+	idx := v.selColIdx
+	if !v.shouldFetchToFillViewportForColumn(idx) {
+		return nil
+	}
+	col := &v.columns[idx]
+	cursor := col.nextCursor
+	col.fetching = true
+	return loadIssuesPageCmd(
+		s.loadCtx, s.tabID, s.provider, s.projectCfg, s.cwd,
+		col.spec.Query, IssuePagination{Cursor: cursor, PerPage: githubDefaultPerPage},
+		s.queryGen,
+	)
+}
+
+func (v *kanbanIssueView) maybeFetchVisibleWork(s *issuesState) tea.Cmd {
+	if cmd := v.maybeFetchToFillViewport(s); cmd != nil {
+		return cmd
+	}
+	return v.maybeFetchNextPage(s)
+}
+
 func (v *kanbanIssueView) resize(width, height int) {
 	width = max(20, width)
 	v.width = width
@@ -1924,27 +1996,25 @@ func (v *kanbanIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueV
 				v.selRowIdx++
 			}
 		}
-		// Threshold check: dispatch the next-page cmd for this
-		// column when the cursor crosses 50%.
-		return v, v.maybeFetchNextPage(s), true
+		return v, v.maybeFetchVisibleWork(s), true
 	case tea.KeyLeft, 'h':
 		if v.selColIdx > 0 {
 			v.selColIdx--
 			v.clampSelection()
 		}
-		return v, nil, true
+		return v, v.maybeFetchToFillViewport(s), true
 	case tea.KeyRight, 'l':
 		if v.selColIdx+1 < len(v.columns) {
 			v.selColIdx++
 			v.clampSelection()
 		}
-		return v, nil, true
+		return v, v.maybeFetchToFillViewport(s), true
 	case tea.KeyTab:
 		if len(v.columns) > 0 {
 			v.selColIdx = (v.selColIdx + 1) % len(v.columns)
 			v.clampSelection()
 		}
-		return v, nil, true
+		return v, v.maybeFetchToFillViewport(s), true
 	case 'g':
 		v.selRowIdx = 0
 		return v, nil, true
@@ -1952,7 +2022,7 @@ func (v *kanbanIssueView) updateKey(s *issuesState, msg tea.KeyPressMsg) (issueV
 		if v.selColIdx < len(v.columns) {
 			v.selRowIdx = max(0, len(v.columns[v.selColIdx].loaded)-1)
 		}
-		return v, nil, true
+		return v, v.maybeFetchVisibleWork(s), true
 	}
 	return v, nil, true
 }
@@ -2064,7 +2134,10 @@ func (v *kanbanIssueView) renderBody(s *issuesState) string {
 		card = xansi.Truncate(card, v.width, "…")
 		lines = append(lines, carryStyle.Render(card))
 	}
-	for i, it := range col.loaded {
+	start := v.cardYOffset()
+	end := min(len(col.loaded), start+v.visibleCardRows())
+	for i := start; i < end; i++ {
+		it := col.loaded[i]
 		card := formatIssueCard(it, keyPrefix, hasKeyPrefix, s, v.width)
 		// While carrying, suppress the normal selection highlight —
 		// the carry card up top is the focus.
@@ -2124,9 +2197,9 @@ func (v *kanbanIssueView) renderNarrowTabs() string {
 }
 
 // scroll on kanban: no global vertical scroll, so report 0/0/0 and
-// the screen-level scrollbar stays hidden. Per-column scrolling for
-// dense backlogs is a follow-up — for the mock no column has more
-// rows than fit.
+// the screen-level scrollbar stays hidden. The focused row now stays
+// visible inside the bounded card window, but scrolling is still
+// selection-driven rather than scrollbar-driven.
 func (v *kanbanIssueView) scroll() (int, int, int) { return 0, 0, v.height }
 
 func (v *kanbanIssueView) setYOffset(int) {}
@@ -2141,11 +2214,11 @@ func (v *kanbanIssueView) wheel(delta int) {
 	col := v.columns[v.selColIdx]
 	switch {
 	case delta > 0:
-		if v.selRowIdx+1 < len(col.loaded) {
+		for i := 0; i < delta && v.selRowIdx+1 < len(col.loaded); i++ {
 			v.selRowIdx++
 		}
 	case delta < 0:
-		if v.selRowIdx > 0 {
+		for i := 0; i < -delta && v.selRowIdx > 0; i++ {
 			v.selRowIdx--
 		}
 	}

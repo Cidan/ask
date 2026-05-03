@@ -7,11 +7,34 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func liveGitHubOwnerRepo(t *testing.T) (string, string) {
+	t.Helper()
+	owner := os.Getenv("ASK_GITHUB_OWNER")
+	if owner == "" {
+		owner = "Cidan"
+	}
+	repo := os.Getenv("ASK_GITHUB_REPO")
+	if repo == "" {
+		repo = "ask"
+	}
+	return owner, repo
+}
+
+func liveGitHubPerPage() int {
+	if raw := os.Getenv("ASK_GITHUB_PER_PAGE"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 50
+}
 
 // TestGitHubProvider_LiveDumpToolNames lists every tool the
 // MCP server advertises so we can match real tool names against
@@ -103,6 +126,7 @@ func TestGitHubProvider_LiveDumpListIssuesPayload(t *testing.T) {
 	if token == "" {
 		t.Skip("set ASK_GITHUB_TOKEN to run")
 	}
+	owner, repo := liveGitHubOwnerRepo(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	cli := mcp.NewClient(&mcp.Implementation{Name: "ask-debug", Version: "0.1"}, nil)
@@ -121,16 +145,17 @@ func TestGitHubProvider_LiveDumpListIssuesPayload(t *testing.T) {
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
 		Name: "list_issues",
 		Arguments: map[string]any{
-			"owner":   "Cidan",
-			"repo":    "ask",
+			"owner":   owner,
+			"repo":    repo,
 			"state":   "all",
-			"perPage": 5,
+			"perPage": liveGitHubPerPage(),
 		},
 	})
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
 	t.Logf("IsError=%v", res.IsError)
+	t.Logf("owner/repo=%s/%s perPage=%d", owner, repo, liveGitHubPerPage())
 	t.Logf("StructuredContent != nil: %v", res.StructuredContent != nil)
 	if res.StructuredContent != nil {
 		b, _ := json.MarshalIndent(res.StructuredContent, "", "  ")
@@ -179,14 +204,22 @@ func TestGitHubProvider_LiveListIssues(t *testing.T) {
 	if !p.Configured(pc, cwd) {
 		t.Fatalf("Configured returned false for cwd=%q — origin not on github.com?", cwd)
 	}
+	var q IssueQuery
+	if raw := os.Getenv("ASK_GITHUB_QUERY"); raw != "" {
+		parsed, err := p.ParseQuery(raw)
+		if err != nil {
+			t.Fatalf("ParseQuery(%q): %v", raw, err)
+		}
+		q = parsed
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	page, err := p.ListIssues(ctx, pc, cwd, nil, IssuePagination{Cursor: "", PerPage: 50})
+	page, err := p.ListIssues(ctx, pc, cwd, q, IssuePagination{Cursor: "", PerPage: liveGitHubPerPage()})
 	if err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
 	issues := page.Issues
-	t.Logf("listed %d issues from cwd=%q", len(issues), cwd)
+	t.Logf("listed %d issues from cwd=%q query=%q perPage=%d", len(issues), cwd, os.Getenv("ASK_GITHUB_QUERY"), liveGitHubPerPage())
 	for i, it := range issues {
 		if i >= 5 {
 			t.Logf("  …(%d more)", len(issues)-5)

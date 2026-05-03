@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // newPaginatedTestState builds an issuesState whose provider is a
@@ -362,5 +364,97 @@ func TestKanbanColumn_NoFurtherDispatchWhenNextCursorEmpty(t *testing.T) {
 	v.columns[0].nextCursor = ""
 	if cmd := v.maybeFetchNextPage(s); cmd != nil {
 		t.Errorf("hasMore-with-empty-nextCursor should not dispatch (would round-trip the first-chunk sentinel)")
+	}
+}
+
+func TestKanbanPageLoad_AutoFetchesMoreWhenFirstChunkDoesNotFillViewport(t *testing.T) {
+	s, _, all := newPaginatedTestState(120)
+	s.tabID = 77
+	s.projectCfg = projectConfig{}
+	s.cwd = "/tmp"
+	kv := s.view.(*kanbanIssueView)
+	kv.resize(80, 10) // 2 fixed rows => 8 visible cards
+
+	m := newTestModel(t, newFakeProvider())
+	m.id = s.tabID
+	m.screen = screenIssues
+	m.issues = s
+	m.width = 100
+	m.height = 20
+
+	m, cmd := runUpdate(t, m, issuePageLoadedMsg{
+		tabID:           s.tabID,
+		gen:             s.queryGen,
+		query:           kv.columns[0].spec.Query,
+		requestedCursor: "",
+		page: IssueListPage{
+			Issues:     append([]issue(nil), all[:3]...),
+			NextCursor: "3",
+			HasMore:    true,
+		},
+	})
+	if cmd == nil {
+		t.Fatalf("short first chunk should dispatch a follow-up fetch to fill the viewport")
+	}
+	kv = m.issues.view.(*kanbanIssueView)
+	if !kv.columns[0].fetching {
+		t.Errorf("follow-up fetch should mark the selected column fetching")
+	}
+}
+
+func TestKanbanMouseWheel_DownCanTriggerNextPageFetch(t *testing.T) {
+	s, _, all := newPaginatedTestState(120)
+	s.tabID = 5
+	s.projectCfg = projectConfig{}
+	s.cwd = "/tmp"
+	kv := s.view.(*kanbanIssueView)
+	kv.columns[0].loaded = append([]issue(nil), all[:50]...)
+	kv.columns[0].nextCursor = "50"
+	kv.columns[0].hasMore = true
+	kv.selRowIdx = 22
+
+	m := newTestModel(t, newFakeProvider())
+	m.id = s.tabID
+	m.screen = screenIssues
+	m.issues = s
+	m.width = 100
+	m.height = 30
+	_ = m.activeScreen().view(m)
+
+	m, cmd := runUpdate(t, m, tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: 50, Y: 5})
+	if cmd == nil {
+		t.Fatalf("wheel-down across the threshold should dispatch the next page fetch")
+	}
+	kv = m.issues.view.(*kanbanIssueView)
+	if !kv.columns[0].fetching {
+		t.Errorf("wheel-triggered fetch should mark the column fetching")
+	}
+}
+
+func TestKanban_WindowResizeFetchesMoreWhenViewportGrowsPastLoadedRows(t *testing.T) {
+	s, _, all := newPaginatedTestState(120)
+	s.tabID = 9
+	s.projectCfg = projectConfig{}
+	s.cwd = "/tmp"
+	kv := s.view.(*kanbanIssueView)
+	kv.resize(80, 6) // 2 fixed rows => 4 visible cards
+	kv.columns[0].loaded = append([]issue(nil), all[:4]...)
+	kv.columns[0].nextCursor = "4"
+	kv.columns[0].hasMore = true
+
+	m := newTestModel(t, newFakeProvider())
+	m.id = s.tabID
+	m.screen = screenIssues
+	m.issues = s
+	m.width = 100
+	m.height = 12
+
+	m, cmd := runUpdate(t, m, tea.WindowSizeMsg{Width: 100, Height: 20})
+	if cmd == nil {
+		t.Fatalf("growing the viewport past the loaded row count should fetch more")
+	}
+	kv = m.issues.view.(*kanbanIssueView)
+	if !kv.columns[0].fetching {
+		t.Errorf("resize-triggered fetch should mark the selected column fetching")
 	}
 }

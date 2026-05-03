@@ -71,6 +71,34 @@ func TestParseGitHubIssueList_FromTextContent(t *testing.T) {
 	}
 }
 
+func TestParseGitHubIssueList_AcceptsStringLabelArrays(t *testing.T) {
+	res := &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: `{"issues":[
+				{"number": 946, "title": "Categories don't show their contents", "body": "details",
+				 "state": "OPEN", "created_at": "2026-04-29T23:12:06Z",
+				 "labels": ["bug", "triage"]},
+				{"number": 939, "title": "Battle pet error", "body": "details",
+				 "state": "OPEN", "created_at": "2026-04-06T16:27:38Z",
+				 "labels": ["bug"]}
+			]}`},
+		},
+	}
+	out, err := parseGitHubIssueList(res)
+	if err != nil {
+		t.Fatalf("parse err: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("want 2 issues, got %d", len(out))
+	}
+	if out[0].number != 946 || out[1].number != 939 {
+		t.Errorf("unexpected issue numbers: %+v", out)
+	}
+	if out[0].status != "open" || out[1].status != "open" {
+		t.Errorf("status normalization regressed: %+v", out)
+	}
+}
+
 // Zero-result responses are valid — kanban columns regularly hit
 // this for filters like is:closed reason:duplicate on a repo with
 // no duplicate-closed issues. None of these shapes are errors.
