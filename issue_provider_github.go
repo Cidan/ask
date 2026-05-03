@@ -634,15 +634,10 @@ type githubAPIIssue struct {
 	CreatedAt time.Time            `json:"created_at"`
 	Assignee  *githubAPIUserField  `json:"assignee"`
 	Assignees []githubAPIUserField `json:"assignees"`
-	Labels    []githubAPILabel     `json:"labels"`
 }
 
 type githubAPIUserField struct {
 	Login string `json:"login"`
-}
-
-type githubAPILabel struct {
-	Name string `json:"name"`
 }
 
 // githubAPIComment is the trim of a single comment payload.

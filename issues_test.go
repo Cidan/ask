@@ -838,6 +838,40 @@ func TestKanban_BodyShowsFocusedColumnAndHidesOthers(t *testing.T) {
 	}
 }
 
+func TestKanban_BodyKeepsFocusedRowVisibleInBoundedViewport(t *testing.T) {
+	s, _, all := newPaginatedTestState(20)
+	v := s.view.(*kanbanIssueView)
+	v.columns[0].loaded = append([]issue(nil), all...)
+	v.resize(80, 6) // 2 fixed rows => 4 visible cards
+	v.selRowIdx = 8
+
+	body := stripAnsi(v.view(s))
+	if !strings.Contains(body, "#9") {
+		t.Fatalf("focused row should stay visible after scrolling the bounded viewport:\n%s", body)
+	}
+	if strings.Contains(body, "#1") {
+		t.Errorf("top rows should scroll out once the selection moves down:\n%s", body)
+	}
+}
+
+func TestKanban_ResizeKeepsFocusedRowVisible(t *testing.T) {
+	s, _, all := newPaginatedTestState(20)
+	v := s.view.(*kanbanIssueView)
+	v.columns[0].loaded = append([]issue(nil), all...)
+	v.resize(80, 6)
+	v.selRowIdx = 10
+	before := stripAnsi(v.view(s))
+	if !strings.Contains(before, "#11") {
+		t.Fatalf("setup: focused row missing before resize:\n%s", before)
+	}
+
+	v.resize(80, 8)
+	after := stripAnsi(v.view(s))
+	if !strings.Contains(after, "#11") {
+		t.Fatalf("focused row should remain visible after resize:\n%s", after)
+	}
+}
+
 func TestIssues_FirstCtrlCArmsExit(t *testing.T) {
 	m := enterIssuesScreen(t)
 	if m.exitArmed {

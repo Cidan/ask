@@ -128,6 +128,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 				col.nextCursor = msg.page.NextCursor
 				col.hasMore = msg.page.HasMore
 				col.fetching = false
+				if idx == kv.selColIdx {
+					return m, kv.maybeFetchToFillViewport(s)
+				}
 			}
 		}
 		return m, nil
@@ -196,6 +199,22 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		// wrappedFor != width inside ensureEntryWrapped, which also
 		// owns rebuilding m.renderer at the new width.
 		m.lastContentFP = ""
+		if m.screen == screenIssues && m.issues != nil {
+			width := msg.Width
+			height := msg.Height
+			if width <= 0 {
+				width = 80
+			}
+			if height <= 0 {
+				height = 24
+			}
+			contentW := max(20, width-issueScreenIndent-1)
+			contentH := max(4, height-issueScreenChromeHeight(m.issues))
+			m.issues.view.resize(contentW, contentH)
+			if kv, ok := m.issues.view.(*kanbanIssueView); ok {
+				return m, kv.maybeFetchToFillViewport(m.issues)
+			}
+		}
 		return m, nil
 
 	case spinner.TickMsg:
