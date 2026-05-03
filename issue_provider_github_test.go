@@ -147,6 +147,38 @@ func TestParseGitHubIssue_FromTextContent(t *testing.T) {
 	}
 }
 
+func TestGitHubAPIToIssue_UnescapesHTMLEntities(t *testing.T) {
+	t.Run("escaped fields", func(t *testing.T) {
+		got := githubAPIToIssue(githubAPIIssue{
+			Number: 12,
+			Title:  "fish &amp; chips &lt;beta&gt; &quot;quote&quot; &#39;apos&#39; &#x27;hex&#x27;",
+			Body:   "body &amp; copy &lt;tag&gt;",
+			State:  "open",
+		})
+		if got.title != `fish & chips <beta> "quote" 'apos' 'hex'` {
+			t.Fatalf("title=%q", got.title)
+		}
+		if got.description != "body & copy <tag>" {
+			t.Fatalf("description=%q", got.description)
+		}
+	})
+
+	t.Run("plain text is unchanged", func(t *testing.T) {
+		got := githubAPIToIssue(githubAPIIssue{
+			Number: 13,
+			Title:  "already plain",
+			Body:   "",
+			State:  "open",
+		})
+		if got.title != "already plain" {
+			t.Fatalf("title=%q", got.title)
+		}
+		if got.description != "" {
+			t.Fatalf("description=%q", got.description)
+		}
+	})
+}
+
 func TestParseGitHubComments_Roundtrip(t *testing.T) {
 	res := &mcp.CallToolResult{
 		Content: []mcp.Content{
@@ -162,6 +194,27 @@ func TestParseGitHubComments_Roundtrip(t *testing.T) {
 	}
 	if len(out) != 1 || out[0].author != "fritz" || out[0].body != "+1" {
 		t.Errorf("comment mismatch: %+v", out)
+	}
+}
+
+func TestParseGitHubComments_UnescapesHTMLEntities(t *testing.T) {
+	res := &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: `[
+				{"user": {"login": "fritz"}, "created_at": "2026-02-01T10:00:00Z",
+				 "body": "rock &amp; roll &lt;ok&gt; &#39;yep&#39;"}
+			]`},
+		},
+	}
+	out, err := parseGitHubComments(res)
+	if err != nil {
+		t.Fatalf("parse err: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("want 1 comment, got %d", len(out))
+	}
+	if out[0].body != "rock & roll <ok> 'yep'" {
+		t.Fatalf("body=%q", out[0].body)
 	}
 }
 
@@ -486,8 +539,31 @@ func TestGitHubProvider_BuildSearchQ_ScopesAndQuotesLabels(t *testing.T) {
 	if !strings.Contains(s, "label:p0") {
 		t.Errorf("simple label missing: %q", s)
 	}
+	if !strings.Contains(s, "sort:created-desc") {
+		t.Errorf("default sort missing: %q", s)
+	}
+	if strings.Contains(s, "order:desc") {
+		t.Errorf("search query should use combined sort qualifier, got %q", s)
+	}
 	if !strings.Contains(s, "boom") {
 		t.Errorf("free text missing: %q", s)
+	}
+}
+
+func TestGitHubBuildSearchQ_RespectsExplicitSortAndOrder(t *testing.T) {
+	s := githubBuildSearchQ("Cidan", "ask", &githubQuery{
+		state: "open",
+		sort:  "updated",
+		order: "asc",
+	})
+	if !strings.Contains(s, "sort:updated-asc") {
+		t.Fatalf("explicit sort missing: %q", s)
+	}
+	if strings.Contains(s, "order:asc") || strings.Contains(s, "sort:updated order:asc") {
+		t.Fatalf("search query should use combined sort qualifier: %q", s)
+	}
+	if strings.Contains(s, "sort:created-desc") {
+		t.Fatalf("defaults should not leak over explicit values: %q", s)
 	}
 }
 
@@ -497,6 +573,12 @@ func TestGitHubProvider_QueryNeedsSearch_StateOnlyDoesnt(t *testing.T) {
 	}
 	if githubQueryNeedsSearch(&githubQuery{state: "open"}) {
 		t.Error("state-only query shouldn't need search")
+	}
+	if githubQueryNeedsSearch(&githubQuery{sort: "created"}) {
+		t.Error("sort-only query shouldn't need search")
+	}
+	if githubQueryNeedsSearch(&githubQuery{order: "asc"}) {
+		t.Error("order-only query shouldn't need search")
 	}
 	if !githubQueryNeedsSearch(&githubQuery{labels: []string{"bug"}}) {
 		t.Error("label query should need search")
@@ -524,6 +606,12 @@ func TestGitHubBuildListIssuesArgs_AfterOmittedWhenEmpty(t *testing.T) {
 	if args["perPage"] != 50 {
 		t.Errorf("perPage should always be present, got args=%+v", args)
 	}
+	if got := args["sort"]; got != "created" {
+		t.Errorf("sort=%v want created", got)
+	}
+	if got := args["direction"]; got != "desc" {
+		t.Errorf("direction=%v want desc", got)
+	}
 	if _, present := args["page"]; present {
 		t.Errorf("page must NOT be sent under cursor pagination, got args=%+v", args)
 	}
@@ -541,6 +629,36 @@ func TestGitHubBuildListIssuesArgs_AfterPresentWhenSet(t *testing.T) {
 	}
 	if _, present := args["page"]; present {
 		t.Errorf("page must NOT be sent, got args=%+v", args)
+	}
+}
+
+func TestGitHubBuildListIssuesArgs_DefaultsSortAndDirection(t *testing.T) {
+	tool, args := githubBuildListIssuesArgs("Cidan", "ask", &githubQuery{state: "open"}, IssuePagination{PerPage: 50})
+	if tool != githubToolListIssues {
+		t.Fatalf("state-only query should route to list_issues, got %q", tool)
+	}
+	if got := args["sort"]; got != "created" {
+		t.Fatalf("sort=%v want created", got)
+	}
+	if got := args["direction"]; got != "desc" {
+		t.Fatalf("direction=%v want desc", got)
+	}
+}
+
+func TestGitHubBuildListIssuesArgs_RespectsExplicitSortAndDirection(t *testing.T) {
+	tool, args := githubBuildListIssuesArgs("Cidan", "ask", &githubQuery{
+		state: "open",
+		sort:  "updated",
+		order: "asc",
+	}, IssuePagination{PerPage: 50})
+	if tool != githubToolListIssues {
+		t.Fatalf("state-only query should route to list_issues, got %q", tool)
+	}
+	if got := args["sort"]; got != "updated" {
+		t.Fatalf("sort=%v want updated", got)
+	}
+	if got := args["direction"]; got != "asc" {
+		t.Fatalf("direction=%v want asc", got)
 	}
 }
 
@@ -566,6 +684,24 @@ func TestGitHubBuildListIssuesArgs_SearchPathHonoursCursor(t *testing.T) {
 	_, argsCursor := githubBuildListIssuesArgs("Cidan", "ask", gq, IssuePagination{Cursor: "xyz", PerPage: 30})
 	if got := argsCursor["after"]; got != "xyz" {
 		t.Errorf("after=%v want %q (search path)", got, "xyz")
+	}
+}
+
+func TestGitHubBuildListIssuesArgs_OpenKanbanColumnKeepsListPath(t *testing.T) {
+	col := (&githubIssueProvider{}).KanbanColumns()[0]
+	gq, ok := col.Query.(*githubQuery)
+	if !ok {
+		t.Fatalf("open column query type=%T want *githubQuery", col.Query)
+	}
+	tool, args := githubBuildListIssuesArgs("Cidan", "ask", gq, IssuePagination{PerPage: 50})
+	if tool != githubToolListIssues {
+		t.Fatalf("open kanban column should stay on list_issues, got %q", tool)
+	}
+	if got := args["sort"]; got != "created" {
+		t.Fatalf("sort=%v want created", got)
+	}
+	if got := args["direction"]; got != "desc" {
+		t.Fatalf("direction=%v want desc", got)
 	}
 }
 

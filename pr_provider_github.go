@@ -546,11 +546,16 @@ func githubBuildSearchPRQ(owner, repo string, q *githubPRQuery) string {
 	if q.noAssignee {
 		parts = append(parts, "no:assignee")
 	}
-	if q.sort != "" {
-		parts = append(parts, "sort:"+q.sort)
-	}
-	if q.order != "" {
-		parts = append(parts, "order:"+q.order)
+	if q.sort != "" || q.order != "" {
+		sort := q.sort
+		order := q.order
+		if sort == "" {
+			sort = githubDefaultSort
+		}
+		if order == "" {
+			order = githubDefaultOrder
+		}
+		parts = append(parts, "sort:"+sort+"-"+order)
 	}
 	if q.freeText != "" {
 		parts = append(parts, q.freeText)
@@ -767,10 +772,10 @@ func githubAPIPRToIssue(pr githubAPIPR) issue {
 	}
 	return issue{
 		number:      pr.Number,
-		title:       pr.Title,
+		title:       githubUnescapeText(pr.Title),
 		assignee:    assignee,
 		status:      status,
 		createdAt:   pr.CreatedAt,
-		description: pr.Body,
+		description: githubUnescapeText(pr.Body),
 	}
 }
