@@ -7,6 +7,13 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+func renderedLineCount(s string) int {
+	if s == "" {
+		return 1
+	}
+	return strings.Count(s, "\n") + 1
+}
+
 func testAppWithTwoTabs(t *testing.T) app {
 	t.Helper()
 	first := newTestModel(t, newFakeProvider())
@@ -176,6 +183,48 @@ func TestApp_ResumeMsgClearsSuspendingAndReturnsToAltScreen(t *testing.T) {
 	}
 	if strings.Contains(view.Content, "backgrounded") {
 		t.Errorf("post-resume View should not show backgrounded message; content=%q", view.Content)
+	}
+}
+
+func TestApp_ViewPinsTabBarToBottomOnIssuesScreen(t *testing.T) {
+	a := testAppWithTwoTabs(t)
+	active := enterIssuesScreen(t)
+	active.id = a.tabs[a.active].id
+	active.height = a.bodyHeight()
+	a.tabs[a.active] = &active
+	a.width = active.width
+	a.height = active.height + a.tabBarHeight()
+
+	view := a.View()
+	lines := strings.Split(view.Content, "\n")
+
+	if got, want := renderedLineCount(view.Content), a.height; got != want {
+		t.Fatalf("rendered line count=%d want app height=%d\n%s", got, want, view.Content)
+	}
+	if got, want := strings.TrimRight(lines[len(lines)-1], " "), strings.TrimRight(a.renderTabBar(), " "); got != want {
+		t.Fatalf("last line=%q want tab bar=%q", got, want)
+	}
+}
+
+func TestApp_ViewPinsTabBarToBottomDuringIssuesLoad(t *testing.T) {
+	a := testAppWithTwoTabs(t)
+	active := enterIssuesScreen(t)
+	active.id = a.tabs[a.active].id
+	active.height = a.bodyHeight()
+	active.issues.loading = true
+	active.issues.loadingMessage = "Reticulating splines..."
+	a.tabs[a.active] = &active
+	a.width = active.width
+	a.height = active.height + a.tabBarHeight()
+
+	view := a.View()
+	lines := strings.Split(view.Content, "\n")
+
+	if got, want := renderedLineCount(view.Content), a.height; got != want {
+		t.Fatalf("rendered line count=%d want app height=%d\n%s", got, want, view.Content)
+	}
+	if got, want := strings.TrimRight(lines[len(lines)-1], " "), strings.TrimRight(a.renderTabBar(), " "); got != want {
+		t.Fatalf("last line=%q want tab bar=%q", got, want)
 	}
 }
 

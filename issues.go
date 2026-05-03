@@ -315,8 +315,8 @@ type issuesState struct {
 // re-fetching.
 type issueView interface {
 	name() string
-	// resize is called on WindowSizeMsg and on screen entry so the
-	// sub-view can re-fit its widgets to the available body area.
+	// resize is called on WindowSizeMsg and on screen entry with the
+	// available body area after the screen chrome is accounted for.
 	resize(width, height int)
 	// updateKey handles keys when this sub-view is active. Returns the
 	// (possibly mutated) view, a tea.Cmd, and handled=true if the key
@@ -635,12 +635,20 @@ func (s *issuesState) setView(v issueView) {
 	s.view = v
 }
 
-// issueScreenChrome is the row budget the screen reserves around the
-// active sub-view (header line + spacer above, hint line below). Used
-// by kanbanIssueView.resize and issueDetailView.resize to compute
-// available body height; bumping it here keeps the calculation in
-// one place when chrome changes.
-const issueScreenChrome = 4
+// issueScreenChromeBase is the row budget the screen always reserves
+// around the active sub-view: header line + spacer above + hint line
+// below. Optional chrome, such as the search row, is layered on top
+// by issueScreenChromeHeight so the body does not lose a line when
+// the extra row is absent.
+const issueScreenChromeBase = 3
+
+func issueScreenChromeHeight(s *issuesState) int {
+	chrome := issueScreenChromeBase
+	if s != nil && s.search != nil {
+		chrome++
+	}
+	return chrome
+}
 
 // issueScreenIndent is the left margin every line on the issues screen
 // shares — matching the chat side's outputStyle (MarginLeft(5)) so the
@@ -853,7 +861,6 @@ func renderIssuesScrollbar(viewportH, total, yOffset int) []string {
 	}
 	return out
 }
-
 
 // issuesScreen is the screen interface implementation; state lives on
 // the model (m.issues), not here, so the implementation can be
@@ -1092,15 +1099,20 @@ func (issuesScreen) view(m model) string {
 	// allocation, even when there's no overflow, so selection /
 	// click-routing math stays stable as content grows or shrinks.
 	contentW := max(20, width-issueScreenIndent-1)
-	m.issues.view.resize(contentW, height)
+	contentH := max(4, height-issueScreenChromeHeight(m.issues))
+	m.issues.view.resize(contentW, contentH)
 
 	bodyView := m.issues.view.view(m.issues)
 	bodyLines := strings.Split(bodyView, "\n")
 
 	// Track the screen footprint of the body so mouse handlers can
 	// translate clicks back to (sub-view content row, column). Header
-	// is one line, then a blank, so body starts at screen Y == 2.
-	const bodyTopRow = 2
+	// is one line, then a blank; the optional search row sits between
+	// that chrome and the body when active.
+	bodyTopRow := 2
+	if m.issues.search != nil {
+		bodyTopRow++
+	}
 	s := m.issues
 	s.bodyTopRow = bodyTopRow
 	s.bodyContentH = len(bodyLines)
@@ -1360,11 +1372,10 @@ func (v *issueDetailView) name() string { return "detail" }
 
 func (v *issueDetailView) resize(width, height int) {
 	width = max(20, width)
-	contentH := max(4, height-issueScreenChrome)
 	v.width = width
-	v.height = height
+	v.height = max(4, height)
 	v.vp.SetWidth(width)
-	v.vp.SetHeight(contentH)
+	v.vp.SetHeight(v.height)
 	if v.renderedFor != width || v.rendered == "" {
 		v.rendered = v.renderBody(width)
 		v.renderedFor = width
@@ -1853,9 +1864,8 @@ func (v *kanbanIssueView) shouldFetchNextPageForColumn(idx int) bool {
 
 func (v *kanbanIssueView) resize(width, height int) {
 	width = max(20, width)
-	contentH := max(4, height-issueScreenChrome)
 	v.width = width
-	v.height = contentH
+	v.height = max(4, height)
 }
 
 func (v *kanbanIssueView) header(s *issuesState) string {

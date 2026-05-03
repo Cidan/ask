@@ -189,8 +189,23 @@ func (a app) View() tea.View {
 		return v
 	}
 	bar := a.renderTabBar()
-	v.Content = strings.TrimRight(v.Content, "\n") + "\n" + bar
+	v.Content = bodyContentAtHeight(v.Content, a.bodyHeight()) + "\n" + bar
 	return v
+}
+
+func bodyContentAtHeight(content string, height int) string {
+	if height < 1 {
+		height = 1
+	}
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	lines := strings.Split(content, "\n")
+	switch {
+	case len(lines) > height:
+		lines = lines[:height]
+	case len(lines) < height:
+		lines = append(lines, make([]string, height-len(lines))...)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // dispatchActive forwards a message to the currently active tab only.
