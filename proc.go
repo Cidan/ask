@@ -437,12 +437,38 @@ func (m *model) killProc() {
 		return
 	}
 	m.proc.kill()
+	drainProviderStream(m.streamCh)
 	m.proc = nil
 	m.streamCh = nil
 	m.busy = false
 	m.status = ""
 	m.todos = nil
 	m.bgTasks = nil
+}
+
+// drainProviderStream consumes any remaining messages on a provider's
+// stream channel after the proc has been killed, so the writer
+// goroutine (readClaudeStream / readCodexStream) can finish its drain
+// of buffered stdout, reach `cmd.Wait()`, send `providerExitedMsg`,
+// and hit its `defer close(ch)`. Without this, a writer blocked on a
+// full 32-slot channel never reaches its exit path: nothing reads from
+// the orphaned channel because the model has already swapped to a new
+// stream (workflow step transition, /clear, provider switch). The
+// next-turn `nextStreamCmd` reads a single stale message, the proc
+// guard in Update drops it without rearming, and the writer wedges
+// permanently — claude's stdout pipe fills, the child process can't
+// flush its tail events, and the entire pipeline can stall.
+//
+// The range loop terminates when the writer's `defer close(ch)` runs.
+// Safe to call with a nil channel.
+func drainProviderStream(ch chan tea.Msg) {
+	if ch == nil {
+		return
+	}
+	go func() {
+		for range ch {
+		}
+	}()
 }
 
 // drainPendingReplies unblocks any MCP tool call that was waiting on
