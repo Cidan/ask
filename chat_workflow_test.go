@@ -89,8 +89,8 @@ func TestChatWorkflowSource_LabelAndKey(t *testing.T) {
 
 // TestChatWorkflowSource_KeyIsUniquePerSpawn covers the "two
 // consecutive Ctrl+F runs from the same tab must not collide in
-// the workflow tracker" requirement. The timestamp suffix gives
-// each spawn a distinct key even when nothing else changed.
+// the workflow tracker" requirement. The generated suffix gives each
+// spawn a distinct key even when nothing else changed.
 func TestChatWorkflowSource_KeyIsUniquePerSpawn(t *testing.T) {
 	hist := []historyEntry{{kind: histUser, text: "x"}}
 	a := chatWorkflowSource(3, hist)

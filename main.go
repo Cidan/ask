@@ -272,7 +272,12 @@ func main() {
 		startupResumeVID = vid
 	}
 	cfg, _ := loadConfig()
-	_ = saveConfig(cfg)
+	// Re-save right after load so any silent migration applied by
+	// loadConfig (legacy field rewrites) lands on disk in the
+	// canonical shape. Held under the lock for consistency with
+	// every other production write site, even though main runs
+	// before any goroutine fires.
+	_ = withConfigLock(func() error { return saveConfig(cfg) })
 	if cfg.UI.Worktree != nil && *cfg.UI.Worktree {
 		ensureWorktreeGitignore()
 	}

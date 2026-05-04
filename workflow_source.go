@@ -3,8 +3,11 @@ package main
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+var workflowSourceNonce atomic.Uint64
 
 // workflowSourceKind tags which payload the source carries. The
 // runtime machinery (picker, tab, runner, banner) is source-agnostic;
@@ -15,6 +18,11 @@ type workflowSourceKind int
 const (
 	workflowSourceIssue workflowSourceKind = iota
 	workflowSourceChat
+	// workflowSourceText is the LLM-driven entry path: an MCP
+	// workflow_run call hands an arbitrary text blob the agent
+	// wants appended after step 1's prompt. Disposable per run —
+	// no kanban surface, no on-disk identity.
+	workflowSourceText
 )
 
 // chatTurn is one filtered entry in a chat-source transcript. Role is
@@ -44,6 +52,19 @@ type workflowSource struct {
 	ChatLabel      string
 	ChatKey        string
 	ChatTranscript []chatTurn
+
+	// TextLabel is the user-facing tag rendered in the picker title /
+	// banner for text sources ("text (256 chars)").
+	TextLabel string
+	// TextKey is the unique session-map key for this text run
+	// ("mcp:<tabID>:<unix-nanos>:<counter>") so two consecutive
+	// workflow_run calls don't collide on the workflow tracker.
+	TextKey string
+	// TextAppend carries the raw blob the LLM wants appended after
+	// step 1's prompt. Empty means RefBlock returns "" — no
+	// reference section, just the user's prompt + previous-step
+	// output.
+	TextAppend string
 }
 
 // Key returns the canonical session-map key for the source. Issue
@@ -57,6 +78,8 @@ func (s workflowSource) Key() string {
 		return s.Issue.Key()
 	case workflowSourceChat:
 		return s.ChatKey
+	case workflowSourceText:
+		return s.TextKey
 	}
 	return ""
 }
@@ -70,6 +93,8 @@ func (s workflowSource) Display() string {
 		return s.Issue.Display()
 	case workflowSourceChat:
 		return s.ChatLabel
+	case workflowSourceText:
+		return s.TextLabel
 	}
 	return ""
 }
@@ -102,6 +127,12 @@ func (s workflowSource) RefBlock() string {
 			b.WriteString(strings.TrimSpace(t.Text))
 		}
 		return b.String()
+	case workflowSourceText:
+		body := strings.TrimSpace(s.TextAppend)
+		if body == "" {
+			return ""
+		}
+		return "Reference:\n" + body
 	}
 	return ""
 }
@@ -118,14 +149,13 @@ func issueWorkflowSource(ref issueRef) workflowSource {
 // `histResponse` entries — `histPrerendered` (tool calls, results,
 // status banners, shell output, info messages) is dropped so the
 // agent only sees real conversation turns. Empty messages (after
-// whitespace trim) are skipped too. The Key embeds the spawning
-// tabID plus the spawn timestamp so two Ctrl+F presses on the same
-// tab produce distinct tracker entries instead of stomping each
-// other.
+// whitespace trim) are skipped too. The Key embeds the spawning tabID
+// plus a timestamp/counter suffix so two Ctrl+F presses on the same tab
+// produce distinct tracker entries instead of stomping each other.
 func chatWorkflowSource(tabID int, history []historyEntry) workflowSource {
 	turns := chatTurnsFromHistory(history)
 	label := fmt.Sprintf("chat (%s)", chatTurnCountLabel(len(turns)))
-	key := fmt.Sprintf("chat:%d:%d", tabID, time.Now().UnixNano())
+	key := workflowSourceKey("chat", tabID)
 	return workflowSource{
 		Kind:           workflowSourceChat,
 		ChatLabel:      label,
@@ -169,4 +199,38 @@ func chatTurnCountLabel(n int) string {
 		return "1 turn"
 	}
 	return fmt.Sprintf("%d turns", n)
+}
+
+// textWorkflowSource builds a text-flavoured source from a raw blob.
+// `originTabID` namespaces the session key so two simultaneous runs
+// from different chat tabs can't collide on the workflow tracker; the
+// timestamp/counter suffix makes consecutive runs from the same tab
+// distinct too. `appendText` is the literal text the LLM wants threaded
+// into step 1's user prompt — empty is allowed (the runner just emits
+// the user prompt + previous-step output, no Reference block).
+func textWorkflowSource(originTabID int, appendText string) workflowSource {
+	body := strings.TrimSpace(appendText)
+	label := textWorkflowLabel(body)
+	key := workflowSourceKey("mcp", originTabID)
+	return workflowSource{
+		Kind:       workflowSourceText,
+		TextLabel:  label,
+		TextKey:    key,
+		TextAppend: body,
+	}
+}
+
+// textWorkflowLabel renders the picker title / banner suffix for a
+// text source. Empty body → "text (empty)" so the user can still
+// see the picker title makes sense; otherwise "text (N chars)".
+func textWorkflowLabel(body string) string {
+	if body == "" {
+		return "text (empty)"
+	}
+	return fmt.Sprintf("text (%d chars)", len([]rune(body)))
+}
+
+func workflowSourceKey(prefix string, tabID int) string {
+	return fmt.Sprintf("%s:%d:%d:%d",
+		prefix, tabID, time.Now().UnixNano(), workflowSourceNonce.Add(1))
 }

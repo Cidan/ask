@@ -339,11 +339,13 @@ func (claudeProvider) LoadSettings() ProviderSettings {
 }
 
 func (claudeProvider) SaveSettings(s ProviderSettings) error {
-	cfg, _ := loadConfig()
-	cfg.Claude.Model = s.Model
-	cfg.Claude.Effort = s.Effort
-	cfg.Claude.SlashCommands = s.SlashCommands
-	return saveConfig(cfg)
+	return withConfigLock(func() error {
+		cfg, _ := loadConfig()
+		cfg.Claude.Model = s.Model
+		cfg.Claude.Effort = s.Effort
+		cfg.Claude.SlashCommands = s.SlashCommands
+		return saveConfig(cfg)
+	})
 }
 
 func (claudeProvider) ListSessions(cwd string) ([]sessionEntry, error) {
