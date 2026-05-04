@@ -7,8 +7,32 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
+
+// configFileMu serialises read-modify-write cycles against the on-disk
+// config (~/.config/ask/ask.json). loadConfig and saveConfig are
+// individually fine, but a load → mutate → save chain run from two
+// goroutines races the file: the second saver clobbers whatever the
+// first one persisted. The lock is package-scoped because the file
+// itself is the contended resource — every goroutine on the process
+// (MCP handlers on independent HTTP threads, the tea loop, the
+// workflow tracker's broadcast goroutine) shares one config file.
+var configFileMu sync.Mutex
+
+// withConfigLock holds configFileMu around fn. Use it whenever the
+// caller intends to load → mutate → save the config in one atomic
+// sequence. Callers that only need to read may use loadConfig
+// directly; callers that only need to write a wholly-fresh config may
+// use saveConfig directly. The lock is what makes interleaved CRUD
+// (e.g. concurrent workflow_edit MCP calls) durable instead of
+// last-writer-wins.
+func withConfigLock(fn func() error) error {
+	configFileMu.Lock()
+	defer configFileMu.Unlock()
+	return fn()
+}
 
 // neo4jDefaultHost is what the picker fills in when the user has not
 // configured a host explicitly. memmy talks Bolt, and Bolt's
@@ -47,9 +71,9 @@ type askConfig struct {
 // loadProjectConfig returns the zero value when the project key is
 // absent, so callers don't have to nil-check.
 type projectConfig struct {
-	Issues    issuesConfig    `json:"issues,omitempty"`
+	Issues    issuesConfig     `json:"issues,omitempty"`
 	MCP       projectMCPConfig `json:"mcp,omitempty"`
-	Workflows workflowsConfig `json:"workflows,omitempty"`
+	Workflows workflowsConfig  `json:"workflows,omitempty"`
 }
 
 // projectMCPConfig holds the per-project MCP server credentials that
@@ -190,10 +214,10 @@ func projectKey(cwd string) string {
 //   - main checkout `~/repo`            → `~/repo`
 //   - worktree under
 //     `~/repo/.claude/worktrees/foo`    → `~/repo` (walks past the
-//                                          worktree's .git file
-//                                          since the file isn't a
-//                                          directory, then up two
-//                                          more levels)
+//     worktree's .git file
+//     since the file isn't a
+//     directory, then up two
+//     more levels)
 //   - subdir of `~/repo/cmd/x`          → `~/repo`
 //   - non-checkout dir `/tmp/scratch`   → `/tmp/scratch`
 //
@@ -512,7 +536,8 @@ func saveConfig(cfg askConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
@@ -520,5 +545,31 @@ func saveConfig(cfg askConfig) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o600)
+	tmp, err := os.CreateTemp(dir, ".ask.json.tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	removeTmp := true
+	defer func() {
+		if removeTmp {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	removeTmp = false
+	return nil
 }

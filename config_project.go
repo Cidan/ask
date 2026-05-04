@@ -222,27 +222,41 @@ func (m model) updateConfigProjectPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 // provider — wrap-around back to "" / none always succeeds so the
 // user can never get stuck.
 func (m model) cycleIssueProvider() (tea.Model, tea.Cmd) {
-	cfg, _ := loadConfig()
-	pc := loadProjectConfig(cfg, m.cwd)
-	curIdx := -1
-	for i, p := range issueProviderRegistry {
-		if p.ID() == pc.Issues.Provider {
-			curIdx = i
-			break
+	var (
+		next       IssueProvider
+		gateToast  string
+		saveErr    error
+	)
+	if err := withConfigLock(func() error {
+		cfg, _ := loadConfig()
+		pc := loadProjectConfig(cfg, m.cwd)
+		curIdx := -1
+		for i, p := range issueProviderRegistry {
+			if p.ID() == pc.Issues.Provider {
+				curIdx = i
+				break
+			}
 		}
+		if curIdx == -1 {
+			curIdx = 0
+		}
+		next = issueProviderRegistry[(curIdx+1)%len(issueProviderRegistry)]
+		if next.ID() == "github" && pc.MCP.GitHub.Token == "" {
+			gateToast = "issues: configure GitHub MCP PAT first"
+			return nil
+		}
+		pc.Issues.Provider = next.ID()
+		cfg = upsertProjectConfig(cfg, m.cwd, pc)
+		return saveConfig(cfg)
+	}); err != nil {
+		saveErr = err
 	}
-	if curIdx == -1 {
-		curIdx = 0
+	if gateToast != "" {
+		return m, m.toast.show(gateToast)
 	}
-	next := issueProviderRegistry[(curIdx+1)%len(issueProviderRegistry)]
-	if next.ID() == "github" && pc.MCP.GitHub.Token == "" {
-		return m, m.toast.show("issues: configure GitHub MCP PAT first")
-	}
-	pc.Issues.Provider = next.ID()
-	cfg = upsertProjectConfig(cfg, m.cwd, pc)
-	if err := saveConfig(cfg); err != nil {
-		debugLog("project provider saveConfig: %v", err)
-		return m, m.toast.show("config: " + err.Error())
+	if saveErr != nil {
+		debugLog("project provider saveConfig: %v", saveErr)
+		return m, m.toast.show("config: " + saveErr.Error())
 	}
 	return m, m.toast.show("issues: provider → " + next.DisplayName())
 }
@@ -285,11 +299,13 @@ func (m model) commitConfigProjectField() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	draft := strings.TrimSpace(m.configProjectFieldDraft)
-	cfg, _ := loadConfig()
-	pc := loadProjectConfig(cfg, m.cwd)
-	spec.save(&pc, draft)
-	cfg = upsertProjectConfig(cfg, m.cwd, pc)
-	if err := saveConfig(cfg); err != nil {
+	if err := withConfigLock(func() error {
+		cfg, _ := loadConfig()
+		pc := loadProjectConfig(cfg, m.cwd)
+		spec.save(&pc, draft)
+		cfg = upsertProjectConfig(cfg, m.cwd, pc)
+		return saveConfig(cfg)
+	}); err != nil {
 		debugLog("project %s saveConfig: %v", id, err)
 		m = m.closeConfigProjectFieldEditor()
 		return m, m.toast.show("config: save: " + err.Error())

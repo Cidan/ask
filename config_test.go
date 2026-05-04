@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -113,6 +116,93 @@ func TestSaveConfig_FormatsJSONIndented(t *testing.T) {
 	if err := json.Unmarshal(data, &back); err != nil {
 		t.Errorf("config not parseable JSON: %v; data=%s", err, data)
 	}
+}
+
+func TestSaveConfig_ConcurrentReadersSeeCompleteJSON(t *testing.T) {
+	home := isolateHome(t)
+	if err := saveConfig(askConfig{Provider: "seed"}); err != nil {
+		t.Fatalf("seed saveConfig: %v", err)
+	}
+	path := filepath.Join(home, ".config", "ask", "ask.json")
+	dir := filepath.Dir(path)
+
+	done := make(chan struct{})
+	errs := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				select {
+				case errs <- err:
+				default:
+				}
+				return
+			}
+			var cfg askConfig
+			if err := json.Unmarshal(data, &cfg); err != nil {
+				select {
+				case errs <- fmt.Errorf("read partial config: %w; len=%d", err, len(data)):
+				default:
+				}
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 80; i++ {
+		cfg := askConfig{
+			Provider: fmt.Sprintf("provider-%02d", i),
+			Projects: map[string]projectConfig{
+				"/large": {Workflows: workflowsConfig{Items: largeWorkflowFixture(i)}},
+			},
+		}
+		if err := saveConfig(cfg); err != nil {
+			close(done)
+			wg.Wait()
+			t.Fatalf("saveConfig %d: %v", i, err)
+		}
+	}
+	close(done)
+	wg.Wait()
+
+	select {
+	case err := <-errs:
+		t.Fatal(err)
+	default:
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, ".ask.json.tmp-*"))
+	if err != nil {
+		t.Fatalf("glob temp files: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("saveConfig left temp files behind: %v", matches)
+	}
+}
+
+func largeWorkflowFixture(seed int) []workflowDef {
+	items := make([]workflowDef, 0, 8)
+	prompt := strings.Repeat(fmt.Sprintf("prompt-%02d ", seed), 400)
+	for i := 0; i < 8; i++ {
+		steps := make([]workflowStep, 0, 4)
+		for j := 0; j < 4; j++ {
+			steps = append(steps, workflowStep{
+				Name:     fmt.Sprintf("step-%d-%d", i, j),
+				Provider: "claude",
+				Model:    "sonnet",
+				Prompt:   prompt,
+			})
+		}
+		items = append(items, workflowDef{Name: fmt.Sprintf("wf-%d-%d", seed, i), Steps: steps})
+	}
+	return items
 }
 
 func TestValidateOllamaHost(t *testing.T) {
