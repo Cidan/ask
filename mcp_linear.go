@@ -91,6 +91,25 @@ type linearCommentOutput struct {
 	Comment linearCommentView `json:"comment" jsonschema:"the created comment as Linear returned it"`
 }
 
+type linearCreateInput struct {
+	Title       string `json:"title" jsonschema:"issue title (required)"`
+	Description string `json:"description,omitempty" jsonschema:"optional Markdown body for the issue"`
+}
+
+type linearCreateOutput struct {
+	Issue linearIssueView `json:"issue" jsonschema:"the newly created issue with its Linear-assigned number and identifier"`
+}
+
+type linearDeleteInput struct {
+	Number int `json:"number" jsonschema:"issue number within the configured team"`
+}
+
+type linearDeleteOutput struct {
+	Number     int    `json:"number"`
+	Identifier string `json:"identifier" jsonschema:"team-prefixed identifier of the archived issue, e.g. ENG-42"`
+	Deleted    bool   `json:"deleted" jsonschema:"true once Linear confirms the archive"`
+}
+
 // linearNotActiveMsg is the canonical error every Linear MCP handler
 // returns when the project's Issues.Provider isn't "linear" or the
 // Linear creds are missing. Centralised so the agent always sees the
@@ -119,6 +138,18 @@ Errors when no team workflow-state matches the requested type, the issue does no
 	linearCreateCommentToolDescription = `Add a comment to a Linear issue.
 
 Body is rendered as Markdown by Linear. Returns the created comment. Errors when the issue does not exist or Linear is not configured.`
+
+	linearCreateIssueToolDescription = `Create a new Linear issue in the project's configured team.
+
+Title is required. Description is optional Markdown. The team is implicit (set in /config); Linear assigns the next available number under that team and the response carries the new identifier (TEAM-N) so the agent can reference it immediately.
+
+Errors when Linear is not configured for the current project (missing API key or team key) or the team key cannot be resolved.`
+
+	linearDeleteIssueToolDescription = `Delete (archive) a Linear issue by number.
+
+Linear's "delete" is a soft archive — the issue is removed from the active workspace but stays recoverable from Linear's archive view, matching what users see when they hit the trash icon in Linear's UI. The configured team is implicit.
+
+Errors when the issue does not exist or Linear is not configured for the current project.`
 )
 
 // registerLinearTools wires the four Linear MCP tools onto b.server.
@@ -144,6 +175,14 @@ func (b *mcpBridge) registerLinearTools() {
 		Name:        "linear_create_comment",
 		Description: linearCreateCommentToolDescription,
 	}, b.linearCreateCommentTool)
+	mcp.AddTool(b.server, &mcp.Tool{
+		Name:        "linear_create_issue",
+		Description: linearCreateIssueToolDescription,
+	}, b.linearCreateIssueTool)
+	mcp.AddTool(b.server, &mcp.Tool{
+		Name:        "linear_delete_issue",
+		Description: linearDeleteIssueToolDescription,
+	}, b.linearDeleteIssueTool)
 }
 
 // ----- Handlers -----
@@ -251,6 +290,45 @@ func (b *mcpBridge) linearCreateCommentTool(ctx context.Context, req *mcp.CallTo
 		CreatedAt: c.createdAt.Format(time.RFC3339),
 		Body:      c.body,
 	}}
+	body, _ := json.Marshal(out)
+	return okResult(string(body)), out, nil
+}
+
+func (b *mcpBridge) linearCreateIssueTool(ctx context.Context, req *mcp.CallToolRequest, in linearCreateInput) (*mcp.CallToolResult, linearCreateOutput, error) {
+	pc, ok := b.linearProjectConfig()
+	if !ok {
+		return errResult(linearNotActiveMsg), linearCreateOutput{}, nil
+	}
+	if strings.TrimSpace(in.Title) == "" {
+		return errResult("linear: title is required"), linearCreateOutput{}, nil
+	}
+	p := mcpLinearProvider()
+	it, err := p.CreateIssue(ctx, pc, b.getCwd(), in.Title, in.Description)
+	if err != nil {
+		return errResult("linear: " + err.Error()), linearCreateOutput{}, nil
+	}
+	out := linearCreateOutput{Issue: linearIssueViewOf(it, pc.MCP.Linear.TeamKey)}
+	body, _ := json.Marshal(out)
+	return okResult(string(body)), out, nil
+}
+
+func (b *mcpBridge) linearDeleteIssueTool(ctx context.Context, req *mcp.CallToolRequest, in linearDeleteInput) (*mcp.CallToolResult, linearDeleteOutput, error) {
+	pc, ok := b.linearProjectConfig()
+	if !ok {
+		return errResult(linearNotActiveMsg), linearDeleteOutput{}, nil
+	}
+	if in.Number <= 0 {
+		return errResult("linear: number must be positive"), linearDeleteOutput{}, nil
+	}
+	p := mcpLinearProvider()
+	if err := p.DeleteIssue(ctx, pc, b.getCwd(), in.Number); err != nil {
+		return errResult("linear: " + err.Error()), linearDeleteOutput{}, nil
+	}
+	out := linearDeleteOutput{
+		Number:     in.Number,
+		Identifier: fmt.Sprintf("%s-%d", pc.MCP.Linear.TeamKey, in.Number),
+		Deleted:    true,
+	}
 	body, _ := json.Marshal(out)
 	return okResult(string(body)), out, nil
 }

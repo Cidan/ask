@@ -45,6 +45,9 @@ type linearIssueProvider struct {
 
 	statesMu    sync.Mutex
 	statesCache map[string][]linearWorkflowState
+
+	teamIDMu    sync.Mutex
+	teamIDCache map[string]string
 }
 
 const (
@@ -442,6 +445,124 @@ func (p *linearIssueProvider) CreateComment(ctx context.Context, cfg projectConf
 	return linearAPIToComment(out.CommentCreate.Comment), nil
 }
 
+// CreateIssue files a new issue in the configured team. Title is
+// required; description is optional Markdown. Returns the created
+// issue with its server-assigned number/identifier so callers can
+// reference it without a follow-up GetIssue.
+//
+// Resolves the team's UUID via fetchTeamID (cached after the first
+// call) — Linear's IssueCreateInput.teamId requires the UUID, not
+// the team key. Same shape as CreateComment: not part of the
+// IssueProvider interface, exposed directly because the github
+// provider doesn't currently surface a parallel method.
+func (p *linearIssueProvider) CreateIssue(ctx context.Context, cfg projectConfig, cwd, title, description string) (issue, error) {
+	if cfg.MCP.Linear.Token == "" || cfg.MCP.Linear.TeamKey == "" {
+		return issue{}, errIssueProviderNotConfigured
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return issue{}, fmt.Errorf("linear: title is required")
+	}
+	teamID, err := p.fetchTeamID(ctx, cfg.MCP.Linear)
+	if err != nil {
+		return issue{}, err
+	}
+	cctx, cancel := context.WithTimeout(ctx, linearGraphQLCallTimeout)
+	defer cancel()
+	input := map[string]any{"teamId": teamID, "title": title}
+	if strings.TrimSpace(description) != "" {
+		input["description"] = description
+	}
+	var out struct {
+		IssueCreate struct {
+			Success bool           `json:"success"`
+			Issue   linearAPIIssue `json:"issue"`
+		} `json:"issueCreate"`
+	}
+	err = p.callGraphQL(cctx, cfg.MCP.Linear, linearIssueCreateMutation,
+		map[string]any{"input": input}, &out)
+	if err != nil {
+		return issue{}, err
+	}
+	if !out.IssueCreate.Success {
+		return issue{}, fmt.Errorf("linear: issueCreate returned success=false")
+	}
+	return linearAPIToIssue(out.IssueCreate.Issue), nil
+}
+
+// DeleteIssue archives a Linear issue. Linear's "delete" semantic is
+// a soft archive — the issue stays recoverable from the workspace's
+// archive view, matching what users see when they hit the trash icon
+// in Linear's UI. The mutation accepts either the UUID or the
+// "TEAM-N" identifier in the id arg; we use the identifier so the
+// caller doesn't need to carry a UUID forward.
+func (p *linearIssueProvider) DeleteIssue(ctx context.Context, cfg projectConfig, cwd string, number int) error {
+	if cfg.MCP.Linear.Token == "" || cfg.MCP.Linear.TeamKey == "" {
+		return errIssueProviderNotConfigured
+	}
+	if number <= 0 {
+		return fmt.Errorf("linear: number must be positive")
+	}
+	identifier := fmt.Sprintf("%s-%d", cfg.MCP.Linear.TeamKey, number)
+	cctx, cancel := context.WithTimeout(ctx, linearGraphQLCallTimeout)
+	defer cancel()
+	var out struct {
+		IssueDelete struct {
+			Success bool `json:"success"`
+		} `json:"issueDelete"`
+	}
+	err := p.callGraphQL(cctx, cfg.MCP.Linear, linearIssueDeleteMutation,
+		map[string]any{"id": identifier}, &out)
+	if err != nil {
+		return err
+	}
+	if !out.IssueDelete.Success {
+		return fmt.Errorf("linear: issueDelete returned success=false")
+	}
+	return nil
+}
+
+// fetchTeamID resolves the configured team key to its UUID. Linear's
+// IssueCreateInput.teamId requires the UUID; the team key works for
+// most filter shapes but not here, so a lookup is unavoidable. Cached
+// per (endpoint, token, team) tuple so a series of CreateIssue calls
+// only pays the lookup once. Cache invalidation on token rotation is
+// handled in callGraphQL alongside the workflow-state cache.
+func (p *linearIssueProvider) fetchTeamID(ctx context.Context, cfg linearMCPConfig) (string, error) {
+	cacheKey := linearGraphQLEndpointOrDefault(cfg) + "\x00" + cfg.Token + "\x00" + cfg.TeamKey
+	p.teamIDMu.Lock()
+	if p.teamIDCache == nil {
+		p.teamIDCache = map[string]string{}
+	}
+	if cached, ok := p.teamIDCache[cacheKey]; ok {
+		p.teamIDMu.Unlock()
+		return cached, nil
+	}
+	p.teamIDMu.Unlock()
+
+	cctx, cancel := context.WithTimeout(ctx, linearGraphQLCallTimeout)
+	defer cancel()
+	var out struct {
+		Team *struct {
+			ID string `json:"id"`
+		} `json:"team"`
+	}
+	if err := p.callGraphQL(cctx, cfg, linearTeamIDQuery,
+		map[string]any{"id": cfg.TeamKey}, &out); err != nil {
+		return "", fmt.Errorf("linear: fetch team ID: %w", err)
+	}
+	if out.Team == nil {
+		return "", fmt.Errorf("linear: team %q not found", cfg.TeamKey)
+	}
+	p.teamIDMu.Lock()
+	if p.teamIDCache == nil {
+		p.teamIDCache = map[string]string{}
+	}
+	p.teamIDCache[cacheKey] = out.Team.ID
+	p.teamIDMu.Unlock()
+	return out.Team.ID, nil
+}
+
 // resolveTargetState picks the first cached workflow state whose
 // type appears in stateTypes, in order. Caches per team via
 // fetchTeamStates so repeated moves don't re-query.
@@ -535,6 +656,9 @@ func (p *linearIssueProvider) callGraphQL(ctx context.Context, cfg linearMCPConf
 		p.statesMu.Lock()
 		p.statesCache = nil
 		p.statesMu.Unlock()
+		p.teamIDMu.Lock()
+		p.teamIDCache = nil
+		p.teamIDMu.Unlock()
 	}
 	cli := p.httpClient
 	p.mu.Unlock()
@@ -880,5 +1004,34 @@ mutation AskCommentCreate($input: CommentCreateInput!) {
       body
       user { name displayName }
     }
+  }
+}`
+
+const linearTeamIDQuery = `
+query AskTeamID($id: String!) {
+  team(id: $id) { id }
+}`
+
+const linearIssueCreateMutation = `
+mutation AskIssueCreate($input: IssueCreateInput!) {
+  issueCreate(input: $input) {
+    success
+    issue {
+      id
+      identifier
+      number
+      title
+      description
+      createdAt
+      state { name type }
+      assignee { name displayName }
+    }
+  }
+}`
+
+const linearIssueDeleteMutation = `
+mutation AskIssueDelete($id: String!) {
+  issueDelete(id: $id) {
+    success
   }
 }`

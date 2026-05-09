@@ -935,6 +935,161 @@ func TestLinearProvider_ListIssues_NotConfiguredWithoutToken(t *testing.T) {
 	}
 }
 
+func TestLinearProvider_CreateIssue_ResolvesTeamThenCreates(t *testing.T) {
+	mock := newLinearMockServer(t)
+	var teamLookups, createCalls int
+	mock.handlers["AskTeamID"] = func(vars map[string]any) any {
+		teamLookups++
+		if vars["id"] != "ENG" {
+			t.Errorf("team lookup id=%v want ENG", vars["id"])
+		}
+		return map[string]any{"team": map[string]any{"id": "team-uuid-1"}}
+	}
+	mock.handlers["AskIssueCreate"] = func(vars map[string]any) any {
+		createCalls++
+		input := vars["input"].(map[string]any)
+		if input["teamId"] != "team-uuid-1" {
+			t.Errorf("teamId=%v want team-uuid-1", input["teamId"])
+		}
+		return map[string]any{
+			"issueCreate": map[string]any{
+				"success": true,
+				"issue": map[string]any{
+					"number":      42,
+					"title":       input["title"],
+					"description": input["description"],
+					"state":       map[string]any{"type": "backlog"},
+					"createdAt":   "2026-04-01T00:00:00Z",
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	got, err := p.CreateIssue(context.Background(), cfg, "/tmp", "ship it", "body")
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if got.number != 42 || got.title != "ship it" || got.status != "backlog" {
+		t.Errorf("issue=%+v", got)
+	}
+
+	// Second create must reuse the cached team UUID — no second
+	// AskTeamID round trip.
+	if _, err := p.CreateIssue(context.Background(), cfg, "/tmp", "again", ""); err != nil {
+		t.Fatalf("second CreateIssue: %v", err)
+	}
+	if teamLookups != 1 {
+		t.Errorf("teamLookups=%d want 1 (cache should hit)", teamLookups)
+	}
+	if createCalls != 2 {
+		t.Errorf("createCalls=%d want 2", createCalls)
+	}
+}
+
+func TestLinearProvider_CreateIssue_RejectsEmptyTitle(t *testing.T) {
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: "https://example.test", Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	_, err := p.CreateIssue(context.Background(), cfg, "/tmp", "   ", "body")
+	if err == nil || !strings.Contains(err.Error(), "title is required") {
+		t.Errorf("err=%v want 'title is required'", err)
+	}
+}
+
+func TestLinearProvider_CreateIssue_NotConfiguredWithoutToken(t *testing.T) {
+	p := &linearIssueProvider{}
+	_, err := p.CreateIssue(context.Background(), projectConfig{}, "/tmp", "x", "")
+	if !errors.Is(err, errIssueProviderNotConfigured) {
+		t.Errorf("err=%v want errIssueProviderNotConfigured", err)
+	}
+}
+
+func TestLinearProvider_CreateIssue_HonorsSuccessFalse(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskTeamID"] = func(vars map[string]any) any {
+		return map[string]any{"team": map[string]any{"id": "team-uuid-1"}}
+	}
+	mock.handlers["AskIssueCreate"] = func(vars map[string]any) any {
+		return map[string]any{"issueCreate": map[string]any{"success": false}}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	_, err := p.CreateIssue(context.Background(), cfg, "/tmp", "x", "")
+	if err == nil || !strings.Contains(err.Error(), "success=false") {
+		t.Errorf("err=%v want 'success=false'", err)
+	}
+}
+
+func TestLinearProvider_CreateIssue_TeamNotFound(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskTeamID"] = func(vars map[string]any) any {
+		return map[string]any{"team": nil}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "MISSING",
+	}}}
+	_, err := p.CreateIssue(context.Background(), cfg, "/tmp", "x", "")
+	if err == nil || !strings.Contains(err.Error(), "MISSING") {
+		t.Errorf("err=%v want team key in message", err)
+	}
+}
+
+func TestLinearProvider_DeleteIssue_HappyPath(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskIssueDelete"] = func(vars map[string]any) any {
+		if vars["id"] != "ENG-7" {
+			t.Errorf("delete id=%v want ENG-7", vars["id"])
+		}
+		return map[string]any{"issueDelete": map[string]any{"success": true}}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	if err := p.DeleteIssue(context.Background(), cfg, "/tmp", 7); err != nil {
+		t.Fatalf("DeleteIssue: %v", err)
+	}
+}
+
+func TestLinearProvider_DeleteIssue_RejectsZeroNumber(t *testing.T) {
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: "https://example.test", Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	if err := p.DeleteIssue(context.Background(), cfg, "/tmp", 0); err == nil {
+		t.Error("DeleteIssue should reject zero number")
+	}
+}
+
+func TestLinearProvider_DeleteIssue_NotConfiguredWithoutToken(t *testing.T) {
+	p := &linearIssueProvider{}
+	if err := p.DeleteIssue(context.Background(), projectConfig{}, "/tmp", 7); !errors.Is(err, errIssueProviderNotConfigured) {
+		t.Errorf("err=%v want errIssueProviderNotConfigured", err)
+	}
+}
+
+func TestLinearProvider_DeleteIssue_HonorsSuccessFalse(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskIssueDelete"] = func(vars map[string]any) any {
+		return map[string]any{"issueDelete": map[string]any{"success": false}}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	err := p.DeleteIssue(context.Background(), cfg, "/tmp", 7)
+	if err == nil || !strings.Contains(err.Error(), "success=false") {
+		t.Errorf("err=%v want 'success=false'", err)
+	}
+}
+
 // slicesEqual is a tiny string-slice equality helper local to this
 // file — pulled out so the kanban+stateTypes assertions read cleanly.
 func slicesEqual(a, b []string) bool {

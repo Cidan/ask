@@ -595,6 +595,182 @@ func TestLinearCreateCommentTool_IssueNotFoundSurfacesIdentifier(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------
+// linear_create_issue coverage
+// -----------------------------------------------------------------------
+
+func TestLinearCreateIssueTool_NotConfiguredErrors(t *testing.T) {
+	b, _ := newLinearMCPTestBridge(t, nil)
+	res, _, _ := b.linearCreateIssueTool(context.Background(), &mcp.CallToolRequest{}, linearCreateInput{
+		Title: "hi",
+	})
+	if !res.IsError {
+		t.Error("not-configured should produce IsError result")
+	}
+	if !strings.Contains(textContent(res), "not the active issue provider") {
+		t.Errorf("text=%q want 'not the active issue provider'", textContent(res))
+	}
+}
+
+func TestLinearCreateIssueTool_RejectsEmptyTitle(t *testing.T) {
+	mock := newLinearMockServer(t)
+	b, _ := configuredLinearBridge(t, mock.URL())
+	res, _, _ := b.linearCreateIssueTool(context.Background(), &mcp.CallToolRequest{}, linearCreateInput{
+		Title: "   ",
+	})
+	if !res.IsError {
+		t.Error("empty title should produce IsError result")
+	}
+	if !strings.Contains(textContent(res), "title is required") {
+		t.Errorf("text=%q want 'title is required'", textContent(res))
+	}
+}
+
+func TestLinearCreateIssueTool_HappyPath(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskTeamID"] = func(vars map[string]any) any {
+		if vars["id"] != "ENG" {
+			t.Errorf("team lookup id=%v want ENG", vars["id"])
+		}
+		return map[string]any{"team": map[string]any{"id": "team-uuid-1"}}
+	}
+	mock.handlers["AskIssueCreate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		if input["teamId"] != "team-uuid-1" {
+			t.Errorf("teamId=%v want team-uuid-1", input["teamId"])
+		}
+		if input["title"] != "new bug" {
+			t.Errorf("title=%v want 'new bug'", input["title"])
+		}
+		if input["description"] != "## body" {
+			t.Errorf("description=%v want '## body'", input["description"])
+		}
+		return map[string]any{
+			"issueCreate": map[string]any{
+				"success": true,
+				"issue": map[string]any{
+					"number":    101,
+					"title":     "new bug",
+					"state":     map[string]any{"type": "backlog"},
+					"createdAt": "2026-04-01T00:00:00Z",
+				},
+			},
+		}
+	}
+	b, _ := configuredLinearBridge(t, mock.URL())
+	res, out, err := b.linearCreateIssueTool(context.Background(), &mcp.CallToolRequest{}, linearCreateInput{
+		Title:       "new bug",
+		Description: "## body",
+	})
+	if err != nil {
+		t.Fatalf("handler err: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("happy path errored: %s", textContent(res))
+	}
+	if out.Issue.Identifier != "ENG-101" {
+		t.Errorf("identifier=%q want ENG-101", out.Issue.Identifier)
+	}
+	if out.Issue.Number != 101 || out.Issue.Title != "new bug" || out.Issue.Status != "backlog" {
+		t.Errorf("issue=%+v", out.Issue)
+	}
+}
+
+func TestLinearCreateIssueTool_OmitsDescriptionWhenBlank(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskTeamID"] = func(vars map[string]any) any {
+		return map[string]any{"team": map[string]any{"id": "team-uuid-1"}}
+	}
+	mock.handlers["AskIssueCreate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		if _, present := input["description"]; present {
+			t.Errorf("description should be omitted when blank, got %v", input["description"])
+		}
+		return map[string]any{
+			"issueCreate": map[string]any{
+				"success": true,
+				"issue": map[string]any{
+					"number": 7,
+					"title":  "stub",
+					"state":  map[string]any{"type": "backlog"},
+				},
+			},
+		}
+	}
+	b, _ := configuredLinearBridge(t, mock.URL())
+	res, _, _ := b.linearCreateIssueTool(context.Background(), &mcp.CallToolRequest{}, linearCreateInput{
+		Title: "stub",
+	})
+	if res.IsError {
+		t.Fatalf("happy path errored: %s", textContent(res))
+	}
+}
+
+// -----------------------------------------------------------------------
+// linear_delete_issue coverage
+// -----------------------------------------------------------------------
+
+func TestLinearDeleteIssueTool_NotConfiguredErrors(t *testing.T) {
+	b, _ := newLinearMCPTestBridge(t, nil)
+	res, _, _ := b.linearDeleteIssueTool(context.Background(), &mcp.CallToolRequest{}, linearDeleteInput{
+		Number: 7,
+	})
+	if !res.IsError {
+		t.Error("not-configured should produce IsError result")
+	}
+	if !strings.Contains(textContent(res), "not the active issue provider") {
+		t.Errorf("text=%q want 'not the active issue provider'", textContent(res))
+	}
+}
+
+func TestLinearDeleteIssueTool_RejectsZeroNumber(t *testing.T) {
+	mock := newLinearMockServer(t)
+	b, _ := configuredLinearBridge(t, mock.URL())
+	res, _, _ := b.linearDeleteIssueTool(context.Background(), &mcp.CallToolRequest{}, linearDeleteInput{
+		Number: 0,
+	})
+	if !res.IsError {
+		t.Error("zero number should produce IsError result")
+	}
+}
+
+func TestLinearDeleteIssueTool_HappyPath(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskIssueDelete"] = func(vars map[string]any) any {
+		if vars["id"] != "ENG-7" {
+			t.Errorf("delete id=%v want ENG-7", vars["id"])
+		}
+		return map[string]any{"issueDelete": map[string]any{"success": true}}
+	}
+	b, _ := configuredLinearBridge(t, mock.URL())
+	res, out, _ := b.linearDeleteIssueTool(context.Background(), &mcp.CallToolRequest{}, linearDeleteInput{
+		Number: 7,
+	})
+	if res.IsError {
+		t.Fatalf("happy path errored: %s", textContent(res))
+	}
+	if out.Number != 7 || out.Identifier != "ENG-7" || !out.Deleted {
+		t.Errorf("out=%+v want number=7 id=ENG-7 deleted=true", out)
+	}
+}
+
+func TestLinearDeleteIssueTool_HonorsSuccessFalse(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskIssueDelete"] = func(vars map[string]any) any {
+		return map[string]any{"issueDelete": map[string]any{"success": false}}
+	}
+	b, _ := configuredLinearBridge(t, mock.URL())
+	res, _, _ := b.linearDeleteIssueTool(context.Background(), &mcp.CallToolRequest{}, linearDeleteInput{
+		Number: 7,
+	})
+	if !res.IsError {
+		t.Error("success=false should produce IsError result")
+	}
+	if !strings.Contains(textContent(res), "success=false") {
+		t.Errorf("text=%q want 'success=false'", textContent(res))
+	}
+}
+
+// -----------------------------------------------------------------------
 // Registration coverage — the four tools must show up on a live bridge
 // so future refactors don't silently drop a tool.
 // -----------------------------------------------------------------------
@@ -618,6 +794,8 @@ func TestRegisterLinearTools_AddsExpectedToolNames(t *testing.T) {
 		"linear_get_issue":      false,
 		"linear_update_issue":   false,
 		"linear_create_comment": false,
+		"linear_create_issue":   false,
+		"linear_delete_issue":   false,
 	}
 	for _, tool := range res.Tools {
 		if _, ok := want[tool.Name]; ok {
