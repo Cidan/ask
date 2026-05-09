@@ -47,13 +47,19 @@ func (m model) sessionArgs() ProviderSessionArgs {
 }
 
 // projectGitHubMCP resolves the project-level GitHub MCP credentials
-// for cwd into a wire-shape descriptor, or nil when the project hasn't
-// configured a token. Independent of the issue provider — the chat
-// agent receives the GitHub MCP whenever the user has populated
-// MCP.GitHub.Token, even if the issues backend is "" / disabled.
-// Pulled out of sessionArgs so the prepareProviderSession path — which
-// also rebuilds args from disk-backed config inside
-// startAndSendProviderCmd — can pick up the latest MCP config after
+// for cwd into a wire-shape descriptor, or nil when the project
+// hasn't configured a token. Independent of the issue provider —
+// the chat agent receives the GitHub MCP whenever MCP.GitHub.Token
+// is set, even with issues set to None or Linear. GitHub's MCP
+// covers more than issues (PRs, search, code, repo metadata), so
+// scoping it to the issue-provider toggle would yank tools the
+// user wants regardless of their issue tracker. Linear, by
+// contrast, IS gated on the toggle (see mcp_linear.go) because
+// Linear is purely an issue tracker for our purposes.
+//
+// Pulled out of sessionArgs so the prepareProviderSession path —
+// which rebuilds args from disk-backed config inside
+// startAndSendProviderCmd — picks up the latest MCP config after
 // the user edits it without having to re-thread state through every
 // caller.
 func projectGitHubMCP(cwd string) *issueMCPServer {

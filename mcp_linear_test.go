@@ -38,11 +38,16 @@ func newLinearMCPTestBridge(t *testing.T, cfgFn func(*projectConfig)) (*mcpBridg
 
 // configuredLinearBridge is the convenience constructor used by every
 // happy-path test — pre-seeds the project with mock-pointed Linear
-// creds plus the team key so handlers don't short-circuit on the
-// configured-gate.
+// creds, the team key, AND Issues.Provider = "linear" so the gate
+// in linearProjectConfig accepts. The provider field is what makes
+// the toggle authoritative: without it set the bridge refuses every
+// linear_* call as "not the active issue provider", and tests below
+// rely on that being the explicit failure mode (see the
+// NotActiveErrors family).
 func configuredLinearBridge(t *testing.T, mockURL string) (*mcpBridge, string) {
 	t.Helper()
 	return newLinearMCPTestBridge(t, func(pc *projectConfig) {
+		pc.Issues.Provider = "linear"
 		pc.MCP.Linear = linearMCPConfig{
 			Endpoint: mockURL,
 			Token:    "lin_api_x",
@@ -168,10 +173,21 @@ func TestLinearProjectConfig_RejectsPartialConfig(t *testing.T) {
 		name string
 		fn   func(*projectConfig)
 	}{
-		{"only token", func(pc *projectConfig) {
+		{"provider linear, only token", func(pc *projectConfig) {
+			pc.Issues.Provider = "linear"
 			pc.MCP.Linear.Token = "lin_api_x"
 		}},
-		{"only team", func(pc *projectConfig) {
+		{"provider linear, only team", func(pc *projectConfig) {
+			pc.Issues.Provider = "linear"
+			pc.MCP.Linear.TeamKey = "ENG"
+		}},
+		{"creds set but provider blank", func(pc *projectConfig) {
+			pc.MCP.Linear.Token = "lin_api_x"
+			pc.MCP.Linear.TeamKey = "ENG"
+		}},
+		{"creds set but provider github", func(pc *projectConfig) {
+			pc.Issues.Provider = "github"
+			pc.MCP.Linear.Token = "lin_api_x"
 			pc.MCP.Linear.TeamKey = "ENG"
 		}},
 	}
@@ -216,17 +232,39 @@ func TestMCPLinearProvider_ResolvesFromRegistry(t *testing.T) {
 // Tool handler coverage
 // -----------------------------------------------------------------------
 
-func TestLinearListTool_NotConfiguredErrors(t *testing.T) {
+func TestLinearListTool_NotActiveErrors(t *testing.T) {
 	b, _ := newLinearMCPTestBridge(t, nil)
 	res, _, err := b.linearListTool(context.Background(), &mcp.CallToolRequest{}, linearListInput{})
 	if err != nil {
 		t.Fatalf("handler returned err: %v", err)
 	}
 	if !res.IsError {
-		t.Errorf("not-configured should produce IsError result, got %+v", res)
+		t.Errorf("not-active should produce IsError result, got %+v", res)
 	}
-	if !strings.Contains(textContent(res), "not configured") {
-		t.Errorf("text=%q want 'not configured'", textContent(res))
+	if !strings.Contains(textContent(res), "not the active issue provider") {
+		t.Errorf("text=%q want 'not the active issue provider'", textContent(res))
+	}
+}
+
+// Toggle-authoritative gate: even with full Linear creds populated,
+// flipping Issues.Provider to "github" (or leaving it blank) must
+// shut every Linear MCP tool with the same error path the agent
+// sees when creds are missing entirely.
+func TestLinearListTool_RejectedWhenProviderNotLinear(t *testing.T) {
+	b, _ := newLinearMCPTestBridge(t, func(pc *projectConfig) {
+		pc.Issues.Provider = "github" // creds present but toggle is github
+		pc.MCP.Linear = linearMCPConfig{
+			Endpoint: "https://api.linear.app/graphql",
+			Token:    "lin_api_x",
+			TeamKey:  "ENG",
+		}
+	})
+	res, _, _ := b.linearListTool(context.Background(), &mcp.CallToolRequest{}, linearListInput{})
+	if !res.IsError {
+		t.Fatal("Linear tool must error when Issues.Provider != linear, even with creds present")
+	}
+	if !strings.Contains(textContent(res), "not the active issue provider") {
+		t.Errorf("text=%q want 'not the active issue provider'", textContent(res))
 	}
 }
 

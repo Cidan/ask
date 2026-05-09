@@ -91,6 +91,12 @@ type linearCommentOutput struct {
 	Comment linearCommentView `json:"comment" jsonschema:"the created comment as Linear returned it"`
 }
 
+// linearNotActiveMsg is the canonical error every Linear MCP handler
+// returns when the project's Issues.Provider isn't "linear" or the
+// Linear creds are missing. Centralised so the agent always sees the
+// same string and can fingerprint it for retry logic.
+const linearNotActiveMsg = "linear: not the active issue provider for this project (set Issues.Provider to linear in /config, with API key + team key)"
+
 // ----- Tool descriptions -----
 
 const (
@@ -145,7 +151,7 @@ func (b *mcpBridge) registerLinearTools() {
 func (b *mcpBridge) linearListTool(ctx context.Context, req *mcp.CallToolRequest, in linearListInput) (*mcp.CallToolResult, linearListOutput, error) {
 	pc, ok := b.linearProjectConfig()
 	if !ok {
-		return errResult("linear: not configured for this project (set Linear API key and team key in /config)"), linearListOutput{}, nil
+		return errResult(linearNotActiveMsg), linearListOutput{}, nil
 	}
 	p := mcpLinearProvider()
 	var query IssueQuery
@@ -179,7 +185,7 @@ func (b *mcpBridge) linearListTool(ctx context.Context, req *mcp.CallToolRequest
 func (b *mcpBridge) linearGetTool(ctx context.Context, req *mcp.CallToolRequest, in linearGetInput) (*mcp.CallToolResult, linearGetOutput, error) {
 	pc, ok := b.linearProjectConfig()
 	if !ok {
-		return errResult("linear: not configured for this project"), linearGetOutput{}, nil
+		return errResult(linearNotActiveMsg), linearGetOutput{}, nil
 	}
 	if in.Number <= 0 {
 		return errResult("linear: number must be positive"), linearGetOutput{}, nil
@@ -198,7 +204,7 @@ func (b *mcpBridge) linearGetTool(ctx context.Context, req *mcp.CallToolRequest,
 func (b *mcpBridge) linearUpdateTool(ctx context.Context, req *mcp.CallToolRequest, in linearUpdateInput) (*mcp.CallToolResult, linearUpdateOutput, error) {
 	pc, ok := b.linearProjectConfig()
 	if !ok {
-		return errResult("linear: not configured for this project"), linearUpdateOutput{}, nil
+		return errResult(linearNotActiveMsg), linearUpdateOutput{}, nil
 	}
 	if in.Number <= 0 {
 		return errResult("linear: number must be positive"), linearUpdateOutput{}, nil
@@ -227,7 +233,7 @@ func (b *mcpBridge) linearUpdateTool(ctx context.Context, req *mcp.CallToolReque
 func (b *mcpBridge) linearCreateCommentTool(ctx context.Context, req *mcp.CallToolRequest, in linearCommentInput) (*mcp.CallToolResult, linearCommentOutput, error) {
 	pc, ok := b.linearProjectConfig()
 	if !ok {
-		return errResult("linear: not configured for this project"), linearCommentOutput{}, nil
+		return errResult(linearNotActiveMsg), linearCommentOutput{}, nil
 	}
 	if in.Number <= 0 {
 		return errResult("linear: number must be positive"), linearCommentOutput{}, nil
@@ -252,11 +258,26 @@ func (b *mcpBridge) linearCreateCommentTool(ctx context.Context, req *mcp.CallTo
 // ----- Helpers -----
 
 // linearProjectConfig returns the per-tab projectConfig when the
-// bridge's cwd resolves to a project with Linear creds populated.
-// Single-stop config gate every Linear MCP handler runs on entry.
-// Returns ok=false when cwd is unset, the config can't be loaded,
-// or Linear's Token / TeamKey is empty — the handler then surfaces
-// a "not configured" error to the agent.
+// bridge's cwd resolves to a Linear-active project. Single-stop
+// gate every Linear MCP handler runs on entry. Returns ok=false
+// when any of the following hold:
+//
+//   - cwd is unset
+//   - the config can't be loaded
+//   - Issues.Provider isn't "linear" (the toggle is authoritative;
+//     the chat agent only sees Linear tooling when the user has
+//     explicitly switched the project to Linear in /config)
+//   - Linear's Token or TeamKey is empty
+//
+// The Issues.Provider check is what makes the toggle clean: once a
+// user flips the project back to GitHub or None, every linear_*
+// tool starts erroring with "not the active issue provider", and
+// the agent learns to stop calling them. We deliberately don't
+// dynamically deregister the tools — the SDK supports it, but the
+// per-tab bridge is shared across proc respawns and a refresh-on-
+// config-change hook would have to be wired through every model
+// path that touches Issues.Provider. A clear error at call time
+// is the simpler, more robust signal.
 func (b *mcpBridge) linearProjectConfig() (projectConfig, bool) {
 	cwd := b.getCwd()
 	if cwd == "" {
@@ -267,6 +288,9 @@ func (b *mcpBridge) linearProjectConfig() (projectConfig, bool) {
 		return projectConfig{}, false
 	}
 	pc := loadProjectConfig(cfg, cwd)
+	if pc.Issues.Provider != "linear" {
+		return projectConfig{}, false
+	}
 	if pc.MCP.Linear.Token == "" || pc.MCP.Linear.TeamKey == "" {
 		return projectConfig{}, false
 	}
