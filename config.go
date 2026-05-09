@@ -76,19 +76,21 @@ type projectConfig struct {
 	Workflows workflowsConfig  `json:"workflows,omitempty"`
 }
 
-// projectMCPConfig holds the per-project MCP server credentials that
-// get injected into the chat agent's --mcp-config and reused by issue
-// providers that piggyback on the same backend (e.g. github issues
-// share the GitHub MCP). Today there's a single GitHub slot; future
-// MCP backends sit alongside as sibling fields.
+// projectMCPConfig holds the per-project remote-backend credentials.
+// Two flavours live here today: GitHub (which is genuinely an MCP
+// server we both use locally and inject into the chat agent) and
+// Linear (which we hit directly via GraphQL — the name "MCP" is a
+// historical leak; the slot is really "per-project per-backend
+// credentials"). Future backends — ClickUp, GitLab — sit alongside
+// as sibling fields.
 //
-// Decoupled from issuesConfig so the chat agent can have GitHub MCP
-// access without the issues UI being wired up — and conversely so a
-// user enabling github issues is forced to configure the MCP first
-// (the issue provider piggybacks on this slot, not the other way
-// around).
+// Decoupled from issuesConfig so the chat agent can have a GitHub
+// MCP wired in without the issues UI being on, and conversely so
+// a user enabling a backend's issue surface is forced to configure
+// the credential slot first.
 type projectMCPConfig struct {
 	GitHub githubMCPConfig `json:"github,omitempty"`
+	Linear linearMCPConfig `json:"linear,omitempty"`
 }
 
 // githubMCPConfig wires the GitHub MCP server. Endpoint defaults to
@@ -99,6 +101,25 @@ type projectMCPConfig struct {
 type githubMCPConfig struct {
 	Endpoint string `json:"endpoint,omitempty"`
 	Token    string `json:"token,omitempty"`
+}
+
+// linearMCPConfig wires the Linear backend. Linear's GraphQL API
+// (https://api.linear.app/graphql) is the wire today — the hosted
+// MCP at mcp.linear.app/mcp is OAuth-only, so for now we drive
+// list/get/move via GraphQL with a personal API key. Endpoint
+// defaults to the official GraphQL host when blank.
+//
+// TeamKey is the Linear team identifier (e.g. "ENG") that scopes
+// list/kanban queries — Linear isn't tied to git remotes the way
+// GitHub is, so we ask the user explicitly. Without a TeamKey the
+// provider reports unconfigured. Token is the personal API key
+// (lin_api_…) sent verbatim in the Authorization header (Linear
+// expects no "Bearer" prefix for personal keys). Held in 0600
+// config alongside the GitHub PAT — same trust model.
+type linearMCPConfig struct {
+	Endpoint string `json:"endpoint,omitempty"`
+	Token    string `json:"token,omitempty"`
+	TeamKey  string `json:"teamKey,omitempty"`
 }
 
 // workflowsConfig holds the per-project workflows definition list and
@@ -187,6 +208,21 @@ const githubMCPDefaultEndpoint = "https://api.githubcopilot.com/mcp"
 func githubMCPEndpointOrDefault(c githubMCPConfig) string {
 	if c.Endpoint == "" {
 		return githubMCPDefaultEndpoint
+	}
+	return c.Endpoint
+}
+
+// linearGraphQLDefaultEndpoint is Linear's hosted GraphQL endpoint.
+// Used when linearMCPConfig.Endpoint is empty. Self-hosted variants
+// can override this — Linear doesn't ship a self-hosted product
+// today but the override slot is cheap and matches GitHub's shape.
+const linearGraphQLDefaultEndpoint = "https://api.linear.app/graphql"
+
+// linearGraphQLEndpointOrDefault applies the documented fallback so
+// callers don't have to remember the constant.
+func linearGraphQLEndpointOrDefault(c linearMCPConfig) string {
+	if c.Endpoint == "" {
+		return linearGraphQLDefaultEndpoint
 	}
 	return c.Endpoint
 }

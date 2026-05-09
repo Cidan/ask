@@ -29,8 +29,9 @@ type projectFieldSpec struct {
 
 // projectFieldSpecs is the registry. Order doesn't matter; row
 // order in the submenu comes from projectPickerItems. The GitHub
-// rows write into projectConfig.MCP.GitHub — the project-level MCP
-// slot the github issue provider also piggybacks on.
+// rows write into projectConfig.MCP.GitHub; the Linear rows write
+// into projectConfig.MCP.Linear — both are project-level credential
+// slots the matching issue provider piggybacks on.
 var projectFieldSpecs = map[string]projectFieldSpec{
 	"githubMCPEndpoint": {
 		id:       "githubMCPEndpoint",
@@ -51,25 +52,64 @@ var projectFieldSpecs = map[string]projectFieldSpec{
 		},
 		save: func(p *projectConfig, v string) { p.MCP.GitHub.Token = v },
 	},
+	"linearGraphQLEndpoint": {
+		id:       "linearGraphQLEndpoint",
+		title:    "Linear GraphQL endpoint",
+		helpHint: "blank uses the default (api.linear.app/graphql); enter to save",
+		load: func(c askConfig, cwd string) string {
+			return loadProjectConfig(c, cwd).MCP.Linear.Endpoint
+		},
+		save: func(p *projectConfig, v string) { p.MCP.Linear.Endpoint = v },
+	},
+	"linearAPIKey": {
+		id:       "linearAPIKey",
+		title:    "Linear API key",
+		helpHint: "personal API key (lin_api_…); enter to save",
+		masked:   true,
+		load: func(c askConfig, cwd string) string {
+			return loadProjectConfig(c, cwd).MCP.Linear.Token
+		},
+		save: func(p *projectConfig, v string) { p.MCP.Linear.Token = v },
+	},
+	"linearTeamKey": {
+		id:       "linearTeamKey",
+		title:    "Linear team key",
+		helpHint: "team identifier (e.g. ENG); enter to save",
+		load: func(c askConfig, cwd string) string {
+			return loadProjectConfig(c, cwd).MCP.Linear.TeamKey
+		},
+		save: func(p *projectConfig, v string) { p.MCP.Linear.TeamKey = v },
+	},
 }
 
 // projectPickerItems builds the row list for the Project Options
-// submenu. The GitHub MCP rows are always visible — the project-
-// level MCP slot is independent of whether the issue provider is
-// configured (the chat agent gets the GitHub MCP whenever a token
-// is set, even with issues disabled). Returns []configItem so the
-// rows feed straight into the same renderLayeredConfigBox helper
-// the Global Options submenu uses (no per-picker styling drift).
+// submenu. Backend credential rows (GitHub, Linear) are always
+// visible — the project-level credential slot is independent of
+// whether the issue provider is configured. Returns []configItem
+// so the rows feed straight into the same renderLayeredConfigBox
+// helper the Global Options submenu uses (no per-picker styling
+// drift).
 func (m model) projectPickerItems() []configItem {
 	cfg, _ := loadConfig()
 	pc := loadProjectConfig(cfg, m.cwd)
-	endpoint := pc.MCP.GitHub.Endpoint
-	if endpoint == "" {
-		endpoint = "(default)"
+	ghEndpoint := pc.MCP.GitHub.Endpoint
+	if ghEndpoint == "" {
+		ghEndpoint = "(default)"
+	}
+	lnEndpoint := pc.MCP.Linear.Endpoint
+	if lnEndpoint == "" {
+		lnEndpoint = "(default)"
+	}
+	lnTeam := pc.MCP.Linear.TeamKey
+	if lnTeam == "" {
+		lnTeam = "(unset)"
 	}
 	rows := []configItem{
-		{"GitHub MCP endpoint", endpoint, "githubMCPEndpoint"},
+		{"GitHub MCP endpoint", ghEndpoint, "githubMCPEndpoint"},
 		{"GitHub MCP PAT", maskedSummary(pc.MCP.GitHub.Token), "githubMCPToken"},
+		{"Linear GraphQL endpoint", lnEndpoint, "linearGraphQLEndpoint"},
+		{"Linear API key", maskedSummary(pc.MCP.Linear.Token), "linearAPIKey"},
+		{"Linear team key", lnTeam, "linearTeamKey"},
 		{"Issue provider", issueProviderByID(pc.Issues.Provider).DisplayName(), "issueProvider"},
 	}
 	wfCount := len(pc.Workflows.Items)
@@ -208,24 +248,26 @@ func (m model) updateConfigProjectPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 	return m, nil
 }
 
-// cycleIssueProvider advances Issues.Provider to the next entry in
-// issueProviderRegistry, persists to disk, and shows a toast. The
-// cycle is tab-aware: existing tabs continue with whatever their
-// state was; the change applies to all future issue-screen loads
-// project-wide.
+// cycleIssueProvider advances Issues.Provider to the next reachable
+// entry in issueProviderRegistry, persists to disk, and shows a
+// toast. "Reachable" means the provider's per-project credentials
+// are populated — github needs MCP.GitHub.Token; linear needs both
+// MCP.Linear.Token and MCP.Linear.TeamKey. Providers that fail the
+// gate are skipped so the cycle always makes progress: noneIssue-
+// Provider is unconditional, so the wrap is guaranteed to terminate.
 //
-// Cycling INTO a provider that piggybacks on a project-level MCP slot
-// (today: github → projectConfig.MCP.GitHub) requires that slot to be
-// configured first; otherwise we'd land in a state where issues are
-// nominally "github" but every list call fails because no token is
-// wired. The gate only fires on the transition into the constrained
-// provider — wrap-around back to "" / none always succeeds so the
-// user can never get stuck.
+// The skip-on-gate behaviour means a user with no credentials at all
+// can still cycle without getting stuck — the cycle wraps from any
+// real provider back to "none" even when nothing else is configured,
+// matching the user's mental model that "cycle" should always do
+// something visible. When providers were skipped, the toast lists
+// them so the user understands why they didn't land on the next
+// natural entry.
 func (m model) cycleIssueProvider() (tea.Model, tea.Cmd) {
 	var (
-		next       IssueProvider
-		gateToast  string
-		saveErr    error
+		next    IssueProvider
+		skipped []string
+		saveErr error
 	)
 	if err := withConfigLock(func() error {
 		cfg, _ := loadConfig()
@@ -240,9 +282,17 @@ func (m model) cycleIssueProvider() (tea.Model, tea.Cmd) {
 		if curIdx == -1 {
 			curIdx = 0
 		}
-		next = issueProviderRegistry[(curIdx+1)%len(issueProviderRegistry)]
-		if next.ID() == "github" && pc.MCP.GitHub.Token == "" {
-			gateToast = "issues: configure GitHub MCP PAT first"
+		n := len(issueProviderRegistry)
+		for step := 1; step <= n; step++ {
+			cand := issueProviderRegistry[(curIdx+step)%n]
+			if !providerActivationReady(cand, pc) {
+				skipped = append(skipped, cand.DisplayName())
+				continue
+			}
+			next = cand
+			break
+		}
+		if next == nil {
 			return nil
 		}
 		pc.Issues.Provider = next.ID()
@@ -251,14 +301,34 @@ func (m model) cycleIssueProvider() (tea.Model, tea.Cmd) {
 	}); err != nil {
 		saveErr = err
 	}
-	if gateToast != "" {
-		return m, m.toast.show(gateToast)
-	}
 	if saveErr != nil {
 		debugLog("project provider saveConfig: %v", saveErr)
 		return m, m.toast.show("config: " + saveErr.Error())
 	}
-	return m, m.toast.show("issues: provider → " + next.DisplayName())
+	if next == nil {
+		return m, nil
+	}
+	msg := "issues: provider → " + next.DisplayName()
+	if len(skipped) > 0 {
+		msg += " (skipped: " + strings.Join(skipped, ", ") + ")"
+	}
+	return m, m.toast.show(msg)
+}
+
+// providerActivationReady reports whether the project carries the
+// credentials a given provider needs before it can dispatch a real
+// network call. None ("") is always ready. New backends extend the
+// switch as they land.
+func providerActivationReady(p IssueProvider, pc projectConfig) bool {
+	switch p.ID() {
+	case "":
+		return true
+	case "github":
+		return pc.MCP.GitHub.Token != ""
+	case "linear":
+		return pc.MCP.Linear.Token != "" && pc.MCP.Linear.TeamKey != ""
+	}
+	return true
 }
 
 // updateConfigProjectFieldInput accumulates keystrokes in the

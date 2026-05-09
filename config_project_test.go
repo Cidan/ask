@@ -133,17 +133,21 @@ func TestCycleIssueProvider_WrapsBackToNone(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.cwd = t.TempDir()
 	m.toast = NewToastModel(40, time.Second)
-	// Pre-seed the MCP token so the gate lets us cycle through.
+	// Pre-seed credentials for every gated provider so the cycle isn't
+	// short-circuited by the activation gate.
 	cfg, _ := loadConfig()
 	cfg = upsertProjectConfig(cfg, m.cwd, projectConfig{
-		MCP: projectMCPConfig{GitHub: githubMCPConfig{Token: "ghp_seed"}},
+		MCP: projectMCPConfig{
+			GitHub: githubMCPConfig{Token: "ghp_seed"},
+			Linear: linearMCPConfig{Token: "lin_api_seed", TeamKey: "ENG"},
+		},
 	})
 	if err := saveConfig(cfg); err != nil {
 		t.Fatalf("seed saveConfig: %v", err)
 	}
 	m = m.openConfigProjectPicker()
 	// Cycle through every registered provider, expecting to land back
-	// on None. With 2 entries (none, github) that's 2 cycles.
+	// on None after one full lap.
 	for i := 0; i < len(issueProviderRegistry); i++ {
 		mi, _ := m.cycleIssueProvider()
 		m = mi.(model)

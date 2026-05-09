@@ -213,6 +213,7 @@ func newMCPBridge(tabID int) (*mcpBridge, error) {
 		InputSchema: approvalInputSchema,
 	}, b.approvalTool)
 	b.registerWorkflowTools()
+	b.registerLinearTools()
 	handler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return b.server },
 		&mcp.StreamableHTTPOptions{DisableLocalhostProtection: true, Stateless: true},
