@@ -380,18 +380,27 @@ func TestLinearGetTool_HappyPath(t *testing.T) {
 	}
 }
 
-func TestLinearUpdateTool_RejectsUnknownToState(t *testing.T) {
+func TestLinearUpdateTool_RejectsUnknownState(t *testing.T) {
 	mock := newLinearMockServer(t)
+	mock.handlers["AskWorkflowStates"] = func(vars map[string]any) any {
+		return map[string]any{
+			"workflowStates": map[string]any{
+				"nodes": []any{
+					map[string]any{"id": "s-backlog", "name": "Backlog", "type": "backlog", "position": 1.0},
+				},
+			},
+		}
+	}
 	b, _ := configuredLinearBridge(t, mock.URL())
 	res, _, _ := b.linearUpdateTool(context.Background(), &mcp.CallToolRequest{}, linearUpdateInput{
-		Number:  7,
-		ToState: "blocked",
+		Number: 7,
+		State:  "blocked",
 	})
 	if !res.IsError {
-		t.Error("unknown to_state should produce IsError result")
+		t.Error("unknown state should produce IsError result")
 	}
-	if !strings.Contains(textContent(res), "unknown to_state") {
-		t.Errorf("text=%q want 'unknown to_state'", textContent(res))
+	if !strings.Contains(textContent(res), "no workflow state matches") {
+		t.Errorf("text=%q want 'no workflow state matches'", textContent(res))
 	}
 }
 
@@ -399,19 +408,33 @@ func TestLinearUpdateTool_RejectsZeroNumber(t *testing.T) {
 	mock := newLinearMockServer(t)
 	b, _ := configuredLinearBridge(t, mock.URL())
 	res, _, _ := b.linearUpdateTool(context.Background(), &mcp.CallToolRequest{}, linearUpdateInput{
-		Number:  0,
-		ToState: "Done",
+		Number: 0,
+		State:  "Done",
 	})
 	if !res.IsError {
 		t.Error("zero number should produce IsError result")
 	}
 }
 
+func TestLinearUpdateTool_RejectsEmptyOptions(t *testing.T) {
+	mock := newLinearMockServer(t)
+	b, _ := configuredLinearBridge(t, mock.URL())
+	res, _, _ := b.linearUpdateTool(context.Background(), &mcp.CallToolRequest{}, linearUpdateInput{
+		Number: 7,
+	})
+	if !res.IsError {
+		t.Error("empty update payload should produce IsError result")
+	}
+	if !strings.Contains(textContent(res), "at least one editable field") {
+		t.Errorf("text=%q want 'at least one editable field'", textContent(res))
+	}
+}
+
 func TestLinearUpdateTool_NotConfiguredErrors(t *testing.T) {
 	b, _ := newLinearMCPTestBridge(t, nil)
 	res, _, _ := b.linearUpdateTool(context.Background(), &mcp.CallToolRequest{}, linearUpdateInput{
-		Number:  7,
-		ToState: "Done",
+		Number: 7,
+		State:  "Done",
 	})
 	if !res.IsError {
 		t.Error("not-configured should produce IsError result")
@@ -450,8 +473,8 @@ func TestLinearUpdateTool_HappyPathRoundTripsState(t *testing.T) {
 	}
 	b, _ := configuredLinearBridge(t, mock.URL())
 	res, out, _ := b.linearUpdateTool(context.Background(), &mcp.CallToolRequest{}, linearUpdateInput{
-		Number:  7,
-		ToState: "Done",
+		Number: 7,
+		State:  "Done",
 	})
 	if res.IsError {
 		t.Fatalf("happy path errored: %s", textContent(res))
@@ -488,8 +511,8 @@ func TestLinearUpdateTool_AcceptsRawStateType(t *testing.T) {
 	b, _ := configuredLinearBridge(t, mock.URL())
 	// "canceled" is the raw state type — no kanban-label round-trip.
 	res, _, _ := b.linearUpdateTool(context.Background(), &mcp.CallToolRequest{}, linearUpdateInput{
-		Number:  7,
-		ToState: "canceled",
+		Number: 7,
+		State:  "canceled",
 	})
 	if res.IsError {
 		t.Fatalf("raw-type path errored: %s", textContent(res))
@@ -796,6 +819,12 @@ func TestRegisterLinearTools_AddsExpectedToolNames(t *testing.T) {
 		"linear_create_comment": false,
 		"linear_create_issue":   false,
 		"linear_delete_issue":   false,
+		"linear_list_teams":     false,
+		"linear_list_users":     false,
+		"linear_list_labels":    false,
+		"linear_list_states":    false,
+		"linear_list_projects":  false,
+		"linear_list_cycles":    false,
 	}
 	for _, tool := range res.Tools {
 		if _, ok := want[tool.Name]; ok {
@@ -837,3 +866,465 @@ var (
 	_ = httptest.NewServer
 	_ = http.StatusOK
 )
+
+// -----------------------------------------------------------------------
+// linear_create_issue — comprehensive options coverage
+// -----------------------------------------------------------------------
+
+func TestLinearCreateIssueTool_ResolvesAssigneeAndLabels(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskTeamID"] = func(vars map[string]any) any {
+		return map[string]any{"team": map[string]any{"id": "team-eng"}}
+	}
+	mock.handlers["AskListUsers"] = func(vars map[string]any) any {
+		return map[string]any{"users": map[string]any{"nodes": []any{
+			map[string]any{"id": "u-antonio", "displayName": "Antonio", "name": "antonio", "active": true},
+		}}}
+	}
+	mock.handlers["AskListLabels"] = func(vars map[string]any) any {
+		return map[string]any{"issueLabels": map[string]any{"nodes": []any{
+			map[string]any{"id": "l-bug", "name": "bug"},
+		}}}
+	}
+	mock.handlers["AskIssueCreate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		if input["assigneeId"] != "u-antonio" {
+			t.Errorf("assigneeId=%v want u-antonio", input["assigneeId"])
+		}
+		labels := input["labelIds"].([]any)
+		if len(labels) != 1 || labels[0] != "l-bug" {
+			t.Errorf("labelIds=%v want [l-bug]", labels)
+		}
+		return map[string]any{
+			"issueCreate": map[string]any{
+				"success": true,
+				"issue": map[string]any{
+					"number": 42, "title": "x",
+					"state": map[string]any{"type": "backlog"},
+				},
+			},
+		}
+	}
+	b, _ := configuredLinearBridge(t, mock.URL())
+	res, out, _ := b.linearCreateIssueTool(context.Background(), &mcp.CallToolRequest{}, linearCreateInput{
+		Title:    "x",
+		Assignee: "Antonio",
+		Labels:   []string{"bug"},
+	})
+	if res.IsError {
+		t.Fatalf("happy path errored: %s", textContent(res))
+	}
+	if out.Issue.Identifier != "ENG-42" {
+		t.Errorf("identifier=%q", out.Issue.Identifier)
+	}
+}
+
+func TestLinearCreateIssueTool_TeamOverrideUsedInResponseIdentifier(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskTeamID"] = func(vars map[string]any) any {
+		if vars["id"] != "BACKEND" {
+			t.Errorf("team override id=%v want BACKEND", vars["id"])
+		}
+		return map[string]any{"team": map[string]any{"id": "team-be"}}
+	}
+	mock.handlers["AskIssueCreate"] = func(vars map[string]any) any {
+		return map[string]any{
+			"issueCreate": map[string]any{
+				"success": true,
+				"issue": map[string]any{
+					"number": 5, "title": "x",
+					"state": map[string]any{"type": "backlog"},
+				},
+			},
+		}
+	}
+	b, _ := configuredLinearBridge(t, mock.URL())
+	res, out, _ := b.linearCreateIssueTool(context.Background(), &mcp.CallToolRequest{}, linearCreateInput{
+		Title: "x",
+		Team:  "BACKEND",
+	})
+	if res.IsError {
+		t.Fatalf("happy path errored: %s", textContent(res))
+	}
+	// Identifier should reflect the override team, not the project default.
+	if out.Issue.Identifier != "BACKEND-5" {
+		t.Errorf("identifier=%q want BACKEND-5", out.Issue.Identifier)
+	}
+}
+
+func TestLinearCreateIssueTool_PriorityRangeError(t *testing.T) {
+	mock := newLinearMockServer(t)
+	b, _ := configuredLinearBridge(t, mock.URL())
+	bad := 9
+	res, _, _ := b.linearCreateIssueTool(context.Background(), &mcp.CallToolRequest{}, linearCreateInput{
+		Title:    "x",
+		Priority: &bad,
+	})
+	if !res.IsError {
+		t.Error("priority out-of-range should produce IsError result")
+	}
+	if !strings.Contains(textContent(res), "priority") {
+		t.Errorf("text=%q want 'priority' in error", textContent(res))
+	}
+}
+
+// -----------------------------------------------------------------------
+// linear_update_issue — comprehensive options coverage
+// -----------------------------------------------------------------------
+
+func TestLinearUpdateTool_AssigneeUnassignFlowsThrough(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskIssueUpdate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		val, present := input["assigneeId"]
+		if !present || val != nil {
+			t.Errorf("assigneeId=%v present=%v want nil-and-present", val, present)
+		}
+		return map[string]any{"issueUpdate": map[string]any{"success": true}}
+	}
+	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
+		return map[string]any{"issueByIdentifier": map[string]any{
+			"number": 7, "state": map[string]any{"type": "started"},
+		}}
+	}
+	b, _ := configuredLinearBridge(t, mock.URL())
+	empty := ""
+	res, _, _ := b.linearUpdateTool(context.Background(), &mcp.CallToolRequest{}, linearUpdateInput{
+		Number:   7,
+		Assignee: &empty,
+	})
+	if res.IsError {
+		t.Fatalf("happy path errored: %s", textContent(res))
+	}
+}
+
+func TestLinearUpdateTool_TeamMoveAffectsResponseIdentifier(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskTeamID"] = func(vars map[string]any) any {
+		return map[string]any{"team": map[string]any{"id": "team-be"}}
+	}
+	mock.handlers["AskIssueUpdate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		if input["teamId"] != "team-be" {
+			t.Errorf("teamId=%v want team-be", input["teamId"])
+		}
+		return map[string]any{"issueUpdate": map[string]any{"success": true}}
+	}
+	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
+		// Post-update fetch should target BACKEND-7
+		if vars["id"] != "BACKEND-7" {
+			t.Errorf("post-update id=%v want BACKEND-7", vars["id"])
+		}
+		return map[string]any{"issueByIdentifier": map[string]any{
+			"number": 7, "state": map[string]any{"type": "started"},
+		}}
+	}
+	b, _ := configuredLinearBridge(t, mock.URL())
+	res, out, _ := b.linearUpdateTool(context.Background(), &mcp.CallToolRequest{}, linearUpdateInput{
+		Number: 7,
+		Team:   "BACKEND",
+	})
+	if res.IsError {
+		t.Fatalf("happy path errored: %s", textContent(res))
+	}
+	if out.Issue.Identifier != "BACKEND-7" {
+		t.Errorf("identifier=%q want BACKEND-7", out.Issue.Identifier)
+	}
+}
+
+func TestLinearUpdateTool_PriorityZeroPropagates(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskIssueUpdate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		// Should send 0 (json marshal yields float64 0)
+		switch input["priority"].(type) {
+		case float64:
+			if input["priority"].(float64) != 0 {
+				t.Errorf("priority=%v want 0", input["priority"])
+			}
+		case int:
+			if input["priority"].(int) != 0 {
+				t.Errorf("priority=%v want 0", input["priority"])
+			}
+		default:
+			t.Errorf("priority=%T %v unexpected type", input["priority"], input["priority"])
+		}
+		return map[string]any{"issueUpdate": map[string]any{"success": true}}
+	}
+	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
+		return map[string]any{"issueByIdentifier": map[string]any{
+			"number": 7, "state": map[string]any{"type": "started"},
+		}}
+	}
+	b, _ := configuredLinearBridge(t, mock.URL())
+	zero := 0
+	res, _, _ := b.linearUpdateTool(context.Background(), &mcp.CallToolRequest{}, linearUpdateInput{
+		Number:   7,
+		Priority: &zero,
+	})
+	if res.IsError {
+		t.Fatalf("happy path errored: %s", textContent(res))
+	}
+}
+
+// -----------------------------------------------------------------------
+// Discovery tool coverage
+// -----------------------------------------------------------------------
+
+func TestLinearListTeamsTool_NotActiveErrors(t *testing.T) {
+	b, _ := newLinearMCPTestBridge(t, nil)
+	res, _, _ := b.linearListTeamsTool(context.Background(), &mcp.CallToolRequest{}, linearListTeamsInput{})
+	if !res.IsError {
+		t.Error("not-active should produce IsError result")
+	}
+}
+
+func TestLinearListTeamsTool_HappyPath(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListTeams"] = func(vars map[string]any) any {
+		return map[string]any{"teams": map[string]any{"nodes": []any{
+			map[string]any{"id": "t-eng", "key": "ENG", "name": "Engineering", "description": "build it"},
+			map[string]any{"id": "t-des", "key": "DES", "name": "Design"},
+		}}}
+	}
+	b, _ := configuredLinearBridge(t, mock.URL())
+	res, out, _ := b.linearListTeamsTool(context.Background(), &mcp.CallToolRequest{}, linearListTeamsInput{})
+	if res.IsError {
+		t.Fatalf("happy path errored: %s", textContent(res))
+	}
+	if len(out.Teams) != 2 || out.Teams[0].Key != "ENG" || out.Teams[1].Key != "DES" {
+		t.Errorf("teams=%+v", out.Teams)
+	}
+	if out.Teams[0].Description != "build it" {
+		t.Errorf("description not propagated: %+v", out.Teams[0])
+	}
+}
+
+func TestLinearListUsersTool_QueryPassesThrough(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListUsers"] = func(vars map[string]any) any {
+		filter := vars["filter"].(map[string]any)
+		// Expect 'or' filter for substring 'antonio'.
+		or, ok := filter["or"].([]any)
+		if !ok || len(or) != 3 {
+			t.Errorf("expected 3-clause OR filter, got %+v", filter)
+		}
+		return map[string]any{"users": map[string]any{"nodes": []any{
+			map[string]any{"id": "u-1", "name": "antonio", "displayName": "Antonio", "email": "a@x.com", "active": true},
+		}}}
+	}
+	b, _ := configuredLinearBridge(t, mock.URL())
+	res, out, _ := b.linearListUsersTool(context.Background(), &mcp.CallToolRequest{}, linearListUsersInput{
+		Query: "antonio",
+	})
+	if res.IsError {
+		t.Fatalf("happy path errored: %s", textContent(res))
+	}
+	if len(out.Users) != 1 || out.Users[0].Email != "a@x.com" {
+		t.Errorf("users=%+v", out.Users)
+	}
+}
+
+func TestLinearListLabelsTool_DefaultsToConfiguredTeam(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListLabels"] = func(vars map[string]any) any {
+		filter := vars["filter"].(map[string]any)
+		or := filter["or"].([]any)
+		// First clause must scope to ENG (the configured team).
+		first := or[0].(map[string]any)["team"].(map[string]any)["key"].(map[string]any)
+		if first["eq"] != "ENG" {
+			t.Errorf("expected scope to ENG, got %v", first)
+		}
+		return map[string]any{"issueLabels": map[string]any{"nodes": []any{
+			map[string]any{"id": "l-bug", "name": "bug", "color": "#f00"},
+		}}}
+	}
+	b, _ := configuredLinearBridge(t, mock.URL())
+	res, out, _ := b.linearListLabelsTool(context.Background(), &mcp.CallToolRequest{}, linearListLabelsInput{})
+	if res.IsError {
+		t.Fatalf("happy path errored: %s", textContent(res))
+	}
+	if len(out.Labels) != 1 || out.Labels[0].Name != "bug" {
+		t.Errorf("labels=%+v", out.Labels)
+	}
+}
+
+func TestLinearListStatesTool_HappyPath(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskWorkflowStates"] = func(vars map[string]any) any {
+		return map[string]any{"workflowStates": map[string]any{"nodes": []any{
+			map[string]any{"id": "s1", "name": "Backlog", "type": "backlog", "position": 1.0},
+			map[string]any{"id": "s2", "name": "In Progress", "type": "started", "position": 2.0},
+		}}}
+	}
+	b, _ := configuredLinearBridge(t, mock.URL())
+	res, out, _ := b.linearListStatesTool(context.Background(), &mcp.CallToolRequest{}, linearListStatesInput{})
+	if res.IsError {
+		t.Fatalf("happy path errored: %s", textContent(res))
+	}
+	if len(out.States) != 2 || out.States[0].Name != "Backlog" || out.States[1].Type != "started" {
+		t.Errorf("states=%+v", out.States)
+	}
+}
+
+func TestLinearListProjectsTool_HappyPath(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListProjects"] = func(vars map[string]any) any {
+		return map[string]any{"projects": map[string]any{"nodes": []any{
+			map[string]any{"id": "p-q1", "name": "Q1 launch", "state": "started"},
+		}}}
+	}
+	b, _ := configuredLinearBridge(t, mock.URL())
+	res, out, _ := b.linearListProjectsTool(context.Background(), &mcp.CallToolRequest{}, linearListProjectsInput{})
+	if res.IsError {
+		t.Fatalf("happy path errored: %s", textContent(res))
+	}
+	if len(out.Projects) != 1 || out.Projects[0].Name != "Q1 launch" {
+		t.Errorf("projects=%+v", out.Projects)
+	}
+}
+
+func TestLinearListCyclesTool_HappyPath(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListCycles"] = func(vars map[string]any) any {
+		return map[string]any{"cycles": map[string]any{"nodes": []any{
+			map[string]any{"id": "c-7", "number": 7, "name": "Sprint 7", "startsAt": "2026-04-01T00:00:00Z", "endsAt": "2026-04-15T00:00:00Z"},
+		}}}
+	}
+	b, _ := configuredLinearBridge(t, mock.URL())
+	res, out, _ := b.linearListCyclesTool(context.Background(), &mcp.CallToolRequest{}, linearListCyclesInput{})
+	if res.IsError {
+		t.Fatalf("happy path errored: %s", textContent(res))
+	}
+	if len(out.Cycles) != 1 || out.Cycles[0].Number != 7 || out.Cycles[0].StartsAt == "" {
+		t.Errorf("cycles=%+v", out.Cycles)
+	}
+}
+
+func TestLinearDiscoveryTools_AllRejectWhenNotActive(t *testing.T) {
+	type call func(b *mcpBridge) *mcp.CallToolResult
+	cases := []struct {
+		name string
+		fn   call
+	}{
+		{"linear_list_teams", func(b *mcpBridge) *mcp.CallToolResult {
+			res, _, _ := b.linearListTeamsTool(context.Background(), &mcp.CallToolRequest{}, linearListTeamsInput{})
+			return res
+		}},
+		{"linear_list_users", func(b *mcpBridge) *mcp.CallToolResult {
+			res, _, _ := b.linearListUsersTool(context.Background(), &mcp.CallToolRequest{}, linearListUsersInput{})
+			return res
+		}},
+		{"linear_list_labels", func(b *mcpBridge) *mcp.CallToolResult {
+			res, _, _ := b.linearListLabelsTool(context.Background(), &mcp.CallToolRequest{}, linearListLabelsInput{})
+			return res
+		}},
+		{"linear_list_states", func(b *mcpBridge) *mcp.CallToolResult {
+			res, _, _ := b.linearListStatesTool(context.Background(), &mcp.CallToolRequest{}, linearListStatesInput{})
+			return res
+		}},
+		{"linear_list_projects", func(b *mcpBridge) *mcp.CallToolResult {
+			res, _, _ := b.linearListProjectsTool(context.Background(), &mcp.CallToolRequest{}, linearListProjectsInput{})
+			return res
+		}},
+		{"linear_list_cycles", func(b *mcpBridge) *mcp.CallToolResult {
+			res, _, _ := b.linearListCyclesTool(context.Background(), &mcp.CallToolRequest{}, linearListCyclesInput{})
+			return res
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b, _ := newLinearMCPTestBridge(t, nil)
+			res := c.fn(b)
+			if !res.IsError {
+				t.Errorf("%s should error when Linear is not active", c.name)
+			}
+			if !strings.Contains(textContent(res), "not the active issue provider") {
+				t.Errorf("%s text=%q want 'not the active issue provider'", c.name, textContent(res))
+			}
+		})
+	}
+}
+
+// -----------------------------------------------------------------------
+// linearUpdateInputToOptions / linearUpdateOptionsEmpty pure mapping
+// -----------------------------------------------------------------------
+
+func TestLinearUpdateOptionsEmpty(t *testing.T) {
+	if !linearUpdateOptionsEmpty(linearUpdateIssueOptions{}) {
+		t.Error("zero options should be empty")
+	}
+	title := "x"
+	if linearUpdateOptionsEmpty(linearUpdateIssueOptions{Title: &title}) {
+		t.Error("Title set should not count as empty")
+	}
+	if linearUpdateOptionsEmpty(linearUpdateIssueOptions{AddedLabels: []string{"x"}}) {
+		t.Error("AddedLabels set should not count as empty")
+	}
+	if linearUpdateOptionsEmpty(linearUpdateIssueOptions{Team: "BACKEND"}) {
+		t.Error("Team set should not count as empty")
+	}
+	if linearUpdateOptionsEmpty(linearUpdateIssueOptions{Team: "   "}) == false {
+		t.Error("whitespace-only Team should count as empty")
+	}
+}
+
+func TestLinearUpdateInputToOptions_PassesPointersThrough(t *testing.T) {
+	desc := "body"
+	assignee := ""
+	priority := 1
+	cycle := -1
+	dueDate := "2026-04-30"
+	estimate := 3
+	parent := ""
+	project := "Q1"
+	labels := []string{"bug"}
+	in := linearUpdateInput{
+		Number:       7,
+		Title:        "  rename  ",
+		Description:  &desc,
+		State:        "  Done  ",
+		Assignee:     &assignee,
+		Priority:     &priority,
+		Labels:       &labels,
+		AddLabels:    []string{"x"},
+		RemoveLabels: []string{"y"},
+		Team:         "BACKEND",
+		Project:      &project,
+		Cycle:        &cycle,
+		DueDate:      &dueDate,
+		Estimate:     &estimate,
+		Parent:       &parent,
+	}
+	opts := linearUpdateInputToOptions(in)
+	if opts.Title == nil || *opts.Title != "rename" {
+		t.Errorf("Title=%v want trimmed pointer to 'rename'", opts.Title)
+	}
+	if opts.State == nil || *opts.State != "Done" {
+		t.Errorf("State=%v want trimmed pointer to 'Done'", opts.State)
+	}
+	if opts.Description == nil || *opts.Description != "body" {
+		t.Errorf("Description not passed through: %v", opts.Description)
+	}
+	if opts.Assignee == nil || *opts.Assignee != "" {
+		t.Errorf("Assignee unassign not preserved: %v", opts.Assignee)
+	}
+	if opts.Priority == nil || *opts.Priority != 1 {
+		t.Errorf("Priority=%v want 1", opts.Priority)
+	}
+	if opts.Labels == nil || (*opts.Labels)[0] != "bug" {
+		t.Errorf("Labels=%v want pointer to [bug]", opts.Labels)
+	}
+	if !slicesEqual(opts.AddedLabels, []string{"x"}) || !slicesEqual(opts.RemovedLabels, []string{"y"}) {
+		t.Errorf("Added/Removed: %v / %v", opts.AddedLabels, opts.RemovedLabels)
+	}
+	if opts.Team != "BACKEND" {
+		t.Errorf("Team=%q want BACKEND", opts.Team)
+	}
+	if opts.Project == nil || *opts.Project != "Q1" {
+		t.Errorf("Project=%v want pointer to Q1", opts.Project)
+	}
+	if opts.Cycle == nil || *opts.Cycle != -1 {
+		t.Errorf("Cycle=%v want pointer to -1", opts.Cycle)
+	}
+}

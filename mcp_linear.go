@@ -74,12 +74,61 @@ type linearGetOutput struct {
 }
 
 type linearUpdateInput struct {
-	Number  int    `json:"number" jsonschema:"issue number within the configured team"`
-	ToState string `json:"to_state" jsonschema:"target column or state type: 'Backlog' | 'In Progress' | 'Done' | 'Canceled', or a Linear state type (backlog, triage, unstarted, started, completed, canceled)"`
+	Number int `json:"number" jsonschema:"issue number within the configured team"`
+
+	// Title (set or no change). Empty means no change. Cannot be cleared
+	// because Linear requires every issue to have a non-empty title.
+	Title string `json:"title,omitempty" jsonschema:"optional new title; empty leaves it unchanged"`
+
+	// Description (set or no change). Use null or omit for no change;
+	// pass an explicit empty string to clear. Pointer-typed to distinguish.
+	Description *string `json:"description,omitempty" jsonschema:"optional new Markdown body; pass empty string to clear"`
+
+	// State (set or no change). Accepts a kanban label
+	// ('Backlog' | 'In Progress' | 'Done' | 'Canceled'), a Linear state
+	// type (backlog/triage/unstarted/started/completed/canceled), the
+	// state's display name (e.g. 'Code Review'), or a Linear UUID.
+	State string `json:"state,omitempty" jsonschema:"optional new workflow state; accepts kanban label, state type, state name, or UUID"`
+
+	// Assignee. nil = no change; pointer-to-empty-string = unassign;
+	// pointer-to-name/email/uuid = set.
+	Assignee *string `json:"assignee,omitempty" jsonschema:"optional assignee (user name, displayName, email, or UUID); pass empty string to unassign"`
+
+	// Priority 0..4 (0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low).
+	Priority *int `json:"priority,omitempty" jsonschema:"optional new priority 0..4 (0=None, 1=Urgent, 2=High, 3=Medium, 4=Low)"`
+
+	// Labels — full-replace semantics. nil = no change; pointer-to-[]
+	// = clear; pointer-to-[a,b,...] = replace label set with these.
+	Labels *[]string `json:"labels,omitempty" jsonschema:"optional full-replace label set (names or UUIDs); pass [] to clear all labels"`
+
+	// AddLabels / RemoveLabels — additive label edits. Mutually
+	// composable with each other, NOT with Labels (which replaces the
+	// whole set). When Labels is set the additive params are ignored.
+	AddLabels    []string `json:"add_labels,omitempty" jsonschema:"label names/UUIDs to add to the issue without replacing the existing set"`
+	RemoveLabels []string `json:"remove_labels,omitempty" jsonschema:"label names/UUIDs to remove from the issue"`
+
+	// Team move. Empty = no change. Linear issues always belong to
+	// exactly one team; this changes which team owns the issue.
+	Team string `json:"team,omitempty" jsonschema:"optional team key to move the issue into a different team"`
+
+	// Project — pointer-to-empty clears, pointer-to-name/uuid sets.
+	Project *string `json:"project,omitempty" jsonschema:"optional project name or UUID; pass empty string to detach from project"`
+
+	// Cycle — pointer-to-int. Negative value (e.g. -1) clears.
+	Cycle *int `json:"cycle,omitempty" jsonschema:"optional cycle number; pass a negative number (e.g. -1) to detach from cycle"`
+
+	// DueDate — pointer-to-empty clears, pointer-to-YYYY-MM-DD sets.
+	DueDate *string `json:"due_date,omitempty" jsonschema:"optional due date in YYYY-MM-DD; pass empty string to clear"`
+
+	// Estimate — pointer-to-int. Negative value clears.
+	Estimate *int `json:"estimate,omitempty" jsonschema:"optional point estimate; pass a negative number (e.g. -1) to clear"`
+
+	// Parent — pointer-to-empty orphans, pointer-to-identifier sets.
+	Parent *string `json:"parent,omitempty" jsonschema:"optional parent issue identifier (TEAM-N), bare number, or UUID; pass empty string to orphan"`
 }
 
 type linearUpdateOutput struct {
-	Issue linearIssueView `json:"issue" jsonschema:"the issue after the update — useful for verifying the new status"`
+	Issue linearIssueDetailView `json:"issue" jsonschema:"the issue after the update — full detail view including description and comments so the agent can verify every applied change"`
 }
 
 type linearCommentInput struct {
@@ -94,6 +143,32 @@ type linearCommentOutput struct {
 type linearCreateInput struct {
 	Title       string `json:"title" jsonschema:"issue title (required)"`
 	Description string `json:"description,omitempty" jsonschema:"optional Markdown body for the issue"`
+
+	// Optional team override. Empty means use the project-configured
+	// team key. The team must be visible to the API key.
+	Team string `json:"team,omitempty" jsonschema:"optional team key override; empty falls back to the project-configured team"`
+
+	// Assignee on create. Empty = unassigned. Accepts name, displayName,
+	// email, or UUID.
+	Assignee string `json:"assignee,omitempty" jsonschema:"optional assignee (user name, displayName, email, or UUID); empty leaves it unassigned"`
+
+	// Priority. nil = leave unset; otherwise 0..4.
+	Priority *int `json:"priority,omitempty" jsonschema:"optional priority 0..4 (0=None, 1=Urgent, 2=High, 3=Medium, 4=Low)"`
+
+	// Labels at create time.
+	Labels []string `json:"labels,omitempty" jsonschema:"optional label names or UUIDs to attach at creation time"`
+
+	// Initial state. Empty = team's default backlog state.
+	State string `json:"state,omitempty" jsonschema:"optional initial workflow state; accepts kanban label, state type, state name, or UUID"`
+
+	// Parent — sub-issue creation.
+	Parent string `json:"parent,omitempty" jsonschema:"optional parent issue identifier (TEAM-N), bare number, or UUID — turns this into a sub-issue"`
+
+	// Project / Cycle / DueDate / Estimate.
+	Project  string `json:"project,omitempty" jsonschema:"optional project name or UUID to file the issue under"`
+	Cycle    *int   `json:"cycle,omitempty" jsonschema:"optional cycle number to attach the issue to"`
+	DueDate  string `json:"due_date,omitempty" jsonschema:"optional due date in YYYY-MM-DD"`
+	Estimate *int   `json:"estimate,omitempty" jsonschema:"optional point estimate"`
 }
 
 type linearCreateOutput struct {
@@ -108,6 +183,89 @@ type linearDeleteOutput struct {
 	Number     int    `json:"number"`
 	Identifier string `json:"identifier" jsonschema:"team-prefixed identifier of the archived issue, e.g. ENG-42"`
 	Deleted    bool   `json:"deleted" jsonschema:"true once Linear confirms the archive"`
+}
+
+// ----- Discovery tool I/O schemas -----
+
+type linearListTeamsInput struct{}
+
+type linearTeamView struct {
+	Key         string `json:"key" jsonschema:"team identifier prefix, e.g. ENG"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+type linearListTeamsOutput struct {
+	Teams []linearTeamView `json:"teams"`
+}
+
+type linearListUsersInput struct {
+	Query string `json:"query,omitempty" jsonschema:"optional substring filter on name/displayName/email"`
+}
+
+type linearUserView struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name,omitempty"`
+	Email       string `json:"email,omitempty"`
+}
+
+type linearListUsersOutput struct {
+	Users []linearUserView `json:"users"`
+}
+
+type linearListLabelsInput struct {
+	Team string `json:"team,omitempty" jsonschema:"optional team key to scope labels (returns team-scoped + workspace-wide); empty uses the project-configured team"`
+}
+
+type linearLabelView struct {
+	Name  string `json:"name"`
+	Color string `json:"color,omitempty" jsonschema:"hex color string Linear assigned to the label"`
+	Team  string `json:"team,omitempty" jsonschema:"team key the label is scoped to; empty for workspace-wide labels"`
+}
+
+type linearListLabelsOutput struct {
+	Labels []linearLabelView `json:"labels"`
+}
+
+type linearListStatesInput struct {
+	Team string `json:"team,omitempty" jsonschema:"optional team key; empty uses the project-configured team"`
+}
+
+type linearStateView struct {
+	Name string `json:"name"`
+	Type string `json:"type" jsonschema:"workflow state type: backlog | triage | unstarted | started | completed | canceled"`
+}
+
+type linearListStatesOutput struct {
+	States []linearStateView `json:"states"`
+}
+
+type linearListProjectsInput struct {
+	Team string `json:"team,omitempty" jsonschema:"optional team key to scope projects to those accessible to that team"`
+}
+
+type linearProjectView struct {
+	Name  string `json:"name"`
+	State string `json:"state,omitempty" jsonschema:"project lifecycle state (planned, started, paused, completed, canceled, ...)"`
+}
+
+type linearListProjectsOutput struct {
+	Projects []linearProjectView `json:"projects"`
+}
+
+type linearListCyclesInput struct {
+	Team string `json:"team,omitempty" jsonschema:"optional team key; empty uses the project-configured team"`
+}
+
+type linearCycleView struct {
+	Number   int    `json:"number"`
+	Name     string `json:"name,omitempty"`
+	StartsAt string `json:"starts_at,omitempty" jsonschema:"RFC3339 timestamp when the cycle begins"`
+	EndsAt   string `json:"ends_at,omitempty" jsonschema:"RFC3339 timestamp when the cycle ends"`
+}
+
+type linearListCyclesOutput struct {
+	Cycles []linearCycleView `json:"cycles"`
 }
 
 // linearNotActiveMsg is the canonical error every Linear MCP handler
@@ -129,27 +287,92 @@ Errors when Linear is not configured for the current project (missing API key or
 
 The configured team is implicit; the caller passes only the integer number. Errors when the issue does not exist or Linear is not configured for the current project.`
 
-	linearUpdateToolDescription = `Move a Linear issue to a different workflow state (kanban column).
+	linearUpdateToolDescription = `Edit any field of an existing Linear issue.
 
-Accepts either a kanban column label ("Backlog" | "In Progress" | "Done" | "Canceled") or a Linear state type (backlog, triage, unstarted, started, completed, canceled). The provider resolves the team's matching workflow-state UUID and dispatches an issueUpdate mutation, then returns the post-move issue snapshot.
+Every field is optional — only fields you set are sent to Linear, so partial edits are safe (setting just 'priority' won't disturb the assignee or labels). Pointer-typed fields use null/missing to mean "no change" and an explicit empty string (or negative number for cycle/estimate) to mean "clear".
 
-Errors when no team workflow-state matches the requested type, the issue does not exist, or Linear is not configured.`
+Supported edits:
+  • title — set new title (cannot be empty; Linear requires a non-empty title)
+  • description — set or clear the Markdown body
+  • state — change workflow state. Accepts a kanban label ("Backlog" | "In Progress" | "Done" | "Canceled"), a Linear state type (backlog/triage/unstarted/started/completed/canceled), the state's display name (e.g. "Code Review"), or a UUID
+  • assignee — set by name/displayName/email/UUID, or pass empty string to unassign
+  • priority — 0..4 (0=None, 1=Urgent, 2=High, 3=Medium, 4=Low)
+  • labels — full-replace label set; pass [] to clear all labels
+  • add_labels / remove_labels — additive label edits when labels (full replace) is not set
+  • team — move the issue to a different team by team key
+  • project — set by name/UUID, or pass empty string to detach
+  • cycle — set by cycle number, or pass a negative value to detach
+  • due_date — set in YYYY-MM-DD, or pass empty string to clear
+  • estimate — set point estimate, or pass a negative value to clear
+  • parent — set parent (TEAM-N / bare number / UUID) for sub-issue, or pass empty string to orphan
+
+Returns the post-update issue snapshot (full detail view including description and comments). Errors when no field was supplied, a name fails to resolve, the issue does not exist, or Linear is not configured.`
 
 	linearCreateCommentToolDescription = `Add a comment to a Linear issue.
 
 Body is rendered as Markdown by Linear. Returns the created comment. Errors when the issue does not exist or Linear is not configured.`
 
-	linearCreateIssueToolDescription = `Create a new Linear issue in the project's configured team.
+	linearCreateIssueToolDescription = `Create a new Linear issue with optional assignee, labels, priority, state, project, cycle, due date, parent, estimate, and team override.
 
-Title is required. Description is optional Markdown. The team is implicit (set in /config); Linear assigns the next available number under that team and the response carries the new identifier (TEAM-N) so the agent can reference it immediately.
+Title is required. The team defaults to the project-configured team but can be overridden per-call via 'team'. Every other field is optional. Linear assigns the next available number under the chosen team and the response carries the new identifier (TEAM-N).
 
-Errors when Linear is not configured for the current project (missing API key or team key) or the team key cannot be resolved.`
+Supported fields:
+  • title (required)
+  • description — Markdown body
+  • team — team key override (e.g. "BACKEND") to file under a different team than the project default
+  • assignee — name/displayName/email/UUID; empty leaves the issue unassigned
+  • priority — 0..4 (0=None, 1=Urgent, 2=High, 3=Medium, 4=Low)
+  • labels — array of label names or UUIDs (resolved scoped to the chosen team)
+  • state — initial workflow state (kanban label, state type, state name, or UUID)
+  • parent — parent identifier (TEAM-N / bare number / UUID) — turns the new issue into a sub-issue
+  • project — project name or UUID
+  • cycle — cycle number to attach to
+  • due_date — YYYY-MM-DD
+  • estimate — point estimate
+
+Errors when Linear is not configured, the team key cannot be resolved, or any name fails to resolve to its UUID.`
 
 	linearDeleteIssueToolDescription = `Delete (archive) a Linear issue by number.
 
 Linear's "delete" is a soft archive — the issue is removed from the active workspace but stays recoverable from Linear's archive view, matching what users see when they hit the trash icon in Linear's UI. The configured team is implicit.
 
 Errors when the issue does not exist or Linear is not configured for the current project.`
+
+	linearListTeamsToolDescription = `List every Linear team visible to the configured API key.
+
+Returns team key (the prefix for issue identifiers, e.g. ENG → ENG-42), display name, and description. Use this to discover what 'team' values are accepted by the create/update/list tools.
+
+Errors when Linear is not configured for the current project.`
+
+	linearListUsersToolDescription = `List Linear workspace users (active only).
+
+Optional 'query' substring-matches user name, displayName, and email. Returned fields are name, displayName, and email — exactly the values accepted by 'assignee' on linear_create_issue and linear_update_issue.
+
+Errors when Linear is not configured for the current project.`
+
+	linearListLabelsToolDescription = `List Linear labels available to a team.
+
+When 'team' is set, returns labels scoped to that team plus workspace-wide labels (which Linear also lets you attach to that team's issues). Empty 'team' uses the project-configured team. Returned label names are exactly what 'labels' / 'add_labels' / 'remove_labels' on the create/update tools accept.
+
+Errors when Linear is not configured for the current project.`
+
+	linearListStatesToolDescription = `List a Linear team's workflow states (kanban columns).
+
+Returns each state's display name and type (backlog/triage/unstarted/started/completed/canceled). Names and types are both accepted by 'state' on linear_create_issue and linear_update_issue.
+
+Errors when Linear is not configured for the current project.`
+
+	linearListProjectsToolDescription = `List Linear projects accessible to a team.
+
+When 'team' is set, scopes to projects that include that team. Empty 'team' returns every project the API key can see. Returned project names are accepted by 'project' on linear_create_issue and linear_update_issue.
+
+Errors when Linear is not configured for the current project.`
+
+	linearListCyclesToolDescription = `List a Linear team's cycles (sprints / timeboxed iterations).
+
+Returns each cycle's number, name, and start/end timestamps. Cycle numbers are accepted by 'cycle' on linear_create_issue and linear_update_issue.
+
+Errors when Linear is not configured for the current project.`
 )
 
 // registerLinearTools wires the four Linear MCP tools onto b.server.
@@ -183,6 +406,33 @@ func (b *mcpBridge) registerLinearTools() {
 		Name:        "linear_delete_issue",
 		Description: linearDeleteIssueToolDescription,
 	}, b.linearDeleteIssueTool)
+
+	// Discovery tools — used by the agent to resolve human-friendly
+	// names into the inputs the create / update tools accept.
+	mcp.AddTool(b.server, &mcp.Tool{
+		Name:        "linear_list_teams",
+		Description: linearListTeamsToolDescription,
+	}, b.linearListTeamsTool)
+	mcp.AddTool(b.server, &mcp.Tool{
+		Name:        "linear_list_users",
+		Description: linearListUsersToolDescription,
+	}, b.linearListUsersTool)
+	mcp.AddTool(b.server, &mcp.Tool{
+		Name:        "linear_list_labels",
+		Description: linearListLabelsToolDescription,
+	}, b.linearListLabelsTool)
+	mcp.AddTool(b.server, &mcp.Tool{
+		Name:        "linear_list_states",
+		Description: linearListStatesToolDescription,
+	}, b.linearListStatesTool)
+	mcp.AddTool(b.server, &mcp.Tool{
+		Name:        "linear_list_projects",
+		Description: linearListProjectsToolDescription,
+	}, b.linearListProjectsTool)
+	mcp.AddTool(b.server, &mcp.Tool{
+		Name:        "linear_list_cycles",
+		Description: linearListCyclesToolDescription,
+	}, b.linearListCyclesTool)
 }
 
 // ----- Handlers -----
@@ -248,25 +498,75 @@ func (b *mcpBridge) linearUpdateTool(ctx context.Context, req *mcp.CallToolReque
 	if in.Number <= 0 {
 		return errResult("linear: number must be positive"), linearUpdateOutput{}, nil
 	}
-	types := resolveLinearStateTypes(in.ToState)
-	if len(types) == 0 {
-		return errResult(fmt.Sprintf("linear: unknown to_state %q (expected Backlog | In Progress | Done | Canceled or a state type)", in.ToState)), linearUpdateOutput{}, nil
+	opts := linearUpdateInputToOptions(in)
+	if linearUpdateOptionsEmpty(opts) {
+		return errResult("linear: at least one editable field must be supplied"), linearUpdateOutput{}, nil
 	}
 	p := mcpLinearProvider()
-	spec := KanbanColumnSpec{Label: in.ToState, Query: &linearQuery{stateTypes: types}}
-	if err := p.MoveIssue(ctx, pc, b.getCwd(), issue{number: in.Number}, spec); err != nil {
+	it, err := p.UpdateIssue(ctx, pc, b.getCwd(), in.Number, opts)
+	if err != nil {
 		return errResult("linear: " + err.Error()), linearUpdateOutput{}, nil
 	}
-	// Round-trip a fresh GetIssue so the agent sees the post-move
-	// snapshot — useful for verifying the transition without making
-	// the agent issue a separate get call.
-	it, err := p.GetIssue(ctx, pc, b.getCwd(), in.Number)
-	if err != nil {
-		return errResult("linear: post-update fetch: " + err.Error()), linearUpdateOutput{}, nil
+	// Use the team key from the response config — the issue may have
+	// moved teams as part of this update, so the post-update identifier
+	// reflects the destination team.
+	postTeamKey := pc.MCP.Linear.TeamKey
+	if v := strings.TrimSpace(in.Team); v != "" {
+		postTeamKey = v
 	}
-	out := linearUpdateOutput{Issue: linearIssueViewOf(it, pc.MCP.Linear.TeamKey)}
+	out := linearUpdateOutput{Issue: linearIssueDetailViewOf(it, postTeamKey)}
 	body, _ := json.Marshal(out)
 	return okResult(string(body)), out, nil
+}
+
+// linearUpdateInputToOptions translates the wire-shape (JSON-friendly,
+// pointer-typed for nullable fields) into the provider-side options
+// struct. Pure mapping; no resolver calls happen here.
+func linearUpdateInputToOptions(in linearUpdateInput) linearUpdateIssueOptions {
+	opts := linearUpdateIssueOptions{
+		Description:   in.Description,
+		Assignee:      in.Assignee,
+		Priority:      in.Priority,
+		Labels:        in.Labels,
+		AddedLabels:   in.AddLabels,
+		RemovedLabels: in.RemoveLabels,
+		Team:          in.Team,
+		Project:       in.Project,
+		Cycle:         in.Cycle,
+		DueDate:       in.DueDate,
+		Estimate:      in.Estimate,
+		Parent:        in.Parent,
+	}
+	if v := strings.TrimSpace(in.Title); v != "" {
+		t := v
+		opts.Title = &t
+	}
+	if v := strings.TrimSpace(in.State); v != "" {
+		s := v
+		opts.State = &s
+	}
+	return opts
+}
+
+// linearUpdateOptionsEmpty reports whether the caller passed nothing
+// to update — every editable field is in its zero / nil state. The
+// MCP handler short-circuits with a friendly error in that case so
+// the provider doesn't waste a round trip just to discover the
+// payload was empty.
+func linearUpdateOptionsEmpty(o linearUpdateIssueOptions) bool {
+	if o.Title != nil || o.Description != nil || o.State != nil ||
+		o.Assignee != nil || o.Priority != nil || o.Labels != nil ||
+		o.Project != nil || o.Cycle != nil || o.DueDate != nil ||
+		o.Estimate != nil || o.Parent != nil {
+		return false
+	}
+	if len(o.AddedLabels) > 0 || len(o.RemovedLabels) > 0 {
+		return false
+	}
+	if strings.TrimSpace(o.Team) != "" {
+		return false
+	}
+	return true
 }
 
 func (b *mcpBridge) linearCreateCommentTool(ctx context.Context, req *mcp.CallToolRequest, in linearCommentInput) (*mcp.CallToolResult, linearCommentOutput, error) {
@@ -302,12 +602,30 @@ func (b *mcpBridge) linearCreateIssueTool(ctx context.Context, req *mcp.CallTool
 	if strings.TrimSpace(in.Title) == "" {
 		return errResult("linear: title is required"), linearCreateOutput{}, nil
 	}
+	opts := linearCreateIssueOptions{
+		Title:       in.Title,
+		Description: in.Description,
+		TeamKey:     in.Team,
+		Assignee:    in.Assignee,
+		Priority:    in.Priority,
+		Labels:      in.Labels,
+		State:       in.State,
+		Parent:      in.Parent,
+		Project:     in.Project,
+		Cycle:       in.Cycle,
+		DueDate:     in.DueDate,
+		Estimate:    in.Estimate,
+	}
 	p := mcpLinearProvider()
-	it, err := p.CreateIssue(ctx, pc, b.getCwd(), in.Title, in.Description)
+	it, err := p.CreateIssueWithOptions(ctx, pc, b.getCwd(), opts)
 	if err != nil {
 		return errResult("linear: " + err.Error()), linearCreateOutput{}, nil
 	}
-	out := linearCreateOutput{Issue: linearIssueViewOf(it, pc.MCP.Linear.TeamKey)}
+	respTeamKey := pc.MCP.Linear.TeamKey
+	if v := strings.TrimSpace(in.Team); v != "" {
+		respTeamKey = v
+	}
+	out := linearCreateOutput{Issue: linearIssueViewOf(it, respTeamKey)}
 	body, _ := json.Marshal(out)
 	return okResult(string(body)), out, nil
 }
@@ -427,6 +745,152 @@ func linearIssueDetailViewOf(it issue, teamKey string) linearIssueDetailView {
 		}
 	}
 	return out
+}
+
+// ----- Discovery handlers -----
+
+func (b *mcpBridge) linearListTeamsTool(ctx context.Context, req *mcp.CallToolRequest, in linearListTeamsInput) (*mcp.CallToolResult, linearListTeamsOutput, error) {
+	pc, ok := b.linearProjectConfig()
+	if !ok {
+		return errResult(linearNotActiveMsg), linearListTeamsOutput{}, nil
+	}
+	p := mcpLinearProvider()
+	teams, err := p.ListTeams(ctx, pc)
+	if err != nil {
+		return errResult("linear: " + err.Error()), linearListTeamsOutput{}, nil
+	}
+	out := linearListTeamsOutput{Teams: make([]linearTeamView, 0, len(teams))}
+	for _, t := range teams {
+		out.Teams = append(out.Teams, linearTeamView{
+			Key:         t.Key,
+			Name:        t.Name,
+			Description: t.Description,
+		})
+	}
+	body, _ := json.Marshal(out)
+	return okResult(string(body)), out, nil
+}
+
+func (b *mcpBridge) linearListUsersTool(ctx context.Context, req *mcp.CallToolRequest, in linearListUsersInput) (*mcp.CallToolResult, linearListUsersOutput, error) {
+	pc, ok := b.linearProjectConfig()
+	if !ok {
+		return errResult(linearNotActiveMsg), linearListUsersOutput{}, nil
+	}
+	p := mcpLinearProvider()
+	users, err := p.ListUsers(ctx, pc, in.Query)
+	if err != nil {
+		return errResult("linear: " + err.Error()), linearListUsersOutput{}, nil
+	}
+	out := linearListUsersOutput{Users: make([]linearUserView, 0, len(users))}
+	for _, u := range users {
+		out.Users = append(out.Users, linearUserView{
+			Name:        u.Name,
+			DisplayName: u.DisplayName,
+			Email:       u.Email,
+		})
+	}
+	body, _ := json.Marshal(out)
+	return okResult(string(body)), out, nil
+}
+
+func (b *mcpBridge) linearListLabelsTool(ctx context.Context, req *mcp.CallToolRequest, in linearListLabelsInput) (*mcp.CallToolResult, linearListLabelsOutput, error) {
+	pc, ok := b.linearProjectConfig()
+	if !ok {
+		return errResult(linearNotActiveMsg), linearListLabelsOutput{}, nil
+	}
+	teamKey := strings.TrimSpace(in.Team)
+	if teamKey == "" {
+		teamKey = pc.MCP.Linear.TeamKey
+	}
+	p := mcpLinearProvider()
+	labels, err := p.ListLabels(ctx, pc, teamKey)
+	if err != nil {
+		return errResult("linear: " + err.Error()), linearListLabelsOutput{}, nil
+	}
+	out := linearListLabelsOutput{Labels: make([]linearLabelView, 0, len(labels))}
+	for _, l := range labels {
+		out.Labels = append(out.Labels, linearLabelView{
+			Name:  l.Name,
+			Color: l.Color,
+			Team:  l.TeamKey,
+		})
+	}
+	body, _ := json.Marshal(out)
+	return okResult(string(body)), out, nil
+}
+
+func (b *mcpBridge) linearListStatesTool(ctx context.Context, req *mcp.CallToolRequest, in linearListStatesInput) (*mcp.CallToolResult, linearListStatesOutput, error) {
+	pc, ok := b.linearProjectConfig()
+	if !ok {
+		return errResult(linearNotActiveMsg), linearListStatesOutput{}, nil
+	}
+	p := mcpLinearProvider()
+	states, err := p.ListWorkflowStatesForTeam(ctx, pc, in.Team)
+	if err != nil {
+		return errResult("linear: " + err.Error()), linearListStatesOutput{}, nil
+	}
+	out := linearListStatesOutput{States: make([]linearStateView, 0, len(states))}
+	for _, s := range states {
+		out.States = append(out.States, linearStateView{
+			Name: s.Name,
+			Type: s.Type,
+		})
+	}
+	body, _ := json.Marshal(out)
+	return okResult(string(body)), out, nil
+}
+
+func (b *mcpBridge) linearListProjectsTool(ctx context.Context, req *mcp.CallToolRequest, in linearListProjectsInput) (*mcp.CallToolResult, linearListProjectsOutput, error) {
+	pc, ok := b.linearProjectConfig()
+	if !ok {
+		return errResult(linearNotActiveMsg), linearListProjectsOutput{}, nil
+	}
+	teamKey := strings.TrimSpace(in.Team)
+	if teamKey == "" {
+		teamKey = pc.MCP.Linear.TeamKey
+	}
+	p := mcpLinearProvider()
+	projects, err := p.ListProjects(ctx, pc, teamKey)
+	if err != nil {
+		return errResult("linear: " + err.Error()), linearListProjectsOutput{}, nil
+	}
+	out := linearListProjectsOutput{Projects: make([]linearProjectView, 0, len(projects))}
+	for _, pr := range projects {
+		out.Projects = append(out.Projects, linearProjectView{
+			Name:  pr.Name,
+			State: pr.State,
+		})
+	}
+	body, _ := json.Marshal(out)
+	return okResult(string(body)), out, nil
+}
+
+func (b *mcpBridge) linearListCyclesTool(ctx context.Context, req *mcp.CallToolRequest, in linearListCyclesInput) (*mcp.CallToolResult, linearListCyclesOutput, error) {
+	pc, ok := b.linearProjectConfig()
+	if !ok {
+		return errResult(linearNotActiveMsg), linearListCyclesOutput{}, nil
+	}
+	p := mcpLinearProvider()
+	cycles, err := p.ListCycles(ctx, pc, in.Team)
+	if err != nil {
+		return errResult("linear: " + err.Error()), linearListCyclesOutput{}, nil
+	}
+	out := linearListCyclesOutput{Cycles: make([]linearCycleView, 0, len(cycles))}
+	for _, c := range cycles {
+		view := linearCycleView{
+			Number: c.Number,
+			Name:   c.Name,
+		}
+		if !c.StartsAt.IsZero() {
+			view.StartsAt = c.StartsAt.Format(time.RFC3339)
+		}
+		if !c.EndsAt.IsZero() {
+			view.EndsAt = c.EndsAt.Format(time.RFC3339)
+		}
+		out.Cycles = append(out.Cycles, view)
+	}
+	body, _ := json.Marshal(out)
+	return okResult(string(body)), out, nil
 }
 
 // resolveLinearStateTypes maps the agent-friendly to_state input to

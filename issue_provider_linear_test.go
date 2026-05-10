@@ -1103,3 +1103,1185 @@ func slicesEqual(a, b []string) bool {
 	}
 	return true
 }
+
+// -----------------------------------------------------------------------
+// Pure helper coverage — UUID detection + label set merging
+// -----------------------------------------------------------------------
+
+func TestIsLinearUUID(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"abc12345-1234-4567-8901-abcdef123456", true},
+		{"ABC12345-1234-4567-8901-ABCDEF123456", true},
+		{"00000000-0000-0000-0000-000000000000", true},
+		{"", false},
+		{"abc", false},
+		{"abc12345-1234-4567-8901-abcdef12345", false}, // 35
+		{"abc12345-1234-4567-8901-abcdef123456X", false}, // 37
+		{"abc12345-12345-456-8901-abcdef123456", false}, // misplaced hyphens
+		{"abc12345_1234_4567_8901_abcdef123456", false}, // underscores not hyphens
+		{"abcg2345-1234-4567-8901-abcdef123456", false}, // non-hex 'g'
+	}
+	for _, c := range cases {
+		if got := isLinearUUID(c.in); got != c.want {
+			t.Errorf("isLinearUUID(%q)=%v want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestMergeLabelIDs(t *testing.T) {
+	cases := []struct {
+		name              string
+		base, add, remove []string
+		want              []string
+	}{
+		{"add only", []string{"a", "b"}, []string{"c"}, nil, []string{"a", "b", "c"}},
+		{"remove only", []string{"a", "b", "c"}, nil, []string{"b"}, []string{"a", "c"}},
+		{"add and remove", []string{"a", "b"}, []string{"c"}, []string{"a"}, []string{"b", "c"}},
+		{"add duplicates skipped", []string{"a"}, []string{"a", "b"}, nil, []string{"a", "b"}},
+		{"remove wins over add", nil, []string{"a"}, []string{"a"}, []string{}},
+		{"empty base", nil, []string{"a", "b"}, []string{"a"}, []string{"b"}},
+		{"all removed", []string{"a", "b"}, nil, []string{"a", "b"}, []string{}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := mergeLabelIDs(c.base, c.add, c.remove)
+			if !slicesEqual(got, c.want) {
+				t.Errorf("got=%v want=%v", got, c.want)
+			}
+		})
+	}
+}
+
+// -----------------------------------------------------------------------
+// List helpers — ListTeams / ListUsers / ListLabels / ListProjects /
+// ListCycles / ListWorkflowStatesForTeam
+// -----------------------------------------------------------------------
+
+func TestLinearProvider_ListTeams_HappyPath(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListTeams"] = func(vars map[string]any) any {
+		if vars["first"] == nil {
+			t.Errorf("AskListTeams missing 'first' var")
+		}
+		return map[string]any{
+			"teams": map[string]any{
+				"nodes": []any{
+					map[string]any{"id": "t-eng", "key": "ENG", "name": "Engineering", "description": "build it"},
+					map[string]any{"id": "t-des", "key": "DES", "name": "Design"},
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	teams, err := p.ListTeams(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("ListTeams: %v", err)
+	}
+	if len(teams) != 2 || teams[0].Key != "ENG" || teams[1].Key != "DES" {
+		t.Errorf("teams=%+v", teams)
+	}
+	if teams[0].Description != "build it" {
+		t.Errorf("description not propagated: %+v", teams[0])
+	}
+}
+
+func TestLinearProvider_ListTeams_NotConfiguredWithoutToken(t *testing.T) {
+	p := &linearIssueProvider{}
+	if _, err := p.ListTeams(context.Background(), projectConfig{}); !errors.Is(err, errIssueProviderNotConfigured) {
+		t.Errorf("err=%v want errIssueProviderNotConfigured", err)
+	}
+}
+
+func TestLinearProvider_ListUsers_FilterAppliedAndDecoded(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListUsers"] = func(vars map[string]any) any {
+		filter := vars["filter"].(map[string]any)
+		if active, ok := filter["active"].(map[string]any); !ok || active["eq"] != true {
+			t.Errorf("filter missing active=true clause: %+v", filter)
+		}
+		// Substring filter present
+		if _, ok := filter["or"]; !ok {
+			t.Errorf("expected 'or' substring filter for query, got %+v", filter)
+		}
+		return map[string]any{
+			"users": map[string]any{
+				"nodes": []any{
+					map[string]any{
+						"id":          "u-1",
+						"name":        "antonio",
+						"displayName": "Antonio",
+						"email":       "antonio@example.com",
+						"active":      true,
+					},
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	users, err := p.ListUsers(context.Background(), cfg, "antonio")
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(users) != 1 || users[0].DisplayName != "Antonio" || users[0].Email != "antonio@example.com" {
+		t.Errorf("users=%+v", users)
+	}
+}
+
+func TestLinearProvider_ListUsers_QueryEmptyOmitsSubstringFilter(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListUsers"] = func(vars map[string]any) any {
+		filter := vars["filter"].(map[string]any)
+		if _, ok := filter["or"]; ok {
+			t.Errorf("empty query should not include 'or' filter, got %+v", filter)
+		}
+		return map[string]any{"users": map[string]any{"nodes": []any{}}}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	if _, err := p.ListUsers(context.Background(), cfg, ""); err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+}
+
+func TestLinearProvider_ListLabels_TeamScopedFilter(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListLabels"] = func(vars map[string]any) any {
+		filter := vars["filter"].(map[string]any)
+		or, ok := filter["or"].([]any)
+		if !ok || len(or) != 2 {
+			t.Errorf("expected team-scoped OR filter, got %+v", filter)
+		}
+		return map[string]any{
+			"issueLabels": map[string]any{
+				"nodes": []any{
+					map[string]any{"id": "l-bug", "name": "bug", "color": "#f00", "team": map[string]any{"key": "ENG"}},
+					map[string]any{"id": "l-ws", "name": "wontfix", "color": "#888"},
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	labels, err := p.ListLabels(context.Background(), cfg, "ENG")
+	if err != nil {
+		t.Fatalf("ListLabels: %v", err)
+	}
+	if len(labels) != 2 {
+		t.Fatalf("len=%d want 2", len(labels))
+	}
+	if labels[0].Name != "bug" || labels[0].TeamKey != "ENG" {
+		t.Errorf("labels[0]=%+v", labels[0])
+	}
+	if labels[1].Name != "wontfix" || labels[1].TeamKey != "" {
+		t.Errorf("labels[1]=%+v", labels[1])
+	}
+}
+
+func TestLinearProvider_ListLabels_NoTeamSkipsFilter(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListLabels"] = func(vars map[string]any) any {
+		if _, ok := vars["filter"]; ok {
+			t.Errorf("empty teamKey should not produce filter, got %+v", vars["filter"])
+		}
+		return map[string]any{"issueLabels": map[string]any{"nodes": []any{}}}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x",
+	}}}
+	if _, err := p.ListLabels(context.Background(), cfg, ""); err != nil {
+		t.Fatalf("ListLabels: %v", err)
+	}
+}
+
+func TestLinearProvider_ListWorkflowStatesForTeam_RoutesThroughCache(t *testing.T) {
+	mock := newLinearMockServer(t)
+	var calls int
+	mock.handlers["AskWorkflowStates"] = func(vars map[string]any) any {
+		calls++
+		return map[string]any{
+			"workflowStates": map[string]any{
+				"nodes": []any{
+					map[string]any{"id": "s1", "name": "Backlog", "type": "backlog", "position": 1.0},
+					map[string]any{"id": "s2", "name": "In Progress", "type": "started", "position": 2.0},
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	states, err := p.ListWorkflowStatesForTeam(context.Background(), cfg, "")
+	if err != nil {
+		t.Fatalf("ListWorkflowStatesForTeam: %v", err)
+	}
+	if len(states) != 2 || states[0].Name != "Backlog" {
+		t.Errorf("states=%+v", states)
+	}
+	// Second call hits cache — no additional GraphQL.
+	if _, err := p.ListWorkflowStatesForTeam(context.Background(), cfg, ""); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls=%d want 1 (cache hit)", calls)
+	}
+}
+
+func TestLinearProvider_ListProjects_TeamFilter(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListProjects"] = func(vars map[string]any) any {
+		filter := vars["filter"].(map[string]any)
+		teams := filter["accessibleTeams"].(map[string]any)["some"].(map[string]any)
+		if teams["key"].(map[string]any)["eq"] != "ENG" {
+			t.Errorf("project filter team=%v want ENG", teams)
+		}
+		return map[string]any{
+			"projects": map[string]any{
+				"nodes": []any{
+					map[string]any{"id": "p1", "name": "Q1 launch", "state": "started"},
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	projects, err := p.ListProjects(context.Background(), cfg, "ENG")
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if len(projects) != 1 || projects[0].Name != "Q1 launch" || projects[0].State != "started" {
+		t.Errorf("projects=%+v", projects)
+	}
+}
+
+func TestLinearProvider_ListCycles_TeamScoped(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListCycles"] = func(vars map[string]any) any {
+		filter := vars["filter"].(map[string]any)
+		team := filter["team"].(map[string]any)["key"].(map[string]any)
+		if team["eq"] != "ENG" {
+			t.Errorf("cycle filter team=%v want ENG", team)
+		}
+		return map[string]any{
+			"cycles": map[string]any{
+				"nodes": []any{
+					map[string]any{"id": "c1", "number": 7, "name": "Sprint 7", "startsAt": "2026-04-01T00:00:00Z", "endsAt": "2026-04-15T00:00:00Z"},
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	cycles, err := p.ListCycles(context.Background(), cfg, "")
+	if err != nil {
+		t.Fatalf("ListCycles: %v", err)
+	}
+	if len(cycles) != 1 || cycles[0].Number != 7 || cycles[0].Name != "Sprint 7" {
+		t.Errorf("cycles=%+v", cycles)
+	}
+}
+
+func TestLinearProvider_ListCycles_RequiresTeam(t *testing.T) {
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Token: "lin_api_x", // no team
+	}}}
+	if _, err := p.ListCycles(context.Background(), cfg, ""); !errors.Is(err, errIssueProviderNotConfigured) {
+		t.Errorf("err=%v want errIssueProviderNotConfigured (no team)", err)
+	}
+}
+
+// -----------------------------------------------------------------------
+// Resolvers — assignee / labels / state / project / cycle / parent
+// -----------------------------------------------------------------------
+
+func TestLinearProvider_ResolveAssignee_PassesUUIDThrough(t *testing.T) {
+	mock := newLinearMockServer(t)
+	// No handler registered: any GraphQL call here would 500.
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	got, err := p.resolveAssignee(context.Background(), cfg, "abc12345-1234-4567-8901-abcdef123456")
+	if err != nil {
+		t.Fatalf("resolveAssignee: %v", err)
+	}
+	if got != "abc12345-1234-4567-8901-abcdef123456" {
+		t.Errorf("got=%q want pass-through", got)
+	}
+}
+
+func TestLinearProvider_ResolveAssignee_ExactMatch(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListUsers"] = func(vars map[string]any) any {
+		return map[string]any{
+			"users": map[string]any{
+				"nodes": []any{
+					map[string]any{"id": "u-1", "name": "antonio", "displayName": "Antonio", "email": "a@x.com", "active": true},
+					map[string]any{"id": "u-2", "name": "antonio2", "displayName": "Antonio Two", "email": "a2@x.com", "active": true},
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	got, err := p.resolveAssignee(context.Background(), cfg, "Antonio")
+	if err != nil {
+		t.Fatalf("resolveAssignee: %v", err)
+	}
+	if got != "u-1" {
+		t.Errorf("exact-match got=%q want u-1", got)
+	}
+}
+
+func TestLinearProvider_ResolveAssignee_ExactByEmail(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListUsers"] = func(vars map[string]any) any {
+		return map[string]any{
+			"users": map[string]any{
+				"nodes": []any{
+					map[string]any{"id": "u-1", "name": "ant", "displayName": "Ant", "email": "antonio@example.com", "active": true},
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	got, err := p.resolveAssignee(context.Background(), cfg, "antonio@example.com")
+	if err != nil || got != "u-1" {
+		t.Errorf("got=%q err=%v", got, err)
+	}
+}
+
+func TestLinearProvider_ResolveAssignee_AmbiguousErrors(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListUsers"] = func(vars map[string]any) any {
+		return map[string]any{
+			"users": map[string]any{
+				"nodes": []any{
+					map[string]any{"id": "u-1", "displayName": "Antonio One", "name": "antonio_one", "active": true},
+					map[string]any{"id": "u-2", "displayName": "Antonio Two", "name": "antonio_two", "active": true},
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	_, err := p.resolveAssignee(context.Background(), cfg, "antonio")
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("err=%v want ambiguous", err)
+	}
+}
+
+func TestLinearProvider_ResolveAssignee_NoMatch(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListUsers"] = func(vars map[string]any) any {
+		return map[string]any{"users": map[string]any{"nodes": []any{}}}
+	}
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	_, err := p.resolveAssignee(context.Background(), cfg, "nobody")
+	if err == nil || !strings.Contains(err.Error(), "no user matches") {
+		t.Errorf("err=%v want 'no user matches'", err)
+	}
+}
+
+func TestLinearProvider_ResolveLabels_MapsNames(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListLabels"] = func(vars map[string]any) any {
+		return map[string]any{
+			"issueLabels": map[string]any{
+				"nodes": []any{
+					map[string]any{"id": "l-bug", "name": "bug", "team": map[string]any{"key": "ENG"}},
+					map[string]any{"id": "l-p0", "name": "p0", "team": map[string]any{"key": "ENG"}},
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	ids, err := p.resolveLabels(context.Background(), cfg, []string{"Bug", "P0"}, "team-uuid")
+	if err != nil {
+		t.Fatalf("resolveLabels: %v", err)
+	}
+	if !slicesEqual(ids, []string{"l-bug", "l-p0"}) {
+		t.Errorf("ids=%v want l-bug,l-p0", ids)
+	}
+}
+
+func TestLinearProvider_ResolveLabels_MissingErrors(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListLabels"] = func(vars map[string]any) any {
+		return map[string]any{
+			"issueLabels": map[string]any{
+				"nodes": []any{map[string]any{"id": "l-bug", "name": "bug"}},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	_, err := p.resolveLabels(context.Background(), cfg, []string{"bug", "missing", "alsogone"}, "team-uuid")
+	if err == nil || !strings.Contains(err.Error(), "missing") || !strings.Contains(err.Error(), "alsogone") {
+		t.Errorf("err=%v should list both missing names", err)
+	}
+}
+
+func TestLinearProvider_ResolveLabels_DedupsAndPassesUUIDs(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListLabels"] = func(vars map[string]any) any {
+		return map[string]any{
+			"issueLabels": map[string]any{
+				"nodes": []any{map[string]any{"id": "l-bug", "name": "bug"}},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	uuid := "abc12345-1234-4567-8901-abcdef123456"
+	ids, err := p.resolveLabels(context.Background(), cfg, []string{"bug", "bug", uuid, uuid}, "team-uuid")
+	if err != nil {
+		t.Fatalf("resolveLabels: %v", err)
+	}
+	if !slicesEqual(ids, []string{"l-bug", uuid}) {
+		t.Errorf("ids=%v want dedup'd l-bug + uuid pass-through", ids)
+	}
+}
+
+func TestLinearProvider_ResolveStateNameOrType_AcceptsType(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskWorkflowStates"] = func(vars map[string]any) any {
+		return map[string]any{
+			"workflowStates": map[string]any{
+				"nodes": []any{
+					map[string]any{"id": "s1", "name": "Backlog", "type": "backlog", "position": 1.0},
+					map[string]any{"id": "s2", "name": "Code Review", "type": "started", "position": 2.0},
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	id, err := p.resolveStateNameOrType(context.Background(), cfg, "In Progress")
+	if err != nil {
+		t.Fatalf("resolveStateNameOrType: %v", err)
+	}
+	if id != "s2" {
+		t.Errorf("id=%q want s2", id)
+	}
+}
+
+func TestLinearProvider_ResolveStateNameOrType_AcceptsName(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskWorkflowStates"] = func(vars map[string]any) any {
+		return map[string]any{
+			"workflowStates": map[string]any{
+				"nodes": []any{
+					map[string]any{"id": "s1", "name": "Backlog", "type": "backlog", "position": 1.0},
+					map[string]any{"id": "s2", "name": "Code Review", "type": "started", "position": 2.0},
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	id, err := p.resolveStateNameOrType(context.Background(), cfg, "code review")
+	if err != nil {
+		t.Fatalf("resolveStateNameOrType: %v", err)
+	}
+	if id != "s2" {
+		t.Errorf("id=%q want s2 by name match", id)
+	}
+}
+
+func TestLinearProvider_ResolveStateNameOrType_NoMatch(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskWorkflowStates"] = func(vars map[string]any) any {
+		return map[string]any{
+			"workflowStates": map[string]any{"nodes": []any{
+				map[string]any{"id": "s1", "name": "Backlog", "type": "backlog"},
+			}},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	_, err := p.resolveStateNameOrType(context.Background(), cfg, "blocked")
+	if err == nil || !strings.Contains(err.Error(), "no workflow state matches") {
+		t.Errorf("err=%v want 'no workflow state matches'", err)
+	}
+}
+
+func TestLinearProvider_ResolveProject_ExactMatch(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListProjects"] = func(vars map[string]any) any {
+		return map[string]any{
+			"projects": map[string]any{
+				"nodes": []any{
+					map[string]any{"id": "p1", "name": "Q1 launch"},
+					map[string]any{"id": "p2", "name": "Q2 launch"},
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	id, err := p.resolveProject(context.Background(), cfg, "Q1 launch")
+	if err != nil {
+		t.Fatalf("resolveProject: %v", err)
+	}
+	if id != "p1" {
+		t.Errorf("id=%q want p1", id)
+	}
+}
+
+func TestLinearProvider_ResolveProject_AmbiguousSubstring(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListProjects"] = func(vars map[string]any) any {
+		return map[string]any{
+			"projects": map[string]any{
+				"nodes": []any{
+					map[string]any{"id": "p1", "name": "Q1 launch"},
+					map[string]any{"id": "p2", "name": "Q2 launch"},
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	_, err := p.resolveProject(context.Background(), cfg, "launch")
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("err=%v want ambiguous (two substring hits)", err)
+	}
+}
+
+func TestLinearProvider_ResolveCycle_ByNumber(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListCycles"] = func(vars map[string]any) any {
+		return map[string]any{
+			"cycles": map[string]any{
+				"nodes": []any{
+					map[string]any{"id": "c7", "number": 7},
+					map[string]any{"id": "c8", "number": 8},
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	id, err := p.resolveCycle(context.Background(), cfg, 7, "team-uuid")
+	if err != nil {
+		t.Fatalf("resolveCycle: %v", err)
+	}
+	if id != "c7" {
+		t.Errorf("id=%q want c7", id)
+	}
+}
+
+func TestLinearProvider_ResolveCycle_NotFound(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListCycles"] = func(vars map[string]any) any {
+		return map[string]any{"cycles": map[string]any{"nodes": []any{}}}
+	}
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	_, err := p.resolveCycle(context.Background(), cfg, 99, "team-uuid")
+	if err == nil || !strings.Contains(err.Error(), "no cycle") {
+		t.Errorf("err=%v want 'no cycle'", err)
+	}
+}
+
+func TestLinearProvider_ResolveParent_QualifiesBareNumber(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskIssueIDLookup"] = func(vars map[string]any) any {
+		if vars["id"] != "ENG-42" {
+			t.Errorf("id=%v want ENG-42 (bare 42 should be qualified)", vars["id"])
+		}
+		return map[string]any{"issueByIdentifier": map[string]any{"id": "uuid-42"}}
+	}
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	got, err := p.resolveParent(context.Background(), cfg, "42")
+	if err != nil || got != "uuid-42" {
+		t.Errorf("got=%q err=%v", got, err)
+	}
+}
+
+func TestLinearProvider_ResolveParent_AcceptsExplicitIdentifier(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskIssueIDLookup"] = func(vars map[string]any) any {
+		if vars["id"] != "DES-7" {
+			t.Errorf("id=%v want DES-7 (explicit team prefix preserved)", vars["id"])
+		}
+		return map[string]any{"issueByIdentifier": map[string]any{"id": "uuid-des-7"}}
+	}
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	got, err := p.resolveParent(context.Background(), cfg, "DES-7")
+	if err != nil || got != "uuid-des-7" {
+		t.Errorf("got=%q err=%v", got, err)
+	}
+}
+
+func TestLinearProvider_ResolveParent_NotFound(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskIssueIDLookup"] = func(vars map[string]any) any {
+		return map[string]any{"issueByIdentifier": nil}
+	}
+	p := &linearIssueProvider{}
+	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
+	_, err := p.resolveParent(context.Background(), cfg, "ENG-99")
+	if err == nil || !strings.Contains(err.Error(), "ENG-99") {
+		t.Errorf("err=%v want identifier in message", err)
+	}
+}
+
+// -----------------------------------------------------------------------
+// CreateIssueWithOptions — the comprehensive create surface
+// -----------------------------------------------------------------------
+
+func TestLinearProvider_CreateIssueWithOptions_FullPayload(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskTeamID"] = func(vars map[string]any) any {
+		if vars["id"] != "ENG" {
+			t.Errorf("team lookup id=%v want ENG", vars["id"])
+		}
+		return map[string]any{"team": map[string]any{"id": "team-uuid-1"}}
+	}
+	mock.handlers["AskListUsers"] = func(vars map[string]any) any {
+		return map[string]any{
+			"users": map[string]any{
+				"nodes": []any{map[string]any{"id": "u-antonio", "displayName": "Antonio", "name": "antonio", "active": true}},
+			},
+		}
+	}
+	mock.handlers["AskListLabels"] = func(vars map[string]any) any {
+		return map[string]any{
+			"issueLabels": map[string]any{
+				"nodes": []any{
+					map[string]any{"id": "l-bug", "name": "bug"},
+					map[string]any{"id": "l-p0", "name": "p0"},
+				},
+			},
+		}
+	}
+	mock.handlers["AskWorkflowStates"] = func(vars map[string]any) any {
+		return map[string]any{
+			"workflowStates": map[string]any{
+				"nodes": []any{
+					map[string]any{"id": "s-todo", "name": "Todo", "type": "unstarted", "position": 2.0},
+				},
+			},
+		}
+	}
+	mock.handlers["AskListProjects"] = func(vars map[string]any) any {
+		return map[string]any{
+			"projects": map[string]any{"nodes": []any{map[string]any{"id": "p-q1", "name": "Q1"}}},
+		}
+	}
+	mock.handlers["AskListCycles"] = func(vars map[string]any) any {
+		return map[string]any{
+			"cycles": map[string]any{"nodes": []any{map[string]any{"id": "c-7", "number": 7}}},
+		}
+	}
+	mock.handlers["AskIssueIDLookup"] = func(vars map[string]any) any {
+		// Parent lookup
+		return map[string]any{"issueByIdentifier": map[string]any{"id": "parent-uuid"}}
+	}
+	mock.handlers["AskIssueCreate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		expected := map[string]any{
+			"teamId":      "team-uuid-1",
+			"title":       "ship it",
+			"description": "body",
+			"assigneeId":  "u-antonio",
+			"priority":    1, // urgent
+			"stateId":     "s-todo",
+			"projectId":   "p-q1",
+			"cycleId":     "c-7",
+			"parentId":    "parent-uuid",
+			"dueDate":     "2026-04-30",
+			"estimate":    3,
+		}
+		for k, v := range expected {
+			if !sameJSON(input[k], v) {
+				t.Errorf("input[%q]=%v want %v", k, input[k], v)
+			}
+		}
+		labels, _ := input["labelIds"].([]any)
+		if len(labels) != 2 {
+			t.Errorf("labelIds=%v want 2", input["labelIds"])
+		}
+		return map[string]any{
+			"issueCreate": map[string]any{
+				"success": true,
+				"issue": map[string]any{
+					"number": 101,
+					"title":  "ship it",
+					"state":  map[string]any{"type": "unstarted"},
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	priority := 1
+	cycle := 7
+	estimate := 3
+	got, err := p.CreateIssueWithOptions(context.Background(), cfg, "/tmp", linearCreateIssueOptions{
+		Title:       "ship it",
+		Description: "body",
+		Assignee:    "Antonio",
+		Priority:    &priority,
+		Labels:      []string{"bug", "p0"},
+		State:       "In Progress",
+		Project:     "Q1",
+		Cycle:       &cycle,
+		Parent:      "ENG-1",
+		DueDate:     "2026-04-30",
+		Estimate:    &estimate,
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueWithOptions: %v", err)
+	}
+	if got.number != 101 || got.title != "ship it" {
+		t.Errorf("issue=%+v", got)
+	}
+}
+
+func TestLinearProvider_CreateIssueWithOptions_TeamOverride(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskTeamID"] = func(vars map[string]any) any {
+		// Override should use BACKEND, not ENG
+		if vars["id"] != "BACKEND" {
+			t.Errorf("team override lookup id=%v want BACKEND", vars["id"])
+		}
+		return map[string]any{"team": map[string]any{"id": "team-be"}}
+	}
+	mock.handlers["AskIssueCreate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		if input["teamId"] != "team-be" {
+			t.Errorf("teamId=%v want team-be", input["teamId"])
+		}
+		return map[string]any{
+			"issueCreate": map[string]any{
+				"success": true,
+				"issue":   map[string]any{"number": 1, "title": "x", "state": map[string]any{"type": "backlog"}},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	if _, err := p.CreateIssueWithOptions(context.Background(), cfg, "/tmp", linearCreateIssueOptions{
+		Title:   "x",
+		TeamKey: "BACKEND",
+	}); err != nil {
+		t.Fatalf("CreateIssueWithOptions: %v", err)
+	}
+}
+
+func TestLinearProvider_CreateIssueWithOptions_PriorityRangeCheck(t *testing.T) {
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: "https://example.test", Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	bad := 9
+	_, err := p.CreateIssueWithOptions(context.Background(), cfg, "/tmp", linearCreateIssueOptions{
+		Title:    "x",
+		Priority: &bad,
+	})
+	if err == nil || !strings.Contains(err.Error(), "priority") {
+		t.Errorf("err=%v want priority range error", err)
+	}
+}
+
+func TestLinearProvider_CreateIssueWithOptions_NoTeamErrors(t *testing.T) {
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Token: "lin_api_x", // no team in cfg, no override
+	}}}
+	_, err := p.CreateIssueWithOptions(context.Background(), cfg, "/tmp", linearCreateIssueOptions{Title: "x"})
+	if !errors.Is(err, errIssueProviderNotConfigured) {
+		t.Errorf("err=%v want errIssueProviderNotConfigured", err)
+	}
+}
+
+// -----------------------------------------------------------------------
+// UpdateIssue — comprehensive update surface
+// -----------------------------------------------------------------------
+
+func TestLinearProvider_UpdateIssue_Title(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskIssueUpdate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		if input["title"] != "renamed" {
+			t.Errorf("title=%v want renamed", input["title"])
+		}
+		if _, hasState := input["stateId"]; hasState {
+			t.Errorf("stateId should not be set when only Title is supplied")
+		}
+		return map[string]any{"issueUpdate": map[string]any{"success": true}}
+	}
+	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
+		return map[string]any{"issueByIdentifier": map[string]any{
+			"number": 7, "title": "renamed", "state": map[string]any{"type": "started"},
+		}}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	title := "renamed"
+	got, err := p.UpdateIssue(context.Background(), cfg, "/tmp", 7, linearUpdateIssueOptions{
+		Title: &title,
+	})
+	if err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+	if got.title != "renamed" {
+		t.Errorf("title=%q want renamed", got.title)
+	}
+}
+
+func TestLinearProvider_UpdateIssue_AssigneeUnassign(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskIssueUpdate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		val, present := input["assigneeId"]
+		if !present {
+			t.Errorf("assigneeId missing — wanted present-but-null")
+		}
+		if val != nil {
+			t.Errorf("assigneeId=%v want nil (unassign)", val)
+		}
+		return map[string]any{"issueUpdate": map[string]any{"success": true}}
+	}
+	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
+		return map[string]any{"issueByIdentifier": map[string]any{
+			"number": 7, "state": map[string]any{"type": "started"},
+		}}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	empty := ""
+	if _, err := p.UpdateIssue(context.Background(), cfg, "/tmp", 7, linearUpdateIssueOptions{
+		Assignee: &empty,
+	}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+}
+
+func TestLinearProvider_UpdateIssue_PriorityZero(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskIssueUpdate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		if !sameJSON(input["priority"], 0) {
+			t.Errorf("priority=%v want 0", input["priority"])
+		}
+		return map[string]any{"issueUpdate": map[string]any{"success": true}}
+	}
+	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
+		return map[string]any{"issueByIdentifier": map[string]any{
+			"number": 7, "state": map[string]any{"type": "started"},
+		}}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	zero := 0
+	if _, err := p.UpdateIssue(context.Background(), cfg, "/tmp", 7, linearUpdateIssueOptions{
+		Priority: &zero,
+	}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+}
+
+func TestLinearProvider_UpdateIssue_LabelsReplace(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskListLabels"] = func(vars map[string]any) any {
+		return map[string]any{"issueLabels": map[string]any{"nodes": []any{
+			map[string]any{"id": "l-bug", "name": "bug"},
+			map[string]any{"id": "l-p1", "name": "p1"},
+		}}}
+	}
+	mock.handlers["AskTeamID"] = func(vars map[string]any) any {
+		return map[string]any{"team": map[string]any{"id": "team-uuid"}}
+	}
+	mock.handlers["AskIssueUpdate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		got := input["labelIds"].([]any)
+		if len(got) != 2 || !sameJSON(got[0], "l-bug") || !sameJSON(got[1], "l-p1") {
+			t.Errorf("labelIds=%+v want [l-bug,l-p1]", got)
+		}
+		return map[string]any{"issueUpdate": map[string]any{"success": true}}
+	}
+	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
+		return map[string]any{"issueByIdentifier": map[string]any{
+			"number": 7, "state": map[string]any{"type": "started"},
+		}}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	labels := []string{"bug", "p1"}
+	if _, err := p.UpdateIssue(context.Background(), cfg, "/tmp", 7, linearUpdateIssueOptions{
+		Labels: &labels,
+	}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+}
+
+func TestLinearProvider_UpdateIssue_LabelsClear(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskIssueUpdate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		got := input["labelIds"].([]any)
+		if len(got) != 0 {
+			t.Errorf("labelIds=%v want empty", got)
+		}
+		return map[string]any{"issueUpdate": map[string]any{"success": true}}
+	}
+	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
+		return map[string]any{"issueByIdentifier": map[string]any{
+			"number": 7, "state": map[string]any{"type": "started"},
+		}}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	empty := []string{}
+	if _, err := p.UpdateIssue(context.Background(), cfg, "/tmp", 7, linearUpdateIssueOptions{
+		Labels: &empty,
+	}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+}
+
+func TestLinearProvider_UpdateIssue_LabelsAdditive(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskTeamID"] = func(vars map[string]any) any {
+		return map[string]any{"team": map[string]any{"id": "team-uuid"}}
+	}
+	mock.handlers["AskListLabels"] = func(vars map[string]any) any {
+		return map[string]any{"issueLabels": map[string]any{"nodes": []any{
+			map[string]any{"id": "l-newlabel", "name": "newlabel"},
+		}}}
+	}
+	mock.handlers["AskIssueLabelsLookup"] = func(vars map[string]any) any {
+		return map[string]any{"issueByIdentifier": map[string]any{
+			"labels": map[string]any{"nodes": []any{
+				map[string]any{"id": "l-existing"},
+			}},
+		}}
+	}
+	mock.handlers["AskIssueUpdate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		got := input["labelIds"].([]any)
+		if len(got) != 2 {
+			t.Errorf("labelIds=%v want 2 entries (existing + new)", got)
+		}
+		return map[string]any{"issueUpdate": map[string]any{"success": true}}
+	}
+	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
+		return map[string]any{"issueByIdentifier": map[string]any{
+			"number": 7, "state": map[string]any{"type": "started"},
+		}}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	if _, err := p.UpdateIssue(context.Background(), cfg, "/tmp", 7, linearUpdateIssueOptions{
+		AddedLabels: []string{"newlabel"},
+	}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+}
+
+func TestLinearProvider_UpdateIssue_TeamMove(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskTeamID"] = func(vars map[string]any) any {
+		if vars["id"] != "BACKEND" {
+			t.Errorf("team move id=%v want BACKEND", vars["id"])
+		}
+		return map[string]any{"team": map[string]any{"id": "team-be"}}
+	}
+	mock.handlers["AskIssueUpdate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		if input["teamId"] != "team-be" {
+			t.Errorf("teamId=%v want team-be", input["teamId"])
+		}
+		return map[string]any{"issueUpdate": map[string]any{"success": true}}
+	}
+	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
+		// Identifier should now be BACKEND-7 (post-move team)
+		if vars["id"] != "BACKEND-7" {
+			t.Errorf("post-update GetIssue id=%v want BACKEND-7", vars["id"])
+		}
+		return map[string]any{"issueByIdentifier": map[string]any{
+			"number": 7, "state": map[string]any{"type": "started"},
+		}}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	if _, err := p.UpdateIssue(context.Background(), cfg, "/tmp", 7, linearUpdateIssueOptions{
+		Team: "BACKEND",
+	}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+}
+
+func TestLinearProvider_UpdateIssue_EmptyOptionsErrors(t *testing.T) {
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: "https://example.test", Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	_, err := p.UpdateIssue(context.Background(), cfg, "/tmp", 7, linearUpdateIssueOptions{})
+	if err == nil || !strings.Contains(err.Error(), "at least one") {
+		t.Errorf("err=%v want 'at least one'", err)
+	}
+}
+
+func TestLinearProvider_UpdateIssue_RejectsZeroNumber(t *testing.T) {
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: "https://example.test", Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	title := "x"
+	_, err := p.UpdateIssue(context.Background(), cfg, "/tmp", 0, linearUpdateIssueOptions{
+		Title: &title,
+	})
+	if err == nil || !strings.Contains(err.Error(), "number must be positive") {
+		t.Errorf("err=%v want 'number must be positive'", err)
+	}
+}
+
+func TestLinearProvider_UpdateIssue_NotConfiguredWithoutToken(t *testing.T) {
+	p := &linearIssueProvider{}
+	title := "x"
+	_, err := p.UpdateIssue(context.Background(), projectConfig{}, "/tmp", 7, linearUpdateIssueOptions{
+		Title: &title,
+	})
+	if !errors.Is(err, errIssueProviderNotConfigured) {
+		t.Errorf("err=%v want errIssueProviderNotConfigured", err)
+	}
+}
+
+func TestLinearProvider_UpdateIssue_ProjectClear(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskIssueUpdate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		val, present := input["projectId"]
+		if !present || val != nil {
+			t.Errorf("projectId=%v present=%v want nil-and-present", val, present)
+		}
+		return map[string]any{"issueUpdate": map[string]any{"success": true}}
+	}
+	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
+		return map[string]any{"issueByIdentifier": map[string]any{
+			"number": 7, "state": map[string]any{"type": "started"},
+		}}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	empty := ""
+	if _, err := p.UpdateIssue(context.Background(), cfg, "/tmp", 7, linearUpdateIssueOptions{
+		Project: &empty,
+	}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+}
+
+func TestLinearProvider_UpdateIssue_CycleClear(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskIssueUpdate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		val, present := input["cycleId"]
+		if !present || val != nil {
+			t.Errorf("cycleId=%v present=%v want nil-and-present", val, present)
+		}
+		return map[string]any{"issueUpdate": map[string]any{"success": true}}
+	}
+	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
+		return map[string]any{"issueByIdentifier": map[string]any{
+			"number": 7, "state": map[string]any{"type": "started"},
+		}}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	negative := -1
+	if _, err := p.UpdateIssue(context.Background(), cfg, "/tmp", 7, linearUpdateIssueOptions{
+		Cycle: &negative,
+	}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+}
+
+func TestLinearProvider_UpdateIssue_ParentOrphan(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskIssueUpdate"] = func(vars map[string]any) any {
+		input := vars["input"].(map[string]any)
+		val, present := input["parentId"]
+		if !present || val != nil {
+			t.Errorf("parentId=%v present=%v want nil-and-present", val, present)
+		}
+		return map[string]any{"issueUpdate": map[string]any{"success": true}}
+	}
+	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
+		return map[string]any{"issueByIdentifier": map[string]any{
+			"number": 7, "state": map[string]any{"type": "started"},
+		}}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG",
+	}}}
+	empty := ""
+	if _, err := p.UpdateIssue(context.Background(), cfg, "/tmp", 7, linearUpdateIssueOptions{
+		Parent: &empty,
+	}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+}
+
+// sameJSON compares two values as if they round-tripped through JSON
+// — this normalises numeric type drift (Go's json package decodes
+// numbers as float64) so the assertions don't have to special-case
+// every numeric field.
+func sameJSON(a, b any) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	aj, _ := json.Marshal(a)
+	bj, _ := json.Marshal(b)
+	return string(aj) == string(bj)
+}

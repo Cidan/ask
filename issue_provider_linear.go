@@ -333,6 +333,19 @@ func (p *linearIssueProvider) MoveIssue(ctx context.Context, cfg projectConfig, 
 		return err
 	}
 	identifier := fmt.Sprintf("%s-%d", cfg.MCP.Linear.TeamKey, it.number)
+	return p.dispatchIssueUpdate(ctx, cfg.MCP.Linear, identifier, map[string]any{"stateId": state.ID})
+}
+
+// dispatchIssueUpdate is the shared write helper behind MoveIssue and
+// UpdateIssue. Translates a (issue identifier, IssueUpdateInput) pair
+// into a single Linear issueUpdate mutation. Callers assemble the
+// input map; this helper owns the transport, timeout, and success
+// check. Empty input is rejected explicitly so a caller that passes
+// no fields at all gets an error instead of a silent no-op.
+func (p *linearIssueProvider) dispatchIssueUpdate(ctx context.Context, cfg linearMCPConfig, identifier string, input map[string]any) error {
+	if len(input) == 0 {
+		return fmt.Errorf("linear: issueUpdate requires at least one field")
+	}
 	cctx, cancel := context.WithTimeout(ctx, linearGraphQLCallTimeout)
 	defer cancel()
 	var out struct {
@@ -340,9 +353,9 @@ func (p *linearIssueProvider) MoveIssue(ctx context.Context, cfg projectConfig, 
 			Success bool `json:"success"`
 		} `json:"issueUpdate"`
 	}
-	err = p.callGraphQL(cctx, cfg.MCP.Linear, linearIssueUpdateMutation, map[string]any{
+	err := p.callGraphQL(cctx, cfg, linearIssueUpdateMutation, map[string]any{
 		"id":    identifier,
-		"input": map[string]any{"stateId": state.ID},
+		"input": input,
 	}, &out)
 	if err != nil {
 		return err
@@ -445,41 +458,143 @@ func (p *linearIssueProvider) CreateComment(ctx context.Context, cfg projectConf
 	return linearAPIToComment(out.CommentCreate.Comment), nil
 }
 
-// CreateIssue files a new issue in the configured team. Title is
-// required; description is optional Markdown. Returns the created
-// issue with its server-assigned number/identifier so callers can
-// reference it without a follow-up GetIssue.
-//
-// Resolves the team's UUID via fetchTeamID (cached after the first
-// call) — Linear's IssueCreateInput.teamId requires the UUID, not
-// the team key. Same shape as CreateComment: not part of the
-// IssueProvider interface, exposed directly because the github
-// provider doesn't currently surface a parallel method.
+// CreateIssue is the title+description-only convenience wrapper around
+// CreateIssueWithOptions. Kept so existing call sites (and the simpler
+// MCP entry point) don't have to assemble an options struct for the
+// common case. Behaviour matches CreateIssueWithOptions with TeamKey
+// inherited from cfg and every other field zero.
 func (p *linearIssueProvider) CreateIssue(ctx context.Context, cfg projectConfig, cwd, title, description string) (issue, error) {
-	if cfg.MCP.Linear.Token == "" || cfg.MCP.Linear.TeamKey == "" {
+	return p.CreateIssueWithOptions(ctx, cfg, cwd, linearCreateIssueOptions{
+		Title:       title,
+		Description: description,
+	})
+}
+
+// CreateIssueWithOptions files a new Linear issue using the full
+// IssueCreateInput surface. Title is required; everything else is
+// optional and resolved through name-aware helpers (assignee → user
+// UUID, label names → label UUIDs, state name/type → workflow-state
+// UUID, project name → project UUID, parent identifier → issue UUID,
+// cycle number → cycle UUID).
+//
+// TeamKey on the options struct overrides the project-configured team
+// — useful when the agent is creating a triage issue in a different
+// team without flipping global config. When empty, falls back to
+// cfg.MCP.Linear.TeamKey. The chosen team's UUID is used for both
+// IssueCreateInput.teamId and as the scoping team for label / state
+// / cycle resolution.
+//
+// Resolution failures (unknown user, missing label, etc.) surface as
+// errors before the create mutation is dispatched so a partial
+// payload never reaches Linear.
+func (p *linearIssueProvider) CreateIssueWithOptions(ctx context.Context, cfg projectConfig, cwd string, opts linearCreateIssueOptions) (issue, error) {
+	if cfg.MCP.Linear.Token == "" {
 		return issue{}, errIssueProviderNotConfigured
 	}
-	title = strings.TrimSpace(title)
+	teamKey := strings.TrimSpace(opts.TeamKey)
+	if teamKey == "" {
+		teamKey = cfg.MCP.Linear.TeamKey
+	}
+	if teamKey == "" {
+		return issue{}, errIssueProviderNotConfigured
+	}
+	title := strings.TrimSpace(opts.Title)
 	if title == "" {
 		return issue{}, fmt.Errorf("linear: title is required")
 	}
-	teamID, err := p.fetchTeamID(ctx, cfg.MCP.Linear)
+	// Pre-validate numeric ranges so a bad priority/estimate doesn't
+	// trigger a wasted team-id round trip. Cycle isn't pre-validated
+	// here because resolveCycle reports a clearer "no cycle with
+	// number N" error after listing cycles.
+	if opts.Priority != nil {
+		if *opts.Priority < 0 || *opts.Priority > 4 {
+			return issue{}, fmt.Errorf("linear: priority %d out of range (expected 0..4)", *opts.Priority)
+		}
+	}
+	if opts.Estimate != nil {
+		if *opts.Estimate < 0 {
+			return issue{}, fmt.Errorf("linear: estimate must be >= 0")
+		}
+	}
+
+	cfgWithTeam := cfg.MCP.Linear
+	cfgWithTeam.TeamKey = teamKey
+
+	teamID, err := p.fetchTeamID(ctx, cfgWithTeam)
 	if err != nil {
 		return issue{}, err
 	}
+	input := map[string]any{"teamId": teamID, "title": title}
+	if strings.TrimSpace(opts.Description) != "" {
+		input["description"] = opts.Description
+	}
+	if v := strings.TrimSpace(opts.Assignee); v != "" {
+		assigneeID, err := p.resolveAssignee(ctx, cfgWithTeam, v)
+		if err != nil {
+			return issue{}, err
+		}
+		input["assigneeId"] = assigneeID
+	}
+	if opts.Priority != nil {
+		if *opts.Priority < 0 || *opts.Priority > 4 {
+			return issue{}, fmt.Errorf("linear: priority %d out of range (expected 0..4)", *opts.Priority)
+		}
+		input["priority"] = *opts.Priority
+	}
+	if len(opts.Labels) > 0 {
+		ids, err := p.resolveLabels(ctx, cfgWithTeam, opts.Labels, teamID)
+		if err != nil {
+			return issue{}, err
+		}
+		input["labelIds"] = ids
+	}
+	if v := strings.TrimSpace(opts.State); v != "" {
+		stateID, err := p.resolveStateNameOrType(ctx, cfgWithTeam, v)
+		if err != nil {
+			return issue{}, err
+		}
+		input["stateId"] = stateID
+	}
+	if v := strings.TrimSpace(opts.Parent); v != "" {
+		parentID, err := p.resolveParent(ctx, cfgWithTeam, v)
+		if err != nil {
+			return issue{}, err
+		}
+		input["parentId"] = parentID
+	}
+	if v := strings.TrimSpace(opts.Project); v != "" {
+		projectID, err := p.resolveProject(ctx, cfgWithTeam, v)
+		if err != nil {
+			return issue{}, err
+		}
+		input["projectId"] = projectID
+	}
+	if opts.Cycle != nil {
+		cycleID, err := p.resolveCycle(ctx, cfgWithTeam, *opts.Cycle, teamID)
+		if err != nil {
+			return issue{}, err
+		}
+		input["cycleId"] = cycleID
+	}
+	if v := strings.TrimSpace(opts.DueDate); v != "" {
+		input["dueDate"] = v
+	}
+	if opts.Estimate != nil {
+		if *opts.Estimate < 0 {
+			return issue{}, fmt.Errorf("linear: estimate must be >= 0")
+		}
+		input["estimate"] = *opts.Estimate
+	}
+
 	cctx, cancel := context.WithTimeout(ctx, linearGraphQLCallTimeout)
 	defer cancel()
-	input := map[string]any{"teamId": teamID, "title": title}
-	if strings.TrimSpace(description) != "" {
-		input["description"] = description
-	}
 	var out struct {
 		IssueCreate struct {
 			Success bool           `json:"success"`
 			Issue   linearAPIIssue `json:"issue"`
 		} `json:"issueCreate"`
 	}
-	err = p.callGraphQL(cctx, cfg.MCP.Linear, linearIssueCreateMutation,
+	err = p.callGraphQL(cctx, cfgWithTeam, linearIssueCreateMutation,
 		map[string]any{"input": input}, &out)
 	if err != nil {
 		return issue{}, err
@@ -488,6 +603,229 @@ func (p *linearIssueProvider) CreateIssue(ctx context.Context, cfg projectConfig
 		return issue{}, fmt.Errorf("linear: issueCreate returned success=false")
 	}
 	return linearAPIToIssue(out.IssueCreate.Issue), nil
+}
+
+// UpdateIssue mutates an existing Linear issue. Every field on opts is
+// optional — fields left at their zero / nil value are NOT included in
+// the IssueUpdateInput payload, so partial edits are safe (a caller
+// that only sets Title doesn't accidentally clobber assignee).
+//
+// Pointer-typed fields (Title, Description, State, Assignee, Priority,
+// Project, Cycle, DueDate, Estimate, Parent, Labels) distinguish the
+// no-change case (nil) from explicit clearing. For Assignee and
+// Parent, a pointer to the empty string clears the field (Linear
+// accepts assigneeId=null / parentId=null to unassign / orphan); for
+// Project/Cycle the same applies. For Labels, *opts.Labels==[] clears
+// all labels; AddedLabels and RemovedLabels mutate the set without
+// replacing the whole list.
+//
+// Returns the post-update issue snapshot via a follow-up GetIssue so
+// callers don't have to round-trip themselves.
+func (p *linearIssueProvider) UpdateIssue(ctx context.Context, cfg projectConfig, cwd string, number int, opts linearUpdateIssueOptions) (issue, error) {
+	if cfg.MCP.Linear.Token == "" || cfg.MCP.Linear.TeamKey == "" {
+		return issue{}, errIssueProviderNotConfigured
+	}
+	if number <= 0 {
+		return issue{}, fmt.Errorf("linear: number must be positive")
+	}
+	teamKey := cfg.MCP.Linear.TeamKey
+	identifier := fmt.Sprintf("%s-%d", teamKey, number)
+
+	input := map[string]any{}
+	if opts.Title != nil {
+		t := strings.TrimSpace(*opts.Title)
+		if t == "" {
+			return issue{}, fmt.Errorf("linear: title cannot be cleared (Linear requires non-empty title)")
+		}
+		input["title"] = t
+	}
+	if opts.Description != nil {
+		input["description"] = *opts.Description
+	}
+	if opts.State != nil {
+		v := strings.TrimSpace(*opts.State)
+		if v == "" {
+			return issue{}, fmt.Errorf("linear: state cannot be cleared")
+		}
+		stateID, err := p.resolveStateNameOrType(ctx, cfg.MCP.Linear, v)
+		if err != nil {
+			return issue{}, err
+		}
+		input["stateId"] = stateID
+	}
+	if opts.Assignee != nil {
+		v := strings.TrimSpace(*opts.Assignee)
+		if v == "" {
+			input["assigneeId"] = nil
+		} else {
+			assigneeID, err := p.resolveAssignee(ctx, cfg.MCP.Linear, v)
+			if err != nil {
+				return issue{}, err
+			}
+			input["assigneeId"] = assigneeID
+		}
+	}
+	if opts.Priority != nil {
+		if *opts.Priority < 0 || *opts.Priority > 4 {
+			return issue{}, fmt.Errorf("linear: priority %d out of range (expected 0..4)", *opts.Priority)
+		}
+		input["priority"] = *opts.Priority
+	}
+	if opts.Team != "" {
+		// Team move requires the UUID. Use a synthesised cfg so the
+		// per-team UUID cache key matches the move target rather than
+		// the source team.
+		moveCfg := cfg.MCP.Linear
+		moveCfg.TeamKey = strings.TrimSpace(opts.Team)
+		teamID, err := p.fetchTeamID(ctx, moveCfg)
+		if err != nil {
+			return issue{}, err
+		}
+		input["teamId"] = teamID
+	}
+	if opts.Labels != nil {
+		if len(*opts.Labels) == 0 {
+			input["labelIds"] = []string{}
+		} else {
+			// Resolve labels against the issue's current team — we
+			// don't know the move-target team's id here when Team is
+			// also set, but Linear scopes labels per-team and a label
+			// from the source team isn't valid in the destination
+			// anyway. The caller asked for a label set; we try to
+			// resolve it against whichever team the issue currently
+			// belongs to (the target if a move is happening, else the
+			// configured team).
+			scopeCfg := cfg.MCP.Linear
+			if opts.Team != "" {
+				scopeCfg.TeamKey = strings.TrimSpace(opts.Team)
+			}
+			scopeTeamID, err := p.fetchTeamID(ctx, scopeCfg)
+			if err != nil {
+				return issue{}, err
+			}
+			ids, err := p.resolveLabels(ctx, scopeCfg, *opts.Labels, scopeTeamID)
+			if err != nil {
+				return issue{}, err
+			}
+			input["labelIds"] = ids
+		}
+	}
+	if len(opts.AddedLabels) > 0 {
+		teamID, err := p.fetchTeamID(ctx, cfg.MCP.Linear)
+		if err != nil {
+			return issue{}, err
+		}
+		ids, err := p.resolveLabels(ctx, cfg.MCP.Linear, opts.AddedLabels, teamID)
+		if err != nil {
+			return issue{}, err
+		}
+		// Linear's GraphQL doesn't expose addedLabelIds / removedLabelIds
+		// at the IssueUpdateInput layer in every workspace tier; SDKs
+		// typically read the issue's existing labelIds and write back a
+		// new combined set. Do the same: read current labels, union /
+		// subtract, write back via labelIds. The hydrate happens via a
+		// short identifier-only query so we don't need to round-trip
+		// the full issue.
+		current, err := p.fetchIssueLabelIDs(ctx, cfg.MCP.Linear, identifier)
+		if err != nil {
+			return issue{}, err
+		}
+		merged := mergeLabelIDs(current, ids, nil)
+		input["labelIds"] = merged
+	}
+	if len(opts.RemovedLabels) > 0 {
+		teamID, err := p.fetchTeamID(ctx, cfg.MCP.Linear)
+		if err != nil {
+			return issue{}, err
+		}
+		removeIDs, err := p.resolveLabels(ctx, cfg.MCP.Linear, opts.RemovedLabels, teamID)
+		if err != nil {
+			return issue{}, err
+		}
+		var base []string
+		if v, ok := input["labelIds"].([]string); ok {
+			base = v
+		} else {
+			cur, err := p.fetchIssueLabelIDs(ctx, cfg.MCP.Linear, identifier)
+			if err != nil {
+				return issue{}, err
+			}
+			base = cur
+		}
+		input["labelIds"] = mergeLabelIDs(base, nil, removeIDs)
+	}
+	if opts.Project != nil {
+		v := strings.TrimSpace(*opts.Project)
+		if v == "" {
+			input["projectId"] = nil
+		} else {
+			projectID, err := p.resolveProject(ctx, cfg.MCP.Linear, v)
+			if err != nil {
+				return issue{}, err
+			}
+			input["projectId"] = projectID
+		}
+	}
+	if opts.Cycle != nil {
+		// Pointer-to-int with negative value (e.g. -1) acts as "unset"
+		// — Linear accepts cycleId=null to detach. Non-negative cycle
+		// numbers resolve through the catalogue.
+		if *opts.Cycle < 0 {
+			input["cycleId"] = nil
+		} else {
+			teamID, err := p.fetchTeamID(ctx, cfg.MCP.Linear)
+			if err != nil {
+				return issue{}, err
+			}
+			cycleID, err := p.resolveCycle(ctx, cfg.MCP.Linear, *opts.Cycle, teamID)
+			if err != nil {
+				return issue{}, err
+			}
+			input["cycleId"] = cycleID
+		}
+	}
+	if opts.DueDate != nil {
+		v := strings.TrimSpace(*opts.DueDate)
+		if v == "" {
+			input["dueDate"] = nil
+		} else {
+			input["dueDate"] = v
+		}
+	}
+	if opts.Estimate != nil {
+		if *opts.Estimate < 0 {
+			input["estimate"] = nil
+		} else {
+			input["estimate"] = *opts.Estimate
+		}
+	}
+	if opts.Parent != nil {
+		v := strings.TrimSpace(*opts.Parent)
+		if v == "" {
+			input["parentId"] = nil
+		} else {
+			parentID, err := p.resolveParent(ctx, cfg.MCP.Linear, v)
+			if err != nil {
+				return issue{}, err
+			}
+			input["parentId"] = parentID
+		}
+	}
+
+	if len(input) == 0 {
+		return issue{}, fmt.Errorf("linear: UpdateIssue requires at least one field to change")
+	}
+	if err := p.dispatchIssueUpdate(ctx, cfg.MCP.Linear, identifier, input); err != nil {
+		return issue{}, err
+	}
+	// Round-trip the post-update snapshot so callers see the result
+	// without an extra GetIssue. Use the team-after-move identifier so
+	// a cross-team move resolves correctly.
+	postCfg := cfg
+	if opts.Team != "" {
+		postCfg.MCP.Linear.TeamKey = strings.TrimSpace(opts.Team)
+	}
+	return p.GetIssue(ctx, postCfg, cwd, number)
 }
 
 // DeleteIssue archives a Linear issue. Linear's "delete" semantic is
@@ -841,8 +1179,11 @@ type linearAPIState struct {
 }
 
 type linearAPIUser struct {
+	ID          string `json:"id,omitempty"`
 	Name        string `json:"name"`
 	DisplayName string `json:"displayName"`
+	Email       string `json:"email,omitempty"`
+	Active      bool   `json:"active,omitempty"`
 }
 
 type linearAPIPageInfo struct {
@@ -931,6 +1272,673 @@ func truncateForError(s string, max int) string {
 		return s
 	}
 	return s[:max] + "…"
+}
+
+// ----- Comprehensive write-path support (create / update options + resolvers + list helpers) -----
+
+// linearCreateIssueOptions is the full IssueCreateInput surface we
+// expose. Title is required; everything else is optional and resolves
+// human-friendly inputs (names, identifiers, numbers) into the UUIDs
+// Linear actually wants on the wire.
+//
+// TeamKey overrides the project-configured team for this single
+// create call — useful for cross-team filing without flipping
+// /config. Empty falls back to cfg.MCP.Linear.TeamKey.
+type linearCreateIssueOptions struct {
+	Title       string
+	Description string
+	TeamKey     string
+	Assignee    string
+	Priority    *int
+	Labels      []string
+	State       string
+	Parent      string
+	Project     string
+	Cycle       *int
+	DueDate     string
+	Estimate    *int
+}
+
+// linearUpdateIssueOptions is the full IssueUpdateInput surface we
+// expose. Pointer-typed fields distinguish "no change" (nil) from
+// "explicitly set / clear" (non-nil). Slice fields default to nil
+// for "no change"; non-nil empty slices either no-op (AddedLabels /
+// RemovedLabels) or clear (Labels via *Labels=[]).
+//
+// Team is a string (not *string) because moving back to "no team"
+// isn't a Linear concept — every issue belongs to exactly one team.
+// To move teams, set Team to the destination team key.
+type linearUpdateIssueOptions struct {
+	Title         *string
+	Description   *string
+	State         *string
+	Assignee      *string
+	Priority      *int
+	Labels        *[]string
+	AddedLabels   []string
+	RemovedLabels []string
+	Team          string
+	Project       *string
+	Cycle         *int
+	DueDate       *string
+	Estimate      *int
+	Parent        *string
+}
+
+// linearTeam, linearUser, linearLabel, linearProject, linearCycle are
+// the trim shapes ListTeams / ListUsers / ListLabels / ListProjects /
+// ListCycles return — and the resolvers walk to map names → UUIDs.
+type linearTeam struct {
+	ID          string
+	Key         string
+	Name        string
+	Description string
+}
+
+type linearUser struct {
+	ID          string
+	Name        string
+	DisplayName string
+	Email       string
+	Active      bool
+}
+
+type linearLabel struct {
+	ID      string
+	Name    string
+	Color   string
+	TeamKey string // empty for workspace-wide labels
+}
+
+type linearProject struct {
+	ID    string
+	Name  string
+	State string
+}
+
+type linearCycle struct {
+	ID       string
+	Number   int
+	Name     string
+	StartsAt time.Time
+	EndsAt   time.Time
+}
+
+// ListTeams enumerates every team visible to the API key. No team
+// filter; pagination cap is the GraphQL default 250 — Linear
+// workspaces with more than 250 teams are exotic and the agent can
+// reach the rest by issuing follow-up queries with the cursor.
+// Returned in API order.
+func (p *linearIssueProvider) ListTeams(ctx context.Context, cfg projectConfig) ([]linearTeam, error) {
+	if cfg.MCP.Linear.Token == "" {
+		return nil, errIssueProviderNotConfigured
+	}
+	cctx, cancel := context.WithTimeout(ctx, linearGraphQLCallTimeout)
+	defer cancel()
+	var out struct {
+		Teams struct {
+			Nodes []linearAPITeam `json:"nodes"`
+		} `json:"teams"`
+	}
+	if err := p.callGraphQL(cctx, cfg.MCP.Linear, linearTeamsQuery,
+		map[string]any{"first": 250}, &out); err != nil {
+		return nil, fmt.Errorf("linear: list teams: %w", err)
+	}
+	teams := make([]linearTeam, 0, len(out.Teams.Nodes))
+	for _, n := range out.Teams.Nodes {
+		teams = append(teams, linearTeam{
+			ID:          n.ID,
+			Key:         n.Key,
+			Name:        n.Name,
+			Description: n.Description,
+		})
+	}
+	return teams, nil
+}
+
+// ListUsers enumerates workspace users. The optional query string
+// substring-matches name / displayName / email (Linear-side filter).
+// Returns active users only by default — agents looking for
+// deactivated members can pass query="" and filter client-side, but
+// active-only matches the most common assignee-resolution shape.
+func (p *linearIssueProvider) ListUsers(ctx context.Context, cfg projectConfig, query string) ([]linearUser, error) {
+	if cfg.MCP.Linear.Token == "" {
+		return nil, errIssueProviderNotConfigured
+	}
+	cctx, cancel := context.WithTimeout(ctx, linearGraphQLCallTimeout)
+	defer cancel()
+	filter := map[string]any{
+		"active": map[string]any{"eq": true},
+	}
+	if q := strings.TrimSpace(query); q != "" {
+		filter["or"] = []map[string]any{
+			{"name": map[string]any{"containsIgnoreCase": q}},
+			{"displayName": map[string]any{"containsIgnoreCase": q}},
+			{"email": map[string]any{"containsIgnoreCase": q}},
+		}
+	}
+	var out struct {
+		Users struct {
+			Nodes []linearAPIUser `json:"nodes"`
+		} `json:"users"`
+	}
+	if err := p.callGraphQL(cctx, cfg.MCP.Linear, linearUsersQuery,
+		map[string]any{"filter": filter, "first": 250}, &out); err != nil {
+		return nil, fmt.Errorf("linear: list users: %w", err)
+	}
+	users := make([]linearUser, 0, len(out.Users.Nodes))
+	for _, n := range out.Users.Nodes {
+		users = append(users, linearUser{
+			ID:          n.ID,
+			Name:        n.Name,
+			DisplayName: n.DisplayName,
+			Email:       n.Email,
+			Active:      n.Active,
+		})
+	}
+	return users, nil
+}
+
+// ListLabels returns labels. When teamKey is non-empty, scopes to
+// that team plus workspace-wide labels (team:null) — Linear lets
+// labels be either team-scoped or workspace-wide and a team's issues
+// can carry both. When teamKey is empty, returns every label
+// reachable to the API key.
+func (p *linearIssueProvider) ListLabels(ctx context.Context, cfg projectConfig, teamKey string) ([]linearLabel, error) {
+	if cfg.MCP.Linear.Token == "" {
+		return nil, errIssueProviderNotConfigured
+	}
+	cctx, cancel := context.WithTimeout(ctx, linearGraphQLCallTimeout)
+	defer cancel()
+	vars := map[string]any{"first": 250}
+	if k := strings.TrimSpace(teamKey); k != "" {
+		vars["filter"] = map[string]any{
+			"or": []map[string]any{
+				{"team": map[string]any{"key": map[string]any{"eq": k}}},
+				{"team": map[string]any{"null": true}},
+			},
+		}
+	}
+	var out struct {
+		IssueLabels struct {
+			Nodes []linearAPILabel `json:"nodes"`
+		} `json:"issueLabels"`
+	}
+	if err := p.callGraphQL(cctx, cfg.MCP.Linear, linearLabelsQuery, vars, &out); err != nil {
+		return nil, fmt.Errorf("linear: list labels: %w", err)
+	}
+	labels := make([]linearLabel, 0, len(out.IssueLabels.Nodes))
+	for _, n := range out.IssueLabels.Nodes {
+		l := linearLabel{ID: n.ID, Name: n.Name, Color: n.Color}
+		if n.Team != nil {
+			l.TeamKey = n.Team.Key
+		}
+		labels = append(labels, l)
+	}
+	return labels, nil
+}
+
+// ListWorkflowStatesForTeam is the public wrapper around the
+// internal team-states cache used by MoveIssue. Always returns the
+// state list for the given team key (defaults to cfg.MCP.Linear.TeamKey
+// when empty), sorted by Position. The MCP tool surface uses this so
+// agents can show the user available kanban columns.
+func (p *linearIssueProvider) ListWorkflowStatesForTeam(ctx context.Context, cfg projectConfig, teamKey string) ([]linearWorkflowState, error) {
+	if cfg.MCP.Linear.Token == "" {
+		return nil, errIssueProviderNotConfigured
+	}
+	scope := cfg.MCP.Linear
+	if k := strings.TrimSpace(teamKey); k != "" {
+		scope.TeamKey = k
+	}
+	if scope.TeamKey == "" {
+		return nil, errIssueProviderNotConfigured
+	}
+	return p.fetchTeamStates(ctx, scope)
+}
+
+// ListProjects enumerates projects visible to the API key, optionally
+// scoped to a team. Linear projects can span multiple teams — when
+// teamKey is set, the filter narrows to projects that include that
+// team in their team list. State filter is unset (returns active +
+// completed + canceled) so agents see the full picture.
+func (p *linearIssueProvider) ListProjects(ctx context.Context, cfg projectConfig, teamKey string) ([]linearProject, error) {
+	if cfg.MCP.Linear.Token == "" {
+		return nil, errIssueProviderNotConfigured
+	}
+	cctx, cancel := context.WithTimeout(ctx, linearGraphQLCallTimeout)
+	defer cancel()
+	vars := map[string]any{"first": 250}
+	if k := strings.TrimSpace(teamKey); k != "" {
+		vars["filter"] = map[string]any{
+			"accessibleTeams": map[string]any{
+				"some": map[string]any{"key": map[string]any{"eq": k}},
+			},
+		}
+	}
+	var out struct {
+		Projects struct {
+			Nodes []linearAPIProject `json:"nodes"`
+		} `json:"projects"`
+	}
+	if err := p.callGraphQL(cctx, cfg.MCP.Linear, linearProjectsQuery, vars, &out); err != nil {
+		return nil, fmt.Errorf("linear: list projects: %w", err)
+	}
+	projects := make([]linearProject, 0, len(out.Projects.Nodes))
+	for _, n := range out.Projects.Nodes {
+		projects = append(projects, linearProject{ID: n.ID, Name: n.Name, State: n.State})
+	}
+	return projects, nil
+}
+
+// ListCycles enumerates cycles for a team. teamKey defaults to the
+// configured team when empty. Linear cycles are always team-scoped.
+func (p *linearIssueProvider) ListCycles(ctx context.Context, cfg projectConfig, teamKey string) ([]linearCycle, error) {
+	if cfg.MCP.Linear.Token == "" {
+		return nil, errIssueProviderNotConfigured
+	}
+	scope := cfg.MCP.Linear
+	if k := strings.TrimSpace(teamKey); k != "" {
+		scope.TeamKey = k
+	}
+	if scope.TeamKey == "" {
+		return nil, errIssueProviderNotConfigured
+	}
+	cctx, cancel := context.WithTimeout(ctx, linearGraphQLCallTimeout)
+	defer cancel()
+	var out struct {
+		Cycles struct {
+			Nodes []linearAPICycle `json:"nodes"`
+		} `json:"cycles"`
+	}
+	vars := map[string]any{
+		"filter": map[string]any{
+			"team": map[string]any{"key": map[string]any{"eq": scope.TeamKey}},
+		},
+		"first": 250,
+	}
+	if err := p.callGraphQL(cctx, scope, linearCyclesQuery, vars, &out); err != nil {
+		return nil, fmt.Errorf("linear: list cycles: %w", err)
+	}
+	cycles := make([]linearCycle, 0, len(out.Cycles.Nodes))
+	for _, n := range out.Cycles.Nodes {
+		cycles = append(cycles, linearCycle{
+			ID:       n.ID,
+			Number:   int(n.Number),
+			Name:     n.Name,
+			StartsAt: n.StartsAt,
+			EndsAt:   n.EndsAt,
+		})
+	}
+	return cycles, nil
+}
+
+// resolveAssignee maps a human-friendly assignee value (UUID, email,
+// name, or displayName) to a Linear user UUID. Recognises:
+//
+//   - Linear UUIDs: pass through unchanged.
+//   - Email addresses (contain @): exact match against User.email.
+//   - Anything else: substring match against displayName, name, then
+//     email — case-insensitive. Ambiguous matches surface an error
+//     listing the candidates so the agent can disambiguate.
+func (p *linearIssueProvider) resolveAssignee(ctx context.Context, cfg linearMCPConfig, value string) (string, error) {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return "", fmt.Errorf("linear: empty assignee")
+	}
+	if isLinearUUID(v) {
+		return v, nil
+	}
+	users, err := p.ListUsers(ctx, projectConfig{MCP: projectMCPConfig{Linear: cfg}}, v)
+	if err != nil {
+		return "", err
+	}
+	candidates := matchUsers(users, v)
+	switch len(candidates) {
+	case 0:
+		return "", fmt.Errorf("linear: no user matches %q", v)
+	case 1:
+		return candidates[0].ID, nil
+	default:
+		names := make([]string, 0, len(candidates))
+		for _, c := range candidates {
+			label := c.DisplayName
+			if label == "" {
+				label = c.Name
+			}
+			if c.Email != "" {
+				label = fmt.Sprintf("%s <%s>", label, c.Email)
+			}
+			names = append(names, label)
+		}
+		return "", fmt.Errorf("linear: ambiguous assignee %q — %d matches: %s", v, len(candidates), strings.Join(names, ", "))
+	}
+}
+
+// matchUsers picks the candidates that match value most strictly:
+// exact email > exact displayName > exact name > substring on any.
+// Returning a slice (rather than a single best) lets the resolver
+// surface ambiguity instead of silently picking one.
+func matchUsers(users []linearUser, value string) []linearUser {
+	v := strings.ToLower(strings.TrimSpace(value))
+	if v == "" {
+		return nil
+	}
+	var exact []linearUser
+	var partial []linearUser
+	for _, u := range users {
+		uname := strings.ToLower(u.Name)
+		udn := strings.ToLower(u.DisplayName)
+		uemail := strings.ToLower(u.Email)
+		if uemail == v || uname == v || udn == v {
+			exact = append(exact, u)
+			continue
+		}
+		if strings.Contains(uname, v) || strings.Contains(udn, v) || strings.Contains(uemail, v) {
+			partial = append(partial, u)
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	return partial
+}
+
+// resolveLabels maps label names to label UUIDs. Names are
+// case-insensitive. Each unmatched name surfaces as an error listing
+// every name we couldn't find — the agent can then list_labels to
+// see what's available.
+func (p *linearIssueProvider) resolveLabels(ctx context.Context, cfg linearMCPConfig, names []string, _ string) ([]string, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	labels, err := p.ListLabels(ctx, projectConfig{MCP: projectMCPConfig{Linear: cfg}}, cfg.TeamKey)
+	if err != nil {
+		return nil, err
+	}
+	byName := map[string]string{}
+	for _, l := range labels {
+		byName[strings.ToLower(strings.TrimSpace(l.Name))] = l.ID
+	}
+	ids := make([]string, 0, len(names))
+	var missing []string
+	seen := map[string]bool{}
+	for _, n := range names {
+		key := strings.ToLower(strings.TrimSpace(n))
+		if key == "" {
+			continue
+		}
+		if isLinearUUID(strings.TrimSpace(n)) {
+			id := strings.TrimSpace(n)
+			if !seen[id] {
+				ids = append(ids, id)
+				seen[id] = true
+			}
+			continue
+		}
+		id, ok := byName[key]
+		if !ok {
+			missing = append(missing, n)
+			continue
+		}
+		if !seen[id] {
+			ids = append(ids, id)
+			seen[id] = true
+		}
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("linear: unknown label(s): %s", strings.Join(missing, ", "))
+	}
+	return ids, nil
+}
+
+// resolveStateNameOrType maps a state value to a workflow-state UUID
+// scoped to the configured team. Accepts:
+//
+//   - Linear UUID — passed through.
+//   - State type (backlog/triage/unstarted/started/completed/canceled)
+//     or kanban label ("In Progress", "Done", …): resolved through
+//     resolveLinearStateTypes against the cached team-state list.
+//   - State name (Linear lets teams customise per-state names like
+//     "Code Review"): exact case-insensitive match against name.
+func (p *linearIssueProvider) resolveStateNameOrType(ctx context.Context, cfg linearMCPConfig, value string) (string, error) {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return "", fmt.Errorf("linear: empty state")
+	}
+	if isLinearUUID(v) {
+		return v, nil
+	}
+	states, err := p.fetchTeamStates(ctx, cfg)
+	if err != nil {
+		return "", err
+	}
+	if types := resolveLinearStateTypes(v); len(types) > 0 {
+		for _, want := range types {
+			for _, s := range states {
+				if s.Type == want {
+					return s.ID, nil
+				}
+			}
+		}
+		return "", fmt.Errorf("linear: no workflow state matches %q for team %s", value, cfg.TeamKey)
+	}
+	low := strings.ToLower(v)
+	for _, s := range states {
+		if strings.ToLower(s.Name) == low {
+			return s.ID, nil
+		}
+	}
+	return "", fmt.Errorf("linear: no workflow state matches %q for team %s", value, cfg.TeamKey)
+}
+
+// resolveProject maps a project name (case-insensitive) to a project
+// UUID. Pass-through for UUIDs.
+func (p *linearIssueProvider) resolveProject(ctx context.Context, cfg linearMCPConfig, value string) (string, error) {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return "", fmt.Errorf("linear: empty project")
+	}
+	if isLinearUUID(v) {
+		return v, nil
+	}
+	projects, err := p.ListProjects(ctx, projectConfig{MCP: projectMCPConfig{Linear: cfg}}, cfg.TeamKey)
+	if err != nil {
+		return "", err
+	}
+	low := strings.ToLower(v)
+	var matches []linearProject
+	for _, pr := range projects {
+		if strings.ToLower(pr.Name) == low {
+			matches = append(matches, pr)
+		}
+	}
+	if len(matches) == 0 {
+		// fall back to substring
+		for _, pr := range projects {
+			if strings.Contains(strings.ToLower(pr.Name), low) {
+				matches = append(matches, pr)
+			}
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("linear: no project matches %q", value)
+	case 1:
+		return matches[0].ID, nil
+	default:
+		names := make([]string, 0, len(matches))
+		for _, m := range matches {
+			names = append(names, m.Name)
+		}
+		return "", fmt.Errorf("linear: ambiguous project %q — %d matches: %s", value, len(matches), strings.Join(names, ", "))
+	}
+}
+
+// resolveCycle maps a cycle number to a cycle UUID for the given
+// team. Linear cycles within a team are uniquely numbered.
+func (p *linearIssueProvider) resolveCycle(ctx context.Context, cfg linearMCPConfig, number int, _ string) (string, error) {
+	if number < 0 {
+		return "", fmt.Errorf("linear: cycle number must be >= 0")
+	}
+	cycles, err := p.ListCycles(ctx, projectConfig{MCP: projectMCPConfig{Linear: cfg}}, cfg.TeamKey)
+	if err != nil {
+		return "", err
+	}
+	for _, c := range cycles {
+		if c.Number == number {
+			return c.ID, nil
+		}
+	}
+	return "", fmt.Errorf("linear: no cycle with number %d in team %s", number, cfg.TeamKey)
+}
+
+// resolveParent maps a parent identifier ("TEAM-N", a bare integer
+// scoped to the configured team, or a Linear UUID) to the parent
+// issue's UUID. Linear's IssueUpdateInput.parentId requires the UUID;
+// we use the same identifier-lookup query as CreateComment.
+func (p *linearIssueProvider) resolveParent(ctx context.Context, cfg linearMCPConfig, value string) (string, error) {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return "", fmt.Errorf("linear: empty parent")
+	}
+	if isLinearUUID(v) {
+		return v, nil
+	}
+	if !strings.Contains(v, "-") {
+		// Bare number — scope to the configured team.
+		v = fmt.Sprintf("%s-%s", cfg.TeamKey, v)
+	}
+	cctx, cancel := context.WithTimeout(ctx, linearGraphQLCallTimeout)
+	defer cancel()
+	var out struct {
+		IssueByIdentifier *struct {
+			ID string `json:"id"`
+		} `json:"issueByIdentifier"`
+	}
+	if err := p.callGraphQL(cctx, cfg, linearIssueIDLookupQuery,
+		map[string]any{"id": v}, &out); err != nil {
+		return "", err
+	}
+	if out.IssueByIdentifier == nil {
+		return "", fmt.Errorf("linear: parent issue %s not found", v)
+	}
+	return out.IssueByIdentifier.ID, nil
+}
+
+// fetchIssueLabelIDs reads the current label-id set on an issue. Used
+// by UpdateIssue's add/remove label paths to compute the new
+// label_ids without requiring the caller to know the current state.
+func (p *linearIssueProvider) fetchIssueLabelIDs(ctx context.Context, cfg linearMCPConfig, identifier string) ([]string, error) {
+	cctx, cancel := context.WithTimeout(ctx, linearGraphQLCallTimeout)
+	defer cancel()
+	var out struct {
+		IssueByIdentifier *struct {
+			Labels struct {
+				Nodes []struct {
+					ID string `json:"id"`
+				} `json:"nodes"`
+			} `json:"labels"`
+		} `json:"issueByIdentifier"`
+	}
+	if err := p.callGraphQL(cctx, cfg, linearIssueLabelsLookupQuery,
+		map[string]any{"id": identifier}, &out); err != nil {
+		return nil, err
+	}
+	if out.IssueByIdentifier == nil {
+		return nil, fmt.Errorf("linear: issue %s not found", identifier)
+	}
+	ids := make([]string, 0, len(out.IssueByIdentifier.Labels.Nodes))
+	for _, n := range out.IssueByIdentifier.Labels.Nodes {
+		ids = append(ids, n.ID)
+	}
+	return ids, nil
+}
+
+// mergeLabelIDs returns base + add - remove with stable ordering and
+// no duplicates. Used by the UpdateIssue add/remove-labels path.
+func mergeLabelIDs(base, add, remove []string) []string {
+	out := make([]string, 0, len(base)+len(add))
+	seen := map[string]bool{}
+	excluded := map[string]bool{}
+	for _, r := range remove {
+		excluded[r] = true
+	}
+	for _, b := range base {
+		if excluded[b] || seen[b] {
+			continue
+		}
+		out = append(out, b)
+		seen[b] = true
+	}
+	for _, a := range add {
+		if excluded[a] || seen[a] {
+			continue
+		}
+		out = append(out, a)
+		seen[a] = true
+	}
+	return out
+}
+
+// isLinearUUID is a cheap heuristic — Linear UUIDs are 36-char
+// lowercase 8-4-4-4-12 hex with hyphens. We don't need to validate
+// the variant/version bits, just rule in shapes that obviously came
+// from the API. Anything that doesn't match falls through to the
+// name-based resolver.
+func isLinearUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, r := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+			continue
+		}
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// linearAPITeam / linearAPILabel / linearAPIProject / linearAPICycle
+// are the wire-trim shapes for the list queries. Pulled out so
+// callers can reuse the GraphQL query strings without duplicating
+// JSON tag conventions.
+type linearAPITeam struct {
+	ID          string `json:"id"`
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+type linearAPILabel struct {
+	ID    string             `json:"id"`
+	Name  string             `json:"name"`
+	Color string             `json:"color"`
+	Team  *linearAPITeamLink `json:"team,omitempty"`
+}
+
+type linearAPITeamLink struct {
+	Key string `json:"key"`
+}
+
+type linearAPIProject struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	State string `json:"state,omitempty"`
+}
+
+type linearAPICycle struct {
+	ID       string    `json:"id"`
+	Number   float64   `json:"number"`
+	Name     string    `json:"name,omitempty"`
+	StartsAt time.Time `json:"startsAt"`
+	EndsAt   time.Time `json:"endsAt"`
 }
 
 // GraphQL operation strings live as package-level consts so callers
@@ -1033,5 +2041,47 @@ const linearIssueDeleteMutation = `
 mutation AskIssueDelete($id: String!) {
   issueDelete(id: $id) {
     success
+  }
+}`
+
+const linearTeamsQuery = `
+query AskListTeams($first: Int!) {
+  teams(first: $first) {
+    nodes { id key name description }
+  }
+}`
+
+const linearUsersQuery = `
+query AskListUsers($filter: UserFilter, $first: Int!) {
+  users(filter: $filter, first: $first) {
+    nodes { id name displayName email active }
+  }
+}`
+
+const linearLabelsQuery = `
+query AskListLabels($filter: IssueLabelFilter, $first: Int!) {
+  issueLabels(filter: $filter, first: $first) {
+    nodes { id name color team { key } }
+  }
+}`
+
+const linearProjectsQuery = `
+query AskListProjects($filter: ProjectFilter, $first: Int!) {
+  projects(filter: $filter, first: $first) {
+    nodes { id name state }
+  }
+}`
+
+const linearCyclesQuery = `
+query AskListCycles($filter: CycleFilter, $first: Int!) {
+  cycles(filter: $filter, first: $first) {
+    nodes { id number name startsAt endsAt }
+  }
+}`
+
+const linearIssueLabelsLookupQuery = `
+query AskIssueLabelsLookup($id: String!) {
+  issueByIdentifier(id: $id) {
+    labels(first: 100) { nodes { id } }
   }
 }`
