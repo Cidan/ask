@@ -346,7 +346,7 @@ func TestLinearGetTool_HappyPath(t *testing.T) {
 			t.Errorf("identifier=%v want ENG-7", vars["id"])
 		}
 		return map[string]any{
-			"issueByIdentifier": map[string]any{
+			"issue": map[string]any{
 				"number":      7,
 				"title":       "deep",
 				"description": "body",
@@ -463,7 +463,7 @@ func TestLinearUpdateTool_HappyPathRoundTripsState(t *testing.T) {
 		// Post-update fetch — return the issue with the new state so
 		// the tool's response confirms the move.
 		return map[string]any{
-			"issueByIdentifier": map[string]any{
+			"issue": map[string]any{
 				"number":    7,
 				"title":     "moved",
 				"state":     map[string]any{"type": "completed"},
@@ -503,7 +503,7 @@ func TestLinearUpdateTool_AcceptsRawStateType(t *testing.T) {
 	}
 	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
 		return map[string]any{
-			"issueByIdentifier": map[string]any{
+			"issue": map[string]any{
 				"number": 7, "state": map[string]any{"type": "canceled"},
 			},
 		}
@@ -564,7 +564,7 @@ func TestLinearCreateCommentTool_HappyPath(t *testing.T) {
 			t.Errorf("lookup id=%v want ENG-7", vars["id"])
 		}
 		return map[string]any{
-			"issueByIdentifier": map[string]any{"id": "uuid-7"},
+			"issue": map[string]any{"id": "uuid-7"},
 		}
 	}
 	mock.handlers["AskCommentCreate"] = func(vars map[string]any) any {
@@ -602,7 +602,7 @@ func TestLinearCreateCommentTool_HappyPath(t *testing.T) {
 func TestLinearCreateCommentTool_IssueNotFoundSurfacesIdentifier(t *testing.T) {
 	mock := newLinearMockServer(t)
 	mock.handlers["AskIssueIDLookup"] = func(vars map[string]any) any {
-		return map[string]any{"issueByIdentifier": nil}
+		return map[string]any{"issue": nil}
 	}
 	b, _ := configuredLinearBridge(t, mock.URL())
 	res, _, _ := b.linearCreateCommentTool(context.Background(), &mcp.CallToolRequest{}, linearCommentInput{
@@ -983,7 +983,7 @@ func TestLinearUpdateTool_AssigneeUnassignFlowsThrough(t *testing.T) {
 		return map[string]any{"issueUpdate": map[string]any{"success": true}}
 	}
 	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
-		return map[string]any{"issueByIdentifier": map[string]any{
+		return map[string]any{"issue": map[string]any{
 			"number": 7, "state": map[string]any{"type": "started"},
 		}}
 	}
@@ -1015,7 +1015,7 @@ func TestLinearUpdateTool_TeamMoveAffectsResponseIdentifier(t *testing.T) {
 		if vars["id"] != "BACKEND-7" {
 			t.Errorf("post-update id=%v want BACKEND-7", vars["id"])
 		}
-		return map[string]any{"issueByIdentifier": map[string]any{
+		return map[string]any{"issue": map[string]any{
 			"number": 7, "state": map[string]any{"type": "started"},
 		}}
 	}
@@ -1052,7 +1052,7 @@ func TestLinearUpdateTool_PriorityZeroPropagates(t *testing.T) {
 		return map[string]any{"issueUpdate": map[string]any{"success": true}}
 	}
 	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
-		return map[string]any{"issueByIdentifier": map[string]any{
+		return map[string]any{"issue": map[string]any{
 			"number": 7, "state": map[string]any{"type": "started"},
 		}}
 	}

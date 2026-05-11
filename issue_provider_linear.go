@@ -274,10 +274,11 @@ func (p *linearIssueProvider) ListIssues(ctx context.Context, cfg projectConfig,
 }
 
 // GetIssue hydrates one issue with description and comments via
-// `issueByIdentifier`. Linear identifies issues as <TEAM>-<NUMBER>;
-// we reconstruct that from cfg.MCP.Linear.TeamKey + the requested
-// number. Comments are pulled in the same query (single round trip)
-// and capped at 100, mirroring github's coverage.
+// the top-level `issue(id:)` query, which accepts the shorthand
+// <TEAM>-<NUMBER> identifier as well as a UUID. We reconstruct the
+// identifier from cfg.MCP.Linear.TeamKey + the requested number.
+// Comments are pulled in the same query (single round trip) and
+// capped at 100, mirroring github's coverage.
 func (p *linearIssueProvider) GetIssue(ctx context.Context, cfg projectConfig, cwd string, number int) (issue, error) {
 	if cfg.MCP.Linear.Token == "" || cfg.MCP.Linear.TeamKey == "" {
 		return issue{}, errIssueProviderNotConfigured
@@ -286,19 +287,19 @@ func (p *linearIssueProvider) GetIssue(ctx context.Context, cfg projectConfig, c
 	cctx, cancel := context.WithTimeout(ctx, linearGraphQLCallTimeout)
 	defer cancel()
 	var out struct {
-		IssueByIdentifier *linearAPIIssue `json:"issueByIdentifier"`
+		Issue *linearAPIIssue `json:"issue"`
 	}
-	err := p.callGraphQL(cctx, cfg.MCP.Linear, linearIssueByIdentifierQuery,
+	err := p.callGraphQL(cctx, cfg.MCP.Linear, linearIssueQuery,
 		map[string]any{"id": identifier}, &out)
 	if err != nil {
 		return issue{}, err
 	}
-	if out.IssueByIdentifier == nil {
+	if out.Issue == nil {
 		return issue{}, fmt.Errorf("linear: issue %s not found", identifier)
 	}
-	it := linearAPIToIssue(*out.IssueByIdentifier)
-	if out.IssueByIdentifier.Comments != nil {
-		for _, c := range out.IssueByIdentifier.Comments.Nodes {
+	it := linearAPIToIssue(*out.Issue)
+	if out.Issue.Comments != nil {
+		for _, c := range out.Issue.Comments.Nodes {
 			it.comments = append(it.comments, linearAPIToComment(c))
 		}
 	}
@@ -406,7 +407,7 @@ func (p *linearIssueProvider) SupportsCarry() bool { return true }
 // CreateComment posts a Markdown comment on the Linear issue with the
 // given number under the configured team. Linear's commentCreate
 // mutation requires the issue UUID, so we run a two-step:
-// issueByIdentifier to resolve "TEAM-N" → UUID, then commentCreate.
+// issue(id:) to resolve "TEAM-N" → UUID, then commentCreate.
 // Returns the trimmed app-internal issueComment shape so the result
 // is uniform with what GetIssue's comments slice carries.
 //
@@ -426,15 +427,15 @@ func (p *linearIssueProvider) CreateComment(ctx context.Context, cfg projectConf
 	cctx, cancel := context.WithTimeout(ctx, linearGraphQLCallTimeout)
 	defer cancel()
 	var idLookup struct {
-		IssueByIdentifier *struct {
+		Issue *struct {
 			ID string `json:"id"`
-		} `json:"issueByIdentifier"`
+		} `json:"issue"`
 	}
 	if err := p.callGraphQL(cctx, cfg.MCP.Linear, linearIssueIDLookupQuery,
 		map[string]any{"id": identifier}, &idLookup); err != nil {
 		return issueComment{}, err
 	}
-	if idLookup.IssueByIdentifier == nil {
+	if idLookup.Issue == nil {
 		return issueComment{}, fmt.Errorf("linear: issue %s not found", identifier)
 	}
 	var out struct {
@@ -445,7 +446,7 @@ func (p *linearIssueProvider) CreateComment(ctx context.Context, cfg projectConf
 	}
 	err := p.callGraphQL(cctx, cfg.MCP.Linear, linearCommentCreateMutation, map[string]any{
 		"input": map[string]any{
-			"issueId": idLookup.IssueByIdentifier.ID,
+			"issueId": idLookup.Issue.ID,
 			"body":    body,
 		},
 	}, &out)
@@ -1812,18 +1813,18 @@ func (p *linearIssueProvider) resolveParent(ctx context.Context, cfg linearMCPCo
 	cctx, cancel := context.WithTimeout(ctx, linearGraphQLCallTimeout)
 	defer cancel()
 	var out struct {
-		IssueByIdentifier *struct {
+		Issue *struct {
 			ID string `json:"id"`
-		} `json:"issueByIdentifier"`
+		} `json:"issue"`
 	}
 	if err := p.callGraphQL(cctx, cfg, linearIssueIDLookupQuery,
 		map[string]any{"id": v}, &out); err != nil {
 		return "", err
 	}
-	if out.IssueByIdentifier == nil {
+	if out.Issue == nil {
 		return "", fmt.Errorf("linear: parent issue %s not found", v)
 	}
-	return out.IssueByIdentifier.ID, nil
+	return out.Issue.ID, nil
 }
 
 // fetchIssueLabelIDs reads the current label-id set on an issue. Used
@@ -1833,23 +1834,23 @@ func (p *linearIssueProvider) fetchIssueLabelIDs(ctx context.Context, cfg linear
 	cctx, cancel := context.WithTimeout(ctx, linearGraphQLCallTimeout)
 	defer cancel()
 	var out struct {
-		IssueByIdentifier *struct {
+		Issue *struct {
 			Labels struct {
 				Nodes []struct {
 					ID string `json:"id"`
 				} `json:"nodes"`
 			} `json:"labels"`
-		} `json:"issueByIdentifier"`
+		} `json:"issue"`
 	}
 	if err := p.callGraphQL(cctx, cfg, linearIssueLabelsLookupQuery,
 		map[string]any{"id": identifier}, &out); err != nil {
 		return nil, err
 	}
-	if out.IssueByIdentifier == nil {
+	if out.Issue == nil {
 		return nil, fmt.Errorf("linear: issue %s not found", identifier)
 	}
-	ids := make([]string, 0, len(out.IssueByIdentifier.Labels.Nodes))
-	for _, n := range out.IssueByIdentifier.Labels.Nodes {
+	ids := make([]string, 0, len(out.Issue.Labels.Nodes))
+	for _, n := range out.Issue.Labels.Nodes {
 		ids = append(ids, n.ID)
 	}
 	return ids, nil
@@ -1963,9 +1964,9 @@ query AskListIssues($filter: IssueFilter, $first: Int!, $after: String, $orderBy
   }
 }`
 
-const linearIssueByIdentifierQuery = `
+const linearIssueQuery = `
 query AskGetIssue($id: String!) {
-  issueByIdentifier(id: $id) {
+  issue(id: $id) {
     id
     identifier
     number
@@ -2000,7 +2001,7 @@ mutation AskIssueUpdate($id: String!, $input: IssueUpdateInput!) {
 
 const linearIssueIDLookupQuery = `
 query AskIssueIDLookup($id: String!) {
-  issueByIdentifier(id: $id) { id }
+  issue(id: $id) { id }
 }`
 
 const linearCommentCreateMutation = `
@@ -2081,7 +2082,7 @@ query AskListCycles($filter: CycleFilter, $first: Int!) {
 
 const linearIssueLabelsLookupQuery = `
 query AskIssueLabelsLookup($id: String!) {
-  issueByIdentifier(id: $id) {
+  issue(id: $id) {
     labels(first: 100) { nodes { id } }
   }
 }`

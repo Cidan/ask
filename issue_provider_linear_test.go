@@ -768,7 +768,7 @@ func TestLinearProvider_GetIssue_HappyPath(t *testing.T) {
 			t.Errorf("id=%v want ENG-7", vars["id"])
 		}
 		return map[string]any{
-			"issueByIdentifier": map[string]any{
+			"issue": map[string]any{
 				"id":          "uuid-7",
 				"identifier":  "ENG-7",
 				"number":      7,
@@ -810,7 +810,7 @@ func TestLinearProvider_GetIssue_HappyPath(t *testing.T) {
 func TestLinearProvider_GetIssue_NotFoundSurfacesIdentifier(t *testing.T) {
 	mock := newLinearMockServer(t)
 	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
-		return map[string]any{"issueByIdentifier": nil}
+		return map[string]any{"issue": nil}
 	}
 	p := &linearIssueProvider{}
 	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
@@ -1711,7 +1711,7 @@ func TestLinearProvider_ResolveParent_QualifiesBareNumber(t *testing.T) {
 		if vars["id"] != "ENG-42" {
 			t.Errorf("id=%v want ENG-42 (bare 42 should be qualified)", vars["id"])
 		}
-		return map[string]any{"issueByIdentifier": map[string]any{"id": "uuid-42"}}
+		return map[string]any{"issue": map[string]any{"id": "uuid-42"}}
 	}
 	p := &linearIssueProvider{}
 	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
@@ -1727,7 +1727,7 @@ func TestLinearProvider_ResolveParent_AcceptsExplicitIdentifier(t *testing.T) {
 		if vars["id"] != "DES-7" {
 			t.Errorf("id=%v want DES-7 (explicit team prefix preserved)", vars["id"])
 		}
-		return map[string]any{"issueByIdentifier": map[string]any{"id": "uuid-des-7"}}
+		return map[string]any{"issue": map[string]any{"id": "uuid-des-7"}}
 	}
 	p := &linearIssueProvider{}
 	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
@@ -1740,7 +1740,7 @@ func TestLinearProvider_ResolveParent_AcceptsExplicitIdentifier(t *testing.T) {
 func TestLinearProvider_ResolveParent_NotFound(t *testing.T) {
 	mock := newLinearMockServer(t)
 	mock.handlers["AskIssueIDLookup"] = func(vars map[string]any) any {
-		return map[string]any{"issueByIdentifier": nil}
+		return map[string]any{"issue": nil}
 	}
 	p := &linearIssueProvider{}
 	cfg := linearMCPConfig{Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "ENG"}
@@ -1800,7 +1800,7 @@ func TestLinearProvider_CreateIssueWithOptions_FullPayload(t *testing.T) {
 	}
 	mock.handlers["AskIssueIDLookup"] = func(vars map[string]any) any {
 		// Parent lookup
-		return map[string]any{"issueByIdentifier": map[string]any{"id": "parent-uuid"}}
+		return map[string]any{"issue": map[string]any{"id": "parent-uuid"}}
 	}
 	mock.handlers["AskIssueCreate"] = func(vars map[string]any) any {
 		input := vars["input"].(map[string]any)
@@ -1941,7 +1941,7 @@ func TestLinearProvider_UpdateIssue_Title(t *testing.T) {
 		return map[string]any{"issueUpdate": map[string]any{"success": true}}
 	}
 	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
-		return map[string]any{"issueByIdentifier": map[string]any{
+		return map[string]any{"issue": map[string]any{
 			"number": 7, "title": "renamed", "state": map[string]any{"type": "started"},
 		}}
 	}
@@ -1975,7 +1975,7 @@ func TestLinearProvider_UpdateIssue_AssigneeUnassign(t *testing.T) {
 		return map[string]any{"issueUpdate": map[string]any{"success": true}}
 	}
 	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
-		return map[string]any{"issueByIdentifier": map[string]any{
+		return map[string]any{"issue": map[string]any{
 			"number": 7, "state": map[string]any{"type": "started"},
 		}}
 	}
@@ -2001,7 +2001,7 @@ func TestLinearProvider_UpdateIssue_PriorityZero(t *testing.T) {
 		return map[string]any{"issueUpdate": map[string]any{"success": true}}
 	}
 	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
-		return map[string]any{"issueByIdentifier": map[string]any{
+		return map[string]any{"issue": map[string]any{
 			"number": 7, "state": map[string]any{"type": "started"},
 		}}
 	}
@@ -2037,7 +2037,7 @@ func TestLinearProvider_UpdateIssue_LabelsReplace(t *testing.T) {
 		return map[string]any{"issueUpdate": map[string]any{"success": true}}
 	}
 	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
-		return map[string]any{"issueByIdentifier": map[string]any{
+		return map[string]any{"issue": map[string]any{
 			"number": 7, "state": map[string]any{"type": "started"},
 		}}
 	}
@@ -2064,7 +2064,7 @@ func TestLinearProvider_UpdateIssue_LabelsClear(t *testing.T) {
 		return map[string]any{"issueUpdate": map[string]any{"success": true}}
 	}
 	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
-		return map[string]any{"issueByIdentifier": map[string]any{
+		return map[string]any{"issue": map[string]any{
 			"number": 7, "state": map[string]any{"type": "started"},
 		}}
 	}
@@ -2091,7 +2091,7 @@ func TestLinearProvider_UpdateIssue_LabelsAdditive(t *testing.T) {
 		}}}
 	}
 	mock.handlers["AskIssueLabelsLookup"] = func(vars map[string]any) any {
-		return map[string]any{"issueByIdentifier": map[string]any{
+		return map[string]any{"issue": map[string]any{
 			"labels": map[string]any{"nodes": []any{
 				map[string]any{"id": "l-existing"},
 			}},
@@ -2106,7 +2106,7 @@ func TestLinearProvider_UpdateIssue_LabelsAdditive(t *testing.T) {
 		return map[string]any{"issueUpdate": map[string]any{"success": true}}
 	}
 	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
-		return map[string]any{"issueByIdentifier": map[string]any{
+		return map[string]any{"issue": map[string]any{
 			"number": 7, "state": map[string]any{"type": "started"},
 		}}
 	}
@@ -2141,7 +2141,7 @@ func TestLinearProvider_UpdateIssue_TeamMove(t *testing.T) {
 		if vars["id"] != "BACKEND-7" {
 			t.Errorf("post-update GetIssue id=%v want BACKEND-7", vars["id"])
 		}
-		return map[string]any{"issueByIdentifier": map[string]any{
+		return map[string]any{"issue": map[string]any{
 			"number": 7, "state": map[string]any{"type": "started"},
 		}}
 	}
@@ -2203,7 +2203,7 @@ func TestLinearProvider_UpdateIssue_ProjectClear(t *testing.T) {
 		return map[string]any{"issueUpdate": map[string]any{"success": true}}
 	}
 	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
-		return map[string]any{"issueByIdentifier": map[string]any{
+		return map[string]any{"issue": map[string]any{
 			"number": 7, "state": map[string]any{"type": "started"},
 		}}
 	}
@@ -2230,7 +2230,7 @@ func TestLinearProvider_UpdateIssue_CycleClear(t *testing.T) {
 		return map[string]any{"issueUpdate": map[string]any{"success": true}}
 	}
 	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
-		return map[string]any{"issueByIdentifier": map[string]any{
+		return map[string]any{"issue": map[string]any{
 			"number": 7, "state": map[string]any{"type": "started"},
 		}}
 	}
@@ -2257,7 +2257,7 @@ func TestLinearProvider_UpdateIssue_ParentOrphan(t *testing.T) {
 		return map[string]any{"issueUpdate": map[string]any{"success": true}}
 	}
 	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
-		return map[string]any{"issueByIdentifier": map[string]any{
+		return map[string]any{"issue": map[string]any{
 			"number": 7, "state": map[string]any{"type": "started"},
 		}}
 	}
