@@ -138,11 +138,11 @@ func TestBuildCopyText_FullEntrySelection(t *testing.T) {
 	}
 }
 
-func TestBuildCopyText_PartialSelectionCopiesOnlySelectedGlyphs(t *testing.T) {
-	// Acceptance: a partial intra-entry selection copies only the
-	// glyphs the user actually highlighted on screen, not the full
-	// buffer. Inter-row middles span the entire wrapped line per
-	// terminal block-selection semantics.
+func TestBuildCopyText_PartialSelectionEscalatesToWholeEntrySource(t *testing.T) {
+	// Acceptance: a partial intra-entry drag copies the entry's full
+	// source text (entry.text), not the visual rows the user
+	// highlighted. The rendered rows carry glamour's soft-wrap newlines
+	// and block padding; the source is what pastes cleanly elsewhere.
 	m := newTestModel(t, newFakeProvider())
 	m.history = []historyEntry{
 		{
@@ -153,16 +153,16 @@ func TestBuildCopyText_PartialSelectionCopiesOnlySelectedGlyphs(t *testing.T) {
 			wrappedFor: 80,
 		},
 	}
-	// Select from row 1 col 7 to row 2 col 8. First row from col 7
-	// (post-margin "ap2") to end of line, last row from col 5
-	// (post-margin) to col 8 inclusive ("wrap").
+	// Drag covers only rows 1..2, cols 7..8 — a small slice of the
+	// rendered visible text. New behaviour: that contact escalates to
+	// copying the entry's whole source.
 	m.selActive = true
 	m.selAnchor = cellPos{row: 1, col: 7}
 	m.selFocus = cellPos{row: 2, col: 8}
 	got := m.buildCopyText()
-	want := "ap2\nwrap"
+	want := "raw markdown source"
 	if got != want {
-		t.Errorf("partial selection should copy only selected glyphs:\n got %q\nwant %q", got, want)
+		t.Errorf("partial intra-entry selection should escalate to full source:\n got %q\nwant %q", got, want)
 	}
 }
 
@@ -187,16 +187,16 @@ func TestBuildCopyText_OnlySelectedEntries(t *testing.T) {
 }
 
 func TestBuildCopyText_StripsAnsiEscapes(t *testing.T) {
-	// Acceptance: ANSI escapes from glamour styling never leak into
-	// the clipboard payload — the output is the bare visible text.
+	// Acceptance: ANSI escapes never leak into the clipboard. For
+	// histPrerendered entries (errors, tool calls, info banners) the
+	// .text field is already routed through outputStyle.Render so it
+	// carries both ANSI sequences AND a 5-col left margin; entryCopyText
+	// must strip both before handing the payload to the OS clipboard.
 	m := newTestModel(t, newFakeProvider())
 	m.history = []historyEntry{
 		{
-			kind:       histResponse,
-			text:       "**hello**",
-			rendered:   "     \x1b[1mhello\x1b[0m",
-			wrapped:    []string{"     \x1b[1mhello\x1b[0m"},
-			wrappedFor: 80,
+			kind: histPrerendered,
+			text: "     \x1b[1mhello\x1b[0m",
 		},
 	}
 	m.selActive = true
@@ -211,59 +211,64 @@ func TestBuildCopyText_StripsAnsiEscapes(t *testing.T) {
 	}
 }
 
-func TestBuildCopyText_LeftMarginSkippedAcrossEntryKinds(t *testing.T) {
-	// Acceptance: the 5-column left gutter (outputStyle.MarginLeft for
-	// histResponse / histPrerendered, the indent + │ + padding for the
-	// userBar) is never part of the clipboard payload regardless of
-	// entry kind.
+func TestBuildCopyText_SourceFidelityAcrossEntryKinds(t *testing.T) {
+	// Acceptance: the clipboard payload carries the entry's *source*
+	// content for every entry kind — never the rendered gutter / ANSI
+	// styling / glamour soft-wraps.
+	//
+	//   - histResponse keeps raw markdown verbatim (the user picked
+	//     "copy raw source including ``` fences" in the design call).
+	//   - histUser keeps raw user input (no userBar styling).
+	//   - histPrerendered has already been rendered through
+	//     outputStyle.Render at append time, so the saved .text carries
+	//     ANSI + a 5-col MarginLeft; entryCopyText strips both.
 	cases := []struct {
 		name     string
 		kind     historyKind
+		text     string
 		rendered string
-		anchor   cellPos
-		focus    cellPos
 		want     string
 	}{
 		{
-			name:     "histUser bar gutter",
+			name:     "histUser raw input",
 			kind:     histUser,
+			text:     "hello world",
 			rendered: "   │ hello world",
-			anchor:   cellPos{row: 0, col: 0},
-			focus:    cellPos{row: 0, col: 15},
 			want:     "hello world",
 		},
 		{
-			name:     "histResponse left margin",
+			name:     "histResponse raw markdown with code fence",
 			kind:     histResponse,
-			rendered: "     response body",
-			anchor:   cellPos{row: 0, col: 0},
-			focus:    cellPos{row: 0, col: 17},
-			want:     "response body",
+			text:     "Look:\n```go\nfmt.Println(\"hi\")\n```",
+			rendered: "     Look:\n     \n     \x1b[38;5;81m fmt.Println(\"hi\")          \x1b[0m\n     ",
+			want:     "Look:\n```go\nfmt.Println(\"hi\")\n```",
 		},
 		{
-			name:     "histPrerendered left margin",
+			name:     "histPrerendered ANSI + margin stripped",
 			kind:     histPrerendered,
-			rendered: "     tool output line",
-			anchor:   cellPos{row: 0, col: 0},
-			focus:    cellPos{row: 0, col: 20},
-			want:     "tool output line",
+			text:     "     \x1b[31merror: not found\x1b[0m",
+			rendered: "",
+			want:     "error: not found",
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			m := newTestModel(t, newFakeProvider())
-			m.history = []historyEntry{
-				{
-					kind:       c.kind,
-					text:       c.want,
-					rendered:   c.rendered,
-					wrapped:    []string{c.rendered},
-					wrappedFor: 80,
-				},
+			entry := historyEntry{kind: c.kind, text: c.text, rendered: c.rendered}
+			// Only populate the wrap cache when there's a rendered
+			// string to wrap — leaving it nil lets entryRowRanges /
+			// lineAtContentRow fall through to .text, which is the
+			// production path for histPrerendered.
+			if c.rendered != "" {
+				entry.wrapped = []string{c.rendered}
+				entry.wrappedFor = 80
 			}
+			m.history = []historyEntry{entry}
+			// A drag that overlaps any visible row of the entry should
+			// pull its source verbatim — partial selections escalate.
 			m.selActive = true
-			m.selAnchor = c.anchor
-			m.selFocus = c.focus
+			m.selAnchor = cellPos{row: 0, col: 6}
+			m.selFocus = cellPos{row: 0, col: 9}
 			if got := m.buildCopyText(); got != c.want {
 				t.Errorf("got %q, want %q", got, c.want)
 			}
@@ -512,12 +517,100 @@ func TestUpdateMouseRightClick_WithSelectionCopiesAndClears(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected toastShowMsg, got %T", msg)
 	}
-	// Cols 0..10 of "     buffer source", clamped to [5,11) = "buffer".
-	if copied != "buffer" {
-		t.Errorf("clipboard payload=%q want \"buffer\" (post-margin cols 5..10)", copied)
+	// The drag touched the response entry, so the clipboard receives
+	// the full entry.text — not the visual slice.
+	if copied != "buffer source" {
+		t.Errorf("clipboard payload=%q want %q (whole-entry source)", copied, "buffer source")
 	}
 	if !strings.Contains(tmsg.text, "copied") {
 		t.Errorf("toast text=%q should announce success", tmsg.text)
+	}
+}
+
+func TestBuildCopyText_MarginOnlySelectionCopiesNothing(t *testing.T) {
+	// A drag that lives entirely inside the 5-col left gutter produces
+	// no on-screen highlight (selectionRenderMask clamps it away), so
+	// it must also produce an empty clipboard payload — otherwise the
+	// user copies an entry they couldn't see selected.
+	m := newTestModel(t, newFakeProvider())
+	m.history = []historyEntry{
+		{kind: histResponse, text: "source body", rendered: "     source body"},
+	}
+	m.selActive = true
+	m.selAnchor = cellPos{row: 0, col: 0}
+	m.selFocus = cellPos{row: 0, col: 3}
+	if got := m.buildCopyText(); got != "" {
+		t.Errorf("margin-only drag must produce no payload; got %q", got)
+	}
+}
+
+func TestBuildCopyText_PrerenderedMultiLineStripsAnsiAndMargin(t *testing.T) {
+	// A multi-line histPrerendered entry — typical of a tool result —
+	// must strip the per-line ANSI styling, the per-line 5-col margin,
+	// and trailing fill whitespace so the clipboard payload reads as
+	// plain text. Trailing blank lines are dropped so consecutive
+	// entries don't pile up newlines in the payload.
+	m := newTestModel(t, newFakeProvider())
+	m.history = []historyEntry{
+		{
+			kind: histPrerendered,
+			text: "     \x1b[36mfile.go\x1b[0m       \n     hunk header   \n     ",
+		},
+	}
+	m.selActive = true
+	m.selAnchor = cellPos{row: 0, col: 6}
+	m.selFocus = cellPos{row: 1, col: 10}
+	got := m.buildCopyText()
+	want := "file.go\nhunk header"
+	if got != want {
+		t.Errorf("prerendered strip:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestBuildCopyText_MultipleEntriesJoinedWithBlankLine(t *testing.T) {
+	// Entries touched by a single drag are joined with a blank line,
+	// mirroring the visible separator row between them.
+	m := newTestModel(t, newFakeProvider())
+	m.history = []historyEntry{
+		{kind: histUser, text: "ask question"},
+		{kind: histResponse, text: "**bold** answer\nwith newline"},
+		{kind: histPrerendered, text: "     \x1b[31m✗ tool error\x1b[0m"},
+	}
+	// Entry row ranges (rendered fields empty, so heights come from
+	// .text line counts): histUser [0,1), separator at 1, histResponse
+	// [2,4), separator at 4, histPrerendered [5,6). The drag spans
+	// rows 0..5 so all three entries are touched.
+	m.selActive = true
+	m.selAnchor = cellPos{row: 0, col: 6}
+	m.selFocus = cellPos{row: 5, col: 9}
+	got := m.buildCopyText()
+	want := "ask question\n\n**bold** answer\nwith newline\n\n✗ tool error"
+	if got != want {
+		t.Errorf("multi-entry join:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestBuildCopyText_HistResponseKeepsRawMarkdownNotRendered(t *testing.T) {
+	// Glamour writes rendered with ANSI + soft-wraps + padding rows.
+	// The clipboard must receive the *raw* markdown — the user's
+	// design call was "copy raw source including ``` fences".
+	m := newTestModel(t, newFakeProvider())
+	m.history = []historyEntry{
+		{
+			kind:       histResponse,
+			text:       "Heading\n\n```go\nfmt.Println(\"x\")\n```\n",
+			rendered:   "     \x1b[1mHeading\x1b[0m\n     \n     \x1b[38;5;81mfmt.Println(\"x\")           \x1b[0m\n     ",
+			wrapped:    []string{"     \x1b[1mHeading\x1b[0m", "     ", "     \x1b[38;5;81mfmt.Println(\"x\")           \x1b[0m", "     "},
+			wrappedFor: 80,
+		},
+	}
+	m.selActive = true
+	m.selAnchor = cellPos{row: 0, col: 6}
+	m.selFocus = cellPos{row: 0, col: 10}
+	got := m.buildCopyText()
+	want := "Heading\n\n```go\nfmt.Println(\"x\")\n```"
+	if got != want {
+		t.Errorf("histResponse raw markdown:\n got %q\nwant %q", got, want)
 	}
 }
 
