@@ -265,9 +265,11 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 	case "quiet":
 		m.quietMode = !m.quietMode
 		v := m.quietMode
-		cfg, _ := loadConfig()
-		cfg.UI.QuietMode = &v
-		if err := saveConfig(cfg); err != nil {
+		if err := withConfigLock(func() error {
+			cfg, _ := loadConfig()
+			cfg.UI.QuietMode = &v
+			return saveConfig(cfg)
+		}); err != nil {
 			debugLog("saveConfig err: %v", err)
 		}
 		return m, m.refreshHistoryCmd()
@@ -275,9 +277,11 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 		m.cursorBlink = !m.cursorBlink
 		applyCursorBlink(&m.input, m.cursorBlink)
 		v := m.cursorBlink
-		cfg, _ := loadConfig()
-		cfg.UI.CursorBlink = &v
-		if err := saveConfig(cfg); err != nil {
+		if err := withConfigLock(func() error {
+			cfg, _ := loadConfig()
+			cfg.UI.CursorBlink = &v
+			return saveConfig(cfg)
+		}); err != nil {
 			debugLog("saveConfig err: %v", err)
 		}
 		if m.cursorBlink {
@@ -287,26 +291,33 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 	case "renderDiffs":
 		m.renderDiffs = !m.renderDiffs
 		v := m.renderDiffs
-		cfg, _ := loadConfig()
-		cfg.UI.RenderDiffs = &v
-		if err := saveConfig(cfg); err != nil {
+		if err := withConfigLock(func() error {
+			cfg, _ := loadConfig()
+			cfg.UI.RenderDiffs = &v
+			return saveConfig(cfg)
+		}); err != nil {
 			debugLog("saveConfig err: %v", err)
 		}
 		return m, m.refreshHistoryCmd()
 	case "toolOutput":
 		m.toolOutputMode = nextToolOutputMode(m.toolOutputMode)
-		cfg, _ := loadConfig()
-		cfg.UI.ToolOutput = string(m.toolOutputMode)
-		if err := saveConfig(cfg); err != nil {
+		mode := string(m.toolOutputMode)
+		if err := withConfigLock(func() error {
+			cfg, _ := loadConfig()
+			cfg.UI.ToolOutput = mode
+			return saveConfig(cfg)
+		}); err != nil {
 			debugLog("saveConfig err: %v", err)
 		}
 		return m, m.refreshHistoryCmd()
 	case "skipAllPermissions":
 		m.skipAllPermissions = !m.skipAllPermissions
 		v := m.skipAllPermissions
-		cfg, _ := loadConfig()
-		cfg.UI.SkipAllPermissions = &v
-		if err := saveConfig(cfg); err != nil {
+		if err := withConfigLock(func() error {
+			cfg, _ := loadConfig()
+			cfg.UI.SkipAllPermissions = &v
+			return saveConfig(cfg)
+		}); err != nil {
 			debugLog("saveConfig err: %v", err)
 		}
 		m.killProc()
@@ -314,9 +325,11 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 	case "worktree":
 		m.worktree = !m.worktree
 		v := m.worktree
-		cfg, _ := loadConfig()
-		cfg.UI.Worktree = &v
-		if err := saveConfig(cfg); err != nil {
+		if err := withConfigLock(func() error {
+			cfg, _ := loadConfig()
+			cfg.UI.Worktree = &v
+			return saveConfig(cfg)
+		}); err != nil {
 			debugLog("saveConfig err: %v", err)
 		}
 		if m.worktree {
@@ -616,9 +629,12 @@ func (m model) updateThemePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case msg.Code == tea.KeyEnter:
-		cfg, _ := loadConfig()
-		cfg.UI.Theme = m.themeName
-		if err := saveConfig(cfg); err != nil {
+		theme := m.themeName
+		if err := withConfigLock(func() error {
+			cfg, _ := loadConfig()
+			cfg.UI.Theme = theme
+			return saveConfig(cfg)
+		}); err != nil {
 			debugLog("saveConfig err: %v", err)
 		}
 		m = m.closeThemePicker()
@@ -739,9 +755,12 @@ func (m model) updateConfigProviderPicker(msg tea.KeyPressMsg) (tea.Model, tea.C
 			return m, nil
 		}
 		chosen := providerRegistry[m.configProviderCursor]
-		cfg, _ := loadConfig()
-		cfg.Provider = chosen.ID()
-		if err := saveConfig(cfg); err != nil {
+		chosenID := chosen.ID()
+		if err := withConfigLock(func() error {
+			cfg, _ := loadConfig()
+			cfg.Provider = chosenID
+			return saveConfig(cfg)
+		}); err != nil {
 			debugLog("saveConfig err: %v", err)
 		}
 		m.appendHistory(outputStyle.Render(promptStyle.Render(

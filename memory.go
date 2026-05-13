@@ -43,8 +43,19 @@ const memoryTenantScope = "ask"
 // closeMemoryService. Both are idempotent — repeated open while open
 // is a no-op, repeated close while closed is a no-op — so the picker
 // handler doesn't have to reason about prior state.
+//
+// memoryMu is an RWMutex specifically because the read paths
+// (memoryRecall / memoryWrite / memoryStatsLine / memoryServiceOpen)
+// hold the read lock for the *entire* duration of the call, which
+// guarantees closeMemoryService cannot tear the underlying neo4j
+// driver out from under an in-flight op. Writers (open / close) take
+// the write lock and block until all readers have released. Reading
+// concurrent recalls run in parallel because RLock is shared among
+// readers; only the rare close/open path is exclusive. Belt-and-
+// suspenders against the same shutdown race the bridge graceful-
+// shutdown change addresses on the HTTP transport side.
 var (
-	memoryMu     sync.Mutex
+	memoryMu     sync.RWMutex
 	memorySvc    memmy.Service
 	memoryCloser io.Closer
 	memorySchema *memmy.TenantSchema
@@ -183,8 +194,8 @@ func closeMemoryService() error {
 // Used by the /config picker to render its `on/off` summary and by
 // tests as a black-box assertion.
 func memoryServiceOpen() bool {
-	memoryMu.Lock()
-	defer memoryMu.Unlock()
+	memoryMu.RLock()
+	defer memoryMu.RUnlock()
 	return memorySvc != nil
 }
 
@@ -199,14 +210,17 @@ func memoryConfigEnabled(cfg askConfig) bool {
 // suitable for a toast / status row. Empty string when the service is
 // not open or stats fail (we never want a stats hiccup to surface as a
 // scary error in the picker).
+//
+// Holds the read lock for the entire call so a concurrent
+// closeMemoryService cannot tear the driver out from under Stats —
+// Stats reaches into the same neo4j driver as Recall does.
 func memoryStatsLine() string {
-	memoryMu.Lock()
-	svc := memorySvc
-	memoryMu.Unlock()
-	if svc == nil {
+	memoryMu.RLock()
+	defer memoryMu.RUnlock()
+	if memorySvc == nil {
 		return ""
 	}
-	res, err := svc.Stats(context.Background(), memmy.StatsRequest{})
+	res, err := memorySvc.Stats(context.Background(), memmy.StatsRequest{})
 	if err != nil {
 		return ""
 	}
@@ -231,18 +245,23 @@ func memoryTenant(cwd string) map[string]string {
 // (nil, nil) when the service is not open — callers that want
 // fail-soft semantics can ignore both results. ctx is propagated
 // straight to memmy.
+//
+// Holds the read lock for the entire call so closeMemoryService
+// cannot nil out the underlying neo4j driver mid-Recall (which is
+// the panic at neo4j/db.go:135 we hit on Ctrl+C with an in-flight
+// SessionStart hook). RLock is shared, so concurrent recalls from
+// different tabs still run in parallel.
 func memoryRecall(ctx context.Context, cwd, query string, k int) ([]memmy.RecallHit, error) {
-	memoryMu.Lock()
-	svc := memorySvc
-	memoryMu.Unlock()
-	if svc == nil {
+	memoryMu.RLock()
+	defer memoryMu.RUnlock()
+	if memorySvc == nil {
 		return nil, nil
 	}
 	tenant := memoryTenant(cwd)
 	if tenant == nil {
 		return nil, nil
 	}
-	res, err := svc.Recall(ctx, memmy.RecallRequest{
+	res, err := memorySvc.Recall(ctx, memmy.RecallRequest{
 		Tenant: tenant,
 		Query:  query,
 		K:      k,
@@ -257,18 +276,21 @@ func memoryRecall(ctx context.Context, cwd, query string, k int) ([]memmy.Recall
 // when the service is closed; this lets the hook handlers call
 // memoryWrite unconditionally without first checking whether memory
 // is enabled.
+//
+// Holds the read lock for the entire call so a concurrent
+// closeMemoryService cannot tear the driver out mid-Write — same
+// invariant memoryRecall keeps for the same reason.
 func memoryWrite(ctx context.Context, cwd, message string) error {
-	memoryMu.Lock()
-	svc := memorySvc
-	memoryMu.Unlock()
-	if svc == nil {
+	memoryMu.RLock()
+	defer memoryMu.RUnlock()
+	if memorySvc == nil {
 		return nil
 	}
 	tenant := memoryTenant(cwd)
 	if tenant == nil {
 		return nil
 	}
-	_, err := svc.Write(ctx, memmy.WriteRequest{
+	_, err := memorySvc.Write(ctx, memmy.WriteRequest{
 		Tenant:  tenant,
 		Message: message,
 	})

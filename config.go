@@ -7,8 +7,32 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
+
+// configFileMu serialises read-modify-write cycles against the on-disk
+// config (~/.config/ask/ask.json). loadConfig and saveConfig are
+// individually fine, but a load → mutate → save chain run from two
+// goroutines races the file: the second saver clobbers whatever the
+// first one persisted. The lock is package-scoped because the file
+// itself is the contended resource — every goroutine on the process
+// (MCP handlers on independent HTTP threads, the tea loop, the
+// workflow tracker's broadcast goroutine) shares one config file.
+var configFileMu sync.Mutex
+
+// withConfigLock holds configFileMu around fn. Use it whenever the
+// caller intends to load → mutate → save the config in one atomic
+// sequence. Callers that only need to read may use loadConfig
+// directly; callers that only need to write a wholly-fresh config may
+// use saveConfig directly. The lock is what makes interleaved CRUD
+// (e.g. concurrent workflow_edit MCP calls) durable instead of
+// last-writer-wins.
+func withConfigLock(fn func() error) error {
+	configFileMu.Lock()
+	defer configFileMu.Unlock()
+	return fn()
+}
 
 // neo4jDefaultHost is what the picker fills in when the user has not
 // configured a host explicitly. memmy talks Bolt, and Bolt's
@@ -47,24 +71,26 @@ type askConfig struct {
 // loadProjectConfig returns the zero value when the project key is
 // absent, so callers don't have to nil-check.
 type projectConfig struct {
-	Issues    issuesConfig    `json:"issues,omitempty"`
+	Issues    issuesConfig     `json:"issues,omitempty"`
 	MCP       projectMCPConfig `json:"mcp,omitempty"`
-	Workflows workflowsConfig `json:"workflows,omitempty"`
+	Workflows workflowsConfig  `json:"workflows,omitempty"`
 }
 
-// projectMCPConfig holds the per-project MCP server credentials that
-// get injected into the chat agent's --mcp-config and reused by issue
-// providers that piggyback on the same backend (e.g. github issues
-// share the GitHub MCP). Today there's a single GitHub slot; future
-// MCP backends sit alongside as sibling fields.
+// projectMCPConfig holds the per-project remote-backend credentials.
+// Two flavours live here today: GitHub (which is genuinely an MCP
+// server we both use locally and inject into the chat agent) and
+// Linear (which we hit directly via GraphQL — the name "MCP" is a
+// historical leak; the slot is really "per-project per-backend
+// credentials"). Future backends — ClickUp, GitLab — sit alongside
+// as sibling fields.
 //
-// Decoupled from issuesConfig so the chat agent can have GitHub MCP
-// access without the issues UI being wired up — and conversely so a
-// user enabling github issues is forced to configure the MCP first
-// (the issue provider piggybacks on this slot, not the other way
-// around).
+// Decoupled from issuesConfig so the chat agent can have a GitHub
+// MCP wired in without the issues UI being on, and conversely so
+// a user enabling a backend's issue surface is forced to configure
+// the credential slot first.
 type projectMCPConfig struct {
 	GitHub githubMCPConfig `json:"github,omitempty"`
+	Linear linearMCPConfig `json:"linear,omitempty"`
 }
 
 // githubMCPConfig wires the GitHub MCP server. Endpoint defaults to
@@ -75,6 +101,25 @@ type projectMCPConfig struct {
 type githubMCPConfig struct {
 	Endpoint string `json:"endpoint,omitempty"`
 	Token    string `json:"token,omitempty"`
+}
+
+// linearMCPConfig wires the Linear backend. Linear's GraphQL API
+// (https://api.linear.app/graphql) is the wire today — the hosted
+// MCP at mcp.linear.app/mcp is OAuth-only, so for now we drive
+// list/get/move via GraphQL with a personal API key. Endpoint
+// defaults to the official GraphQL host when blank.
+//
+// TeamKey is the Linear team identifier (e.g. "ENG") that scopes
+// list/kanban queries — Linear isn't tied to git remotes the way
+// GitHub is, so we ask the user explicitly. Without a TeamKey the
+// provider reports unconfigured. Token is the personal API key
+// (lin_api_…) sent verbatim in the Authorization header (Linear
+// expects no "Bearer" prefix for personal keys). Held in 0600
+// config alongside the GitHub PAT — same trust model.
+type linearMCPConfig struct {
+	Endpoint string `json:"endpoint,omitempty"`
+	Token    string `json:"token,omitempty"`
+	TeamKey  string `json:"teamKey,omitempty"`
 }
 
 // workflowsConfig holds the per-project workflows definition list and
@@ -167,6 +212,21 @@ func githubMCPEndpointOrDefault(c githubMCPConfig) string {
 	return c.Endpoint
 }
 
+// linearGraphQLDefaultEndpoint is Linear's hosted GraphQL endpoint.
+// Used when linearMCPConfig.Endpoint is empty. Self-hosted variants
+// can override this — Linear doesn't ship a self-hosted product
+// today but the override slot is cheap and matches GitHub's shape.
+const linearGraphQLDefaultEndpoint = "https://api.linear.app/graphql"
+
+// linearGraphQLEndpointOrDefault applies the documented fallback so
+// callers don't have to remember the constant.
+func linearGraphQLEndpointOrDefault(c linearMCPConfig) string {
+	if c.Endpoint == "" {
+		return linearGraphQLDefaultEndpoint
+	}
+	return c.Endpoint
+}
+
 // projectKey is the canonical key for projectConfig lookups —
 // the resolved git repo root for cwd, or filepath.Clean(abs(cwd))
 // when cwd isn't inside a git checkout. Resolving up to the repo
@@ -190,10 +250,10 @@ func projectKey(cwd string) string {
 //   - main checkout `~/repo`            → `~/repo`
 //   - worktree under
 //     `~/repo/.claude/worktrees/foo`    → `~/repo` (walks past the
-//                                          worktree's .git file
-//                                          since the file isn't a
-//                                          directory, then up two
-//                                          more levels)
+//     worktree's .git file
+//     since the file isn't a
+//     directory, then up two
+//     more levels)
 //   - subdir of `~/repo/cmd/x`          → `~/repo`
 //   - non-checkout dir `/tmp/scratch`   → `/tmp/scratch`
 //
@@ -512,7 +572,8 @@ func saveConfig(cfg askConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
@@ -520,5 +581,31 @@ func saveConfig(cfg askConfig) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o600)
+	tmp, err := os.CreateTemp(dir, ".ask.json.tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	removeTmp := true
+	defer func() {
+		if removeTmp {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	removeTmp = false
+	return nil
 }

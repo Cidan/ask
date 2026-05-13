@@ -94,10 +94,12 @@ func (m model) saveOllamaConfig() (tea.Model, tea.Cmd) {
 		m.askOllamaField = 1
 		return m, nil
 	}
-	cfg, _ := loadConfig()
-	cfg.Claude.Ollama.Host = host
-	cfg.Claude.Ollama.Model = modelName
-	if err := saveConfig(cfg); err != nil {
+	if err := withConfigLock(func() error {
+		cfg, _ := loadConfig()
+		cfg.Claude.Ollama.Host = host
+		cfg.Claude.Ollama.Model = modelName
+		return saveConfig(cfg)
+	}); err != nil {
 		debugLog("saveConfig err: %v", err)
 		m.askOllamaErr = "could not save: " + err.Error()
 		return m, nil

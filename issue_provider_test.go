@@ -18,6 +18,7 @@ func TestIssueProviderByID_KnownProvidersResolve(t *testing.T) {
 		{"", "", "None (issues disabled)"},
 		{"none", "", "None (issues disabled)"}, // unknown id falls back to none
 		{"github", "github", "GitHub Issues"},
+		{"linear", "linear", "Linear Issues"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
@@ -29,6 +30,25 @@ func TestIssueProviderByID_KnownProvidersResolve(t *testing.T) {
 				t.Errorf("DisplayName()=%q want %q", p.DisplayName(), tc.wantName)
 			}
 		})
+	}
+}
+
+func TestIssueRef_DisplayHonorsSeparator(t *testing.T) {
+	// Default: empty separator falls back to "#" so existing
+	// github callers keep their "owner/repo#42" form.
+	gh := issueRef{Provider: "github", Project: "Cidan/ask", Number: 42}
+	if got := gh.Display(); got != "Cidan/ask#42" {
+		t.Errorf("github display=%q want Cidan/ask#42", got)
+	}
+	// Linear: explicit separator yields the canonical TEAM-N form.
+	ln := issueRef{Provider: "linear", Project: "ENG", Number: 42, Separator: "-"}
+	if got := ln.Display(); got != "ENG-42" {
+		t.Errorf("linear display=%q want ENG-42", got)
+	}
+	// Key always uses "#" regardless of separator — it's the
+	// internal session-map key, not user-visible.
+	if got := ln.Key(); got != "linear:ENG#42" {
+		t.Errorf("linear key=%q want linear:ENG#42", got)
 	}
 }
 

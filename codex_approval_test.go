@@ -5,18 +5,49 @@ import (
 	"bytes"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
 
-// codexApprovalHarness returns a proc/state pair wired to a bytes
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) Close() error { return nil }
+
+func (b *lockedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
+}
+
+func (b *lockedBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// codexApprovalHarness returns a proc/state pair wired to a locked
 // buffer stdin so tests can inspect the JSON-RPC responses approval
-// handlers write back. The done channel lets tests release blocked
-// responders by "killing" the session.
-func codexApprovalHarness() (*providerProc, *codexState, *bytes.Buffer) {
-	buf := &bufferCloser{Buffer: &bytes.Buffer{}}
+// handlers write back without racing the responder goroutine.
+func codexApprovalHarness() (*providerProc, *codexState, *lockedBuffer) {
+	buf := &lockedBuffer{}
 	state := &codexState{
 		stdin:  buf,
 		tabID:  7,
@@ -24,10 +55,10 @@ func codexApprovalHarness() (*providerProc, *codexState, *bytes.Buffer) {
 		done:   make(chan struct{}),
 	}
 	proc := &providerProc{stdin: buf, payload: state}
-	return proc, state, buf.Buffer
+	return proc, state, buf
 }
 
-func parseCodexFrames(t *testing.T, buf *bytes.Buffer) []map[string]any {
+func parseCodexFrames(t *testing.T, buf *lockedBuffer) []map[string]any {
 	t.Helper()
 	if buf.Len() == 0 {
 		return nil
@@ -308,7 +339,7 @@ func TestReadCodexStream_RoutesServerRequestsToApprovalHandler(t *testing.T) {
 // sleep yields the scheduler so the approval responder goroutine gets
 // a chance to run and flush its write; without it the test's tight
 // loop can starve the responder on single-core containers.
-func waitForFrame(t *testing.T, buf *bytes.Buffer) {
+func waitForFrame(t *testing.T, buf *lockedBuffer) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

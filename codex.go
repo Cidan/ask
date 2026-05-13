@@ -177,11 +177,13 @@ func (codexProvider) LoadSettings() ProviderSettings {
 }
 
 func (codexProvider) SaveSettings(s ProviderSettings) error {
-	cfg, _ := loadConfig()
-	cfg.Codex.Model = s.Model
-	cfg.Codex.Effort = s.Effort
-	cfg.Codex.SlashCommands = s.SlashCommands
-	return saveConfig(cfg)
+	return withConfigLock(func() error {
+		cfg, _ := loadConfig()
+		cfg.Codex.Model = s.Model
+		cfg.Codex.Effort = s.Effort
+		cfg.Codex.SlashCommands = s.SlashCommands
+		return saveConfig(cfg)
+	})
 }
 
 // codexState is stashed on providerProc.payload. Send reads threadID
@@ -211,10 +213,11 @@ type codexState struct {
 // flag writes to). Each path is strconv.Quote'd so spaces or quotes
 // don't break codex's TOML parser.
 //
-// ProjectMCP translates to a -c mcp_servers.<name>.url override pair.
-// Codex pulls the bearer token from an env var (not from config), so
-// we point it at codexProjectMCPBearerEnv and codexEnv exports the
-// matching key.
+// MCP servers translate to -c mcp_servers.<name>.* override pairs.
+// The ask bridge is always local and unauthenticated. Project MCP
+// servers may carry bearer auth; Codex pulls that token from an env
+// var, so we point it at codexProjectMCPBearerEnv and codexEnv exports
+// the matching key.
 func codexCLIArgs(args ProviderSessionArgs) []string {
 	out := []string{"app-server", "--listen", "stdio://"}
 	if len(args.AddedDirs) > 0 {
@@ -224,6 +227,10 @@ func codexCLIArgs(args ProviderSessionArgs) []string {
 		}
 		out = append(out, "-c",
 			"sandbox_workspace_write.writable_roots=["+strings.Join(quoted, ",")+"]")
+	}
+	if args.MCPPort > 0 {
+		out = append(out, "-c",
+			"mcp_servers.ask.url="+strconv.Quote(fmt.Sprintf("http://127.0.0.1:%d/", args.MCPPort)))
 	}
 	if mcp := args.ProjectMCP; mcp != nil && mcp.Name != "" && mcp.URL != "" {
 		base := "mcp_servers." + mcp.Name

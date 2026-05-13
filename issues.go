@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"sort"
 	"strings"
 	"time"
 
@@ -115,16 +114,6 @@ type issueComment struct {
 	createdAt time.Time
 	body      string
 }
-
-// issueSort is the comparator strategy applied to incoming chunks
-// before they're cached. Defaults to byNumber ascending; future
-// sort-by toggles will install other comparators here without
-// restructuring the state.
-type issueSort int
-
-const (
-	issueSortByNumber issueSort = iota
-)
 
 // issuesState is the per-tab state for the issues screen. Holds the
 // collection of issues and whichever sub-view is currently rendering
@@ -247,8 +236,6 @@ func loadIssueDetailCmd(tabID int, screen screenID, provider IssueProvider, cfg 
 }
 
 type issuesState struct {
-	sort issueSort
-
 	view issueView
 
 	// screen names which top-level surface this state belongs to —
@@ -445,7 +432,6 @@ func newPRsState() *issuesState {
 // configuration has been verified.
 func newKanbanState(screen screenID) *issuesState {
 	s := &issuesState{
-		sort:      issueSortByNumber,
 		pageCache: map[string][]issuePageChunk{},
 		provider:  noneIssueProvider{},
 		loadCtx:   context.Background(),
@@ -772,19 +758,6 @@ func (s *issuesState) cycleView() bool {
 	next := issueViewLayers[(idx+1)%len(issueViewLayers)]
 	s.view = next.builder(s)
 	return true
-}
-
-// applySort reorders the supplied issues slice in place according
-// to s.sort. Stable so secondary columns aren't reshuffled when a
-// tie breaks; cheap enough that callers can re-invoke any time the
-// comparator or collection changes.
-func (s *issuesState) applySort(issues []issue) {
-	switch s.sort {
-	case issueSortByNumber:
-		sort.SliceStable(issues, func(i, j int) bool {
-			return issues[i].number < issues[j].number
-		})
-	}
 }
 
 // setView swaps the active sub-view, fitting the new view to the

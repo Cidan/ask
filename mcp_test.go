@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestNewMCPBridge_AllocatesEphemeralPort(t *testing.T) {
@@ -403,4 +404,135 @@ func TestMCPBridge_MCPEndpointStillRoutes(t *testing.T) {
 	if resp.StatusCode == http.StatusNotFound {
 		t.Errorf("MCP handler unreachable: got 404 at /")
 	}
+}
+
+// newMCPBridge must wire up an http.Server (not bare http.Serve) so
+// stop() can call Shutdown for graceful drain. Without this, the
+// shutdown race against closeMemoryService re-opens.
+func TestNewMCPBridge_BuildsHTTPServer(t *testing.T) {
+	b, err := newMCPBridge(1)
+	if err != nil {
+		t.Fatalf("bridge: %v", err)
+	}
+	defer b.stop()
+	if b.httpServer == nil {
+		t.Fatalf("newMCPBridge should populate httpServer; got nil")
+	}
+	if b.httpServer.Handler == nil {
+		t.Errorf("httpServer.Handler should be the mux, got nil")
+	}
+}
+
+// After stop(), the listener is gone — a fresh dial against the
+// previously-active port either errors immediately (RST) or fails
+// the dial deadline. Either signals the bridge is done.
+func TestMCPBridge_StopMakesPortUnreachable(t *testing.T) {
+	b, err := newMCPBridge(1)
+	if err != nil {
+		t.Fatalf("bridge: %v", err)
+	}
+
+	addr := fmt.Sprintf("127.0.0.1:%d", b.port)
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial before stop: %v", err)
+	}
+	_ = conn.Close()
+
+	b.stop()
+
+	// Allow a tiny moment for the listener close to propagate to the
+	// kernel — on some platforms net.Listener.Close returns before the
+	// socket actually leaves LISTEN state.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		c, dialErr := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if dialErr != nil {
+			return // expected: port is unreachable
+		}
+		_ = c.Close()
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("port %s remained reachable after stop()", addr)
+}
+
+// stop() must drain in-flight HTTP handlers via http.Server.Shutdown
+// before returning — that's the contract closeMemoryService relies on
+// to avoid the neo4j nil-driver panic. We simulate an in-flight
+// handler with a partial-body POST that parks json.Decode reading
+// r.Body, then assert stop() blocks until we close the conn (which
+// unparks Decode and lets the handler return).
+func TestMCPBridge_StopDrainsInFlightHandler(t *testing.T) {
+	b, err := newMCPBridge(2)
+	if err != nil {
+		t.Fatalf("bridge: %v", err)
+	}
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", b.port))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	// We deliberately keep `conn` open so the handler stays parked.
+	defer func() { _ = conn.Close() }()
+
+	// Declare a Content-Length larger than the bytes we're going to
+	// write so json.NewDecoder(r.Body).Decode keeps reading from the
+	// stream, parking the handler. The body is intentionally a JSON
+	// fragment ("{\"source\":") with no closing brace; Decode will not
+	// see a complete value until the conn drops.
+	req := "POST /hooks/session-start HTTP/1.1\r\n" +
+		"Host: 127.0.0.1\r\n" +
+		"Content-Length: 4096\r\n" +
+		"Content-Type: application/json\r\n" +
+		"\r\n" +
+		`{"source": "startup"`
+	if _, err := conn.Write([]byte(req)); err != nil {
+		t.Fatalf("write partial request: %v", err)
+	}
+
+	// Give the server a beat to dispatch the request to the handler
+	// goroutine. Local TCP loopback dispatch is sub-millisecond, so
+	// 100ms is generous.
+	time.Sleep(100 * time.Millisecond)
+
+	stopDone := make(chan struct{})
+	go func() {
+		b.stop()
+		close(stopDone)
+	}()
+
+	// While the handler is in-flight reading the body, stop() must NOT
+	// have returned. If it does, Shutdown isn't actually being called,
+	// or it's not waiting for handlers — the bug is back.
+	select {
+	case <-stopDone:
+		t.Fatalf("stop() returned before in-flight handler completed")
+	case <-time.After(150 * time.Millisecond):
+		// expected: stop is parked draining
+	}
+
+	// Closing the client conn unblocks the handler's Decode (EOF / read
+	// error), the handler returns, and Shutdown's poll loop sees no
+	// active connections and returns.
+	_ = conn.Close()
+
+	select {
+	case <-stopDone:
+		// success
+	case <-time.After(bridgeShutdownTimeout + time.Second):
+		t.Fatalf("stop() did not complete after conn close (Shutdown deadline=%s)", bridgeShutdownTimeout)
+	}
+}
+
+// stop() must remain idempotent under the new http.Server model — both
+// because the existing test asserts it and because tabs.go calls it
+// from both the per-tab close path and the app-wide shutdown path.
+func TestMCPBridge_StopIsIdempotentWithHTTPServer(t *testing.T) {
+	b, err := newMCPBridge(3)
+	if err != nil {
+		t.Fatalf("bridge: %v", err)
+	}
+	b.stop()
+	b.stop() // must not panic / hang on a server that's already shut down
 }

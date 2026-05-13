@@ -222,43 +222,51 @@ func (h *workflowTrackerHandle) activeWorkflowNames() map[string]struct{} {
 
 // upsertDiskSession persists `sess` under projectConfig.Workflows.Sessions
 // for cwd. Errors land in debugLog only — losing a status record is
-// preferable to crashing the runtime.
+// preferable to crashing the runtime. Held under configFileMu so a
+// concurrent /workflows builder commit or MCP workflow_edit call can't
+// race the load → mutate → save chain and lose either side's update.
 func (h *workflowTrackerHandle) upsertDiskSession(cwd, key string, sess workflowSession) {
-	cfg, err := loadConfig()
+	err := withConfigLock(func() error {
+		cfg, err := loadConfig()
+		if err != nil {
+			return fmt.Errorf("load: %w", err)
+		}
+		pc := loadProjectConfig(cfg, cwd)
+		if pc.Workflows.Sessions == nil {
+			pc.Workflows.Sessions = make(map[string]workflowSession)
+		}
+		pc.Workflows.Sessions[key] = sess
+		cfg = upsertProjectConfig(cfg, cwd, pc)
+		return saveConfig(cfg)
+	})
 	if err != nil {
-		debugLog("workflowTracker upsert load: %v", err)
-		return
-	}
-	pc := loadProjectConfig(cfg, cwd)
-	if pc.Workflows.Sessions == nil {
-		pc.Workflows.Sessions = make(map[string]workflowSession)
-	}
-	pc.Workflows.Sessions[key] = sess
-	cfg = upsertProjectConfig(cfg, cwd, pc)
-	if err := saveConfig(cfg); err != nil {
-		debugLog("workflowTracker upsert save: %v", err)
+		debugLog("workflowTracker upsert: %v", err)
 	}
 }
 
 // deleteDiskSession removes any persisted record for key. Called from
 // markWorking so a fresh run doesn't render the icon for a stale
-// terminal state from a previous attempt.
+// terminal state from a previous attempt. Held under configFileMu for
+// the same reason as upsertDiskSession.
 func (h *workflowTrackerHandle) deleteDiskSession(cwd, key string) {
-	cfg, err := loadConfig()
+	err := withConfigLock(func() error {
+		cfg, err := loadConfig()
+		if err != nil {
+			return err
+		}
+		pc := loadProjectConfig(cfg, cwd)
+		if _, ok := pc.Workflows.Sessions[key]; !ok {
+			return nil
+		}
+		delete(pc.Workflows.Sessions, key)
+		if len(pc.Workflows.Sessions) == 0 {
+			pc.Workflows.Sessions = nil
+		}
+		cfg = upsertProjectConfig(cfg, cwd, pc)
+		return saveConfig(cfg)
+	})
 	if err != nil {
-		return
-	}
-	pc := loadProjectConfig(cfg, cwd)
-	if _, ok := pc.Workflows.Sessions[key]; !ok {
-		return
-	}
-	delete(pc.Workflows.Sessions, key)
-	if len(pc.Workflows.Sessions) == 0 {
-		pc.Workflows.Sessions = nil
-	}
-	cfg = upsertProjectConfig(cfg, cwd, pc)
-	if err := saveConfig(cfg); err != nil {
-		debugLog("workflowTracker delete save: %v", err)
+		debugLog("workflowTracker delete: %v", err)
 	}
 }
 

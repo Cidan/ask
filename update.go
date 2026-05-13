@@ -108,7 +108,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		s.loadErr = nil
 		issues := append([]issue(nil), msg.page.Issues...)
-		s.applySort(issues)
 		chunk := issuePageChunk{
 			cursor:     msg.requestedCursor,
 			nextCursor: msg.page.NextCursor,

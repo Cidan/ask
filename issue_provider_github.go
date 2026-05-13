@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"os/exec"
 	"regexp"
@@ -58,6 +59,8 @@ const (
 	// specify one. 50 mirrors GitHub's REST default and keeps the
 	// per-column "have we hit a page boundary?" math simple.
 	githubDefaultPerPage = 50
+	githubDefaultSort    = "created"
+	githubDefaultOrder   = "desc"
 )
 
 func (p *githubIssueProvider) ID() string          { return "github" }
@@ -241,16 +244,19 @@ func (p *githubIssueProvider) KanbanColumns() []KanbanColumnSpec {
 }
 
 // ListIssues routes to either the MCP `list_issues` tool (for
-// state-only queries with no labels / free-text / sort / order)
-// or the `search_issues` tool (for richer queries that the search
-// API handles natively). PerPage defaults to githubDefaultPerPage
-// when zero. The MCP server uses cursor-based pagination — we
-// pass `after=<endCursor>` from the previous response (omitted
-// entirely on the first chunk so the server treats it as "first
-// page"). NextCursor / HasMore come from the response envelope's
-// pageInfo block when present; when the server returns a bare
-// array (older shape) we fall back to HasMore = (len(issues) ==
-// perPage) and leave NextCursor blank.
+// queries that the REST-shaped list endpoint can express natively)
+// or the `search_issues` tool (for richer queries that only the
+// search API handles). PerPage defaults to githubDefaultPerPage
+// when zero. Both paths pin a deterministic server-side default
+// sort (created desc) unless the query explicitly overrides it.
+//
+// The MCP server uses cursor-based pagination — we pass
+// `after=<endCursor>` from the previous response (omitted entirely
+// on the first chunk so the server treats it as "first page").
+// NextCursor / HasMore come from the response envelope's pageInfo
+// block when present; when the server returns a bare array (older
+// shape) we fall back to HasMore = (len(issues) == perPage) and
+// leave NextCursor blank.
 func (p *githubIssueProvider) ListIssues(ctx context.Context, cfg projectConfig, cwd string, query IssueQuery, page IssuePagination) (IssueListPage, error) {
 	if cfg.MCP.GitHub.Token == "" {
 		return IssueListPage{}, errIssueProviderNotConfigured
@@ -819,7 +825,7 @@ func parseGitHubComments(res *mcp.CallToolResult) ([]issueComment, error) {
 		out = append(out, issueComment{
 			author:    c.User.Login,
 			createdAt: c.CreatedAt,
-			body:      c.Body,
+			body:      githubUnescapeText(c.Body),
 		})
 	}
 	return out, nil
@@ -872,6 +878,18 @@ type githubQuery struct {
 	closedReason string // "completed" | "not_planned" | "duplicate" | ""
 }
 
+func githubSortAndOrder(q *githubQuery) (string, string) {
+	sort := githubDefaultSort
+	order := githubDefaultOrder
+	if q != nil && q.sort != "" {
+		sort = q.sort
+	}
+	if q != nil && q.order != "" {
+		order = q.order
+	}
+	return sort, order
+}
+
 // githubBuildListIssuesArgs is the pure args-builder for the
 // list_issues / search_issues MCP call: chooses the tool name
 // based on query shape and assembles the argument map. `after`
@@ -884,6 +902,7 @@ type githubQuery struct {
 // covered by a fast unit test instead of an httptest MCP loop.
 func githubBuildListIssuesArgs(owner, repo string, gq *githubQuery, page IssuePagination) (string, map[string]any) {
 	useSearch := githubQueryNeedsSearch(gq)
+	sort, order := githubSortAndOrder(gq)
 	var toolName string
 	args := map[string]any{}
 	if useSearch {
@@ -902,6 +921,8 @@ func githubBuildListIssuesArgs(owner, repo string, gq *githubQuery, page IssuePa
 		args["owner"] = owner
 		args["repo"] = repo
 		args["state"] = state
+		args["sort"] = sort
+		args["direction"] = order
 		args["perPage"] = page.PerPage
 	}
 	if page.Cursor != "" {
@@ -912,56 +933,55 @@ func githubBuildListIssuesArgs(owner, repo string, gq *githubQuery, page IssuePa
 
 // githubQueryNeedsSearch reports whether a query has filters
 // list_issues can't express natively (labels, assignee, author,
-// no:assignee, free-text, sort, order, closedReason). state-only
-// queries route to list_issues; everything else routes to
+// no:assignee, free-text, closedReason). sort/order stay on the
+// cheaper list_issues path because that endpoint supports them
+// directly. state-only queries route to list_issues; everything else routes to
 // search_issues so the GitHub backend does the filtering.
 func githubQueryNeedsSearch(q *githubQuery) bool {
 	if q == nil {
 		return false
 	}
 	return len(q.labels) > 0 || q.assignee != "" || q.author != "" ||
-		q.noAssignee || q.freeText != "" || q.sort != "" ||
-		q.order != "" || q.closedReason != ""
+		q.noAssignee || q.freeText != "" || q.closedReason != ""
 }
 
 // githubBuildSearchQ assembles the `q` argument for the
 // search_issues MCP tool. Always scoped to repo:owner/name + a
 // type:issue qualifier so we don't accidentally surface PRs.
 // Tokens are joined with single spaces, matching GitHub's search
-// syntax.
+// syntax. GitHub's search qualifier combines field + direction
+// (`sort:created-desc`), so we translate the parsed sort/order
+// fields back into that single token here. When the query doesn't
+// specify a sort, default to created-desc so the list stays
+// deterministic and newest-first.
 func githubBuildSearchQ(owner, repo string, q *githubQuery) string {
+	sort, order := githubSortAndOrder(q)
 	parts := []string{
 		"repo:" + owner + "/" + repo,
 		"type:issue",
 	}
-	if q == nil {
-		return strings.Join(parts, " ")
-	}
-	if q.state != "" && q.state != "all" {
+	if q != nil && q.state != "" && q.state != "all" {
 		parts = append(parts, "state:"+q.state)
 	}
-	if q.closedReason != "" {
+	if q != nil && q.closedReason != "" {
 		parts = append(parts, "reason:"+q.closedReason)
 	}
-	for _, l := range q.labels {
-		parts = append(parts, "label:"+quoteIfSpaces(l))
+	if q != nil {
+		for _, l := range q.labels {
+			parts = append(parts, "label:"+quoteIfSpaces(l))
+		}
 	}
-	if q.assignee != "" {
+	if q != nil && q.assignee != "" {
 		parts = append(parts, "assignee:"+q.assignee)
 	}
-	if q.author != "" {
+	if q != nil && q.author != "" {
 		parts = append(parts, "author:"+q.author)
 	}
-	if q.noAssignee {
+	if q != nil && q.noAssignee {
 		parts = append(parts, "no:assignee")
 	}
-	if q.sort != "" {
-		parts = append(parts, "sort:"+q.sort)
-	}
-	if q.order != "" {
-		parts = append(parts, "order:"+q.order)
-	}
-	if q.freeText != "" {
+	parts = append(parts, "sort:"+sort+"-"+order)
+	if q != nil && q.freeText != "" {
 		parts = append(parts, q.freeText)
 	}
 	return strings.Join(parts, " ")
@@ -975,6 +995,10 @@ func quoteIfSpaces(s string) string {
 		return "\"" + s + "\""
 	}
 	return s
+}
+
+func githubUnescapeText(s string) string {
+	return html.UnescapeString(s)
 }
 
 // githubAPIToIssue maps the canonical REST shape into the
@@ -1002,10 +1026,10 @@ func githubAPIToIssue(gi githubAPIIssue) issue {
 	}
 	return issue{
 		number:      gi.Number,
-		title:       gi.Title,
+		title:       githubUnescapeText(gi.Title),
 		assignee:    assignee,
 		status:      status,
 		createdAt:   gi.CreatedAt,
-		description: gi.Body,
+		description: githubUnescapeText(gi.Body),
 	}
 }

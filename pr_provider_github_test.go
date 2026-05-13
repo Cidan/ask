@@ -54,7 +54,7 @@ func TestGitHubBuildSearchPRQ(t *testing.T) {
 		order:      "desc",
 		freeText:   "login bug",
 	})
-	want := `repo:Cidan/ask type:pr is:open -is:draft label:"needs review" assignee:antonio author:octocat no:assignee sort:updated order:desc login bug`
+	want := `repo:Cidan/ask type:pr is:open -is:draft label:"needs review" assignee:antonio author:octocat no:assignee sort:updated-desc login bug`
 	if got != want {
 		t.Fatalf("search query mismatch:\n got: %s\nwant: %s", got, want)
 	}
@@ -160,6 +160,21 @@ func TestGitHubAPIPRToIssue_StatusAndAssigneeMapping(t *testing.T) {
 				t.Fatalf("assignee=%q want %q", got.assignee, tc.wantAssignee)
 			}
 		})
+	}
+}
+
+func TestGitHubAPIPRToIssue_UnescapesHTMLEntities(t *testing.T) {
+	got := githubAPIPRToIssue(githubAPIPR{
+		Number: 42,
+		Title:  "fix &amp; verify &lt;pr&gt;",
+		Body:   "body &amp; notes &quot;quoted&quot;",
+		State:  "open",
+	})
+	if got.title != "fix & verify <pr>" {
+		t.Fatalf("title=%q", got.title)
+	}
+	if got.description != `body & notes "quoted"` {
+		t.Fatalf("description=%q", got.description)
 	}
 }
 

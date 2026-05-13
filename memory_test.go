@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -136,6 +139,74 @@ func openFakeMemoryService(t *testing.T) {
 	if err != nil {
 		t.Skipf("openFakeMemoryService: %v", err)
 	}
+	t.Cleanup(func() { _ = closeMemoryService() })
+}
+
+type testMemoryService struct {
+	writeFn  func(context.Context, memmy.WriteRequest) (memmy.WriteResult, error)
+	recallFn func(context.Context, memmy.RecallRequest) (memmy.RecallResult, error)
+	statsFn  func(context.Context, memmy.StatsRequest) (memmy.StatsResult, error)
+}
+
+func (s testMemoryService) Write(ctx context.Context, req memmy.WriteRequest) (memmy.WriteResult, error) {
+	if s.writeFn != nil {
+		return s.writeFn(ctx, req)
+	}
+	return memmy.WriteResult{}, nil
+}
+
+func (s testMemoryService) Recall(ctx context.Context, req memmy.RecallRequest) (memmy.RecallResult, error) {
+	if s.recallFn != nil {
+		return s.recallFn(ctx, req)
+	}
+	return memmy.RecallResult{}, nil
+}
+
+func (s testMemoryService) Forget(context.Context, memmy.ForgetRequest) (memmy.ForgetResult, error) {
+	return memmy.ForgetResult{}, nil
+}
+
+func (s testMemoryService) Stats(ctx context.Context, req memmy.StatsRequest) (memmy.StatsResult, error) {
+	if s.statsFn != nil {
+		return s.statsFn(ctx, req)
+	}
+	return memmy.StatsResult{}, nil
+}
+
+func (s testMemoryService) Reinforce(context.Context, memmy.ReinforceRequest) (memmy.ReinforceResult, error) {
+	return memmy.ReinforceResult{}, nil
+}
+
+func (s testMemoryService) Demote(context.Context, memmy.DemoteRequest) (memmy.DemoteResult, error) {
+	return memmy.DemoteResult{}, nil
+}
+
+func (s testMemoryService) Mark(context.Context, memmy.MarkRequest) (memmy.MarkResult, error) {
+	return memmy.MarkResult{}, nil
+}
+
+type testCloser struct {
+	once   sync.Once
+	called chan struct{}
+}
+
+func newTestCloser() *testCloser {
+	return &testCloser{called: make(chan struct{})}
+}
+
+func (c *testCloser) Close() error {
+	c.once.Do(func() { close(c.called) })
+	return nil
+}
+
+func installMemoryServiceForTest(t *testing.T, svc memmy.Service, closer io.Closer) {
+	t.Helper()
+	resetMemoryService(t)
+	memoryMu.Lock()
+	memorySvc = svc
+	memoryCloser = closer
+	memorySchema = nil
+	memoryMu.Unlock()
 	t.Cleanup(func() { _ = closeMemoryService() })
 }
 
@@ -1070,5 +1141,185 @@ func TestApplyConfigMemoryPaste_AppendsToDraft(t *testing.T) {
 	mm := newM.(model)
 	if mm.configMemoryFieldDraft != "AIza-pasted-tail" {
 		t.Errorf("paste should append to draft: %q", mm.configMemoryFieldDraft)
+	}
+}
+
+// Read paths must not serialize one another for the full duration of
+// the backend call. The lock discipline should let Recall and Write
+// both enter the service concurrently while still excluding Close.
+func TestMemoryReadPaths_AllowConcurrentCalls(t *testing.T) {
+	isolateHome(t)
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	closer := newTestCloser()
+	installMemoryServiceForTest(t, testMemoryService{
+		recallFn: func(context.Context, memmy.RecallRequest) (memmy.RecallResult, error) {
+			started <- "recall"
+			<-release
+			return memmy.RecallResult{}, nil
+		},
+		writeFn: func(context.Context, memmy.WriteRequest) (memmy.WriteResult, error) {
+			started <- "write"
+			<-release
+			return memmy.WriteResult{}, nil
+		},
+	}, closer)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = memoryRecall(context.Background(), "/tmp/proj", "query", 5)
+	}()
+	go func() {
+		defer wg.Done()
+		_ = memoryWrite(context.Background(), "/tmp/proj", "note")
+	}()
+
+	deadline := time.After(2 * time.Second)
+	seen := map[string]bool{}
+	for len(seen) < 2 {
+		select {
+		case name := <-started:
+			seen[name] = true
+		case <-deadline:
+			close(release)
+			wg.Wait()
+			t.Fatalf("expected both read paths to enter the service concurrently, saw %v", seen)
+		}
+	}
+
+	close(release)
+	wg.Wait()
+}
+
+// closeMemoryService must wait for an in-flight helper call to finish.
+// This is the lock contract that prevents the memmy driver from being
+// torn down while a hook-triggered Recall is still running.
+func TestCloseMemoryService_WaitsForInflightRecall(t *testing.T) {
+	isolateHome(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	closer := newTestCloser()
+	installMemoryServiceForTest(t, testMemoryService{
+		recallFn: func(context.Context, memmy.RecallRequest) (memmy.RecallResult, error) {
+			close(started)
+			<-release
+			return memmy.RecallResult{}, nil
+		},
+	}, closer)
+
+	recallDone := make(chan error, 1)
+	go func() {
+		_, err := memoryRecall(context.Background(), "/tmp/proj", "query", 5)
+		recallDone <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("memoryRecall never reached the service")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- closeMemoryService()
+	}()
+
+	select {
+	case err := <-closeDone:
+		t.Fatalf("closeMemoryService returned before recall finished (err=%v)", err)
+	case <-closer.called:
+		t.Fatal("memoryCloser ran before in-flight recall completed")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case err := <-recallDone:
+		if err != nil {
+			t.Fatalf("memoryRecall: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("memoryRecall did not complete after release")
+	}
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("closeMemoryService: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("closeMemoryService did not complete after recall returned")
+	}
+
+	select {
+	case <-closer.called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("memoryCloser was never invoked")
+	}
+
+	if memoryServiceOpen() {
+		t.Errorf("service should be closed after closeMemoryService returns")
+	}
+}
+
+// Stress: spam concurrent recalls while a close fires. Before the
+// fix, this would panic with `invalid memory address or nil pointer
+// dereference` inside withWriteSession because the driver got nilled
+// mid-recall. With the RLock-around-recall discipline plus the
+// write-locked close, every in-flight recall completes cleanly.
+//
+// Run with `-race` to surface any latent unsynchronised access.
+func TestMemoryRecall_NoNilPanicWhenCloseRaces(t *testing.T) {
+	isolateHome(t)
+	resetMemoryService(t)
+	openFakeMemoryService(t)
+
+	cwd := "/tmp/proj-race"
+	if err := memoryWrite(context.Background(), cwd, "seed for race test"); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	const workers = 8
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				// Both call paths must survive the close — recall is
+				// the panic site from the original trace, but write
+				// shares the same neo4j driver so it has the same
+				// failure mode.
+				_, _ = memoryRecall(context.Background(), cwd, "anything", 5)
+				_ = memoryWrite(context.Background(), cwd, "concurrent observation")
+			}
+		}()
+	}
+
+	// Let workers warm up so close lands in the middle of in-flight ops.
+	time.Sleep(50 * time.Millisecond)
+
+	if err := closeMemoryService(); err != nil {
+		t.Fatalf("close while readers in-flight: %v", err)
+	}
+
+	// Workers continue calling memoryRecall / memoryWrite after the
+	// close — they must observe the closed state and silently no-op
+	// rather than panic.
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	if memoryServiceOpen() {
+		t.Errorf("service should remain closed after race test")
 	}
 }

@@ -118,40 +118,99 @@ func (m model) entryRowRanges() [][2]int {
 	return out
 }
 
-// buildCopyText assembles the clipboard payload for the current
-// selection: it walks every selected content row, slices each row to
-// the selected column range using selectionRenderMask (which knows
-// about user-bar margins and terminal block-selection rules), strips
-// ANSI escapes, and joins the rows with newlines. The output matches
-// what the user actually highlighted on screen — partial intra-entry
-// selections only copy the selected glyphs.
+// buildCopyText assembles the clipboard payload from the entries the
+// selection touches. Any entry whose rendered rows overlap the
+// selection — and where at least one of those rows yields a non-empty
+// post-margin mask — contributes its full source text to the payload.
+// Entries are joined with a blank line, mirroring the on-screen gap.
 //
-// Separator rows between entries copy as empty lines, preserving the
-// blank-line gap the user sees on screen. Rows that fall outside any
-// rendered entry (degenerate selection past the end of history) also
-// copy as empty lines so the line count of the payload matches the
-// selection rectangle's height.
+// The rationale is faithfulness on paste: glamour rewraps and styles
+// response markdown (and outputStyle pads every prerendered entry with
+// a 5-col left gutter), so the rendered rows contain soft-wrap newlines
+// and block-fill whitespace that don't exist in the source. Copying the
+// source instead means the clipboard payload pastes cleanly into an
+// editor, the next prompt, or another chat. The cost is that a partial
+// intra-entry drag escalates to copying the whole entry — but
+// partial-paragraph copy is rarely the user's intent in a chat
+// transcript, and the rendered→source character mapping is not 1:1.
 func (m model) buildCopyText() string {
-	b, ok := m.selectionRange()
-	if !ok {
+	if _, ok := m.selectionRange(); !ok {
 		return ""
 	}
 	ranges := m.entryRowRanges()
-	rows := make([]string, 0, b.maxRow-b.minRow+1)
-	for r := b.minRow; r <= b.maxRow; r++ {
+	parts := make([]string, 0, len(ranges))
+	for i, rr := range ranges {
+		if !m.entryRowSelectionTouches(rr, ranges) {
+			continue
+		}
+		p := entryCopyText(m.history[i])
+		if p == "" {
+			continue
+		}
+		parts = append(parts, p)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// entryCopyText returns the clipboard-friendly form of an entry's
+// source. histResponse and histUser entries store their content
+// verbatim in entry.text (raw markdown / raw user input), so we emit
+// them as-is. histPrerendered entries have already been routed through
+// outputStyle.Render(...) at append time, so we strip ANSI, peel the
+// shared 5-col left margin, and trim trailing whitespace per line —
+// that cleanup is what makes tool outputs / errors / info banners
+// paste as plain readable text instead of dragging the rendered
+// gutter and code-block fill along.
+func entryCopyText(e historyEntry) string {
+	src := strings.TrimRight(e.text, "\n\r")
+	if src == "" {
+		return ""
+	}
+	if e.kind != histPrerendered {
+		return src
+	}
+	plain := xansi.Strip(src)
+	lines := strings.Split(plain, "\n")
+	for i, line := range lines {
+		if len(line) >= chatLeftMarginCols && strings.TrimSpace(line[:chatLeftMarginCols]) == "" {
+			line = line[chatLeftMarginCols:]
+		}
+		lines[i] = strings.TrimRight(line, " \t")
+	}
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// entryRowSelectionTouches reports whether at least one row in the
+// half-open range rr is meaningfully inside the current selection.
+// "Meaningfully" = the row's selectionRenderMask is non-empty, so a
+// drag that lives entirely inside the left-margin gutter (where every
+// row clamps to nothing on screen) does not count as touching the
+// entry. The check intentionally mirrors the on-screen highlight, so
+// the user only ever copies entries they could see selected.
+func (m model) entryRowSelectionTouches(rr [2]int, ranges [][2]int) bool {
+	b, ok := m.selectionRange()
+	if !ok {
+		return false
+	}
+	if rr[1] <= b.minRow || rr[0] > b.maxRow {
+		return false
+	}
+	for r := rr[0]; r < rr[1]; r++ {
 		line, inEntry := m.lineAtContentRow(r, ranges)
 		if !inEntry {
-			rows = append(rows, "")
 			continue
 		}
-		start, end, ok := m.selectionRenderMask(r, lipgloss.Width(line), ranges)
-		if !ok {
-			rows = append(rows, "")
-			continue
+		if _, _, ok := m.selectionRenderMask(r, lipgloss.Width(line), ranges); ok {
+			return true
 		}
-		rows = append(rows, xansi.Strip(xansi.Cut(line, start, end)))
 	}
-	return strings.Join(rows, "\n")
+	return false
 }
 
 // lineAtContentRow returns the rendered line at chat-content row r and

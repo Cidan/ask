@@ -14,14 +14,13 @@ func TestCodexCLIArgs_Defaults(t *testing.T) {
 	}
 }
 
-func TestCodexCLIArgs_IgnoresArgsForNow(t *testing.T) {
-	// MVP: config-option plumbing is deliberately out of scope. Prove every
-	// populated field flows through unchanged so a future PR can plug in -c
-	// overrides without hunting for surprise coupling.
+func TestCodexCLIArgs_IgnoresNonWiredSessionArgs(t *testing.T) {
+	// These fields are still handled by the JSON-RPC handshake or other
+	// provider paths, not argv. Keep them from silently leaking into
+	// codex app-server flags.
 	want := codexCLIArgs(ProviderSessionArgs{})
 	got := codexCLIArgs(ProviderSessionArgs{
 		Cwd:                "/tmp/x",
-		MCPPort:            9999,
 		Model:              "gpt-5",
 		Effort:             "high",
 		OllamaHost:         "localhost:11434",
@@ -32,7 +31,7 @@ func TestCodexCLIArgs_IgnoresArgsForNow(t *testing.T) {
 		ResumeCwd:          "/tmp/y",
 	})
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("codexCLIArgs should ignore session args for MVP\n got=%v\nwant=%v", got, want)
+		t.Fatalf("codexCLIArgs should ignore non-wired session args\n got=%v\nwant=%v", got, want)
 	}
 }
 
@@ -80,6 +79,26 @@ func TestCodexCLIArgs_AddedDirsQuoteEscaped(t *testing.T) {
 	got := argAfter(args, "-c")
 	if !strings.Contains(got, `"/with \"quotes\""`) || !strings.Contains(got, `"/with\\backslash"`) {
 		t.Errorf("-c override should quote-escape paths; got %q; argv=%v", got, args)
+	}
+}
+
+func TestCodexCLIArgs_AskMCPEmitsLoopbackURL(t *testing.T) {
+	args := codexCLIArgs(ProviderSessionArgs{MCPPort: 4567})
+	var saw bool
+	for i, a := range args {
+		if a != "-c" || i+1 >= len(args) {
+			continue
+		}
+		v := args[i+1]
+		if strings.HasPrefix(v, "mcp_servers.ask.url=") {
+			saw = true
+			if !strings.Contains(v, `"http://127.0.0.1:4567/"`) {
+				t.Errorf("ask MCP URL should be TOML-quoted loopback; got %q", v)
+			}
+		}
+	}
+	if !saw {
+		t.Errorf("missing ask MCP override; argv=%v", args)
 	}
 }
 

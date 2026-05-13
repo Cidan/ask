@@ -281,11 +281,20 @@ func (m model) commitConfigMemoryField() (tea.Model, tea.Cmd) {
 			return m, m.toast.show("memory: " + spec.title + ": " + err.Error())
 		}
 	}
-	cfg, _ := loadConfig()
-	prevEnabled := memoryConfigEnabled(cfg)
-	prevValue := spec.load(cfg)
-	spec.save(&cfg, draft)
-	if err := saveConfig(cfg); err != nil {
+	var (
+		prevEnabled bool
+		prevValue   string
+		cfg         askConfig
+	)
+	if err := withConfigLock(func() error {
+		var err error
+		cfg, _ = loadConfig()
+		prevEnabled = memoryConfigEnabled(cfg)
+		prevValue = spec.load(cfg)
+		spec.save(&cfg, draft)
+		err = saveConfig(cfg)
+		return err
+	}); err != nil {
 		debugLog("memory %s saveConfig: %v", id, err)
 		m = m.closeConfigMemoryFieldEditor()
 		return m, m.toast.show("memory: save: " + err.Error())
@@ -329,12 +338,18 @@ func (m model) commitConfigMemoryField() (tea.Model, tea.Cmd) {
 // surface as toasts but never revert the flag, so a follow-up edit
 // can retry the open.
 func (m model) toggleMemoryEnabled() (tea.Model, tea.Cmd) {
-	cfg, _ := loadConfig()
-	curr := memoryConfigEnabled(cfg)
-	next := !curr
-	v := next
-	cfg.Memory.Enabled = &v
-	if err := saveConfig(cfg); err != nil {
+	var (
+		cfg  askConfig
+		next bool
+	)
+	if err := withConfigLock(func() error {
+		cfg, _ = loadConfig()
+		curr := memoryConfigEnabled(cfg)
+		next = !curr
+		v := next
+		cfg.Memory.Enabled = &v
+		return saveConfig(cfg)
+	}); err != nil {
 		debugLog("memory toggle saveConfig: %v", err)
 		return m, m.toast.show("memory: save config: " + err.Error())
 	}

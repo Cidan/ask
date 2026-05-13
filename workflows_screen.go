@@ -241,19 +241,25 @@ func (b *workflowsBuilderState) selectedStepIdx() (workflowIdx, stepIdx int, ok 
 
 // commitItems writes b.items back to disk and re-hydrates so any
 // normalisation the persistence layer applies is reflected locally.
+// Wrapped in withConfigLock so a concurrent workflow tracker disk
+// upsert (terminal-status persistence from a finishing workflow) or
+// MCP workflow_edit call can't race the load → mutate → save cycle
+// and lose either side's update.
 func (b *workflowsBuilderState) commitItems() error {
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	pc := loadProjectConfig(cfg, b.cwd)
-	if len(b.items) == 0 {
-		pc.Workflows.Items = nil
-	} else {
-		pc.Workflows.Items = append([]workflowDef(nil), b.items...)
-	}
-	cfg = upsertProjectConfig(cfg, b.cwd, pc)
-	if err := saveConfig(cfg); err != nil {
+	if err := withConfigLock(func() error {
+		cfg, err := loadConfig()
+		if err != nil {
+			return err
+		}
+		pc := loadProjectConfig(cfg, b.cwd)
+		if len(b.items) == 0 {
+			pc.Workflows.Items = nil
+		} else {
+			pc.Workflows.Items = append([]workflowDef(nil), b.items...)
+		}
+		cfg = upsertProjectConfig(cfg, b.cwd, pc)
+		return saveConfig(cfg)
+	}); err != nil {
 		return err
 	}
 	b.refreshItems()

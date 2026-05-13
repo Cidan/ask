@@ -11,37 +11,47 @@ import (
 // reference appended to a workflow step. Provider is the
 // IssueProvider id (e.g. "github") so different backends can never
 // collide on the same Key. Project is the provider-natural project
-// scope ("owner/repo" for github). Number is the issue number.
+// scope ("owner/repo" for github, the team key like "ENG" for
+// linear). Number is the issue number. Separator is the visual
+// glue between Project and Number in Display() — empty defaults to
+// "#" (github's `owner/repo#42`); linear sets it to "-" so the
+// rendered ref matches Linear's canonical "ENG-42".
 type issueRef struct {
-	Provider string
-	Project  string
-	Number   int
+	Provider  string
+	Project   string
+	Number    int
+	Separator string
 }
 
 // Key is the canonical session-map key — "<provider>:<project>#<n>".
 // Stable across processes, so disk-persisted workflowSession entries
-// re-bind to the right issue on subsequent runs.
+// re-bind to the right issue on subsequent runs. The separator stays
+// "#" regardless of provider so the key is deterministic and never
+// surfaces to humans.
 func (r issueRef) Key() string {
 	return fmt.Sprintf("%s:%s#%d", r.Provider, r.Project, r.Number)
 }
 
 // Display is the short, user-facing reference appended to a workflow
-// step's prompt — "<project>#<n>", e.g. "charmbracelet/bubbletea#42".
-// Deliberately omits the provider prefix because the LLM has the
-// matching issues-MCP wired in and just needs enough text to call
-// the lookup tool.
+// step's prompt — "<project><sep><n>". GitHub: "charmbracelet/bubbletea#42";
+// Linear: "ENG-42". Deliberately omits the provider prefix because the
+// LLM has the matching issues backend wired in and just needs enough
+// text to call the lookup tool.
 func (r issueRef) Display() string {
-	return fmt.Sprintf("%s#%d", r.Project, r.Number)
+	sep := r.Separator
+	if sep == "" {
+		sep = "#"
+	}
+	return fmt.Sprintf("%s%s%d", r.Project, sep, r.Number)
 }
 
 // IssueProvider is the abstraction over remote issue-tracking
-// backends. The first concrete implementation is the GitHub MCP
-// server; ClickUp / Linear / GitLab plug in alongside as they land.
+// backends. The first two concrete implementations are the GitHub
+// MCP server (wire protocol: MCP streamable HTTP) and Linear's
+// GraphQL API (raw HTTP, no MCP). ClickUp / GitLab plug in alongside
+// as they land — the interface is wire-protocol-agnostic.
 //
-// Providers are MCP-backed today: the wire protocol is the MCP
-// streamable HTTP transport defined by the 2025-03-26 spec, and
-// each backend exposes named tools the implementation calls. We
-// don't go through the agent (claude/codex) for issue ops — the
+// We don't go through the agent (claude/codex) for issue ops — the
 // whole point is to avoid spending a turn on something the user
 // can do directly. The methods below are the typed surface a
 // per-provider client implements; the rest of the app is
@@ -249,6 +259,7 @@ var errIssueProviderNotConfigured = errors.New("issues not configured for this p
 var issueProviderRegistry = []IssueProvider{
 	noneIssueProvider{},
 	&githubIssueProvider{},
+	&linearIssueProvider{},
 }
 
 var githubPRScreenProvider IssueProvider = &githubPRProvider{}
