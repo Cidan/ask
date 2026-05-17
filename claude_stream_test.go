@@ -488,33 +488,37 @@ func TestReadClaudeStream_StructuredPatchEmitsDiff(t *testing.T) {
 	}
 }
 
-func TestReadClaudeStream_StreamEventEndTurnEmitsTurnComplete(t *testing.T) {
-	ev := map[string]any{
-		"type": "stream_event",
-		"event": map[string]any{
-			"type":  "message_delta",
-			"delta": map[string]any{"stop_reason": "end_turn"},
-		},
+// stream_event frames carry no turn-boundary signal — that's
+// derived solely from `result`. Driving a turnComplete from a
+// message_delta would conflate per-API-message ends with the
+// loop end and would fire (incorrectly) on subagent stream
+// frames too. See the rationale comment in claude.go.
+func TestReadClaudeStream_StreamEventDoesNotEmitTurnComplete(t *testing.T) {
+	cases := []map[string]any{
+		{"type": "stream_event", "event": map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": "end_turn"}}},
+		{"type": "stream_event", "event": map[string]any{"type": "message_stop"}},
+		// Subagent (Task) end_turn — same shape, plus parent_tool_use_id.
+		{"type": "stream_event", "parent_tool_use_id": "toolu_sub", "event": map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": "end_turn"}}},
 	}
-	b, _ := json.Marshal(ev)
-	msgs := runStream(t, string(b))
-	var n int
-	for _, m := range msgs {
-		if _, ok := m.(turnCompleteMsg); ok {
-			n++
+	for _, ev := range cases {
+		b, _ := json.Marshal(ev)
+		msgs := runStream(t, string(b))
+		for _, m := range msgs {
+			if _, ok := m.(turnCompleteMsg); ok {
+				t.Errorf("stream_event must not produce turnCompleteMsg; ev=%v msgs=%#v", ev, msgs)
+			}
 		}
-	}
-	if n == 0 {
-		t.Fatalf("want at least one turnCompleteMsg: %#v", msgs)
 	}
 }
 
 func TestReadClaudeStream_ResultEmitsDoneAndComplete(t *testing.T) {
 	ev := map[string]any{
-		"type":       "result",
-		"result":     "done",
-		"session_id": "sess-1",
-		"is_error":   false,
+		"type":        "result",
+		"subtype":     "success",
+		"result":      "done",
+		"session_id":  "sess-1",
+		"stop_reason": "end_turn",
+		"is_error":    false,
 	}
 	b, _ := json.Marshal(ev)
 	msgs := runStream(t, string(b))
@@ -534,8 +538,95 @@ func TestReadClaudeStream_ResultEmitsDoneAndComplete(t *testing.T) {
 	if done.res.SessionID != "sess-1" || done.res.Result != "done" || done.res.IsError {
 		t.Errorf("result fields wrong: %+v", done.res)
 	}
+	if done.res.Subtype != "success" || done.res.StopReason != "end_turn" {
+		t.Errorf("subtype/stop_reason not plumbed: %+v", done.res)
+	}
 	if !seenComplete {
 		t.Errorf("result should also produce a turnCompleteMsg: %#v", msgs)
+	}
+}
+
+// Error subtypes don't carry the `result` text body — the parser
+// must synthesize a readable line so the UI doesn't render
+// "error: " with no detail. Covers the four documented error
+// subtypes plus the refusal-stop_reason path.
+func TestReadClaudeStream_ResultErrorSubtypeSynthesizesMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		ev   map[string]any
+		want string
+	}{
+		{
+			name: "max turns",
+			ev:   map[string]any{"type": "result", "subtype": "error_max_turns", "session_id": "s", "is_error": true},
+			want: "hit max-turns limit",
+		},
+		{
+			name: "max budget",
+			ev:   map[string]any{"type": "result", "subtype": "error_max_budget_usd", "session_id": "s", "is_error": true},
+			want: "hit max-budget limit",
+		},
+		{
+			name: "execution error with HTTP status",
+			ev:   map[string]any{"type": "result", "subtype": "error_during_execution", "session_id": "s", "is_error": true, "api_error_status": float64(529)},
+			want: "execution error — HTTP 529",
+		},
+		{
+			name: "refusal stop_reason on success subtype",
+			ev:   map[string]any{"type": "result", "subtype": "success", "session_id": "s", "is_error": true, "stop_reason": "refusal"},
+			want: "model declined the request",
+		},
+		{
+			name: "errors list joined",
+			ev:   map[string]any{"type": "result", "subtype": "error_during_execution", "session_id": "s", "is_error": true, "errors": []any{"upstream 5xx", "retry exhausted"}},
+			want: "execution error — upstream 5xx; retry exhausted",
+		},
+		{
+			name: "unknown subtype passthrough",
+			ev:   map[string]any{"type": "result", "subtype": "error_brand_new", "session_id": "s", "is_error": true},
+			want: "error_brand_new",
+		},
+	}
+	for _, c := range cases {
+		b, _ := json.Marshal(c.ev)
+		msgs := runStream(t, string(b))
+		var done *providerDoneMsg
+		for _, m := range msgs {
+			if d, ok := m.(providerDoneMsg); ok {
+				done = &d
+			}
+		}
+		if done == nil {
+			t.Fatalf("%s: no providerDoneMsg: %#v", c.name, msgs)
+		}
+		if !done.res.IsError {
+			t.Errorf("%s: IsError=false on error subtype: %+v", c.name, done.res)
+		}
+		if done.res.Result != c.want {
+			t.Errorf("%s: Result=%q want %q", c.name, done.res.Result, c.want)
+		}
+	}
+}
+
+// An IsError=true result that DID carry a `result` body must keep
+// that body verbatim rather than overwriting it with synthesized
+// text — the API-supplied message is more specific.
+func TestReadClaudeStream_ResultErrorWithBodyKeepsBody(t *testing.T) {
+	ev := map[string]any{
+		"type":       "result",
+		"subtype":    "error_during_execution",
+		"session_id": "s",
+		"is_error":   true,
+		"result":     "downstream auth failed at step 3",
+	}
+	b, _ := json.Marshal(ev)
+	msgs := runStream(t, string(b))
+	for _, m := range msgs {
+		if d, ok := m.(providerDoneMsg); ok {
+			if d.res.Result != "downstream auth failed at step 3" {
+				t.Errorf("Result body overwritten: %q", d.res.Result)
+			}
+		}
 	}
 }
 
@@ -573,20 +664,32 @@ func TestParseStructuredPatch_EmptyOrNil(t *testing.T) {
 	}
 }
 
-func TestStreamEventEndTurn(t *testing.T) {
-	cases := []struct {
-		name string
-		ev   map[string]any
-		want bool
-	}{
-		{"no event", map[string]any{}, false},
-		{"non-message-delta", map[string]any{"event": map[string]any{"type": "message_start"}}, false},
-		{"delta not end_turn", map[string]any{"event": map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": "max_tokens"}}}, false},
-		{"end_turn", map[string]any{"event": map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": "end_turn"}}}, true},
+func TestHumanResultSubtype(t *testing.T) {
+	cases := map[string]string{
+		"error_max_turns":                     "hit max-turns limit",
+		"error_max_budget_usd":                "hit max-budget limit",
+		"error_during_execution":              "execution error",
+		"error_max_structured_output_retries": "structured-output validation failed",
+		"error_some_future_value":             "error_some_future_value",
 	}
-	for _, c := range cases {
-		if got := streamEventEndTurn(c.ev); got != c.want {
-			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+	for in, want := range cases {
+		if got := humanResultSubtype(in); got != want {
+			t.Errorf("humanResultSubtype(%q)=%q want %q", in, got, want)
+		}
+	}
+}
+
+func TestHumanStopReason(t *testing.T) {
+	cases := map[string]string{
+		"refusal":       "model declined the request",
+		"max_tokens":    "model hit the output-token limit",
+		"pause_turn":    "model paused mid-turn",
+		"stop_sequence": "model hit a stop sequence",
+		"end_turn":      "end_turn", // passthrough — normal completion never reaches the error path
+	}
+	for in, want := range cases {
+		if got := humanStopReason(in); got != want {
+			t.Errorf("humanStopReason(%q)=%q want %q", in, got, want)
 		}
 	}
 }

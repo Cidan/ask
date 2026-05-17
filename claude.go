@@ -573,9 +573,22 @@ func readClaudeStream(stdout io.Reader, proc *providerProc, ch chan tea.Msg) {
 				}
 			}
 		case "stream_event":
-			if streamEventEndTurn(ev) {
-				ch <- turnCompleteMsg{proc: proc}
-			}
+			// stream_event frames are raw per-API-message events
+			// (message_start / content_block_* / message_delta /
+			// message_stop). The Agent SDK does not use them for
+			// turn or loop boundaries — those are derived solely
+			// from `result`. Deriving a turn end from a
+			// message_delta.end_turn here is wrong on two axes:
+			// (1) subagent (Task) responses emit their own
+			// end_turn into this same pipe with parent_tool_use_id
+			// set, which would cause us to finalize the user's
+			// turn while the main agent is still working, and
+			// (2) it would fire before the aggregated `assistant`
+			// event lands, leaving memory capture and the spinner
+			// briefly desynced with what the user actually saw.
+			// Future use of these frames (token streaming for a
+			// typewriter effect) is fine — but they are not the
+			// loop-end signal.
 		case "result":
 			pending = providerResult{}
 			if r, _ := ev["result"].(string); r != "" {
@@ -585,15 +598,96 @@ func readClaudeStream(stdout io.Reader, proc *providerProc, ch chan tea.Msg) {
 				pending.SessionID = id
 			}
 			pending.IsError, _ = ev["is_error"].(bool)
+			pending.Subtype, _ = ev["subtype"].(string)
+			pending.StopReason, _ = ev["stop_reason"].(string)
+			// Per the SDK contract, `result` (the text body) is only
+			// populated on subtype=success. On error subtypes the
+			// upstream caller would otherwise see a bare "error: " —
+			// synthesize a human line from subtype / stop_reason /
+			// errors so the UI tells the user what actually happened.
+			if pending.IsError && pending.Result == "" {
+				pending.Result = claudeSynthesizeErrorResult(ev, pending)
+			}
 			ch <- providerDoneMsg{res: pending, proc: proc}
 			ch <- turnCompleteMsg{proc: proc}
 		}
+		// Keep scanning past `result`: the Agent SDK docs warn
+		// that a small number of trailing system events
+		// (e.g. prompt_suggestion) can land after the result
+		// event, and we want them parsed rather than dropped
+		// when stdout finally EOFs.
 	}
 	var err error
 	if proc.cmd != nil {
 		err = proc.cmd.Wait()
 	}
 	ch <- providerExitedMsg{err: err, proc: proc}
+}
+
+// claudeSynthesizeErrorResult builds a one-line, user-readable
+// description of why a claude turn ended in error. Pulls signal
+// from the canonical SDK fields (subtype, stop_reason, errors,
+// api_error_status) so the UI doesn't render a bare "error: ".
+func claudeSynthesizeErrorResult(ev map[string]any, res providerResult) string {
+	var parts []string
+	switch {
+	case res.Subtype != "" && res.Subtype != "success":
+		parts = append(parts, humanResultSubtype(res.Subtype))
+	case res.StopReason != "" && res.StopReason != "end_turn":
+		parts = append(parts, humanStopReason(res.StopReason))
+	}
+	if errs, ok := ev["errors"].([]any); ok {
+		var msgs []string
+		for _, e := range errs {
+			if s, _ := e.(string); s != "" {
+				msgs = append(msgs, s)
+			}
+		}
+		if len(msgs) > 0 {
+			parts = append(parts, strings.Join(msgs, "; "))
+		}
+	}
+	if status, _ := ev["api_error_status"].(float64); status != 0 {
+		parts = append(parts, fmt.Sprintf("HTTP %d", int(status)))
+	}
+	if len(parts) == 0 {
+		return "unknown error"
+	}
+	return strings.Join(parts, " — ")
+}
+
+// humanResultSubtype maps the Agent SDK's ResultMessage.subtype enum
+// to a short user-facing label. Unknown values pass through so a
+// new subtype emitted by a newer CLI is still readable.
+func humanResultSubtype(s string) string {
+	switch s {
+	case "error_max_turns":
+		return "hit max-turns limit"
+	case "error_max_budget_usd":
+		return "hit max-budget limit"
+	case "error_during_execution":
+		return "execution error"
+	case "error_max_structured_output_retries":
+		return "structured-output validation failed"
+	}
+	return s
+}
+
+// humanStopReason maps API stop_reason values to a short user-facing
+// label. end_turn is the normal-completion case and never reaches
+// this helper; the rest are surfaced on the error path.
+func humanStopReason(s string) string {
+	switch s {
+	case "refusal":
+		return "model declined the request"
+	case "max_tokens":
+		return "model hit the output-token limit"
+	case "pause_turn":
+		return "model paused mid-turn"
+	case "stop_sequence":
+		return "model hit a stop sequence"
+	}
+	return s
 }
 
 func assistantTodos(ev map[string]any) ([]todoItem, bool) {
@@ -763,19 +857,6 @@ func mapKeys(m map[string]any) []string {
 		keys = append(keys, k)
 	}
 	return keys
-}
-
-func streamEventEndTurn(ev map[string]any) bool {
-	event, _ := ev["event"].(map[string]any)
-	if event == nil {
-		return false
-	}
-	if t, _ := event["type"].(string); t != "message_delta" {
-		return false
-	}
-	delta, _ := event["delta"].(map[string]any)
-	reason, _ := delta["stop_reason"].(string)
-	return reason == "end_turn"
 }
 
 func assistantText(ev map[string]any) string {

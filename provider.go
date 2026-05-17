@@ -224,11 +224,16 @@ type providerProc struct {
 
 // providerResult carries the end-of-turn summary from a provider.
 // SessionID is the provider-side session identifier used as the key
-// for history persistence.
+// for history persistence. Subtype and StopReason mirror the fields
+// the Anthropic Agent SDK exposes on its ResultMessage so the UI can
+// surface *why* a turn ended (refusal, max_turns, max_budget, etc.)
+// rather than a generic "error".
 type providerResult struct {
-	IsError   bool
-	Result    string
-	SessionID string
+	IsError    bool
+	Result     string
+	SessionID  string
+	Subtype    string
+	StopReason string
 }
 
 // providerSlashEntry is a dynamically-discovered slash command entry
