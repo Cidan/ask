@@ -395,6 +395,12 @@ func codexHandshake(stdin io.Writer, sc *bufio.Scanner, state *codexState, args 
 		params["approvalPolicy"] = "never"
 		params["sandbox"] = "danger-full-access"
 	}
+	// Mirror of claude's --append-system-prompt so the agent gets the
+	// same machine-pace steering regardless of provider. Applied to
+	// both thread/start and thread/resume; codex layers it on top of
+	// its own system prompt rather than replacing it (developerInstructions
+	// is the appendable slot; baseInstructions would replace).
+	params["developerInstructions"] = askSteeringPrompt
 	if err := codexWriteJSON(stdin, codexRequest(codexThreadStartID, method, params)); err != nil {
 		return err
 	}

@@ -75,6 +75,20 @@ func TestClaudeCLIArgs_SkipAllPermissions(t *testing.T) {
 	}
 }
 
+// askSteeringPrompt must ride on every claude spawn (probe + real)
+// as --append-system-prompt so the agent keeps acting at machine pace
+// and the system-prompt prefix stays cache-stable between the probe
+// and the real run.
+func TestClaudeCLIArgs_AppendsAskSteeringPrompt(t *testing.T) {
+	for _, probe := range []bool{false, true} {
+		args := claudeCLIArgs(ProviderSessionArgs{}, probe)
+		got := argAfter(args, "--append-system-prompt")
+		if got != askSteeringPrompt {
+			t.Errorf("probe=%v: --append-system-prompt=%q want askSteeringPrompt", probe, got)
+		}
+	}
+}
+
 func TestClaudeCLIArgs_MCPConfigAndSettings(t *testing.T) {
 	args := claudeCLIArgs(ProviderSessionArgs{MCPPort: 54321}, false)
 

@@ -222,6 +222,10 @@ func claudeCLIArgs(args ProviderSessionArgs, probe bool) []string {
 	if args.SkipAllPermissions {
 		out = append(out, "--dangerously-skip-permissions")
 	}
+	// askSteeringPrompt rides on every claude spawn (probe + real) so
+	// the system-prompt prefix stays cache-stable and codex's
+	// developerInstructions has a matching counterpart.
+	out = append(out, "--append-system-prompt", askSteeringPrompt)
 	if args.PluginDir != "" {
 		out = append(out, "--plugin-dir", args.PluginDir)
 	}

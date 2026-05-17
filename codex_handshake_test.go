@@ -221,6 +221,38 @@ func TestCodexHandshake_WithoutSkipPermsLeavesPolicyUnset(t *testing.T) {
 	}
 }
 
+// developerInstructions must ride on both thread/start (fresh) and
+// thread/resume so the machine-pace steering shows up regardless of
+// how the session was entered. Same payload as claude's
+// --append-system-prompt so /provider swaps keep tone consistent.
+func TestCodexHandshake_SendsDeveloperInstructions(t *testing.T) {
+	cases := []struct {
+		name   string
+		args   ProviderSessionArgs
+		method string
+	}{
+		{"fresh", ProviderSessionArgs{Cwd: "/work"}, "thread/start"},
+		{"resume", ProviderSessionArgs{Cwd: "/work", SessionID: "prior-id"}, "thread/resume"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			serverOut := `{"id":2,"result":{"thread":{"id":"tid"}}}` + "\n"
+			_, stdin, err := fakeHandshake(t, serverOut, c.args)
+			if err != nil {
+				t.Fatalf("handshake err: %v", err)
+			}
+			frames := decodeFrames(t, stdin.Bytes())
+			if frames[2]["method"] != c.method {
+				t.Fatalf("method=%v want %s", frames[2]["method"], c.method)
+			}
+			params, _ := frames[2]["params"].(map[string]any)
+			if got, _ := params["developerInstructions"].(string); got != askSteeringPrompt {
+				t.Errorf("developerInstructions=%q want askSteeringPrompt", got)
+			}
+		})
+	}
+}
+
 // decodeFrames splits the stdin byte stream at newlines and JSON-parses each
 // frame.
 func decodeFrames(t *testing.T, raw []byte) []map[string]any {
