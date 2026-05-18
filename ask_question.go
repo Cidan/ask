@@ -422,6 +422,39 @@ func (m model) cursorOnCustom() bool {
 	return m.askCursor == len(m.askQuestions[m.askTab].options)-1
 }
 
+// applyAskPaste routes a bracketed paste into whichever text field
+// the ask modal currently focuses — the note editor (when the user
+// pressed `n`) or the custom-row free-text input. Anywhere else (cursor
+// on a fixed option, confirm tab, no questions) the paste is absorbed
+// because there is no destination; silently dropping is the same
+// behaviour the typed-text branch takes for unmapped contexts.
+func (m model) applyAskPaste(content string) (tea.Model, tea.Cmd) {
+	if content == "" {
+		return m, nil
+	}
+	if m.askTab < 0 || m.askTab >= len(m.askAnswers) {
+		return m, nil
+	}
+	ans := &m.askAnswers[m.askTab]
+	if m.askEditing == askEditNote {
+		ans.note += content
+		return m, nil
+	}
+	if m.cursorOnCustom() {
+		ans.custom += content
+		if m.askQuestions[m.askTab].kind == qPickMany {
+			customIdx := len(m.askQuestions[m.askTab].options) - 1
+			if ans.custom != "" {
+				ans.picks[customIdx] = true
+			} else {
+				delete(ans.picks, customIdx)
+			}
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m model) handleCustomTyping(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
 	ans := &m.askAnswers[m.askTab]
 	customIdx := len(m.askQuestions[m.askTab].options) - 1
