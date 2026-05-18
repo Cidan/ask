@@ -108,6 +108,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.broadcastResize()
 
 	case tea.KeyPressMsg:
+		m = normalizeKeyPressMsg(m)
 		km := currentKeyMap()
 		switch {
 		case km.Matches(ActionAppSuspend, m):

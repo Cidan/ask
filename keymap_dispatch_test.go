@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	lipgloss "charm.land/lipgloss/v2"
 )
 
 // TestApp_TabNavigationHonoursKeymapOverride proves the tabs.go
@@ -63,6 +64,44 @@ func TestApp_TabNavigationDefaultsStillWork(t *testing.T) {
 	}
 }
 
+func TestApp_TabNavigationIgnoresLockModifiers(t *testing.T) {
+	isolateHome(t)
+	invalidateKeyMapCache()
+	defer invalidateKeyMapCache()
+
+	a := testAppWithTwoTabs(t)
+	a.active = 0
+
+	newA, _ := a.Update(tea.KeyPressMsg{
+		Mod:  tea.ModCtrl | tea.ModCapsLock | tea.ModNumLock,
+		Code: tea.KeyRight,
+	})
+	a2, ok := newA.(app)
+	if !ok {
+		t.Fatalf("Update returned %T, want app", newA)
+	}
+	if a2.active != 1 {
+		t.Errorf("ctrl+right with lock-state modifiers should advance; active=%d", a2.active)
+	}
+}
+
+func TestUpdate_ScreenShortcutIgnoresLockModifiers(t *testing.T) {
+	isolateHome(t)
+	invalidateKeyMapCache()
+	defer invalidateKeyMapCache()
+
+	m := newTestModel(t, newFakeProvider())
+	m.screen = screenAsk
+
+	m2, _ := runUpdate(t, m, tea.KeyPressMsg{
+		Mod:  tea.ModCtrl | tea.ModCapsLock,
+		Code: 'w',
+	})
+	if m2.screen != screenWorkflows {
+		t.Errorf("ctrl+w with CapsLock should open workflows; screen=%v", m2.screen)
+	}
+}
+
 // The /config keybindings picker must persist captures to
 // ~/.config/ask/ask.json so the next process startup sees the
 // override. End-to-end: open the picker, simulate Enter to enter
@@ -112,6 +151,72 @@ func TestConfigKeybindingsPicker_CapturePersistsToDisk(t *testing.T) {
 	// Cache invalidated; currentKeyMap reflects the new binding.
 	if b := currentKeyMap()[ActionScreenIssues]; b != (KeyBinding{Mod: tea.ModAlt | tea.ModShift, Code: 'x'}) {
 		t.Errorf("currentKeyMap not refreshed after persist: %+v", b)
+	}
+}
+
+func TestConfigKeybindingsPicker_CaptureStripsLockModifiers(t *testing.T) {
+	isolateHome(t)
+	invalidateKeyMapCache()
+	defer invalidateKeyMapCache()
+
+	m := newTestModel(t, newFakeProvider())
+	m.mode = modeConfig
+	m.configKeybindingsPickerActive = true
+	m.configKeybindingsCapturing = true
+	m.configKeybindingsCursor = 0
+
+	m2, _ := runUpdate(t, m, tea.KeyPressMsg{
+		Mod:  tea.ModAlt | tea.ModCapsLock | tea.ModScrollLock,
+		Code: 'x',
+	})
+	if m2.configKeybindingsError != "" {
+		t.Fatalf("capture errored: %q", m2.configKeybindingsError)
+	}
+	cfg, _ := loadConfig()
+	if got := cfg.Keybindings[string(ActionScreenIssues)]; got != "alt+x" {
+		t.Errorf("captured binding=%q want alt+x", got)
+	}
+}
+
+func TestConfigKeybindingsPicker_CaptureFunctionKeyRoundTrips(t *testing.T) {
+	isolateHome(t)
+	invalidateKeyMapCache()
+	defer invalidateKeyMapCache()
+
+	m := newTestModel(t, newFakeProvider())
+	m.mode = modeConfig
+	m.configKeybindingsPickerActive = true
+	m.configKeybindingsCapturing = true
+	m.configKeybindingsCursor = 0
+
+	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: tea.KeyF5})
+	if m2.configKeybindingsError != "" {
+		t.Fatalf("capture errored: %q", m2.configKeybindingsError)
+	}
+	cfg, _ := loadConfig()
+	if got := cfg.Keybindings[string(ActionScreenIssues)]; got != "ctrl+f5" {
+		t.Fatalf("captured binding=%q want ctrl+f5", got)
+	}
+	if !currentKeyMap().Matches(ActionScreenIssues, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: tea.KeyF5}) {
+		t.Error("captured function-key binding should match after reload")
+	}
+}
+
+func TestKeybindingsPickerWidthCapsToTerminal(t *testing.T) {
+	rows := [][2]string{
+		{"Run workflow on chat", "ctrl+shift+right"},
+	}
+	innerW := keybindingsPickerInnerWidth(30, rows)
+	maxInnerW := 30 - themePickerBoxStyle.GetHorizontalFrameSize()
+	if innerW > maxInnerW {
+		t.Fatalf("inner width=%d exceeds max terminal inner width=%d", innerW, maxInnerW)
+	}
+	label, binding := fitKeybindingPickerRowParts(rows[0][0], rows[0][1], innerW)
+	if got := lipgloss.Width(label) + lipgloss.Width(binding) + 1; got > innerW {
+		t.Errorf("fitted cells width=%d exceeds inner width=%d", got, innerW)
+	}
+	if got := lipgloss.Width(truncateForRow("↑↓ navigate · enter rebind · esc close", innerW)); got > innerW {
+		t.Errorf("help width=%d exceeds inner width=%d", got, innerW)
 	}
 }
 

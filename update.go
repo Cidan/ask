@@ -1047,7 +1047,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		// on every keypress under the Kitty keyboard protocol. Treating
 		// them as real modifiers would silently break `Mod == 0` gates on
 		// arrow keys, Esc, Enter, etc., so strip them before dispatch.
-		msg.Mod &^= tea.ModCapsLock | tea.ModNumLock | tea.ModScrollLock
+		msg = normalizeKeyPressMsg(msg)
 		// Modal/picker dispatch comes first: anything modal-shaped owns
 		// the keyboard until it dismisses, regardless of which screen is
 		// underneath. Screen-switching is gated against the same

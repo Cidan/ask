@@ -18,10 +18,15 @@ func TestParseKeyBinding_HappyPaths(t *testing.T) {
 		{"alt+enter", KeyBinding{Mod: tea.ModAlt, Code: tea.KeyEnter}},
 		{"f", KeyBinding{Code: 'f'}},
 		{"space", KeyBinding{Code: tea.KeySpace}},
+		{"plus", KeyBinding{Code: '+'}},
+		{"ctrl+plus", KeyBinding{Mod: tea.ModCtrl, Code: '+'}},
 		{"ctrl+space", KeyBinding{Mod: tea.ModCtrl, Code: tea.KeySpace}},
 		{"escape", KeyBinding{Code: tea.KeyEsc}},
 		{"pageup", KeyBinding{Code: tea.KeyPgUp}},
 		{"pgdn", KeyBinding{Code: tea.KeyPgDown}},
+		{"ctrl+f12", KeyBinding{Mod: tea.ModCtrl, Code: tea.KeyF12}},
+		{"super+f1", KeyBinding{Mod: tea.ModSuper, Code: tea.KeyF1}},
+		{"meta+hyper+f63", KeyBinding{Mod: tea.ModMeta | tea.ModHyper, Code: tea.KeyF63}},
 		{"  ctrl+w  ", KeyBinding{Mod: tea.ModCtrl, Code: 'w'}},
 		{"", KeyBinding{}},
 	}
@@ -40,16 +45,18 @@ func TestParseKeyBinding_HappyPaths(t *testing.T) {
 
 func TestParseKeyBinding_Errors(t *testing.T) {
 	cases := []string{
-		"ctrl+",                  // empty key after modifier
-		"+w",                     // empty modifier token
-		"ctrl++w",                // double-plus
-		"shiftcontrol+w",         // unknown modifier (not split)
-		"ctrl+notakey",           // unknown multi-rune key
-		"ctrl+ctrl",              // no key part at all
-		"ctrl+up+down",           // two non-modifier tokens
+		"ctrl+",          // empty key after modifier
+		"+w",             // empty modifier token
+		"ctrl++w",        // double-plus
+		"shiftcontrol+w", // unknown modifier (not split)
+		"ctrl+notakey",   // unknown multi-rune key
+		"ctrl",           // modifier without a key
+		"ctrl+ctrl",      // no key part at all
+		"ctrl+up+down",   // two non-modifier tokens
+		"ctrl+\x00",      // code 0 would stringify as unbound
 	}
 	for _, in := range cases {
-		t.Run(in, func(t *testing.T) {
+		t.Run(strings.ReplaceAll(in, "\x00", "\\x00"), func(t *testing.T) {
 			if _, err := ParseKeyBinding(in); err == nil {
 				t.Errorf("ParseKeyBinding(%q) should have errored", in)
 			}
@@ -85,6 +92,18 @@ func TestKeyBinding_String_UnboundIsEmpty(t *testing.T) {
 	}
 }
 
+func TestKeyBinding_StringRejectsUnsupportedCode(t *testing.T) {
+	if got := (KeyBinding{Mod: tea.ModCtrl, Code: rune(-1)}).String(); got != "" {
+		t.Errorf("unsupported key code should render empty, got %q", got)
+	}
+}
+
+func TestKeyBinding_StringRejectsUnsupportedModifier(t *testing.T) {
+	if got := (KeyBinding{Mod: tea.ModCapsLock, Code: 'x'}).String(); got != "" {
+		t.Errorf("unsupported modifier should render empty, got %q", got)
+	}
+}
+
 func TestKeyBinding_Matches(t *testing.T) {
 	b := KeyBinding{Mod: tea.ModCtrl, Code: 'w'}
 	if !b.Matches(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'w'}) {
@@ -101,6 +120,21 @@ func TestKeyBinding_Matches(t *testing.T) {
 	}
 	if (KeyBinding{}).Matches(tea.KeyPressMsg{Mod: 0, Code: 0}) {
 		t.Error("zero binding must never match (even the zero keypress)")
+	}
+}
+
+func TestKeyBinding_ExtendedModifiersAndFunctionKeysRoundTrip(t *testing.T) {
+	want := KeyBinding{Mod: tea.ModCtrl | tea.ModMeta | tea.ModHyper | tea.ModSuper, Code: tea.KeyF5}
+	s := want.String()
+	if s != "ctrl+meta+hyper+super+f5" {
+		t.Fatalf("String()=%q want ctrl+meta+hyper+super+f5", s)
+	}
+	got, err := ParseKeyBinding(s)
+	if err != nil {
+		t.Fatalf("ParseKeyBinding(%q): %v", s, err)
+	}
+	if got != want {
+		t.Errorf("round trip got %+v want %+v", got, want)
 	}
 }
 
@@ -203,6 +237,22 @@ func TestMarshalConfig_IncludesOverrides(t *testing.T) {
 	}
 	if _, ok := got[string(ActionScreenIssues)]; ok {
 		t.Errorf("non-overridden action should not appear in MarshalConfig output: %+v", got)
+	}
+}
+
+func TestMarshalConfig_IncludesExplicitUnbound(t *testing.T) {
+	km := DefaultKeyMap()
+	km[ActionAppSuspend] = KeyBinding{}
+	got := km.MarshalConfig()
+	if got == nil {
+		t.Fatal("explicit unbind should produce a non-nil map")
+	}
+	if v, ok := got[string(ActionAppSuspend)]; !ok || v != "" {
+		t.Errorf("explicit unbind marshalled as %q, %v; want empty string entry", v, ok)
+	}
+	reloaded := LoadKeyMapFromConfig(got)
+	if reloaded[ActionAppSuspend] != (KeyBinding{}) {
+		t.Errorf("explicit unbind did not reload as zero binding: %+v", reloaded[ActionAppSuspend])
 	}
 }
 

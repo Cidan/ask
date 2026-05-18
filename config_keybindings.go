@@ -79,10 +79,7 @@ func (m model) updateConfigKeybindingsCapture(msg tea.KeyPressMsg) (tea.Model, t
 		m.configKeybindingsCapturing = false
 		return m, nil
 	}
-	// Strip lock-state modifiers the same way the top-level dispatcher
-	// does — they're reported on every press under Kitty and would
-	// silently break Mod==0 gates if persisted.
-	mod := msg.Mod &^ (tea.ModCapsLock | tea.ModNumLock | tea.ModScrollLock)
+	mod := stripKeyLockModifiers(msg.Mod)
 	binding := KeyBinding{Mod: mod, Code: msg.Code}
 	if binding.String() == "" {
 		m.configKeybindingsError = "could not record that key — try a different combination"
@@ -129,7 +126,6 @@ func persistKeyBinding(action Action, binding KeyBinding) error {
 func (m model) viewConfigKeybindingsPicker() string {
 	km := currentKeyMap()
 	rows := make([][2]string, 0, len(actionMeta))
-	innerW := 0
 	for _, am := range actionMeta {
 		label := am.Label
 		binding := km.Binding(am.Action).String()
@@ -137,15 +133,10 @@ func (m model) viewConfigKeybindingsPicker() string {
 			binding = "(unbound)"
 		}
 		rows = append(rows, [2]string{label, binding})
-		if w := lipgloss.Width(label) + lipgloss.Width(binding) + 4; w > innerW {
-			innerW = w
-		}
 	}
-	if innerW < 36 {
-		innerW = 36
-	}
+	innerW := keybindingsPickerInnerWidth(m.width, rows)
 
-	title := themePickerTitleStyle.Render("Keybindings")
+	title := themePickerTitleStyle.Render(truncateForRow("Keybindings", innerW))
 	body := []string{title, ""}
 
 	if m.configKeybindingsCapturing && m.configKeybindingsCursor >= 0 && m.configKeybindingsCursor < len(actionMeta) {
@@ -153,13 +144,13 @@ func (m model) viewConfigKeybindingsPicker() string {
 		if current == "" {
 			current = "(unbound)"
 		}
+		prompt := "Press the new key combination for " +
+			actionMeta[m.configKeybindingsCursor].Label +
+			" (currently " + current + ")."
 		body = append(body,
-			configHelpStyle.Render(
-				"Press the new key combination for "+
-					actionMeta[m.configKeybindingsCursor].Label+
-					" (currently "+current+")."),
+			configHelpStyle.Render(truncateForRow(prompt, innerW)),
 			"",
-			configHelpStyle.Render("esc cancels without saving."),
+			configHelpStyle.Render(truncateForRow("esc cancels without saving.", innerW)),
 		)
 	} else {
 		for i, r := range rows {
@@ -168,23 +159,31 @@ func (m model) viewConfigKeybindingsPicker() string {
 	}
 
 	if m.configKeybindingsError != "" {
-		body = append(body, "", themePickerHelpStyle.Render("✗ "+m.configKeybindingsError))
+		body = append(body, "", themePickerHelpStyle.Render(truncateForRow("✗ "+m.configKeybindingsError, innerW)))
 	}
 
 	body = append(body,
 		"",
-		themePickerHelpStyle.Render("↑↓ navigate · enter rebind · esc close"),
+		themePickerHelpStyle.Render(truncateForRow("↑↓ navigate · enter rebind · esc close", innerW)),
 	)
 
 	return themePickerBoxStyle.Render(strings.Join(body, "\n"))
 }
 
 func renderKeybindingPickerRow(label, binding string, width int, selected bool) string {
+	if width < 1 {
+		return ""
+	}
+	label, binding = fitKeybindingPickerRowParts(label, binding, width)
 	labelW := lipgloss.Width(label)
 	bindingW := lipgloss.Width(binding)
 	pad := width - labelW - bindingW
-	if pad < 1 {
-		pad = 1
+	minPad := 0
+	if binding != "" {
+		minPad = 1
+	}
+	if pad < minPad {
+		pad = minPad
 	}
 	if selected {
 		plain := label + strings.Repeat(" ", pad) + binding
@@ -195,4 +194,44 @@ func renderKeybindingPickerRow(label, binding string, width int, selected bool) 
 	}
 	line := label + strings.Repeat(" ", pad) + configKeyDimStyle.Render(binding)
 	return padRight(line, width)
+}
+
+func keybindingsPickerInnerWidth(screenWidth int, rows [][2]string) int {
+	innerW := 0
+	for _, r := range rows {
+		if w := lipgloss.Width(r[0]) + lipgloss.Width(r[1]) + 4; w > innerW {
+			innerW = w
+		}
+	}
+	if innerW < 36 {
+		innerW = 36
+	}
+	if screenWidth > 0 {
+		if maxInnerW := screenWidth - themePickerBoxStyle.GetHorizontalFrameSize(); maxInnerW < innerW {
+			if maxInnerW < 1 {
+				maxInnerW = 1
+			}
+			innerW = maxInnerW
+		}
+	}
+	return innerW
+}
+
+func fitKeybindingPickerRowParts(label, binding string, width int) (string, string) {
+	if width < 1 {
+		return "", ""
+	}
+	labelW := lipgloss.Width(label)
+	bindingW := lipgloss.Width(binding)
+	if labelW+bindingW+1 <= width {
+		return label, binding
+	}
+	bindingLimit := min(bindingW, max(1, width/2))
+	binding = truncateForRow(binding, bindingLimit)
+	bindingW = lipgloss.Width(binding)
+	labelLimit := width - bindingW - 1
+	if labelLimit < 1 {
+		return truncateForRow(label, width), ""
+	}
+	return truncateForRow(label, labelLimit), binding
 }

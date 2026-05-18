@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -12,10 +14,10 @@ import (
 // keys (kanban j/k, workflow builder Tab, modal arrow keys) are
 // deliberately *not* part of this surface — they stay inline in their
 // own handlers. Adding a new global shortcut requires four edits:
-//   1. New const here.
-//   2. defaultKeyBindings entry.
-//   3. actionMeta entry (label shown in /config).
-//   4. KeyMap.Matches lookup at the dispatch site.
+//  1. New const here.
+//  2. defaultKeyBindings entry.
+//  3. actionMeta entry (label shown in /config).
+//  4. KeyMap.Matches lookup at the dispatch site.
 type Action string
 
 // Ctrl+D close-tab and Ctrl+C are deliberately *not* in this list.
@@ -45,6 +47,8 @@ type KeyBinding struct {
 	Code rune
 }
 
+const supportedKeyBindingMods = tea.ModCtrl | tea.ModAlt | tea.ModShift | tea.ModMeta | tea.ModHyper | tea.ModSuper
+
 func (b KeyBinding) Matches(msg tea.KeyPressMsg) bool {
 	if b.Code == 0 {
 		return false
@@ -54,6 +58,9 @@ func (b KeyBinding) Matches(msg tea.KeyPressMsg) bool {
 
 func (b KeyBinding) String() string {
 	if b.Code == 0 {
+		return ""
+	}
+	if b.Mod&^supportedKeyBindingMods != 0 {
 		return ""
 	}
 	var parts []string
@@ -66,7 +73,20 @@ func (b KeyBinding) String() string {
 	if b.Mod&tea.ModShift != 0 {
 		parts = append(parts, "shift")
 	}
-	parts = append(parts, keyCodeName(b.Code))
+	if b.Mod&tea.ModMeta != 0 {
+		parts = append(parts, "meta")
+	}
+	if b.Mod&tea.ModHyper != 0 {
+		parts = append(parts, "hyper")
+	}
+	if b.Mod&tea.ModSuper != 0 {
+		parts = append(parts, "super")
+	}
+	key := keyCodeName(b.Code)
+	if key == "" {
+		return ""
+	}
+	parts = append(parts, key)
 	return strings.Join(parts, "+")
 }
 
@@ -76,6 +96,9 @@ func (b KeyBinding) String() string {
 func keyCodeName(c rune) string {
 	if n, ok := codeToName[c]; ok {
 		return n
+	}
+	if !utf8.ValidRune(c) || !unicode.IsPrint(c) {
+		return ""
 	}
 	return strings.ToLower(string(c))
 }
@@ -94,6 +117,7 @@ var namedKeyCodes = map[string]rune{
 	"escape":    tea.KeyEsc,
 	"tab":       tea.KeyTab,
 	"space":     tea.KeySpace,
+	"plus":      '+',
 	"home":      tea.KeyHome,
 	"end":       tea.KeyEnd,
 	"pgup":      tea.KeyPgUp,
@@ -118,6 +142,7 @@ var codeToName = map[rune]string{
 	tea.KeyEsc:       "esc",
 	tea.KeyTab:       "tab",
 	tea.KeySpace:     "space",
+	'+':              "plus",
 	tea.KeyHome:      "home",
 	tea.KeyEnd:       "end",
 	tea.KeyPgUp:      "pgup",
@@ -146,10 +171,16 @@ func ParseKeyBinding(s string) (KeyBinding, error) {
 		switch p {
 		case "ctrl", "control":
 			mod |= tea.ModCtrl
-		case "alt", "opt", "option", "meta":
+		case "alt", "opt", "option":
 			mod |= tea.ModAlt
 		case "shift":
 			mod |= tea.ModShift
+		case "meta":
+			mod |= tea.ModMeta
+		case "hyper":
+			mod |= tea.ModHyper
+		case "super":
+			mod |= tea.ModSuper
 		default:
 			if i != len(parts)-1 {
 				return KeyBinding{}, fmt.Errorf("unknown modifier %q in %q", p, s)
@@ -165,6 +196,9 @@ func ParseKeyBinding(s string) (KeyBinding, error) {
 	}
 	rs := []rune(key)
 	if len(rs) != 1 {
+		return KeyBinding{}, fmt.Errorf("unknown key %q in %q", key, s)
+	}
+	if rs[0] == 0 || !unicode.IsPrint(rs[0]) {
 		return KeyBinding{}, fmt.Errorf("unknown key %q in %q", key, s)
 	}
 	return KeyBinding{Mod: mod, Code: rs[0]}, nil
@@ -194,6 +228,15 @@ var defaultKeyBindings = map[Action]KeyBinding{
 	ActionTabPrev:         {Mod: tea.ModCtrl, Code: tea.KeyLeft},
 	ActionTabNext:         {Mod: tea.ModCtrl, Code: tea.KeyRight},
 	ActionAppSuspend:      {Mod: tea.ModCtrl, Code: 'z'},
+}
+
+func init() {
+	for i := 1; i <= 63; i++ {
+		name := fmt.Sprintf("f%d", i)
+		code := tea.KeyF1 + rune(i-1)
+		namedKeyCodes[name] = code
+		codeToName[code] = name
+	}
 }
 
 // Matches is the dispatch-site lookup. Missing actions fall back to
@@ -288,6 +331,15 @@ var (
 	keyMapCache KeyMap
 )
 
+func stripKeyLockModifiers(mod tea.KeyMod) tea.KeyMod {
+	return mod &^ (tea.ModCapsLock | tea.ModNumLock | tea.ModScrollLock)
+}
+
+func normalizeKeyPressMsg(msg tea.KeyPressMsg) tea.KeyPressMsg {
+	msg.Mod = stripKeyLockModifiers(msg.Mod)
+	return msg
+}
+
 // currentKeyMap returns the process-wide keymap, loading from
 // ~/.config/ask/ask.json on first call. Safe for concurrent use.
 func currentKeyMap() KeyMap {
@@ -297,13 +349,10 @@ func currentKeyMap() KeyMap {
 	if km != nil {
 		return km
 	}
-	cfg, _ := loadConfig()
-	resolved := LoadKeyMapFromConfig(cfg.Keybindings)
 	keyMapMu.Lock()
-	// Re-check under write lock so two racing first-callers don't both
-	// load — whoever got the lock second still observes the same map.
 	if keyMapCache == nil {
-		keyMapCache = resolved
+		cfg, _ := loadConfig()
+		keyMapCache = LoadKeyMapFromConfig(cfg.Keybindings)
 	}
 	km = keyMapCache
 	keyMapMu.Unlock()

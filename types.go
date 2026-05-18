@@ -520,8 +520,7 @@ type model struct {
 	// configKeybindingsPickerActive toggles the /config → Keybindings
 	// sub-picker. Rows are the actions from actionMeta. Pressing Enter
 	// on a row flips configKeybindingsCapturing — the next non-Esc
-	// keypress is recorded as the new binding (or written empty by
-	// pressing space, which clears the binding). Esc during capture
+	// keypress is recorded as the new binding. Esc during capture
 	// cancels without persisting.
 	configKeybindingsPickerActive bool
 	configKeybindingsCursor       int
