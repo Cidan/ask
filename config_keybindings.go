@@ -55,6 +55,29 @@ func (m model) updateConfigKeybindingsPicker(msg tea.KeyPressMsg) (tea.Model, te
 		m.configKeybindingsCapturing = true
 		m.configKeybindingsError = ""
 		return m, nil
+	case msg.Mod == 0 && msg.Code == 'r':
+		// Reset the focused row to its compiled-in default. Without
+		// this, a user who accidentally captured the wrong key has no
+		// recovery path from inside the picker — they would have to
+		// remember the default key to capture it back, or hand-edit
+		// ~/.config/ask/ask.json. 'r' is safe to overload here because
+		// row-navigation mode treats every other key (besides ↑↓ Enter
+		// Esc Ctrl+C) as a no-op; capture mode is the only place where
+		// 'r' could be recorded *as* a binding, and we don't shadow
+		// that path.
+		if m.configKeybindingsCursor < 0 || m.configKeybindingsCursor >= len(actionMeta) {
+			return m, nil
+		}
+		action := actionMeta[m.configKeybindingsCursor].Action
+		def := defaultKeyBindings[action]
+		if err := persistKeyBinding(action, def); err != nil {
+			debugLog("persistKeyBinding %s reset err: %v", action, err)
+			m.configKeybindingsError = "reset failed: " + err.Error()
+			return m, nil
+		}
+		invalidateKeyMapCache()
+		m.configKeybindingsError = ""
+		return m, nil
 	}
 	return m, nil
 }
@@ -164,7 +187,7 @@ func (m model) viewConfigKeybindingsPicker() string {
 
 	body = append(body,
 		"",
-		themePickerHelpStyle.Render(truncateForRow("↑↓ navigate · enter rebind · esc close", innerW)),
+		themePickerHelpStyle.Render(truncateForRow("↑↓ navigate · enter rebind · r reset · esc close", innerW)),
 	)
 
 	return themePickerBoxStyle.Render(strings.Join(body, "\n"))

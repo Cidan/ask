@@ -283,3 +283,73 @@ func TestConfigKeybindingsPicker_RebindToDefaultRemovesEntry(t *testing.T) {
 		t.Errorf("re-binding to default should remove the entry: %+v", cfg.Keybindings)
 	}
 }
+
+// Pressing 'r' in row-navigation mode resets the focused row to its
+// compiled-in default. Without this hotkey, a user who captured the
+// wrong key has no recovery path from inside the picker — they would
+// have to remember the original default to capture it back, or
+// hand-edit ~/.config/ask/ask.json.
+func TestConfigKeybindingsPicker_ResetRestoresDefault(t *testing.T) {
+	isolateHome(t)
+	invalidateKeyMapCache()
+	defer invalidateKeyMapCache()
+
+	// Seed an override so we can observe it being cleared.
+	if err := saveConfig(askConfig{
+		Keybindings: map[string]string{
+			string(ActionScreenWorkflows): "alt+q",
+		},
+	}); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+
+	m := newTestModel(t, newFakeProvider())
+	m.mode = modeConfig
+	m.configKeybindingsPickerActive = true
+	// Park the cursor on the Workflows row.
+	for i, am := range actionMeta {
+		if am.Action == ActionScreenWorkflows {
+			m.configKeybindingsCursor = i
+			break
+		}
+	}
+
+	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Code: 'r'})
+	if m2.configKeybindingsCapturing {
+		t.Errorf("reset must not enter capture mode")
+	}
+	if m2.configKeybindingsError != "" {
+		t.Errorf("reset errored: %q", m2.configKeybindingsError)
+	}
+
+	cfg, _ := loadConfig()
+	if _, ok := cfg.Keybindings[string(ActionScreenWorkflows)]; ok {
+		t.Errorf("reset should remove the override entry: %+v", cfg.Keybindings)
+	}
+	if b := currentKeyMap()[ActionScreenWorkflows]; b != defaultKeyBindings[ActionScreenWorkflows] {
+		t.Errorf("reset should restore the default; got %+v", b)
+	}
+}
+
+// 'r' in capture mode must record as the binding, not trigger a reset
+// — otherwise the user can never actually bind to 'r' itself.
+func TestConfigKeybindingsPicker_RInCaptureModeRecordsBinding(t *testing.T) {
+	isolateHome(t)
+	invalidateKeyMapCache()
+	defer invalidateKeyMapCache()
+
+	m := newTestModel(t, newFakeProvider())
+	m.mode = modeConfig
+	m.configKeybindingsPickerActive = true
+	m.configKeybindingsCursor = 0
+	m.configKeybindingsCapturing = true
+
+	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'r'})
+	if m2.configKeybindingsError != "" {
+		t.Fatalf("capture errored: %q", m2.configKeybindingsError)
+	}
+	cfg, _ := loadConfig()
+	if got := cfg.Keybindings[string(actionMeta[0].Action)]; got != "ctrl+r" {
+		t.Errorf("captured binding=%q want ctrl+r", got)
+	}
+}
