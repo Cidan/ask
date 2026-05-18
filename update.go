@@ -984,6 +984,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.mode == modeConfig && m.configProjectPickerActive && m.configProjectFieldEditing != "" {
 			return m.applyConfigProjectPaste(msg.Content)
 		}
+		if m.mode == modeAskQuestion {
+			return m.applyAskPaste(msg.Content)
+		}
 		if m.mode != modeInput {
 			return m, nil
 		}

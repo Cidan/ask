@@ -1534,6 +1534,199 @@ func TestUpdate_PasteMsgInConfigProjectFieldEditorRoutes(t *testing.T) {
 	}
 }
 
+func TestUpdate_PasteMsgInAskModalCustomRowRoutesToCustom(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m = m.startAsk([]question{{
+		kind:    qPickOne,
+		prompt:  "pick a model",
+		options: []string{"default", "gpt-5", switcherCustomRowLabel},
+	}})
+	m.askCursor = 2 // custom row
+	m.input.SetValue("seed")
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "pasted-model-id"})
+
+	if m2.askAnswers[0].custom != "pasted-model-id" {
+		t.Errorf("paste should land in qAnswer.custom: got %q", m2.askAnswers[0].custom)
+	}
+	if m2.input.Value() != "seed" {
+		t.Errorf("paste must not leak into the chat composer: got %q", m2.input.Value())
+	}
+	if m2.mode != modeAskQuestion {
+		t.Errorf("paste must not close the modal; mode=%v", m2.mode)
+	}
+}
+
+func TestUpdate_PasteMsgInAskModalCustomRowPreservesNewlines(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m = m.startAsk([]question{{
+		kind:    qPickOne,
+		prompt:  "instructions",
+		options: []string{"a", "b", switcherCustomRowLabel},
+	}})
+	m.askCursor = 2
+	m.askAnswers[0].custom = "prefix: "
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "line1\nline2"})
+
+	if m2.askAnswers[0].custom != "prefix: line1\nline2" {
+		t.Errorf("paste should append verbatim including newline: got %q", m2.askAnswers[0].custom)
+	}
+}
+
+func TestUpdate_PasteMsgInAskModalCustomRowAutoSelectsForPickMany(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m = m.startAsk([]question{{
+		kind:    qPickMany,
+		prompt:  "pick any",
+		options: []string{"a", "b", switcherCustomRowLabel},
+	}})
+	m.askCursor = 2
+	if _, ok := m.askAnswers[0].picks[2]; ok {
+		t.Fatalf("precondition: custom pick should start unset")
+	}
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "custom-answer"})
+
+	if !m2.askAnswers[0].picks[2] {
+		t.Errorf("paste into custom row on qPickMany must auto-select the row; picks=%v",
+			m2.askAnswers[0].picks)
+	}
+}
+
+func TestUpdate_PasteMsgInAskModalNoteEditorRoutesToNote(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m = m.startAsk([]question{{
+		kind:    qPickOne,
+		prompt:  "pick one",
+		options: []string{"a", "b"},
+	}})
+	m.askEditing = askEditNote
+	m.askAnswers[0].note = "context: "
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "extra\nlines"})
+
+	if m2.askAnswers[0].note != "context: extra\nlines" {
+		t.Errorf("paste should append to qAnswer.note: got %q", m2.askAnswers[0].note)
+	}
+	if m2.askEditing != askEditNote {
+		t.Errorf("paste must not exit note edit mode; askEditing=%v", m2.askEditing)
+	}
+}
+
+func TestUpdate_PasteMsgInAskModalOnFixedOptionIsAbsorbed(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m = m.startAsk([]question{{
+		kind:    qPickOne,
+		prompt:  "pick one",
+		options: []string{"a", "b", switcherCustomRowLabel},
+	}})
+	m.askCursor = 0 // on a fixed option, not custom
+	m.askAnswers[0].custom = "untouched"
+	m.input.SetValue("seed")
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "leak"})
+
+	if m2.askAnswers[0].custom != "untouched" {
+		t.Errorf("paste on fixed option must not touch custom: got %q", m2.askAnswers[0].custom)
+	}
+	if m2.input.Value() != "seed" {
+		t.Errorf("paste must not leak into the chat composer: got %q", m2.input.Value())
+	}
+}
+
+func TestUpdate_PasteMsgInAskModalCancelConfirmIsAbsorbed(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m = m.startAsk([]question{{
+		kind:    qPickOne,
+		prompt:  "pick one",
+		options: []string{"a", switcherCustomRowLabel},
+	}})
+	m.askCursor = 1
+	m.askConfirmingCancel = true
+	m.askAnswers[0].custom = "untouched"
+	m.input.SetValue("seed")
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "leak"})
+
+	if m2.askAnswers[0].custom != "untouched" {
+		t.Errorf("paste during ask cancel confirm must not touch custom: got %q", m2.askAnswers[0].custom)
+	}
+	if m2.input.Value() != "seed" {
+		t.Errorf("paste must not leak into the chat composer: got %q", m2.input.Value())
+	}
+	if !m2.askConfirmingCancel {
+		t.Errorf("paste must not dismiss the ask cancel confirm")
+	}
+}
+
+func TestUpdate_PasteMsgInAskModalOllamaConfigRoutesToActiveField(t *testing.T) {
+	cases := []struct {
+		name      string
+		field     int
+		host      string
+		model     string
+		content   string
+		wantHost  string
+		wantModel string
+	}{
+		{
+			name:      "host",
+			field:     0,
+			host:      "http://",
+			model:     "llama3",
+			content:   "localhost:11434",
+			wantHost:  "http://localhost:11434",
+			wantModel: "llama3",
+		},
+		{
+			name:      "model",
+			field:     1,
+			host:      "localhost:11434",
+			model:     "llama",
+			content:   "3.2",
+			wantHost:  "localhost:11434",
+			wantModel: "llama3.2",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := newTestModel(t, newFakeProvider())
+			m = m.startAsk([]question{{
+				kind:    qPickOne,
+				prompt:  "pick a model",
+				options: []string{ollamaModelOption, switcherCustomRowLabel},
+			}})
+			m.askCursor = 1
+			m.askAnswers[0].custom = "custom"
+			m.askOllamaActive = true
+			m.askOllamaField = c.field
+			m.askOllamaHost = c.host
+			m.askOllamaModel = c.model
+			m.askOllamaErr = "previous error"
+			m.input.SetValue("seed")
+
+			m2, _ := runUpdate(t, m, tea.PasteMsg{Content: c.content})
+
+			if m2.askOllamaHost != c.wantHost {
+				t.Errorf("askOllamaHost=%q want %q", m2.askOllamaHost, c.wantHost)
+			}
+			if m2.askOllamaModel != c.wantModel {
+				t.Errorf("askOllamaModel=%q want %q", m2.askOllamaModel, c.wantModel)
+			}
+			if m2.askOllamaErr != "" {
+				t.Errorf("paste should clear askOllamaErr, got %q", m2.askOllamaErr)
+			}
+			if m2.askAnswers[0].custom != "custom" {
+				t.Errorf("ollama paste must not touch the underlying custom row: got %q", m2.askAnswers[0].custom)
+			}
+			if m2.input.Value() != "seed" {
+				t.Errorf("paste must not leak into the chat composer: got %q", m2.input.Value())
+			}
+		})
+	}
+}
+
 // modeConfig with no field editor open should still absorb paste —
 // the picker rows are not text inputs and there is no destination
 // for the pasted content.

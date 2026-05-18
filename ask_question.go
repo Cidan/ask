@@ -422,6 +422,39 @@ func (m model) cursorOnCustom() bool {
 	return m.askCursor == len(m.askQuestions[m.askTab].options)-1
 }
 
+func (m model) applyAskPaste(content string) (tea.Model, tea.Cmd) {
+	if content == "" {
+		return m, nil
+	}
+	if m.askConfirmingCancel {
+		return m, nil
+	}
+	if m.askOllamaActive {
+		return m.applyAskOllamaPaste(content)
+	}
+	if m.askTab < 0 || m.askTab >= len(m.askAnswers) {
+		return m, nil
+	}
+	ans := &m.askAnswers[m.askTab]
+	if m.askEditing == askEditNote {
+		ans.note += content
+		return m, nil
+	}
+	if m.cursorOnCustom() {
+		ans.custom += content
+		if m.askQuestions[m.askTab].kind == qPickMany {
+			customIdx := len(m.askQuestions[m.askTab].options) - 1
+			if ans.custom != "" {
+				ans.picks[customIdx] = true
+			} else {
+				delete(ans.picks, customIdx)
+			}
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m model) handleCustomTyping(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
 	ans := &m.askAnswers[m.askTab]
 	customIdx := len(m.askQuestions[m.askTab].options) - 1

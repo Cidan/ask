@@ -81,6 +81,19 @@ func (m model) updateAskOllamaConfig(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) applyAskOllamaPaste(content string) (tea.Model, tea.Cmd) {
+	if content == "" {
+		return m, nil
+	}
+	if m.askOllamaField == 0 {
+		m.askOllamaHost += content
+	} else {
+		m.askOllamaModel += content
+	}
+	m.askOllamaErr = ""
+	return m, nil
+}
+
 func (m model) saveOllamaConfig() (tea.Model, tea.Cmd) {
 	host := strings.TrimSpace(m.askOllamaHost)
 	modelName := strings.TrimSpace(m.askOllamaModel)
