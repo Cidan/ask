@@ -936,16 +936,38 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.scrollbarDragging {
 			m.scrollbarDragging = false
 		}
+		var copyCmd tea.Cmd
 		if m.selDragging {
-			m.selDragging = false
-			if m.selAnchor == m.selFocus {
+			switch {
+			case m.selAnchor == m.selFocus:
+				// Degenerate click — no selection, no clipboard write.
 				m.clearSelection()
-			} else {
+			case clipboardGOOS == "darwin":
+				// macOS terminals (iTerm2, Terminal.app) intercept both
+				// Cmd+C and right-click before the inner app sees them,
+				// so the explicit copy verbs are unreachable. Auto-copy
+				// on drag-release + clear gives users a "select + Cmd+V
+				// elsewhere" flow that doesn't need terminal config.
+				// The disappearing highlight is the user-facing receipt.
+				// Read the selection before clearing — buildCopyText
+				// short-circuits when neither selDragging nor selActive
+				// is set, so clearSelection() must come after.
+				if text := m.buildCopyText(); text != "" {
+					copyCmd = copyTextSilentCmd(m.toast, text)
+				}
+				m.clearSelection()
+			default:
+				// Linux/BSD/etc.: terminals forward right-click to the
+				// app, so the explicit right-click → copySelectionAndClear
+				// path already works and shows a toast confirmation.
+				// Preserve that flow: finalize the selection visibly and
+				// let the user complete the copy with a right-click.
+				m.selDragging = false
 				m.selActive = true
 			}
 			m.lastContentFP = ""
 		}
-		return m, nil
+		return m, copyCmd
 
 	case toastShowMsg, toastTickMsg:
 		if m.toast == nil {

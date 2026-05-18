@@ -450,18 +450,62 @@ func TestUpdateMouseMotion_UpdatesSelectionFocus(t *testing.T) {
 	}
 }
 
-func TestUpdateMouseRelease_FinalizesSelection(t *testing.T) {
+func TestUpdateMouseRelease_DarwinClearsSelectionAfterCopy(t *testing.T) {
+	// On macOS the drag-release auto-copies and clears: the
+	// disappearing highlight is the user-facing receipt that the copy
+	// happened. Matches the right-click path (copySelectionAndClear)
+	// and avoids stale highlights after the moment passes. The
+	// clipboard side-effect itself is covered by
+	// TestUpdateMouseRelease_DarwinAutoCopiesSelectionSilently.
+	withClipboardStubs(t, "darwin",
+		map[string]bool{"pbcopy": true},
+		func(string, string, ...string) error { return nil })
 	m := newTestModel(t, newFakeProvider())
 	m.width = 80
 	m.selDragging = true
 	m.selAnchor = cellPos{row: 0, col: 0}
 	m.selFocus = cellPos{row: 0, col: 5}
 	m2, _ := runUpdate(t, m, tea.MouseReleaseMsg{X: 5, Y: 0, Button: tea.MouseLeft})
+	if m2.selDragging || m2.selActive {
+		t.Errorf("darwin release must leave neither selDragging nor selActive set; got selDragging=%v selActive=%v", m2.selDragging, m2.selActive)
+	}
+}
+
+func TestUpdateMouseRelease_LinuxKeepsSelectionForRightClickCopy(t *testing.T) {
+	// On non-darwin platforms terminals forward right-click to the app,
+	// so the explicit copy gesture works and shows a toast. Preserve
+	// that flow: drag-release finalizes the selection visibly without
+	// touching the clipboard, leaving the user to right-click for
+	// copySelectionAndClear. Auto-copy is a macOS-specific concession
+	// to iTerm2's right-click + Cmd+C interception; users on other
+	// platforms haven't asked for it and changing their existing flow
+	// would surprise them.
+	var clipboardCalled bool
+	withClipboardStubs(t, "linux",
+		map[string]bool{"wl-copy": true},
+		func(string, string, ...string) error {
+			clipboardCalled = true
+			return nil
+		})
+	m := newTestModel(t, newFakeProvider())
+	m.width = 80
+	m.selDragging = true
+	m.selAnchor = cellPos{row: 0, col: 0}
+	m.selFocus = cellPos{row: 0, col: 5}
+	m2, cmd := runUpdate(t, m, tea.MouseReleaseMsg{X: 5, Y: 0, Button: tea.MouseLeft})
 	if m2.selDragging {
 		t.Errorf("release must clear selDragging")
 	}
 	if !m2.selActive {
-		t.Errorf("non-degenerate release should activate selection")
+		t.Errorf("non-darwin release should finalize selection visibly (selActive=true) so right-click can copy")
+	}
+	if cmd != nil {
+		// Drain it to make sure the cmd is genuinely a no-op rather than
+		// a deferred clipboard write that just hasn't fired yet.
+		_ = cmd()
+	}
+	if clipboardCalled {
+		t.Errorf("non-darwin drag-release must not touch the clipboard; that's the right-click path's job")
 	}
 }
 
@@ -473,6 +517,132 @@ func TestUpdateMouseRelease_DegenerateSelectionClears(t *testing.T) {
 	m2, _ := runUpdate(t, m, tea.MouseReleaseMsg{X: 5, Y: 0, Button: tea.MouseLeft})
 	if m2.selDragging || m2.selActive {
 		t.Errorf("anchor==focus release should clear, not finalize")
+	}
+}
+
+// Drag-end auto-copies the selection on macOS (where Cmd+C and right-
+// click are both intercepted by iTerm2 before reaching the inner app)
+// so the selected text lands on the system clipboard without needing
+// terminal config. See copyTextSilentCmd for the why.
+func TestUpdateMouseRelease_DarwinAutoCopiesSelectionSilently(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.toast = NewToastModel(40, time.Second)
+	m.history = []historyEntry{
+		{kind: histResponse, text: "auto-copy source", rendered: "     auto-copy source"},
+	}
+	m.selDragging = true
+	m.selAnchor = cellPos{row: 0, col: 0}
+	m.selFocus = cellPos{row: 0, col: 10}
+
+	var copied string
+	withClipboardStubs(t, "darwin",
+		map[string]bool{"pbcopy": true},
+		func(name, stdin string, args ...string) error {
+			copied = stdin
+			return nil
+		})
+
+	m2, cmd := runUpdate(t, m, tea.MouseReleaseMsg{X: 10, Y: 0, Button: tea.MouseLeft})
+	if m2.selDragging || m2.selActive {
+		t.Errorf("auto-copy must clear both selDragging and selActive (disappearing highlight is the receipt); got selDragging=%v selActive=%v", m2.selDragging, m2.selActive)
+	}
+	if cmd == nil {
+		t.Fatal("non-degenerate drag-end with non-empty selection must dispatch an auto-copy cmd")
+	}
+	if msg := cmd(); msg != nil {
+		t.Errorf("auto-copy must stay silent on success; got %T %+v", msg, msg)
+	}
+	if copied != "auto-copy source" {
+		t.Errorf("clipboard payload=%q want %q (whole-entry source)", copied, "auto-copy source")
+	}
+}
+
+func TestUpdateMouseRelease_DarwinAutoCopyClipboardFailureSurfacesToast(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.toast = NewToastModel(40, time.Second)
+	m.history = []historyEntry{
+		{kind: histResponse, text: "failing source", rendered: "     failing source"},
+	}
+	m.selDragging = true
+	m.selAnchor = cellPos{row: 0, col: 0}
+	m.selFocus = cellPos{row: 0, col: 10}
+
+	withClipboardStubs(t, "darwin",
+		map[string]bool{"pbcopy": true},
+		func(name, stdin string, args ...string) error {
+			return errors.New("clipboard busted")
+		})
+
+	_, cmd := runUpdate(t, m, tea.MouseReleaseMsg{X: 10, Y: 0, Button: tea.MouseLeft})
+	if cmd == nil {
+		t.Fatal("expected an error-toast cmd on clipboard failure")
+	}
+	msg := cmd()
+	tmsg, ok := msg.(toastShowMsg)
+	if !ok {
+		t.Fatalf("expected toastShowMsg on failure; got %T", msg)
+	}
+	if !strings.Contains(tmsg.text, "copy failed") {
+		t.Errorf("toast text=%q should announce failure", tmsg.text)
+	}
+}
+
+func TestUpdateMouseRelease_DarwinDegenerateDragSkipsClipboard(t *testing.T) {
+	// A single click that doesn't move (anchor == focus) clears the
+	// selection and must not touch the clipboard; otherwise every stray
+	// click in the chat would overwrite the user's clipboard.
+	m := newTestModel(t, newFakeProvider())
+	m.toast = NewToastModel(40, time.Second)
+	m.selDragging = true
+	m.selAnchor = cellPos{row: 0, col: 5}
+	m.selFocus = cellPos{row: 0, col: 5}
+
+	var called bool
+	withClipboardStubs(t, "darwin",
+		map[string]bool{"pbcopy": true},
+		func(name, stdin string, args ...string) error {
+			called = true
+			return nil
+		})
+
+	_, cmd := runUpdate(t, m, tea.MouseReleaseMsg{X: 5, Y: 0, Button: tea.MouseLeft})
+	if cmd != nil {
+		t.Errorf("degenerate drag-end must not dispatch a copy cmd")
+	}
+	if called {
+		t.Errorf("degenerate drag-end must not call the clipboard writer")
+	}
+}
+
+func TestUpdateMouseRelease_DarwinMarginOnlyDragSkipsClipboard(t *testing.T) {
+	// A drag entirely inside the left gutter produces an empty
+	// buildCopyText result (selectionRenderMask clamps the highlight
+	// away too). Skipping the copy keeps the clipboard from being
+	// overwritten with "" when the user accidentally drags in the
+	// indent column.
+	m := newTestModel(t, newFakeProvider())
+	m.toast = NewToastModel(40, time.Second)
+	m.history = []historyEntry{
+		{kind: histResponse, text: "source body", rendered: "     source body"},
+	}
+	m.selDragging = true
+	m.selAnchor = cellPos{row: 0, col: 0}
+	m.selFocus = cellPos{row: 0, col: 3}
+
+	var called bool
+	withClipboardStubs(t, "darwin",
+		map[string]bool{"pbcopy": true},
+		func(name, stdin string, args ...string) error {
+			called = true
+			return nil
+		})
+
+	_, cmd := runUpdate(t, m, tea.MouseReleaseMsg{X: 3, Y: 0, Button: tea.MouseLeft})
+	if cmd != nil {
+		t.Errorf("margin-only drag-end must not dispatch a copy cmd")
+	}
+	if called {
+		t.Errorf("margin-only drag-end must not call the clipboard writer")
 	}
 }
 
