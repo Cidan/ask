@@ -202,6 +202,30 @@ func TestConfigKeybindingsPicker_CaptureFunctionKeyRoundTrips(t *testing.T) {
 	}
 }
 
+func TestKeybindingsExpandInnerWidthGrowsToFitLine(t *testing.T) {
+	rows := [][2]string{{"Run workflow on chat", "ctrl+shift+f"}}
+	rowsInnerW := keybindingsPickerInnerWidth(200, rows)
+	prompt := "Press the new key combination for Run workflow on chat (currently ctrl+shift+f)."
+	got := keybindingsExpandInnerWidth(200, rowsInnerW, prompt)
+	if got <= rowsInnerW {
+		t.Fatalf("expanded inner width=%d should grow past row inner width=%d", got, rowsInnerW)
+	}
+	if got < lipgloss.Width(prompt) {
+		t.Errorf("expanded inner width=%d should fit line width=%d on a wide terminal", got, lipgloss.Width(prompt))
+	}
+}
+
+func TestKeybindingsExpandInnerWidthCapsToTerminal(t *testing.T) {
+	rows := [][2]string{{"Run workflow on chat", "ctrl+shift+f"}}
+	rowsInnerW := keybindingsPickerInnerWidth(30, rows)
+	prompt := "Press the new key combination for Run workflow on chat (currently ctrl+shift+f)."
+	got := keybindingsExpandInnerWidth(30, rowsInnerW, prompt)
+	maxInnerW := 30 - themePickerBoxStyle.GetHorizontalFrameSize()
+	if got > maxInnerW {
+		t.Fatalf("expanded inner width=%d exceeds terminal cap=%d", got, maxInnerW)
+	}
+}
+
 func TestKeybindingsPickerWidthCapsToTerminal(t *testing.T) {
 	rows := [][2]string{
 		{"Run workflow on chat", "ctrl+shift+right"},
@@ -328,6 +352,71 @@ func TestConfigKeybindingsPicker_ResetRestoresDefault(t *testing.T) {
 	}
 	if b := currentKeyMap()[ActionScreenWorkflows]; b != defaultKeyBindings[ActionScreenWorkflows] {
 		t.Errorf("reset should restore the default; got %+v", b)
+	}
+}
+
+// Pressing 'u' in row-navigation mode unbinds the focused action. The
+// zero-value KeyBinding is persisted as the empty string; Matches()
+// then returns false for every keypress so the action is silently
+// disabled. Recovery is via 'r' (reset to default) on the same row.
+func TestConfigKeybindingsPicker_UnbindWritesZeroBinding(t *testing.T) {
+	isolateHome(t)
+	invalidateKeyMapCache()
+	defer invalidateKeyMapCache()
+
+	m := newTestModel(t, newFakeProvider())
+	m.mode = modeConfig
+	m.configKeybindingsPickerActive = true
+	for i, am := range actionMeta {
+		if am.Action == ActionScreenWorkflows {
+			m.configKeybindingsCursor = i
+			break
+		}
+	}
+
+	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Code: 'u'})
+	if m2.configKeybindingsCapturing {
+		t.Errorf("unbind must not enter capture mode")
+	}
+	if m2.configKeybindingsError != "" {
+		t.Errorf("unbind errored: %q", m2.configKeybindingsError)
+	}
+
+	cfg, _ := loadConfig()
+	got, present := cfg.Keybindings[string(ActionScreenWorkflows)]
+	if !present {
+		t.Fatalf("unbind should persist an explicit empty entry; got %+v", cfg.Keybindings)
+	}
+	if got != "" {
+		t.Errorf("unbind should store empty string; got %q", got)
+	}
+	def := defaultKeyBindings[ActionScreenWorkflows]
+	if currentKeyMap().Matches(ActionScreenWorkflows, tea.KeyPressMsg{Mod: def.Mod, Code: def.Code}) {
+		t.Error("unbound action must not match its former default keypress")
+	}
+}
+
+// 'u' must NOT trigger an unbind while in capture mode — otherwise the
+// user can never bind a key to 'u' itself. The captured key should be
+// recorded as the binding, same as any other letter key.
+func TestConfigKeybindingsPicker_UInCaptureModeRecordsBinding(t *testing.T) {
+	isolateHome(t)
+	invalidateKeyMapCache()
+	defer invalidateKeyMapCache()
+
+	m := newTestModel(t, newFakeProvider())
+	m.mode = modeConfig
+	m.configKeybindingsPickerActive = true
+	m.configKeybindingsCursor = 0
+	m.configKeybindingsCapturing = true
+
+	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'u'})
+	if m2.configKeybindingsError != "" {
+		t.Fatalf("capture errored: %q", m2.configKeybindingsError)
+	}
+	cfg, _ := loadConfig()
+	if got := cfg.Keybindings[string(actionMeta[0].Action)]; got != "ctrl+u" {
+		t.Errorf("captured binding=%q want ctrl+u", got)
 	}
 }
 

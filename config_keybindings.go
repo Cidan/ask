@@ -78,6 +78,23 @@ func (m model) updateConfigKeybindingsPicker(msg tea.KeyPressMsg) (tea.Model, te
 		invalidateKeyMapCache()
 		m.configKeybindingsError = ""
 		return m, nil
+	case msg.Mod == 0 && msg.Code == 'u':
+		// Unbind the focused row — persists the zero-value KeyBinding,
+		// which Matches() correctly treats as "never matches" so the
+		// action is silently disabled. Peer of 'r'; same overload
+		// argument applies (row-nav mode doesn't capture characters).
+		if m.configKeybindingsCursor < 0 || m.configKeybindingsCursor >= len(actionMeta) {
+			return m, nil
+		}
+		action := actionMeta[m.configKeybindingsCursor].Action
+		if err := persistKeyBinding(action, KeyBinding{}); err != nil {
+			debugLog("persistKeyBinding %s unbind err: %v", action, err)
+			m.configKeybindingsError = "unbind failed: " + err.Error()
+			return m, nil
+		}
+		invalidateKeyMapCache()
+		m.configKeybindingsError = ""
+		return m, nil
 	}
 	return m, nil
 }
@@ -159,19 +176,30 @@ func (m model) viewConfigKeybindingsPicker() string {
 	}
 	innerW := keybindingsPickerInnerWidth(m.width, rows)
 
-	title := themePickerTitleStyle.Render(truncateForRow("Keybindings", innerW))
-	body := []string{title, ""}
-
+	var capturePrompt string
 	if m.configKeybindingsCapturing && m.configKeybindingsCursor >= 0 && m.configKeybindingsCursor < len(actionMeta) {
 		current := km.Binding(actionMeta[m.configKeybindingsCursor].Action).String()
 		if current == "" {
 			current = "(unbound)"
 		}
-		prompt := "Press the new key combination for " +
+		capturePrompt = "Press the new key combination for " +
 			actionMeta[m.configKeybindingsCursor].Label +
 			" (currently " + current + ")."
+	}
+	const helpFooter = "↑↓ navigate · enter rebind · r reset · u unbind · esc close"
+	for _, line := range []string{capturePrompt, helpFooter} {
+		if line == "" {
+			continue
+		}
+		innerW = keybindingsExpandInnerWidth(m.width, innerW, line)
+	}
+
+	title := themePickerTitleStyle.Render(truncateForRow("Keybindings", innerW))
+	body := []string{title, ""}
+
+	if capturePrompt != "" {
 		body = append(body,
-			configHelpStyle.Render(truncateForRow(prompt, innerW)),
+			configHelpStyle.Render(truncateForRow(capturePrompt, innerW)),
 			"",
 			configHelpStyle.Render(truncateForRow("esc cancels without saving.", innerW)),
 		)
@@ -187,7 +215,7 @@ func (m model) viewConfigKeybindingsPicker() string {
 
 	body = append(body,
 		"",
-		themePickerHelpStyle.Render(truncateForRow("↑↓ navigate · enter rebind · r reset · esc close", innerW)),
+		themePickerHelpStyle.Render(truncateForRow(helpFooter, innerW)),
 	)
 
 	return themePickerBoxStyle.Render(strings.Join(body, "\n"))
@@ -217,6 +245,27 @@ func renderKeybindingPickerRow(label, binding string, width int, selected bool) 
 	}
 	line := label + strings.Repeat(" ", pad) + configKeyDimStyle.Render(binding)
 	return padRight(line, width)
+}
+
+// keybindingsExpandInnerWidth grows innerW to fit a single content line
+// (capture prompt, help footer, etc.) that may exceed the row-list
+// width, capped at the screen width minus the box frame. Mirrors the
+// growth pattern viewConfigMemoryFieldInput uses for its field editor.
+func keybindingsExpandInnerWidth(screenWidth, current int, line string) int {
+	want := lipgloss.Width(line)
+	if want < current {
+		return current
+	}
+	if screenWidth > 0 {
+		maxInnerW := screenWidth - themePickerBoxStyle.GetHorizontalFrameSize()
+		if maxInnerW < 1 {
+			maxInnerW = 1
+		}
+		if want > maxInnerW {
+			want = maxInnerW
+		}
+	}
+	return want
 }
 
 func keybindingsPickerInnerWidth(screenWidth int, rows [][2]string) int {
