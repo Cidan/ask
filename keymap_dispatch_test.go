@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -441,4 +442,254 @@ func TestConfigKeybindingsPicker_RInCaptureModeRecordsBinding(t *testing.T) {
 	if got := cfg.Keybindings[string(actionMeta[0].Action)]; got != "ctrl+r" {
 		t.Errorf("captured binding=%q want ctrl+r", got)
 	}
+}
+
+// TestUpdate_TabCloseHonoursKeyMapOverride proves the chat-screen
+// Ctrl+D handler routes through ActionTabClose now that the action is
+// rebindable. Rebinds to alt+x; the default ctrl+d must NOT produce a
+// closeTabMsg, and the new key MUST.
+func TestUpdate_TabCloseHonoursKeyMapOverride(t *testing.T) {
+	isolateHome(t)
+	setKeyMapForTesting(KeyMap{
+		ActionTabClose: {Mod: tea.ModAlt, Code: 'x'},
+	})
+	defer invalidateKeyMapCache()
+
+	m := newTestModel(t, newFakeProvider())
+	m.id = 42
+
+	_, cmd := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'd'})
+	if cmd != nil {
+		if _, ok := cmd().(closeTabMsg); ok {
+			t.Error("default ctrl+d should NOT close after rebind")
+		}
+	}
+
+	_, cmd = runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModAlt, Code: 'x'})
+	if cmd == nil {
+		t.Fatal("rebound ActionTabClose key should produce a cmd")
+	}
+	msg := cmd()
+	cm, ok := msg.(closeTabMsg)
+	if !ok {
+		t.Fatalf("expected closeTabMsg, got %T", msg)
+	}
+	if cm.tabID != 42 {
+		t.Errorf("closeTabMsg.tabID=%d, want 42", cm.tabID)
+	}
+}
+
+// TestUpdate_TabCloseDefaultStillWorks pins the default behaviour:
+// ctrl+d closes the tab on a stock keymap. Guards against the
+// inline-to-keymap routing accidentally dropping the default.
+func TestUpdate_TabCloseDefaultStillWorks(t *testing.T) {
+	isolateHome(t)
+	invalidateKeyMapCache()
+	defer invalidateKeyMapCache()
+
+	m := newTestModel(t, newFakeProvider())
+	m.id = 7
+
+	_, cmd := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'd'})
+	if cmd == nil {
+		t.Fatal("ctrl+d should still close under default keymap")
+	}
+	msg := cmd()
+	cm, ok := msg.(closeTabMsg)
+	if !ok {
+		t.Fatalf("expected closeTabMsg, got %T", msg)
+	}
+	if cm.tabID != 7 {
+		t.Errorf("closeTabMsg.tabID=%d, want 7", cm.tabID)
+	}
+}
+
+// TestIssuesScreen_TabCloseFollowsKeyMapOverride mirrors the chat-side
+// check on the issues screen — the screen's own Ctrl+D shortcut also
+// routes through the keymap, so rebinding ActionTabClose must take
+// effect there too.
+func TestIssuesScreen_TabCloseFollowsKeyMapOverride(t *testing.T) {
+	isolateHome(t)
+	setKeyMapForTesting(KeyMap{
+		ActionTabClose: {Mod: tea.ModAlt, Code: 'x'},
+	})
+	defer invalidateKeyMapCache()
+
+	m := newTestModel(t, newFakeProvider())
+	m.id = 11
+	m.screen = screenIssues
+	m.issues = newIssuesState()
+
+	_, cmd, handled := issuesScreen{}.updateKey(m, tea.KeyPressMsg{Mod: tea.ModAlt, Code: 'x'})
+	if !handled {
+		t.Fatal("rebound tab-close key should be handled by issues screen")
+	}
+	if cmd == nil {
+		t.Fatal("rebound tab-close key should produce a cmd")
+	}
+	if _, ok := cmd().(closeTabMsg); !ok {
+		t.Fatalf("expected closeTabMsg, got %T", cmd())
+	}
+}
+
+// TestKanbanHint_ReflectsReloadOverride proves the kanban footer
+// rewrites itself when the user rebinds ActionReload — the original
+// hardcoded "ctrl+r reload" would not have.
+func TestKanbanHint_ReflectsReloadOverride(t *testing.T) {
+	isolateHome(t)
+	setKeyMapForTesting(KeyMap{
+		ActionReload:    {Mod: tea.ModAlt, Code: 'r'},
+		ActionScreenAsk: {Mod: tea.ModCtrl, Code: 'o'},
+	})
+	defer invalidateKeyMapCache()
+
+	v := &kanbanIssueView{}
+	body := v.hintFor(nil)
+	if !strings.Contains(body, "alt+r reload") {
+		t.Errorf("kanban hint should name the rebound reload key; got %q", body)
+	}
+	if strings.Contains(body, "ctrl+r reload") {
+		t.Errorf("kanban hint should not still reference the default ctrl+r; got %q", body)
+	}
+}
+
+// TestKanbanHint_DropsUnboundReloadClause proves an unbound reload
+// action does not leave a dangling " · " segment in the footer — the
+// joinHintClauses helper must filter empties out.
+func TestKanbanHint_DropsUnboundReloadClause(t *testing.T) {
+	isolateHome(t)
+	setKeyMapForTesting(KeyMap{
+		ActionReload:    {},
+		ActionScreenAsk: {Mod: tea.ModCtrl, Code: 'o'},
+	})
+	defer invalidateKeyMapCache()
+
+	v := &kanbanIssueView{}
+	body := v.hintFor(nil)
+	if strings.Contains(body, " reload") {
+		t.Errorf("unbound reload should drop the clause entirely; got %q", body)
+	}
+	if strings.Contains(body, "·  ·") {
+		t.Errorf("dropped clause must not leave a dangling separator; got %q", body)
+	}
+	if !strings.Contains(body, "ctrl+o back") {
+		t.Errorf("other clauses should remain; got %q", body)
+	}
+}
+
+// TestWorkflowsBuilderHint_ReflectsRebindAndUnbind covers the three
+// shapes the workflows-builder hint can take: stock binding, rebound
+// binding, unbound action. The string is shared by the issues toast,
+// the chat toast, and the workflow picker's empty-state row.
+func TestWorkflowsBuilderHint_ReflectsRebindAndUnbind(t *testing.T) {
+	isolateHome(t)
+	defer invalidateKeyMapCache()
+
+	invalidateKeyMapCache()
+	if got := workflowsBuilderHint(); !strings.Contains(got, "ctrl+w") {
+		t.Errorf("default hint should mention ctrl+w; got %q", got)
+	}
+
+	setKeyMapForTesting(KeyMap{
+		ActionScreenWorkflows: {Mod: tea.ModAlt | tea.ModShift, Code: 'q'},
+	})
+	if got := workflowsBuilderHint(); !strings.Contains(got, "alt+shift+q opens the builder") {
+		t.Errorf("rebound hint should name the new key; got %q", got)
+	}
+
+	setKeyMapForTesting(KeyMap{
+		ActionScreenWorkflows: {},
+	})
+	got := workflowsBuilderHint()
+	if strings.Contains(got, "opens the builder") {
+		t.Errorf("unbound hint should not promise a shortcut; got %q", got)
+	}
+	if !strings.Contains(got, "/workflows") {
+		t.Errorf("unbound hint should fall back to the slash command; got %q", got)
+	}
+}
+
+// TestKeybindingsPicker_RendersGroupHeadings proves the picker draws
+// the four group headings — Screens, Tabs, Pickers & dispatch, App —
+// so the user can spot the action they want without scanning a flat
+// list of twelve.
+func TestKeybindingsPicker_RendersGroupHeadings(t *testing.T) {
+	isolateHome(t)
+	invalidateKeyMapCache()
+	defer invalidateKeyMapCache()
+
+	m := newTestModel(t, newFakeProvider())
+	m.width = 120
+	m.mode = modeConfig
+	m.configKeybindingsPickerActive = true
+
+	body := m.viewConfigKeybindingsPicker()
+	for _, heading := range []string{"Screens", "Tabs", "Pickers & dispatch", "App"} {
+		if !strings.Contains(body, heading) {
+			t.Errorf("picker body missing heading %q; got:\n%s", heading, body)
+		}
+	}
+	// Sanity: every action label still renders.
+	for _, item := range actionMeta {
+		if !strings.Contains(body, item.Label) {
+			t.Errorf("picker body missing label %q", item.Label)
+		}
+	}
+}
+
+// TestActionMeta_FlattenedFromGroupsInDisplayOrder pins the
+// cursor-walk order. The picker reads items group-by-group; the flat
+// actionMeta — used for cursor indexing and persistence — must walk
+// the same order so capture mode writes the action under the cursor.
+// Adding a group or reordering items here is a deliberate UX change
+// and should update this test alongside.
+func TestActionMeta_FlattenedFromGroupsInDisplayOrder(t *testing.T) {
+	var want []Action
+	for _, g := range actionGroups {
+		for _, item := range g.Items {
+			want = append(want, item.Action)
+		}
+	}
+	if len(actionMeta) != len(want) {
+		t.Fatalf("actionMeta len=%d, want %d", len(actionMeta), len(want))
+	}
+	for i := range want {
+		if actionMeta[i].Action != want[i] {
+			t.Errorf("actionMeta[%d]=%s, want %s", i, actionMeta[i].Action, want[i])
+		}
+	}
+	// Spot-check: the new ActionTabClose row sits inside the Tabs
+	// group, and ActionReload sits inside Pickers & dispatch. Catches
+	// accidental re-shuffles that would silently move the cursor.
+	if pos := indexOfAction(ActionTabClose); pos < 0 {
+		t.Error("ActionTabClose missing from flat actionMeta")
+	} else if g := groupForFlatIndex(pos); g != "Tabs" {
+		t.Errorf("ActionTabClose lives in group %q, want Tabs", g)
+	}
+	if pos := indexOfAction(ActionReload); pos < 0 {
+		t.Error("ActionReload missing from flat actionMeta")
+	} else if g := groupForFlatIndex(pos); g != "Pickers & dispatch" {
+		t.Errorf("ActionReload lives in group %q, want \"Pickers & dispatch\"", g)
+	}
+}
+
+func indexOfAction(a Action) int {
+	for i, item := range actionMeta {
+		if item.Action == a {
+			return i
+		}
+	}
+	return -1
+}
+
+func groupForFlatIndex(idx int) string {
+	cursor := 0
+	for _, g := range actionGroups {
+		next := cursor + len(g.Items)
+		if idx >= cursor && idx < next {
+			return g.Heading
+		}
+		cursor = next
+	}
+	return ""
 }

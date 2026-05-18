@@ -1181,7 +1181,7 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.workflowPicker != nil {
 		return m.updateWorkflowPicker(msg)
 	}
-	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
+	if currentKeyMap().Matches(ActionTabClose, msg) {
 		return m, closeTabCmd(m.id)
 	}
 	if m.shellMode {
@@ -1590,7 +1590,7 @@ func (m *model) dismissCancelTurnConfirmIfIdle() {
 
 func (m model) updateCloseTabConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case msg.Mod == tea.ModCtrl && msg.Code == 'd':
+	case currentKeyMap().Matches(ActionTabClose, msg):
 		m.closeTabConfirming = false
 		return m, closeTabCmd(m.id)
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c':
@@ -1691,7 +1691,7 @@ func (m model) applyPRMergeConfirm() (tea.Model, tea.Cmd) {
 }
 
 func (m model) updatePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
+	if currentKeyMap().Matches(ActionTabClose, msg) {
 		return m, closeTabCmd(m.id)
 	}
 	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {

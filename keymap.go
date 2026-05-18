@@ -16,16 +16,21 @@ import (
 // own handlers. Adding a new global shortcut requires four edits:
 //  1. New const here.
 //  2. defaultKeyBindings entry.
-//  3. actionMeta entry (label shown in /config).
+//  3. actionGroups entry (label + group shown in /config).
 //  4. KeyMap.Matches lookup at the dispatch site.
 type Action string
 
-// Ctrl+D close-tab and Ctrl+C are deliberately *not* in this list.
-// They're universal escape hatches every modal handler needs to honour
-// (11 sites today), so keeping them inline avoids both the broad
-// refactor and the risk of a misconfigured keymap leaving the user
-// with no way out of a modal. Same for j/k/arrow navigation inside
-// the kanban / workflow builder / pickers.
+// Ctrl+C and modal-escape Ctrl+D are deliberately *not* on this list.
+// Ctrl+C is the universal cancel and every screen/modal needs it to
+// always work; modal-escape Ctrl+D (the /config modal, provider
+// switcher, approval, ask-question, ollama screen) stays hardcoded
+// for the same reason — Esc already closes those, but Ctrl+D is the
+// canonical exit so its dispatcher mustn't follow a rebound key into
+// nowhere. Same for j/k/arrow navigation inside the kanban / workflow
+// builder / pickers. ActionTabClose covers the tab-level close path
+// (chat dispatcher, issues / workflows / workflow-run tabs, pickers,
+// close-confirm bypass) — six sites that all want to follow the
+// user's rebind.
 const (
 	ActionScreenIssues    Action = "screen.issues"
 	ActionScreenPRs       Action = "screen.prs"
@@ -33,7 +38,9 @@ const (
 	ActionScreenAsk       Action = "screen.ask"
 	ActionProviderSwitch  Action = "provider.switch"
 	ActionChatWorkflow    Action = "chat.workflow"
+	ActionReload          Action = "screen.reload"
 	ActionTabNew          Action = "tab.new"
+	ActionTabClose        Action = "tab.close"
 	ActionTabPrev         Action = "tab.prev"
 	ActionTabNext         Action = "tab.next"
 	ActionAppSuspend      Action = "app.suspend"
@@ -224,7 +231,9 @@ var defaultKeyBindings = map[Action]KeyBinding{
 	ActionScreenAsk:       {Mod: tea.ModCtrl, Code: 'o'},
 	ActionProviderSwitch:  {Mod: tea.ModCtrl, Code: 'b'},
 	ActionChatWorkflow:    {Mod: tea.ModCtrl, Code: 'f'},
+	ActionReload:          {Mod: tea.ModCtrl, Code: 'r'},
 	ActionTabNew:          {Mod: tea.ModCtrl, Code: 't'},
+	ActionTabClose:        {Mod: tea.ModCtrl, Code: 'd'},
 	ActionTabPrev:         {Mod: tea.ModCtrl, Code: tea.KeyLeft},
 	ActionTabNext:         {Mod: tea.ModCtrl, Code: tea.KeyRight},
 	ActionAppSuspend:      {Mod: tea.ModCtrl, Code: 'z'},
@@ -302,22 +311,110 @@ func LoadKeyMapFromConfig(raw map[string]string) KeyMap {
 	return km
 }
 
-// actionMeta lists the user-facing label for each action; the order
-// here drives the row order in the /config keybindings sub-picker.
-var actionMeta = []struct {
+// actionMetaItem pairs an Action with the label the /config picker
+// renders for it. Exported only as a shape — instances live inside
+// actionGroups and the derived flat actionMeta.
+type actionMetaItem struct {
 	Action Action
 	Label  string
-}{
-	{ActionScreenIssues, "Issues screen"},
-	{ActionScreenPRs, "PRs screen"},
-	{ActionScreenWorkflows, "Workflows screen"},
-	{ActionScreenAsk, "Ask (chat) screen"},
-	{ActionProviderSwitch, "Provider switch"},
-	{ActionChatWorkflow, "Run workflow on chat"},
-	{ActionTabNew, "New tab"},
-	{ActionTabPrev, "Previous tab"},
-	{ActionTabNext, "Next tab"},
-	{ActionAppSuspend, "Suspend ask"},
+}
+
+// actionMetaGroup is one heading + its items in the /config picker.
+// Adding a group is purely cosmetic: dispatch / persistence /
+// cursor math all walk the flat actionMeta, which is derived from
+// these groups by flattenActionGroups.
+type actionMetaGroup struct {
+	Heading string
+	Items   []actionMetaItem
+}
+
+// actionGroups drives the /config keybindings picker layout. The
+// heading order here is the render order; the item order inside each
+// group is also the cursor walk order (Up/Down skip across group
+// boundaries via the flattened actionMeta).
+var actionGroups = []actionMetaGroup{
+	{Heading: "Screens", Items: []actionMetaItem{
+		{ActionScreenIssues, "Issues screen"},
+		{ActionScreenPRs, "PRs screen"},
+		{ActionScreenWorkflows, "Workflows screen"},
+		{ActionScreenAsk, "Ask (chat) screen"},
+	}},
+	{Heading: "Tabs", Items: []actionMetaItem{
+		{ActionTabNew, "New tab"},
+		{ActionTabClose, "Close tab"},
+		{ActionTabPrev, "Previous tab"},
+		{ActionTabNext, "Next tab"},
+	}},
+	{Heading: "Pickers & dispatch", Items: []actionMetaItem{
+		{ActionProviderSwitch, "Provider switch"},
+		{ActionChatWorkflow, "Run workflow on chat"},
+		{ActionReload, "Reload issues/PRs"},
+	}},
+	{Heading: "App", Items: []actionMetaItem{
+		{ActionAppSuspend, "Suspend ask"},
+	}},
+}
+
+// actionMeta is the flat in-order item list derived from actionGroups.
+// The picker's cursor indexes into this slice and persistence code
+// looks up actions by position here, so the picker can stay
+// group-aware in rendering while every other site treats the action
+// set as a flat ordered list.
+var actionMeta = flattenActionGroups(actionGroups)
+
+func flattenActionGroups(groups []actionMetaGroup) []actionMetaItem {
+	var out []actionMetaItem
+	for _, g := range groups {
+		out = append(out, g.Items...)
+	}
+	return out
+}
+
+// keyHintFor returns the user-facing display form of action's current
+// binding, suitable for inline use in a hint/toast string. Returns ""
+// for unbound actions so callers can drop the surrounding clause via
+// joinHintClauses (otherwise a rebound-to-empty action would print a
+// dangling " · " or " opens the builder" with no key prefix).
+func keyHintFor(action Action) string {
+	return currentKeyMap().Binding(action).String()
+}
+
+// keyClause renders "<key> <suffix>" for an action, suitable for one
+// segment of a · -joined hint footer. Returns "" when the action is
+// unbound so joinHintClauses can drop the clause entirely — printing
+// "  reload" with a leading-empty key would look broken.
+func keyClause(action Action, suffix string) string {
+	k := keyHintFor(action)
+	if k == "" {
+		return ""
+	}
+	return k + " " + suffix
+}
+
+// joinHintClauses joins the non-empty clauses with " · ", the
+// canonical separator used by every hint footer in the app. Empty
+// clauses (produced by keyClause / keyHintFor for unbound actions) are
+// dropped instead of leaving a hanging separator.
+func joinHintClauses(parts ...string) string {
+	out := parts[:0]
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, " · ")
+}
+
+// workflowsBuilderHint is the toast/picker string shown when the user
+// triggers a workflow action but no workflows are configured. When
+// ActionScreenWorkflows is bound, the hint names the live shortcut so
+// rebinds stay in sync; when unbound, it falls back to the slash
+// command path, which is always available.
+func workflowsBuilderHint() string {
+	if k := keyHintFor(ActionScreenWorkflows); k != "" {
+		return "no workflows configured · " + k + " opens the builder"
+	}
+	return "no workflows configured · open the builder from /workflows"
 }
 
 // Process-wide cached keymap. Dispatch happens on every keypress, so

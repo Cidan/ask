@@ -161,32 +161,29 @@ func persistKeyBinding(action Action, binding KeyBinding) error {
 }
 
 // viewConfigKeybindingsPicker mirrors the memory picker's chrome —
-// title, table of rows, help line — so the /config aesthetic stays
-// consistent. Capture mode swaps the body for a prompt.
+// title, grouped rows, help line — so the /config aesthetic stays
+// consistent. Capture mode swaps the body for a prompt. Groups carry
+// an inline heading and have a blank row between them; cursor math
+// still walks the flat actionMeta so Up/Down skip the headings
+// without special-casing.
 func (m model) viewConfigKeybindingsPicker() string {
 	km := currentKeyMap()
 	rows := make([][2]string, 0, len(actionMeta))
 	for _, am := range actionMeta {
-		label := am.Label
-		binding := km.Binding(am.Action).String()
-		if binding == "" {
-			binding = "(unbound)"
-		}
-		rows = append(rows, [2]string{label, binding})
+		rows = append(rows, [2]string{am.Label, displayBinding(km.Binding(am.Action))})
 	}
 	innerW := keybindingsPickerInnerWidth(m.width, rows)
 
 	var capturePrompt string
 	if m.configKeybindingsCapturing && m.configKeybindingsCursor >= 0 && m.configKeybindingsCursor < len(actionMeta) {
-		current := km.Binding(actionMeta[m.configKeybindingsCursor].Action).String()
-		if current == "" {
-			current = "(unbound)"
-		}
 		capturePrompt = "Press the new key combination for " +
 			actionMeta[m.configKeybindingsCursor].Label +
-			" (currently " + current + ")."
+			" (currently " + displayBinding(km.Binding(actionMeta[m.configKeybindingsCursor].Action)) + ")."
 	}
 	const helpFooter = "↑↓ navigate · enter rebind · r reset · u unbind · esc close"
+	for _, g := range actionGroups {
+		innerW = keybindingsExpandInnerWidth(m.width, innerW, g.Heading)
+	}
 	for _, line := range []string{capturePrompt, helpFooter} {
 		if line == "" {
 			continue
@@ -204,8 +201,17 @@ func (m model) viewConfigKeybindingsPicker() string {
 			configHelpStyle.Render(truncateForRow("esc cancels without saving.", innerW)),
 		)
 	} else {
-		for i, r := range rows {
-			body = append(body, renderKeybindingPickerRow(r[0], r[1], innerW, i == m.configKeybindingsCursor))
+		flatIdx := 0
+		for gi, g := range actionGroups {
+			if gi > 0 {
+				body = append(body, "")
+			}
+			body = append(body, configKeybindingsGroupHeadingStyle().Render(truncateForRow(g.Heading, innerW)))
+			for _, item := range g.Items {
+				binding := displayBinding(km.Binding(item.Action))
+				body = append(body, renderKeybindingPickerRow(item.Label, binding, innerW, flatIdx == m.configKeybindingsCursor))
+				flatIdx++
+			}
 		}
 	}
 
@@ -219,6 +225,24 @@ func (m model) viewConfigKeybindingsPicker() string {
 	)
 
 	return themePickerBoxStyle.Render(strings.Join(body, "\n"))
+}
+
+// displayBinding stringifies a binding for picker rows. The zero-value
+// (unbound) binding stringifies to "" — we substitute "(unbound)" so
+// the row stays legible; every other binding round-trips through its
+// canonical String() form.
+func displayBinding(b KeyBinding) string {
+	if s := b.String(); s != "" {
+		return s
+	}
+	return "(unbound)"
+}
+
+// configKeybindingsGroupHeadingStyle is the inline heading style for
+// group rows in the /config keybindings picker. Bold over the dim
+// foreground gives it visual lift without competing with the title.
+func configKeybindingsGroupHeadingStyle() lipgloss.Style {
+	return dimStyle.Bold(true)
 }
 
 func renderKeybindingPickerRow(label, binding string, width int, selected bool) string {

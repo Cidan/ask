@@ -26,7 +26,7 @@ func (m model) dispatchChatWorkflow() (tea.Model, tea.Cmd) {
 	}
 	items := projectWorkflows(m.cwd)
 	if len(items) == 0 {
-		return m, m.toast.show("no workflows configured · ctrl+w opens the builder")
+		return m, m.toast.show(workflowsBuilderHint())
 	}
 	m = m.openWorkflowPicker(items, source)
 	return m, nil
