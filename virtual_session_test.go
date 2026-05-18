@@ -1113,18 +1113,86 @@ func TestNeutralTurnsFromHistory_MapsKindsAndSkipsTools(t *testing.T) {
 		{kind: histUser, text: "more"},
 	}
 	got := neutralTurnsFromHistory(history)
-	if len(got) != 3 {
-		t.Fatalf("want 3 turns, got %d: %+v", len(got), got)
+	if len(got) != 2 {
+		t.Fatalf("want 2 turns, got %d: %+v", len(got), got)
 	}
 	want := []NeutralTurn{
 		{Role: "user", Text: "hi"},
 		{Role: "assistant", Text: "hello"},
-		{Role: "user", Text: "more"},
 	}
 	for i, w := range want {
 		if got[i] != w {
 			t.Errorf("turn[%d] = %+v, want %+v", i, got[i], w)
 		}
+	}
+}
+
+func TestApplyProviderSwitch_SkipsErroredTrailingUserTurn(t *testing.T) {
+	isolateHome(t)
+	pA := newFakeProvider()
+	pA.id = "claude"
+	pA.displayName = "Claude"
+	pB := newFakeProvider()
+	pB.id = "codex"
+	pB.displayName = "Codex"
+	materializeCalls := 0
+	pB.materializeFn = func(string, []NeutralTurn) (string, string, error) {
+		materializeCalls++
+		return "should-not-be-used", "", nil
+	}
+	withRegisteredProviders(t, pA, pB)
+
+	store := &virtualSessionStore{Version: 1}
+	vsID := upsertVirtualSession(store, "", "/ws", "claude", "claude-session", "/ws", "failed prompt", time.Now().UTC())
+	if err := saveVirtualSessions(store); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	m := newTestModel(t, pA)
+	m.cwd = "/ws"
+	m.virtualSessionID = vsID
+	m.sessionID = "claude-session"
+	m.history = []historyEntry{
+		{kind: histUser, text: "failed prompt"},
+		{kind: histPrerendered, text: "error: usage limit reached"},
+	}
+	m.providerSwitchProvIdx = 1
+
+	newM, cmd := m.applyProviderSwitch("")
+	mm := newM.(model)
+	if cmd != nil {
+		t.Fatal("switch after an unanswered error turn should not dispatch session translation")
+	}
+	if materializeCalls != 0 {
+		t.Fatalf("target Materialize called %d times; failed trailing user turn must not become a resume session", materializeCalls)
+	}
+	if mm.busy {
+		t.Error("switch with no completed turns should leave the tab idle")
+	}
+	if mm.sessionID != "" {
+		t.Errorf("sessionID=%q; next codex send should start a fresh thread", mm.sessionID)
+	}
+	if mm.virtualSessionID != vsID {
+		t.Errorf("virtualSessionID=%q want %q", mm.virtualSessionID, vsID)
+	}
+
+	sentM, sendCmd := mm.sendToProvider("try codex")
+	if sendCmd == nil {
+		t.Fatal("fresh codex send should start provider")
+	}
+	done := runProviderStartCmd(t, sendCmd)
+	sent := sentM.(model)
+	if !sent.procStarting {
+		t.Fatal("send should be waiting for codex startup")
+	}
+	if len(pB.startArgs) != 1 {
+		t.Fatalf("StartSession called %d times, want 1", len(pB.startArgs))
+	}
+	if pB.startArgs[0].SessionID != "" {
+		t.Errorf("StartSession SessionID=%q; want fresh thread after failed source turn", pB.startArgs[0].SessionID)
+	}
+	if done.err != nil {
+		t.Fatalf("start cmd returned error: %v", done.err)
 	}
 }
 
@@ -1783,7 +1851,10 @@ func TestResumeVirtualSession_TranslateRecoversWorktreeFromSourceRef(t *testing.
 	pA.id = "fakeA"
 	pA.displayName = "Fake A"
 	pA.loadHistoryFn = func(_ string, _ HistoryOpts) ([]historyEntry, error) {
-		return []historyEntry{{kind: histUser, text: "u"}}, nil
+		return []historyEntry{
+			{kind: histUser, text: "u"},
+			{kind: histResponse, text: "a"},
+		}, nil
 	}
 	pB := newFakeProvider()
 	pB.id = "fakeB"
@@ -1836,7 +1907,10 @@ func TestResumeVirtualSession_TranslateKeepsProjectRootWhenSourceRefIsProjectRoo
 	pA.id = "fakeA"
 	pA.displayName = "Fake A"
 	pA.loadHistoryFn = func(_ string, _ HistoryOpts) ([]historyEntry, error) {
-		return []historyEntry{{kind: histUser, text: "u"}}, nil
+		return []historyEntry{
+			{kind: histUser, text: "u"},
+			{kind: histResponse, text: "a"},
+		}, nil
 	}
 	pB := newFakeProvider()
 	pB.id = "fakeB"
