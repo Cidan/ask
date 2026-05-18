@@ -52,6 +52,14 @@ type askConfig struct {
 	UI       uiConfig     `json:"ui,omitempty"`
 	Memory   memoryConfig `json:"memory,omitempty"`
 
+	// Keybindings overrides the built-in global shortcuts (Ctrl+W
+	// workflows, Ctrl+I issues, …). Stored as action → "ctrl+w" so
+	// users can hand-edit the file without learning a binary format,
+	// and so unknown actions in older builds are skipped instead of
+	// crashing. Only entries that diverge from DefaultKeyMap are
+	// persisted; an empty/missing map means "all defaults."
+	Keybindings map[string]string `json:"keybindings,omitempty"`
+
 	// Projects holds per-project settings keyed by the canonical
 	// absolute path of the project root. Issue-tracking is the first
 	// per-project surface; future per-project knobs (custom slash

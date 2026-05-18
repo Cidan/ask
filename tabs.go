@@ -108,16 +108,15 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.broadcastResize()
 
 	case tea.KeyPressMsg:
-		if m.Mod == tea.ModCtrl && m.Code == 'z' {
+		km := currentKeyMap()
+		switch {
+		case km.Matches(ActionAppSuspend, m):
 			return a.suspendApp()
-		}
-		if m.Mod == tea.ModCtrl && m.Code == 't' {
+		case km.Matches(ActionTabNew, m):
 			return a.openTab()
-		}
-		if m.Mod == tea.ModCtrl && m.Code == tea.KeyLeft {
+		case km.Matches(ActionTabPrev, m):
 			return a.switchTab(a.active - 1)
-		}
-		if m.Mod == tea.ModCtrl && m.Code == tea.KeyRight {
+		case km.Matches(ActionTabNext, m):
 			return a.switchTab(a.active + 1)
 		}
 		return a.dispatchActive(msg)

@@ -1093,7 +1093,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		// Cycling is a no-op on views that aren't in the cycle (e.g.
 		// the detail view returned by Enter), which keeps Ctrl+I from
 		// surprising a user mid-read.
-		if msg.Mod == tea.ModCtrl && msg.Code == 'i' && !m.modalOpen() {
+		km := currentKeyMap()
+		if km.Matches(ActionScreenIssues, msg) && !m.modalOpen() {
 			if m.screen == screenIssues {
 				if s := m.issueStateForScreen(screenIssues); s != nil {
 					s.cycleView()
@@ -1122,7 +1123,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			return m.enterIssueScreen(screenIssues, provider, pc)
 		}
-		if msg.Mod == tea.ModCtrl && msg.Code == 'p' && !m.modalOpen() {
+		if km.Matches(ActionScreenPRs, msg) && !m.modalOpen() {
 			if m.screen == screenPRs {
 				if s := m.issueStateForScreen(screenPRs); s != nil {
 					s.cycleView()
@@ -1140,10 +1141,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			return m.enterIssueScreen(screenPRs, provider, pc)
 		}
-		if msg.Mod == tea.ModCtrl && msg.Code == 'w' && !m.modalOpen() {
-			// Ctrl+W opens the workflows builder. Going to the
-			// builder from the issues screen mirrors Ctrl+I's
-			// "drop the cache + cancel in-flight" hygiene so a
+		if km.Matches(ActionScreenWorkflows, msg) && !m.modalOpen() {
+			// Workflows screen: drop issue-screen cache on the way
+			// out mirrors Ctrl+I's "cancel in-flight" hygiene so a
 			// later return to issues re-fetches cleanly.
 			if isIssueScreen(m.screen) {
 				m.discardIssueScreenState(m.screen)
@@ -1156,7 +1156,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			return m, nil
 		}
-		if msg.Mod == tea.ModCtrl && msg.Code == 'o' && !m.modalOpen() {
+		if km.Matches(ActionScreenAsk, msg) && !m.modalOpen() {
 			// Leaving issues: drop cache + cancel in-flight so re-entry
 			// doesn't stack duplicate chunks onto the chain. Carry
 			// state lives on the kanban view, so we re-insert the
@@ -1230,7 +1230,8 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.Mod == tea.ModCtrl && msg.Code == 'v' {
 		return m, pasteImageCmd()
 	}
-	if msg.Mod == tea.ModCtrl && msg.Code == 'b' {
+	km := currentKeyMap()
+	if km.Matches(ActionProviderSwitch, msg) {
 		if m.busy {
 			// Don't allow swapping mid-turn — the stream reader is
 			// tied to the current proc and the session id is about to
@@ -1247,10 +1248,10 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.openProviderSwitch(), nil
 	}
-	if msg.Mod == tea.ModCtrl && msg.Code == 'f' {
+	if km.Matches(ActionChatWorkflow, msg) {
 		// Path-picker / slash popover are mid-edit affordances; let
-		// them keep the keypress so Ctrl+F doesn't yank the user out
-		// of an in-flight completion.
+		// them keep the keypress so the chat-workflow trigger doesn't
+		// yank the user out of an in-flight completion.
 		if m.pathPickerActive() || len(m.filterSlashCmds()) > 0 {
 			return m, nil
 		}

@@ -71,6 +71,8 @@ One `package main`, one file per concern.
 | `workflows_run.go`     | Step runner: prompt assembly, advance-on-turn-complete, finalise on done/failed. |
 | `workflow_source.go`   | `workflowSource` tagged union (issue ref vs chat transcript) consumed by picker / runner / banner. |
 | `chat_workflow.go`     | `Ctrl+F` dispatcher — snapshots `m.history` into a chat source, gates on busy/empty, opens the picker. |
+| `keymap.go`            | Remappable global shortcuts — `Action` enum, `KeyBinding` parse/stringify, default keymap, `currentKeyMap()` cached accessor. Per-screen keys (kanban `j/k`, modal arrows, Ctrl+D close) stay inline; this only covers the global screen-switch + tab-nav surface. |
+| `config_keybindings.go`| `/config → Keybindings...` sub-picker. Enter on a row arms capture mode; the next non-Esc keypress is persisted to `cfg.Keybindings` and the keymap cache is invalidated so the change takes effect immediately. |
 | `util.go`              | Small helpers (`short`, `humanDuration`, `humanBytes`, `shortCwd`).     |
 | `debug.go`             | `ASK_DEBUG=1` → `/tmp/ask.log`.                                         |
 | `*_test.go`            | Fast, behavior-only tests. See "Test layout" below.                    |
@@ -109,6 +111,8 @@ exercised by the user; code alone won't catch layout regressions.
 | `workflows_run_test.go`    | Step runner — advance, finalise, fail, idempotent finalise, unknown-provider rejection. |
 | `issues_workflow_test.go`  | `f` keybind dispatch on the issues screen — toast / picker / focus-existing-tab. |
 | `chat_workflow_test.go`    | `Ctrl+F` chat-source flow — transcript filter, key uniqueness, prompt assembly, dispatcher gates (busy/empty/no-workflows/workflow-tab), end-to-end picker → spawn. |
+| `keymap_test.go`           | `ParseKeyBinding` / `KeyBinding.String` round-trip, default keymap coverage, load-from-config (unknown/malformed entries skipped, empty-string unbinds), `currentKeyMap` invalidation. |
+| `keymap_dispatch_test.go`  | End-to-end: overridden keymap rewires `tabs.go` tab navigation; `/config → Keybindings` capture persists to disk and re-binding to default deletes the entry. |
 | `util_test.go` / `paths_test.go` | Pure helpers, path completion, frontmatter parsing.       |
 
 ### Testing conventions
