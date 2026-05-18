@@ -962,11 +962,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.mode == modeConfig && m.configProjectPickerActive && m.configProjectFieldEditing != "" {
 			return m.applyConfigProjectPaste(msg.Content)
 		}
-		// The ask modal has two free-text affordances — the custom row
-		// ("type your own…") and the per-question note editor — that
-		// each accept typed characters. Bracketed paste is the same
-		// modality and must route into whichever is focused; without
-		// this the user could type a URL but not paste one.
 		if m.mode == modeAskQuestion {
 			return m.applyAskPaste(msg.Content)
 		}

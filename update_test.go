@@ -1465,10 +1465,7 @@ func TestUpdate_PasteMsgDuringCloseTabConfirmIsAbsorbed(t *testing.T) {
 // Paste in any mode that isn't modeInput is absorbed (with the two
 // config-field-edit fast paths handled by their own tests). Covers
 // every non-input viewMode so a future mode addition can't silently
-// fall through to the textarea. The askQuestion case here has empty
-// questions/answers so applyAskPaste hits its no-destination guard;
-// the routed paths (custom row, note editor) have their own tests
-// below.
+// fall through to the textarea.
 func TestUpdate_PasteMsgInNonInputModesIsAbsorbed(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1537,10 +1534,6 @@ func TestUpdate_PasteMsgInConfigProjectFieldEditorRoutes(t *testing.T) {
 	}
 }
 
-// Bracketed paste with the cursor on the ask modal's "Enter your own"
-// row routes into qAnswer.custom — the same destination the typed-text
-// branch in handleCustomTyping writes to. Without this the user can
-// type a URL but not paste one, which is what the bug report flagged.
 func TestUpdate_PasteMsgInAskModalCustomRowRoutesToCustom(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m = m.startAsk([]question{{
@@ -1564,9 +1557,6 @@ func TestUpdate_PasteMsgInAskModalCustomRowRoutesToCustom(t *testing.T) {
 	}
 }
 
-// Multi-line paste preserves newlines — handleCustomTyping already
-// supports them via shift+enter, and pasted strings must behave the
-// same so dropping a code block into the custom row works.
 func TestUpdate_PasteMsgInAskModalCustomRowPreservesNewlines(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m = m.startAsk([]question{{
@@ -1584,9 +1574,6 @@ func TestUpdate_PasteMsgInAskModalCustomRowPreservesNewlines(t *testing.T) {
 	}
 }
 
-// On a qPickMany question, the typed-text branch auto-selects the
-// custom row as soon as it becomes non-empty. Paste must mirror that
-// so a pasted answer is actually submitted with the other picks.
 func TestUpdate_PasteMsgInAskModalCustomRowAutoSelectsForPickMany(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m = m.startAsk([]question{{
@@ -1607,10 +1594,6 @@ func TestUpdate_PasteMsgInAskModalCustomRowAutoSelectsForPickMany(t *testing.T) 
 	}
 }
 
-// While the note editor is active (user pressed `n`), paste should
-// append to qAnswer.note — same destination the typed-text branch in
-// updateAsk's askEditNote arm uses. Without this, taking notes by
-// pasting a stack trace into the modal is impossible.
 func TestUpdate_PasteMsgInAskModalNoteEditorRoutesToNote(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m = m.startAsk([]question{{
@@ -1631,9 +1614,6 @@ func TestUpdate_PasteMsgInAskModalNoteEditorRoutesToNote(t *testing.T) {
 	}
 }
 
-// Cursor on a regular option (not the custom row, not editing a note)
-// has no destination for the paste — absorb silently. Mirrors the
-// updateAsk behaviour where typed text on a non-custom row is a no-op.
 func TestUpdate_PasteMsgInAskModalOnFixedOptionIsAbsorbed(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m = m.startAsk([]question{{
@@ -1652,6 +1632,98 @@ func TestUpdate_PasteMsgInAskModalOnFixedOptionIsAbsorbed(t *testing.T) {
 	}
 	if m2.input.Value() != "seed" {
 		t.Errorf("paste must not leak into the chat composer: got %q", m2.input.Value())
+	}
+}
+
+func TestUpdate_PasteMsgInAskModalCancelConfirmIsAbsorbed(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m = m.startAsk([]question{{
+		kind:    qPickOne,
+		prompt:  "pick one",
+		options: []string{"a", switcherCustomRowLabel},
+	}})
+	m.askCursor = 1
+	m.askConfirmingCancel = true
+	m.askAnswers[0].custom = "untouched"
+	m.input.SetValue("seed")
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "leak"})
+
+	if m2.askAnswers[0].custom != "untouched" {
+		t.Errorf("paste during ask cancel confirm must not touch custom: got %q", m2.askAnswers[0].custom)
+	}
+	if m2.input.Value() != "seed" {
+		t.Errorf("paste must not leak into the chat composer: got %q", m2.input.Value())
+	}
+	if !m2.askConfirmingCancel {
+		t.Errorf("paste must not dismiss the ask cancel confirm")
+	}
+}
+
+func TestUpdate_PasteMsgInAskModalOllamaConfigRoutesToActiveField(t *testing.T) {
+	cases := []struct {
+		name      string
+		field     int
+		host      string
+		model     string
+		content   string
+		wantHost  string
+		wantModel string
+	}{
+		{
+			name:      "host",
+			field:     0,
+			host:      "http://",
+			model:     "llama3",
+			content:   "localhost:11434",
+			wantHost:  "http://localhost:11434",
+			wantModel: "llama3",
+		},
+		{
+			name:      "model",
+			field:     1,
+			host:      "localhost:11434",
+			model:     "llama",
+			content:   "3.2",
+			wantHost:  "localhost:11434",
+			wantModel: "llama3.2",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := newTestModel(t, newFakeProvider())
+			m = m.startAsk([]question{{
+				kind:    qPickOne,
+				prompt:  "pick a model",
+				options: []string{ollamaModelOption, switcherCustomRowLabel},
+			}})
+			m.askCursor = 1
+			m.askAnswers[0].custom = "custom"
+			m.askOllamaActive = true
+			m.askOllamaField = c.field
+			m.askOllamaHost = c.host
+			m.askOllamaModel = c.model
+			m.askOllamaErr = "previous error"
+			m.input.SetValue("seed")
+
+			m2, _ := runUpdate(t, m, tea.PasteMsg{Content: c.content})
+
+			if m2.askOllamaHost != c.wantHost {
+				t.Errorf("askOllamaHost=%q want %q", m2.askOllamaHost, c.wantHost)
+			}
+			if m2.askOllamaModel != c.wantModel {
+				t.Errorf("askOllamaModel=%q want %q", m2.askOllamaModel, c.wantModel)
+			}
+			if m2.askOllamaErr != "" {
+				t.Errorf("paste should clear askOllamaErr, got %q", m2.askOllamaErr)
+			}
+			if m2.askAnswers[0].custom != "custom" {
+				t.Errorf("ollama paste must not touch the underlying custom row: got %q", m2.askAnswers[0].custom)
+			}
+			if m2.input.Value() != "seed" {
+				t.Errorf("paste must not leak into the chat composer: got %q", m2.input.Value())
+			}
+		})
 	}
 }
 
