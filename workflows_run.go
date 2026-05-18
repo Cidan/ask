@@ -11,11 +11,11 @@ import (
 // workflowTabHandleKey gates input on a workflow tab. The user
 // cannot type a turn — there is no chat input on a workflow tab —
 // but they can still scroll the chat viewport to read streaming
-// output, copy text, cancel the run (Ctrl+C), or close the tab
-// (Ctrl+D). Every other key is silently absorbed so a stray press
-// can't bleed into the chain.
+// output, cancel the run (Ctrl+C), or close the tab (ActionTabClose,
+// default Ctrl+D). Every other key is silently absorbed so a stray
+// press can't bleed into the chain.
 func (m model) workflowTabHandleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
+	if currentKeyMap().Matches(ActionTabClose, msg) {
 		return m, closeTabCmd(m.id)
 	}
 	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {

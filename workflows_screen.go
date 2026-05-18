@@ -119,7 +119,7 @@ func (workflowsScreen) updateKey(m model, msg tea.KeyPressMsg) (model, tea.Cmd, 
 	if m.workflowsBuilder == nil {
 		m.workflowsBuilder = newWorkflowsBuilderState(m.cwd)
 	}
-	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
+	if currentKeyMap().Matches(ActionTabClose, msg) {
 		return m, closeTabCmd(m.id), true
 	}
 	b := m.workflowsBuilder

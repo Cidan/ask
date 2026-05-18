@@ -517,6 +517,16 @@ type model struct {
 	configProjectFieldEditing string
 	configProjectFieldDraft   string
 
+	// configKeybindingsPickerActive toggles the /config → Keybindings
+	// sub-picker. Rows are the actions from actionMeta. Pressing Enter
+	// on a row flips configKeybindingsCapturing — the next non-Esc
+	// keypress is recorded as the new binding. Esc during capture
+	// cancels without persisting.
+	configKeybindingsPickerActive bool
+	configKeybindingsCursor       int
+	configKeybindingsCapturing    bool
+	configKeybindingsError        string
+
 	// Ctrl+B starts at the provider list (Level 0). Picking a provider
 	// with model options advances to Level 1, which reuses the shared
 	// ask/model modal rather than a separate switcher-specific editor.

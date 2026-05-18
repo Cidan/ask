@@ -1023,9 +1023,11 @@ func (prsScreen) view(m model) string {
 
 func updateIssueScreenKey(m model, msg tea.KeyPressMsg, screen screenID) (model, tea.Cmd, bool) {
 	s := m.ensureIssueState(screen)
-	// Ctrl+D closes the current tab from any screen — keep parity with
-	// askScreen so the user isn't trapped in issues.
-	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
+	km := currentKeyMap()
+	// ActionTabClose (default Ctrl+D) closes the current tab from any
+	// screen — keep parity with askScreen so the user isn't trapped in
+	// issues.
+	if km.Matches(ActionTabClose, msg) {
 		return m, closeTabCmd(m.id), true
 	}
 	// Workflow picker overlay owns the keyboard when it's open. It
@@ -1053,14 +1055,15 @@ func updateIssueScreenKey(m model, msg tea.KeyPressMsg, screen screenID) (model,
 	}
 	m.exitArmed = false
 	// Loading and error states own the screen until they resolve. While
-	// loading, Ctrl+R is honoured (cancels the in-flight + dispatches a
-	// fresh load); every other key is consumed silently so an early
-	// keypress can't fall through and mutate the (still-empty) list.
-	// While in error state, Enter/Esc dismiss back to ask, Ctrl+R is
-	// the retry affordance (clears the error + dispatches a fresh
-	// load), and every other key is consumed so a stray press can't
-	// whisk the user past the failure without acknowledgment.
-	isCtrlR := msg.Mod == tea.ModCtrl && msg.Code == 'r'
+	// loading, ActionReload (default Ctrl+R) is honoured (cancels the
+	// in-flight + dispatches a fresh load); every other key is consumed
+	// silently so an early keypress can't fall through and mutate the
+	// (still-empty) list. While in error state, Enter/Esc dismiss back
+	// to ask, ActionReload is the retry affordance (clears the error +
+	// dispatches a fresh load), and every other key is consumed so a
+	// stray press can't whisk the user past the failure without
+	// acknowledgment.
+	isCtrlR := km.Matches(ActionReload, msg)
 	if s.loading {
 		if isCtrlR {
 			return m, s.reloadCurrentQuery(), true
@@ -1331,7 +1334,7 @@ func (m model) dispatchIssueWorkflow(screen screenID) (model, tea.Cmd, bool) {
 	}
 	items := projectWorkflows(m.cwd)
 	if len(items) == 0 {
-		return m, m.toast.show("no workflows configured · ctrl+w opens the builder"), true
+		return m, m.toast.show(workflowsBuilderHint()), true
 	}
 	m = m.openWorkflowPicker(items, issueWorkflowSource(ref))
 	return m, nil, true
@@ -1700,16 +1703,25 @@ func (v *issueDetailView) header(s *issuesState) string {
 }
 
 func (v *issueDetailView) hint() string {
-	return dimStyle.Render(
-		"↑/↓ scroll · pgup/pgdn page · f run workflow · esc/backspace back · ctrl+o back to ask",
-	)
+	return dimStyle.Render(joinHintClauses(
+		"↑/↓ scroll",
+		"pgup/pgdn page",
+		"f run workflow",
+		"esc/backspace back",
+		keyClause(ActionScreenAsk, "back to ask"),
+	))
 }
 
 func (v *issueDetailView) hintFor(s *issuesState) string {
 	if s != nil && s.screen == screenPRs {
-		return dimStyle.Render(
-			"↑/↓ scroll · pgup/pgdn page · m merge · f run workflow · esc/backspace back · ctrl+o back to ask",
-		)
+		return dimStyle.Render(joinHintClauses(
+			"↑/↓ scroll",
+			"pgup/pgdn page",
+			"m merge",
+			"f run workflow",
+			"esc/backspace back",
+			keyClause(ActionScreenAsk, "back to ask"),
+		))
 	}
 	return v.hint()
 }
@@ -2252,19 +2264,32 @@ func (v *kanbanIssueView) hintFor(s *issuesState) string {
 	if v.carry.active {
 		return dimStyle.Render("space drop · ←/→/tab change column · esc cancel · other keys disabled while carrying")
 	}
-	if s != nil && s.provider != nil && !s.provider.SupportsCarry() {
-		if _, ok := s.provider.(IssueMerger); ok {
-			return dimStyle.Render(
-				"↑/↓ row · pgup/pgdn page · ←/→/tab column · enter open · m merge · f run workflow · / search · ctrl+r reload · ctrl+o back",
-			)
-		}
-		return dimStyle.Render(
-			"↑/↓ row · pgup/pgdn page · ←/→/tab column · enter open · f run workflow · / search · ctrl+r reload · ctrl+o back",
-		)
+	commonHead := []string{
+		"↑/↓ row",
+		"pgup/pgdn page",
+		"←/→/tab column",
+		"enter open",
 	}
-	return dimStyle.Render(
-		"↑/↓ row · pgup/pgdn page · ←/→/tab column · enter open · space pick up · f run workflow · / search · ctrl+r reload · ctrl+o back",
-	)
+	commonTail := []string{
+		"f run workflow",
+		"/ search",
+		keyClause(ActionReload, "reload"),
+		keyClause(ActionScreenAsk, "back"),
+	}
+	if s != nil && s.provider != nil && !s.provider.SupportsCarry() {
+		mid := []string{}
+		if _, ok := s.provider.(IssueMerger); ok {
+			mid = append(mid, "m merge")
+		}
+		parts := append([]string{}, commonHead...)
+		parts = append(parts, mid...)
+		parts = append(parts, commonTail...)
+		return dimStyle.Render(joinHintClauses(parts...))
+	}
+	parts := append([]string{}, commonHead...)
+	parts = append(parts, "space pick up")
+	parts = append(parts, commonTail...)
+	return dimStyle.Render(joinHintClauses(parts...))
 }
 
 func (v *kanbanIssueView) hint() string {

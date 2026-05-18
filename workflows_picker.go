@@ -103,7 +103,7 @@ func (m model) renderWorkflowPicker() string {
 
 	rows := make([]string, 0, max(1, len(pkr.Items)))
 	if len(pkr.Items) == 0 {
-		rows = append(rows, dimStyle.Render("(no workflows configured — ctrl+w opens the builder)"))
+		rows = append(rows, dimStyle.Render("("+workflowsBuilderHint()+")"))
 	} else {
 		for i, w := range pkr.Items {
 			label := w.Name

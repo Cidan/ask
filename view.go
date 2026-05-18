@@ -794,6 +794,23 @@ func (m model) View() tea.View {
 					Max: image.Pt(pX+pW, pY+pH),
 				})
 			}
+			if m.configKeybindingsPickerActive {
+				picker := m.viewConfigKeybindingsPicker()
+				pW := lipgloss.Width(picker)
+				pH := lipgloss.Height(picker)
+				pX := (m.width - pW) / 2
+				pY := (m.height - pH) / 2
+				if pX < 0 {
+					pX = 0
+				}
+				if pY < 0 {
+					pY = 0
+				}
+				uv.NewStyledString(picker).Draw(canvas, image.Rectangle{
+					Min: image.Pt(pX, pY),
+					Max: image.Pt(pX+pW, pY+pH),
+				})
+			}
 		}
 		if needSwitch {
 			picker := m.viewProviderSwitch()
@@ -1180,7 +1197,7 @@ func workflowBannerSourceLabel(s workflowSource) string {
 // chat input on a workflow tab. While the chain runs the banner shows
 // the current step; on completion it swaps to a "complete" message;
 // on failure it carries the error. The user has no input affordance
-// — closing the tab (ctrl+d) is the only action.
+// — closing the tab (ActionTabClose) is the only action.
 func (m model) renderWorkflowBanner() string {
 	r := m.workflowRun
 	if r == nil {
@@ -1194,6 +1211,14 @@ func (m model) renderWorkflowBanner() string {
 		Border(lipgloss.RoundedBorder()).
 		Padding(0, 1).
 		Width(width)
+	closeClause := keyClause(ActionTabClose, "to close")
+	if closeClause == "" {
+		closeClause = "close tab from /config"
+	}
+	cancelClause := keyClause(ActionTabClose, "cancel")
+	if cancelClause == "" {
+		cancelClause = "cancel from /config"
+	}
 	var title, line2 string
 	sourceLabel := workflowBannerSourceLabel(r.Source)
 	switch {
@@ -1204,13 +1229,20 @@ func (m model) renderWorkflowBanner() string {
 		if reason == "" {
 			reason = "step error"
 		}
-		line2 = dimStyle.Render(fmt.Sprintf("%s · step %d · %s · ctrl+d to close",
-			sourceLabel, r.StepIdx+1, reason))
+		line2 = dimStyle.Render(joinHintClauses(
+			sourceLabel,
+			fmt.Sprintf("step %d", r.StepIdx+1),
+			reason,
+			closeClause,
+		))
 	case r.done:
 		box = box.BorderForeground(activeTheme.accent)
 		title = promptStyle.Render("✓ workflow complete: ") + r.Workflow.Name
-		line2 = dimStyle.Render(fmt.Sprintf("%s · %d step(s) · ctrl+d to close",
-			sourceLabel, len(r.Workflow.Steps)))
+		line2 = dimStyle.Render(joinHintClauses(
+			sourceLabel,
+			fmt.Sprintf("%d step(s)", len(r.Workflow.Steps)),
+			closeClause,
+		))
 	default:
 		box = box.BorderForeground(activeTheme.accent)
 		stepName := "(unnamed)"
@@ -1230,8 +1262,11 @@ func (m model) renderWorkflowBanner() string {
 		}
 		title = promptStyle.Render("▸ workflow ") + r.Workflow.Name +
 			dimStyle.Render(fmt.Sprintf(" · step %d/%d: %s", r.StepIdx+1, len(r.Workflow.Steps), stepName))
-		line2 = dimStyle.Render(fmt.Sprintf("%s · %s · ctrl+d cancel",
-			sourceLabel, runMeta))
+		line2 = dimStyle.Render(joinHintClauses(
+			sourceLabel,
+			runMeta,
+			cancelClause,
+		))
 	}
 	return box.Render(title + "\n" + line2)
 }
