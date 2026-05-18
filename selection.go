@@ -286,6 +286,29 @@ func copyTextCmd(t *toastModel, text string) tea.Cmd {
 	}
 }
 
+// copyTextSilentCmd is the no-toast-on-success variant of copyTextCmd,
+// used by the macOS-only auto-copy-on-drag-end path (see update.go's
+// MouseReleaseMsg handler). macOS terminals (iTerm2, Terminal.app)
+// intercept both Cmd+C and right-click before they reach the inner
+// app, so the explicit copy verbs are unreachable; finishing a drag
+// puts the selection on the system clipboard directly and the
+// selection clears synchronously — the disappearing highlight is the
+// user-facing receipt that the copy happened, which makes the
+// "copied to clipboard" toast from copyTextCmd redundant noise.
+// Failures still surface a toast so a misconfigured clipboard (no
+// pbcopy, OSC 52 blocked, …) isn't silently dropped.
+func copyTextSilentCmd(t *toastModel, text string) tea.Cmd {
+	if t == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		if err := clipboardCopyText(text); err != nil {
+			return toastShowMsg{text: "copy failed: " + err.Error()}
+		}
+		return nil
+	}
+}
+
 // selectionRenderMask returns the inclusive-start / exclusive-end
 // column range to paint with the selection background on a given
 // content row. The mask handles three concerns in one place so the
