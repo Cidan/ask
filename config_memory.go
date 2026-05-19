@@ -249,7 +249,7 @@ func (m model) updateConfigMemoryFieldInput(msg tea.KeyPressMsg) (tea.Model, tea
 		}
 		return m, nil
 	}
-	if msg.Text != "" && msg.Mod&^tea.ModShift == 0 {
+	if configTextInputKey(msg) {
 		m.configMemoryFieldDraft += msg.Text
 		return m, nil
 	}

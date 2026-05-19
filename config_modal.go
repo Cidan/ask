@@ -194,12 +194,16 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if msg.Text != "" && msg.Mod&^tea.ModShift == 0 {
+	if configTextInputKey(msg) {
 		m.configFilter += msg.Text
 		m.configCursor = 0
 		return m, nil
 	}
 	return m, nil
+}
+
+func configTextInputKey(msg tea.KeyPressMsg) bool {
+	return msg.Text != "" && stripKeyLockModifiers(msg.Mod)&^tea.ModShift == 0
 }
 
 // openConfigGlobalPicker opens the Global Options submenu — the
@@ -264,7 +268,7 @@ func (m model) updateConfigGlobalPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd
 		}
 		return m, nil
 	}
-	if msg.Text != "" && msg.Mod&^tea.ModShift == 0 {
+	if configTextInputKey(msg) {
 		m.configFilter += msg.Text
 		m.configGlobalCursor = 0
 		return m, nil

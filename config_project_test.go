@@ -118,6 +118,126 @@ func TestConfigTopLevel_FilterAndBackspace(t *testing.T) {
 	}
 }
 
+func TestConfigTopLevel_FilterBackspaceRemovesOneRune(t *testing.T) {
+	isolateHome(t)
+	m := newTestModel(t, newFakeProvider()).startConfigModal()
+	for _, s := range []string{"å", "p"} {
+		mi, _ := m.updateConfigModal(tea.KeyPressMsg{Text: s})
+		m = mi.(model)
+	}
+	if m.configFilter != "åp" {
+		t.Fatalf("filter=%q want åp", m.configFilter)
+	}
+	mi, _ := m.updateConfigModal(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	m = mi.(model)
+	if m.configFilter != "å" {
+		t.Fatalf("after first Backspace filter=%q want å", m.configFilter)
+	}
+	mi, _ = m.updateConfigModal(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	m = mi.(model)
+	if m.configFilter != "" {
+		t.Fatalf("after second Backspace filter=%q want empty", m.configFilter)
+	}
+}
+
+func TestConfigTopLevel_FilterModifierGate(t *testing.T) {
+	isolateHome(t)
+	cases := []struct {
+		name string
+		msg  tea.KeyPressMsg
+		want string
+	}{
+		{"plain", tea.KeyPressMsg{Text: "p", Code: 'p'}, "p"},
+		{"shift", tea.KeyPressMsg{Text: "P", Code: 'p', Mod: tea.ModShift}, "P"},
+		{"caps lock", tea.KeyPressMsg{Text: "P", Code: 'p', Mod: tea.ModCapsLock}, "P"},
+		{"num lock", tea.KeyPressMsg{Text: "1", Code: '1', Mod: tea.ModNumLock}, "1"},
+		{"ctrl", tea.KeyPressMsg{Text: "p", Code: 'p', Mod: tea.ModCtrl}, ""},
+		{"alt", tea.KeyPressMsg{Text: "p", Code: 'p', Mod: tea.ModAlt}, ""},
+		{"ctrl shift", tea.KeyPressMsg{Text: "P", Code: 'p', Mod: tea.ModCtrl | tea.ModShift}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(t, newFakeProvider()).startConfigModal()
+			mi, _ := m.updateConfigModal(tc.msg)
+			m = mi.(model)
+			if m.configFilter != tc.want {
+				t.Fatalf("filter=%q want %q", m.configFilter, tc.want)
+			}
+		})
+	}
+}
+
+func TestConfigTopLevel_EnterWithStaleCursorClearsSafely(t *testing.T) {
+	isolateHome(t)
+	m := newTestModel(t, newFakeProvider()).startConfigModal()
+	m.configFilter = "pro"
+	m.configCursor = 99
+	mi, _ := m.updateConfigModal(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = mi.(model)
+	if m.mode != modeInput {
+		t.Fatalf("stale cursor Enter should close config; mode=%v", m.mode)
+	}
+	if m.configFilter != "" || m.configCursor != 0 {
+		t.Fatalf("clearConfigModal should reset filter/cursor; filter=%q cursor=%d", m.configFilter, m.configCursor)
+	}
+}
+
+func TestConfigTopLevel_FilterDoesNotLeakAcrossSubmenus(t *testing.T) {
+	isolateHome(t)
+	pressText := func(m model, s string) model {
+		for _, r := range s {
+			mi, _ := m.updateConfigModal(tea.KeyPressMsg{Text: string(r), Code: r})
+			m = mi.(model)
+		}
+		return m
+	}
+
+	m := newTestModel(t, newFakeProvider()).startConfigModal()
+	m = pressText(m, "pro")
+	mi, _ := m.updateConfigModal(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = mi.(model)
+	if !m.configProjectPickerActive {
+		t.Fatalf("filtered Project row should open Project submenu")
+	}
+	if m.configFilter != "" {
+		t.Fatalf("top-level filter leaked into Project submenu: %q", m.configFilter)
+	}
+	m = pressText(m, "git")
+	if m.configFilter != "git" {
+		t.Fatalf("project filter=%q want git", m.configFilter)
+	}
+	mi, _ = m.updateConfigModal(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = mi.(model)
+	if m.configProjectPickerActive {
+		t.Fatalf("Esc should close Project submenu")
+	}
+	if m.configFilter != "" {
+		t.Fatalf("Project filter leaked back to top level: %q", m.configFilter)
+	}
+
+	m = pressText(m, "glo")
+	mi, _ = m.updateConfigModal(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = mi.(model)
+	if !m.configGlobalPickerActive {
+		t.Fatalf("filtered Global row should open Global submenu")
+	}
+	if m.configFilter != "" {
+		t.Fatalf("top-level filter leaked into Global submenu: %q", m.configFilter)
+	}
+	m = pressText(m, "theme")
+	if m.configFilter != "theme" {
+		t.Fatalf("global filter=%q want theme", m.configFilter)
+	}
+	mi, _ = m.updateConfigModal(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = mi.(model)
+	if m.configGlobalPickerActive {
+		t.Fatalf("Esc should close Global submenu")
+	}
+	if m.configFilter != "" {
+		t.Fatalf("Global filter leaked back to top level: %q", m.configFilter)
+	}
+}
+
 func TestProjectPicker_DefaultsToNoneProvider(t *testing.T) {
 	isolateHome(t)
 	m := newTestModel(t, newFakeProvider())
