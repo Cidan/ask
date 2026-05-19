@@ -155,7 +155,10 @@ func (m model) buildCopyText() string {
 	return strings.Join(parts, "\n\n")
 }
 
-// buildVisualCopyText returns the rendered cells under the selection.
+// buildVisualCopyText is the WYSIWYG counterpart of buildCopyText:
+// only the highlighted cells contribute. The macOS auto-copy path
+// uses it so a partial drag copies a word, not the whole entry's
+// raw markdown source.
 func (m model) buildVisualCopyText() string {
 	b, ok := m.selectionRange()
 	if !ok {
