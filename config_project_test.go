@@ -64,6 +64,60 @@ func TestEnterTopLevel_ProjectRow_OpensSubmenu(t *testing.T) {
 	}
 }
 
+// TestConfigTopLevel_FilterAndBackspace covers the regression where
+// typing at the top-level /config menu did nothing — the renderer
+// already drew the "Type to filter" placeholder via filteredConfigItems,
+// but the handler was reading the unfiltered list and never captured
+// text into m.configFilter. Typing should narrow the rows and
+// Backspace should restore the full list.
+func TestConfigTopLevel_FilterAndBackspace(t *testing.T) {
+	isolateHome(t)
+	m := newTestModel(t, newFakeProvider())
+	m = m.startConfigModal()
+
+	// Type "pro" character by character to narrow to Project Options.
+	// Single 'p' isn't enough — "options" contains 'p' so both rows
+	// still match; "pro" is the smallest prefix that disambiguates.
+	for _, r := range "pro" {
+		mi, _ := m.updateConfigModal(tea.KeyPressMsg{Text: string(r)})
+		m = mi.(model)
+	}
+	if m.configFilter != "pro" {
+		t.Fatalf("typing 'pro' should populate configFilter; got %q", m.configFilter)
+	}
+	items := m.filteredConfigItems()
+	if len(items) != 1 || items[0].id != "project" {
+		t.Fatalf("filter 'pro' should narrow to project row; got %+v", items)
+	}
+	// Cursor should snap to 0 so the (single remaining) row is selected.
+	if m.configCursor != 0 {
+		t.Errorf("filter should reset configCursor to 0; got %d", m.configCursor)
+	}
+	// Enter on the filtered single result must open Project Options.
+	mi, _ := m.updateConfigModal(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = mi.(model)
+	if !m.configProjectPickerActive {
+		t.Errorf("Enter on the filtered Project row should open Project submenu")
+	}
+
+	// Reset, type something that matches nothing.
+	m = newTestModel(t, newFakeProvider()).startConfigModal()
+	mi, _ = m.updateConfigModal(tea.KeyPressMsg{Text: "x"})
+	m = mi.(model)
+	if len(m.filteredConfigItems()) != 0 {
+		t.Errorf("filter 'x' should produce empty list; got %d rows", len(m.filteredConfigItems()))
+	}
+	// Backspace clears the filter character; full list restored.
+	mi, _ = m.updateConfigModal(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	m = mi.(model)
+	if m.configFilter != "" {
+		t.Fatalf("Backspace should clear single-char filter; got %q", m.configFilter)
+	}
+	if got := len(m.filteredConfigItems()); got != 2 {
+		t.Errorf("after Backspace the full list should restore; got %d rows", got)
+	}
+}
+
 func TestProjectPicker_DefaultsToNoneProvider(t *testing.T) {
 	isolateHome(t)
 	m := newTestModel(t, newFakeProvider())
