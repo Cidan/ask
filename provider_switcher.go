@@ -83,14 +83,10 @@ func (m model) updateProviderSwitchLevel0(msg tea.KeyPressMsg) (tea.Model, tea.C
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		return m.closeProviderSwitch(), nil
 	case listNavPrev(msg):
-		if m.providerSwitchProvIdx > 0 {
-			m.providerSwitchProvIdx--
-		}
+		m.providerSwitchProvIdx = listNavWrap(m.providerSwitchProvIdx, -1, len(provs))
 		return m, nil
 	case listNavNext(msg):
-		if m.providerSwitchProvIdx < len(provs)-1 {
-			m.providerSwitchProvIdx++
-		}
+		m.providerSwitchProvIdx = listNavWrap(m.providerSwitchProvIdx, +1, len(provs))
 		return m, nil
 	case msg.Code == tea.KeyEnter:
 		// Fork the picker source once — for codex this does a live

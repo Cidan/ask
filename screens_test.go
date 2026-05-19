@@ -291,4 +291,17 @@ func TestScreens_SlashMenuEmacsListNav(t *testing.T) {
 	if mm.menuIdx != 0 {
 		t.Errorf("Ctrl+P should retreat menuIdx; got %d want 0", mm.menuIdx)
 	}
+
+	// Wrap-around: Ctrl+P at index 0 should roll to the last item, and
+	// the subsequent Ctrl+N should roll back to 0.
+	out, _ = mm.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	mm = out.(model)
+	if mm.menuIdx != len(items)-1 {
+		t.Errorf("Ctrl+P at top should wrap to last item; got %d want %d", mm.menuIdx, len(items)-1)
+	}
+	out, _ = mm.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	mm = out.(model)
+	if mm.menuIdx != 0 {
+		t.Errorf("Ctrl+N at last item should wrap to 0; got %d", mm.menuIdx)
+	}
 }

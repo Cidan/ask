@@ -621,14 +621,10 @@ func (m model) workflowsBuilderUpdateProviderPicker(msg tea.KeyPressMsg) (model,
 		b.providerPicker = false
 		return m, nil, true
 	case listNavPrev(msg):
-		if b.providerCursor > 0 {
-			b.providerCursor--
-		}
+		b.providerCursor = listNavWrap(b.providerCursor, -1, len(providerRegistry))
 		return m, nil, true
 	case listNavNext(msg):
-		if b.providerCursor < len(providerRegistry)-1 {
-			b.providerCursor++
-		}
+		b.providerCursor = listNavWrap(b.providerCursor, +1, len(providerRegistry))
 		return m, nil, true
 	case msg.Code == tea.KeyEnter:
 		if b.providerCursor < 0 || b.providerCursor >= len(providerRegistry) {
@@ -661,14 +657,10 @@ func (m model) workflowsBuilderUpdateModelPicker(msg tea.KeyPressMsg) (model, te
 		b.modelPicker = false
 		return m, nil, true
 	case listNavPrev(msg):
-		if b.modelCursor > 0 {
-			b.modelCursor--
-		}
+		b.modelCursor = listNavWrap(b.modelCursor, -1, len(b.modelPickerOpts))
 		return m, nil, true
 	case listNavNext(msg):
-		if b.modelCursor < len(b.modelPickerOpts)-1 {
-			b.modelCursor++
-		}
+		b.modelCursor = listNavWrap(b.modelCursor, +1, len(b.modelPickerOpts))
 		return m, nil, true
 	case msg.Code == tea.KeyEnter:
 		if b.modelCursor < 0 || b.modelCursor >= len(b.modelPickerOpts) {

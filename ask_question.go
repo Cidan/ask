@@ -373,14 +373,10 @@ func (m model) updateAsk(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case listNavPrev(msg):
-		if m.askCursor > 0 {
-			m.askCursor--
-		}
+		m.askCursor = listNavWrap(m.askCursor, -1, len(q.options))
 		return m, nil
 	case listNavNext(msg):
-		if m.askCursor < len(q.options)-1 {
-			m.askCursor++
-		}
+		m.askCursor = listNavWrap(m.askCursor, +1, len(q.options))
 		return m, nil
 	case msg.Code == 'n' && msg.Mod == 0 && !onCustom:
 		m.askEditing = askEditNote

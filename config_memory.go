@@ -206,14 +206,10 @@ func (m model) updateConfigMemoryPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd
 		m = m.closeConfigMemoryPicker()
 		return m, nil
 	case listNavPrev(msg):
-		if m.configMemoryCursor > 0 {
-			m.configMemoryCursor--
-		}
+		m.configMemoryCursor = listNavWrap(m.configMemoryCursor, -1, len(rows))
 		return m, nil
 	case listNavNext(msg):
-		if m.configMemoryCursor < len(rows)-1 {
-			m.configMemoryCursor++
-		}
+		m.configMemoryCursor = listNavWrap(m.configMemoryCursor, +1, len(rows))
 		return m, nil
 	case msg.Code == tea.KeyEnter:
 		if m.configMemoryCursor < 0 || m.configMemoryCursor >= len(rows) {

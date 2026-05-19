@@ -164,14 +164,10 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case msg.Code == tea.KeyEsc:
 		return m.clearConfigModal(), nil
 	case listNavPrev(msg):
-		if m.configCursor > 0 {
-			m.configCursor--
-		}
+		m.configCursor = listNavWrap(m.configCursor, -1, len(items))
 		return m, nil
 	case listNavNext(msg):
-		if m.configCursor < len(items)-1 {
-			m.configCursor++
-		}
+		m.configCursor = listNavWrap(m.configCursor, +1, len(items))
 		return m, nil
 	case msg.Code == tea.KeyEnter:
 		if m.configCursor < 0 || m.configCursor >= len(items) {
@@ -230,14 +226,10 @@ func (m model) updateConfigGlobalPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd
 		m = m.closeConfigGlobalPicker()
 		return m, nil
 	case listNavPrev(msg):
-		if m.configGlobalCursor > 0 {
-			m.configGlobalCursor--
-		}
+		m.configGlobalCursor = listNavWrap(m.configGlobalCursor, -1, len(items))
 		return m, nil
 	case listNavNext(msg):
-		if m.configGlobalCursor < len(items)-1 {
-			m.configGlobalCursor++
-		}
+		m.configGlobalCursor = listNavWrap(m.configGlobalCursor, +1, len(items))
 		return m, nil
 	case msg.Code == tea.KeyEnter:
 		if m.configGlobalCursor < 0 || m.configGlobalCursor >= len(items) {
@@ -626,14 +618,10 @@ func (m model) updateThemePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m = m.closeThemePicker()
 		return m, nil
 	case listNavPrev(msg):
-		if m.configThemeCursor > 0 {
-			m = m.previewTheme(m.configThemeCursor - 1)
-		}
+		m = m.previewTheme(listNavWrap(m.configThemeCursor, -1, len(themeRegistry)))
 		return m, nil
 	case listNavNext(msg):
-		if m.configThemeCursor < len(themeRegistry)-1 {
-			m = m.previewTheme(m.configThemeCursor + 1)
-		}
+		m = m.previewTheme(listNavWrap(m.configThemeCursor, +1, len(themeRegistry)))
 		return m, nil
 	case msg.Code == tea.KeyEnter:
 		theme := m.themeName
@@ -747,14 +735,10 @@ func (m model) updateConfigProviderPicker(msg tea.KeyPressMsg) (tea.Model, tea.C
 		m = m.closeConfigProviderPicker()
 		return m, nil
 	case listNavPrev(msg):
-		if m.configProviderCursor > 0 {
-			m.configProviderCursor--
-		}
+		m.configProviderCursor = listNavWrap(m.configProviderCursor, -1, len(providerRegistry))
 		return m, nil
 	case listNavNext(msg):
-		if m.configProviderCursor < len(providerRegistry)-1 {
-			m.configProviderCursor++
-		}
+		m.configProviderCursor = listNavWrap(m.configProviderCursor, +1, len(providerRegistry))
 		return m, nil
 	case msg.Code == tea.KeyEnter:
 		if m.configProviderCursor < 0 || m.configProviderCursor >= len(providerRegistry) {

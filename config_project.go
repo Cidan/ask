@@ -193,14 +193,10 @@ func (m model) updateConfigProjectPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 		m = m.closeConfigProjectPicker()
 		return m, nil
 	case listNavPrev(msg):
-		if m.configProjectCursor > 0 {
-			m.configProjectCursor--
-		}
+		m.configProjectCursor = listNavWrap(m.configProjectCursor, -1, len(rows))
 		return m, nil
 	case listNavNext(msg):
-		if m.configProjectCursor < len(rows)-1 {
-			m.configProjectCursor++
-		}
+		m.configProjectCursor = listNavWrap(m.configProjectCursor, +1, len(rows))
 		return m, nil
 	case msg.Code == tea.KeyEnter:
 		if m.configProjectCursor < 0 || m.configProjectCursor >= len(rows) {

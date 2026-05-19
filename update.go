@@ -1308,25 +1308,17 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if pickOpen {
 			switch {
 			case listNavPrev(msg):
-				if m.pathIdx > 0 {
-					m.pathIdx--
-				}
+				m.pathIdx = listNavWrap(m.pathIdx, -1, len(m.pathMatches))
 			case listNavNext(msg):
-				if m.pathIdx < len(m.pathMatches)-1 {
-					m.pathIdx++
-				}
+				m.pathIdx = listNavWrap(m.pathIdx, +1, len(m.pathMatches))
 			}
 			return m, nil
 		}
 		switch {
 		case listNavPrev(msg):
-			if m.menuIdx > 0 {
-				m.menuIdx--
-			}
+			m.menuIdx = listNavWrap(m.menuIdx, -1, len(items))
 		case listNavNext(msg):
-			if m.menuIdx < len(items)-1 {
-				m.menuIdx++
-			}
+			m.menuIdx = listNavWrap(m.menuIdx, +1, len(items))
 		}
 		return m, nil
 	}
@@ -1335,15 +1327,11 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		switch msg.Code {
 		case tea.KeyUp:
 			if pickOpen {
-				if m.pathIdx > 0 {
-					m.pathIdx--
-				}
+				m.pathIdx = listNavWrap(m.pathIdx, -1, len(m.pathMatches))
 				return m, nil
 			}
 			if menuOpen {
-				if m.menuIdx > 0 {
-					m.menuIdx--
-				}
+				m.menuIdx = listNavWrap(m.menuIdx, -1, len(items))
 				return m, nil
 			}
 			if m.historyIdx >= 0 || m.input.Line() == 0 {
@@ -1353,15 +1341,11 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		case tea.KeyDown:
 			if pickOpen {
-				if m.pathIdx < len(m.pathMatches)-1 {
-					m.pathIdx++
-				}
+				m.pathIdx = listNavWrap(m.pathIdx, +1, len(m.pathMatches))
 				return m, nil
 			}
 			if menuOpen {
-				if m.menuIdx < len(items)-1 {
-					m.menuIdx++
-				}
+				m.menuIdx = listNavWrap(m.menuIdx, +1, len(items))
 				return m, nil
 			}
 			if m.historyIdx >= 0 {
@@ -1755,13 +1739,9 @@ func (m model) updatePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeInput
 		return m, nil
 	case listNavPrev(msg):
-		if m.pickerIdx > 0 {
-			m.pickerIdx--
-		}
+		m.pickerIdx = listNavWrap(m.pickerIdx, -1, len(m.sessions))
 	case listNavNext(msg):
-		if m.pickerIdx < len(m.sessions)-1 {
-			m.pickerIdx++
-		}
+		m.pickerIdx = listNavWrap(m.pickerIdx, +1, len(m.sessions))
 	case msg.Code == tea.KeyEnter:
 		if len(m.sessions) > 0 {
 			return m.resumeVirtualSession(m.sessions[m.pickerIdx])

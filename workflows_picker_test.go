@@ -130,29 +130,23 @@ func TestWorkflowPicker_EmacsListNav(t *testing.T) {
 	if mm.workflowPicker.Cursor != 2 {
 		t.Errorf("second Ctrl+N cursor: got %d want 2", mm.workflowPicker.Cursor)
 	}
-	// Ctrl+N at the end clamps.
+	// Ctrl+N past the end wraps back to alpha.
 	out, _ = mm.updateWorkflowPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
 	mm = out.(model)
-	if mm.workflowPicker.Cursor != 2 {
-		t.Errorf("Ctrl+N at end should clamp; got %d want 2", mm.workflowPicker.Cursor)
+	if mm.workflowPicker.Cursor != 0 {
+		t.Errorf("Ctrl+N past end should wrap to 0; got %d", mm.workflowPicker.Cursor)
 	}
-	// Ctrl+P → back to beta.
+	// Ctrl+P at the top wraps to gamma.
+	out, _ = mm.updateWorkflowPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	mm = out.(model)
+	if mm.workflowPicker.Cursor != 2 {
+		t.Errorf("Ctrl+P past top should wrap to last; got %d", mm.workflowPicker.Cursor)
+	}
+	// Ctrl+P retreats normally afterwards.
 	out, _ = mm.updateWorkflowPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
 	mm = out.(model)
 	if mm.workflowPicker.Cursor != 1 {
 		t.Errorf("Ctrl+P cursor: got %d want 1", mm.workflowPicker.Cursor)
-	}
-	// Ctrl+P → alpha.
-	out, _ = mm.updateWorkflowPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
-	mm = out.(model)
-	if mm.workflowPicker.Cursor != 0 {
-		t.Errorf("second Ctrl+P cursor: got %d want 0", mm.workflowPicker.Cursor)
-	}
-	// Ctrl+P at the top clamps.
-	out, _ = mm.updateWorkflowPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
-	mm = out.(model)
-	if mm.workflowPicker.Cursor != 0 {
-		t.Errorf("Ctrl+P at top should clamp; got %d want 0", mm.workflowPicker.Cursor)
 	}
 }
 

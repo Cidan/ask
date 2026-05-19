@@ -71,6 +71,29 @@ func TestIsCtrlListNav(t *testing.T) {
 	}
 }
 
+func TestListNavWrap(t *testing.T) {
+	cases := []struct {
+		name             string
+		cursor, delta, n int
+		want             int
+	}{
+		{"empty list returns 0", 0, +1, 0, 0},
+		{"empty list negative delta returns 0", 0, -1, 0, 0},
+		{"single item next stays", 0, +1, 1, 0},
+		{"single item prev stays", 0, -1, 1, 0},
+		{"plain advance", 1, +1, 3, 2},
+		{"plain retreat", 1, -1, 3, 0},
+		{"advance past last wraps to 0", 2, +1, 3, 0},
+		{"retreat past first wraps to last", 0, -1, 3, 2},
+		{"already past last (defensive)", 5, +1, 3, 0},
+	}
+	for _, c := range cases {
+		if got := listNavWrap(c.cursor, c.delta, c.n); got != c.want {
+			t.Errorf("%s: listNavWrap(%d,%d,%d) = %d, want %d", c.name, c.cursor, c.delta, c.n, got, c.want)
+		}
+	}
+}
+
 func TestPopoverOpen_NoneByDefault(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	if m.popoverOpen() {

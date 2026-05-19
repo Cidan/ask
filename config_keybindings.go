@@ -37,15 +37,11 @@ func (m model) updateConfigKeybindingsPicker(msg tea.KeyPressMsg) (tea.Model, te
 		m = m.closeConfigKeybindingsPicker()
 		return m, nil
 	case listNavPrev(msg):
-		if m.configKeybindingsCursor > 0 {
-			m.configKeybindingsCursor--
-		}
+		m.configKeybindingsCursor = listNavWrap(m.configKeybindingsCursor, -1, len(actionMeta))
 		m.configKeybindingsError = ""
 		return m, nil
 	case listNavNext(msg):
-		if m.configKeybindingsCursor < len(actionMeta)-1 {
-			m.configKeybindingsCursor++
-		}
+		m.configKeybindingsCursor = listNavWrap(m.configKeybindingsCursor, +1, len(actionMeta))
 		m.configKeybindingsError = ""
 		return m, nil
 	case msg.Code == tea.KeyEnter:

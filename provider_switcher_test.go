@@ -94,33 +94,39 @@ func TestSwitcher_Level0NavigatesAndDescendsIntoSharedModelModal(t *testing.T) {
 	}
 }
 
-func TestSwitcher_Level0DownStopsAtLast(t *testing.T) {
+func TestSwitcher_Level0DownWrapsPastLast(t *testing.T) {
 	m, _, _ := providerSwitcherFixture(t)
 	m = m.openProviderSwitch()
-	for i := 0; i < 5; i++ {
-		m = stepKey(t, m, pressSpecial(tea.KeyDown))
-	}
+	// len(providers)=2; Down at idx=1 wraps back to 0.
+	m = stepKey(t, m, pressSpecial(tea.KeyDown))
 	if m.providerSwitchProvIdx != 1 {
-		t.Errorf("Down should clamp at last index; got %d (len=%d)", m.providerSwitchProvIdx, len(providerRegistry))
+		t.Errorf("first Down cursor=%d want 1", m.providerSwitchProvIdx)
+	}
+	m = stepKey(t, m, pressSpecial(tea.KeyDown))
+	if m.providerSwitchProvIdx != 0 {
+		t.Errorf("Down past last should wrap to 0; got %d (len=%d)", m.providerSwitchProvIdx, len(providerRegistry))
 	}
 }
 
-func TestSwitcher_Level0UpStopsAtZero(t *testing.T) {
+func TestSwitcher_Level0UpWrapsPastFirst(t *testing.T) {
 	m, _, _ := providerSwitcherFixture(t)
 	m = m.openProviderSwitch()
-	m.providerSwitchProvIdx = 1
-	for i := 0; i < 3; i++ {
-		m = stepKey(t, m, pressSpecial(tea.KeyUp))
+	// Cursor starts at 0; Up wraps to the last index.
+	m = stepKey(t, m, pressSpecial(tea.KeyUp))
+	if m.providerSwitchProvIdx != len(providerRegistry)-1 {
+		t.Errorf("Up past first should wrap to last (%d); got %d", len(providerRegistry)-1, m.providerSwitchProvIdx)
 	}
+	m = stepKey(t, m, pressSpecial(tea.KeyUp))
 	if m.providerSwitchProvIdx != 0 {
-		t.Errorf("Up should clamp at 0, got %d", m.providerSwitchProvIdx)
+		t.Errorf("second Up should retreat further; got %d want 0", m.providerSwitchProvIdx)
 	}
 }
 
 // TestSwitcher_Level0EmacsListNav verifies Ctrl+P / Ctrl+N drive the
-// provider cursor the same way ↑ / ↓ do. The dispatcher routes
-// directly through modeProviderSwitch (no popoverOpen gate involved),
-// so this confirms the picker handler natively recognises emacs keys.
+// provider cursor the same way ↑ / ↓ do AND wrap at the list edges.
+// The dispatcher routes directly through modeProviderSwitch (no
+// popoverOpen gate involved), so this confirms the picker handler
+// natively recognises emacs keys and applies listNavWrap.
 func TestSwitcher_Level0EmacsListNav(t *testing.T) {
 	m, _, _ := providerSwitcherFixture(t)
 	m = m.openProviderSwitch()
@@ -129,18 +135,19 @@ func TestSwitcher_Level0EmacsListNav(t *testing.T) {
 	if m.providerSwitchProvIdx != 1 {
 		t.Errorf("Ctrl+N cursor: got %d want 1", m.providerSwitchProvIdx)
 	}
-	// Ctrl+N at last index clamps.
+	// Ctrl+N at last index wraps back to the first.
 	m = stepKey(t, m, pressKey('n', tea.ModCtrl))
+	if m.providerSwitchProvIdx != 0 {
+		t.Errorf("Ctrl+N at end should wrap to 0; got %d", m.providerSwitchProvIdx)
+	}
+	// Ctrl+P at the first index wraps back to the last.
+	m = stepKey(t, m, pressKey('p', tea.ModCtrl))
 	if m.providerSwitchProvIdx != 1 {
-		t.Errorf("Ctrl+N at end should clamp; got %d", m.providerSwitchProvIdx)
+		t.Errorf("Ctrl+P at top should wrap to last; got %d", m.providerSwitchProvIdx)
 	}
 	m = stepKey(t, m, pressKey('p', tea.ModCtrl))
 	if m.providerSwitchProvIdx != 0 {
 		t.Errorf("Ctrl+P cursor: got %d want 0", m.providerSwitchProvIdx)
-	}
-	m = stepKey(t, m, pressKey('p', tea.ModCtrl))
-	if m.providerSwitchProvIdx != 0 {
-		t.Errorf("Ctrl+P at top should clamp; got %d", m.providerSwitchProvIdx)
 	}
 }
 

@@ -43,14 +43,10 @@ func (m model) updateWorkflowPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m = m.closeWorkflowPicker()
 		return m, nil
 	case listNavPrev(msg):
-		if pkr.Cursor > 0 {
-			pkr.Cursor--
-		}
+		pkr.Cursor = listNavWrap(pkr.Cursor, -1, len(pkr.Items))
 		return m, nil
 	case listNavNext(msg):
-		if pkr.Cursor < len(pkr.Items)-1 {
-			pkr.Cursor++
-		}
+		pkr.Cursor = listNavWrap(pkr.Cursor, +1, len(pkr.Items))
 		return m, nil
 	case msg.Code == tea.KeyEnter:
 		if len(pkr.Items) == 0 {
