@@ -36,13 +36,13 @@ func (m model) updateConfigKeybindingsPicker(msg tea.KeyPressMsg) (tea.Model, te
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		m = m.closeConfigKeybindingsPicker()
 		return m, nil
-	case msg.Code == tea.KeyUp:
+	case listNavPrev(msg):
 		if m.configKeybindingsCursor > 0 {
 			m.configKeybindingsCursor--
 		}
 		m.configKeybindingsError = ""
 		return m, nil
-	case msg.Code == tea.KeyDown:
+	case listNavNext(msg):
 		if m.configKeybindingsCursor < len(actionMeta)-1 {
 			m.configKeybindingsCursor++
 		}

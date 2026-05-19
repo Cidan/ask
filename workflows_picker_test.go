@@ -105,6 +105,57 @@ func TestWorkflowPicker_EnterEmptyItemsIsNoop(t *testing.T) {
 	}
 }
 
+// TestWorkflowPicker_EmacsListNav covers Ctrl+P / Ctrl+N as
+// arrow-key equivalents — the bindings are hardcoded into the picker
+// handler so unbinding a customizable keymap action can't lock the
+// user out of cursor movement.
+func TestWorkflowPicker_EmacsListNav(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	items := []workflowDef{
+		{Name: "alpha"},
+		{Name: "beta"},
+		{Name: "gamma"},
+	}
+	m = m.openWorkflowPicker(items, issueWorkflowSource(issueRef{Provider: "github", Project: "x/y", Number: 1}))
+
+	// Ctrl+N → down to beta.
+	out, _ := m.updateWorkflowPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	mm := out.(model)
+	if mm.workflowPicker.Cursor != 1 {
+		t.Errorf("Ctrl+N cursor: got %d want 1", mm.workflowPicker.Cursor)
+	}
+	// Ctrl+N again → gamma.
+	out, _ = mm.updateWorkflowPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	mm = out.(model)
+	if mm.workflowPicker.Cursor != 2 {
+		t.Errorf("second Ctrl+N cursor: got %d want 2", mm.workflowPicker.Cursor)
+	}
+	// Ctrl+N at the end clamps.
+	out, _ = mm.updateWorkflowPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	mm = out.(model)
+	if mm.workflowPicker.Cursor != 2 {
+		t.Errorf("Ctrl+N at end should clamp; got %d want 2", mm.workflowPicker.Cursor)
+	}
+	// Ctrl+P → back to beta.
+	out, _ = mm.updateWorkflowPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	mm = out.(model)
+	if mm.workflowPicker.Cursor != 1 {
+		t.Errorf("Ctrl+P cursor: got %d want 1", mm.workflowPicker.Cursor)
+	}
+	// Ctrl+P → alpha.
+	out, _ = mm.updateWorkflowPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	mm = out.(model)
+	if mm.workflowPicker.Cursor != 0 {
+		t.Errorf("second Ctrl+P cursor: got %d want 0", mm.workflowPicker.Cursor)
+	}
+	// Ctrl+P at the top clamps.
+	out, _ = mm.updateWorkflowPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	mm = out.(model)
+	if mm.workflowPicker.Cursor != 0 {
+		t.Errorf("Ctrl+P at top should clamp; got %d want 0", mm.workflowPicker.Cursor)
+	}
+}
+
 // TestWorkflowPicker_StepsCountFormatting locks the human-readable
 // step count format the picker shows alongside each pipeline name.
 func TestWorkflowPicker_StepsCountFormatting(t *testing.T) {

@@ -1116,7 +1116,15 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		// the detail view returned by Enter), which keeps Ctrl+I from
 		// surprising a user mid-read.
 		km := currentKeyMap()
-		if km.Matches(ActionScreenIssues, msg) && !m.modalOpen() {
+		// Surgical gate: when a lightweight popover (slash menu / path
+		// completion / workflow picker) is open and the user pressed the
+		// emacs list-nav variant of an arrow key, let the popover
+		// consume it for cursor movement instead of firing
+		// ActionScreenPRs. Other screen-switch shortcuts (Ctrl+I /
+		// Ctrl+W / Ctrl+O) still take precedence here so a popover
+		// can't trap the user.
+		deferToPopover := isCtrlListNav(msg) && m.popoverOpen()
+		if km.Matches(ActionScreenIssues, msg) && !m.modalOpen() && !deferToPopover {
 			if m.screen == screenIssues {
 				if s := m.issueStateForScreen(screenIssues); s != nil {
 					s.cycleView()
@@ -1145,7 +1153,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			return m.enterIssueScreen(screenIssues, provider, pc)
 		}
-		if km.Matches(ActionScreenPRs, msg) && !m.modalOpen() {
+		if km.Matches(ActionScreenPRs, msg) && !m.modalOpen() && !deferToPopover {
 			if m.screen == screenPRs {
 				if s := m.issueStateForScreen(screenPRs); s != nil {
 					s.cycleView()
@@ -1163,7 +1171,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			return m.enterIssueScreen(screenPRs, provider, pc)
 		}
-		if km.Matches(ActionScreenWorkflows, msg) && !m.modalOpen() {
+		if km.Matches(ActionScreenWorkflows, msg) && !m.modalOpen() && !deferToPopover {
 			// Workflows screen: drop issue-screen cache on the way
 			// out mirrors Ctrl+I's "cancel in-flight" hygiene so a
 			// later return to issues re-fetches cleanly.
@@ -1178,7 +1186,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			return m, nil
 		}
-		if km.Matches(ActionScreenAsk, msg) && !m.modalOpen() {
+		if km.Matches(ActionScreenAsk, msg) && !m.modalOpen() && !deferToPopover {
 			// Leaving issues: drop cache + cancel in-flight so re-entry
 			// doesn't stack duplicate chunks onto the chain. Carry
 			// state lives on the kanban view, so we re-insert the
@@ -1300,6 +1308,37 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	items := m.filterSlashCmds()
 	menuOpen := !m.busy && m.historyIdx < 0 && len(items) > 0
 	pickOpen := !m.busy && m.pathPickerActive() && len(m.pathMatches) > 0
+
+	// Emacs list-nav (Ctrl+P / Ctrl+N) on the slash menu / path picker.
+	// History recall stays on plain arrows only — Ctrl+P at a closed
+	// popover belongs to ActionScreenPRs and the keymap dispatcher
+	// already handled it before we got here.
+	if (pickOpen || menuOpen) && isCtrlListNav(msg) {
+		if pickOpen {
+			switch {
+			case listNavPrev(msg):
+				if m.pathIdx > 0 {
+					m.pathIdx--
+				}
+			case listNavNext(msg):
+				if m.pathIdx < len(m.pathMatches)-1 {
+					m.pathIdx++
+				}
+			}
+			return m, nil
+		}
+		switch {
+		case listNavPrev(msg):
+			if m.menuIdx > 0 {
+				m.menuIdx--
+			}
+		case listNavNext(msg):
+			if m.menuIdx < len(items)-1 {
+				m.menuIdx++
+			}
+		}
+		return m, nil
+	}
 
 	if msg.Mod == 0 {
 		switch msg.Code {
@@ -1720,19 +1759,19 @@ func (m model) updatePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeInput
 		return m, nil
 	}
-	switch msg.Code {
-	case tea.KeyEsc:
+	switch {
+	case msg.Code == tea.KeyEsc:
 		m.mode = modeInput
 		return m, nil
-	case tea.KeyUp:
+	case listNavPrev(msg):
 		if m.pickerIdx > 0 {
 			m.pickerIdx--
 		}
-	case tea.KeyDown:
+	case listNavNext(msg):
 		if m.pickerIdx < len(m.sessions)-1 {
 			m.pickerIdx++
 		}
-	case tea.KeyEnter:
+	case msg.Code == tea.KeyEnter:
 		if len(m.sessions) > 0 {
 			return m.resumeVirtualSession(m.sessions[m.pickerIdx])
 		}

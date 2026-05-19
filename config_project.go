@@ -192,12 +192,12 @@ func (m model) updateConfigProjectPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		m = m.closeConfigProjectPicker()
 		return m, nil
-	case msg.Code == tea.KeyUp:
+	case listNavPrev(msg):
 		if m.configProjectCursor > 0 {
 			m.configProjectCursor--
 		}
 		return m, nil
-	case msg.Code == tea.KeyDown:
+	case listNavNext(msg):
 		if m.configProjectCursor < len(rows)-1 {
 			m.configProjectCursor++
 		}

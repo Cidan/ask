@@ -82,12 +82,12 @@ func (m model) updateProviderSwitchLevel0(msg tea.KeyPressMsg) (tea.Model, tea.C
 	switch {
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		return m.closeProviderSwitch(), nil
-	case msg.Code == tea.KeyUp:
+	case listNavPrev(msg):
 		if m.providerSwitchProvIdx > 0 {
 			m.providerSwitchProvIdx--
 		}
 		return m, nil
-	case msg.Code == tea.KeyDown:
+	case listNavNext(msg):
 		if m.providerSwitchProvIdx < len(provs)-1 {
 			m.providerSwitchProvIdx++
 		}

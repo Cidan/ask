@@ -139,6 +139,30 @@ func (m model) modalOpen() bool {
 	return false
 }
 
+// popoverOpen reports whether a lightweight inline picker that piggy-backs
+// on chat-screen input or the issues kanban (slash-command menu, path
+// completion, workflow picker) currently owns the keyboard for list
+// navigation. Unlike [[modalOpen]] these popovers leave m.mode unchanged,
+// so the screen-switch dispatcher can't see them via the mode gate.
+// Used to defer Ctrl+P / Ctrl+N from the keymap dispatcher so the popup
+// can consume them for cursor nav before ActionScreenPRs steals the
+// keystroke.
+func (m model) popoverOpen() bool {
+	if m.workflowPicker != nil {
+		return true
+	}
+	if m.pathPickerActive() && len(m.pathMatches) > 0 {
+		return true
+	}
+	if !m.busy && m.historyIdx < 0 && len(m.filterSlashCmds()) > 0 {
+		return true
+	}
+	if b := m.workflowsBuilder; b != nil && (b.providerPicker || b.modelPicker) {
+		return true
+	}
+	return false
+}
+
 // switchScreen flips the active screen. Returns the model unchanged
 // when the request is a no-op (already on that screen) or rejected
 // (modal open). Cache invalidation is handled by including m.screen

@@ -205,12 +205,12 @@ func (m model) updateConfigMemoryPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		m = m.closeConfigMemoryPicker()
 		return m, nil
-	case msg.Code == tea.KeyUp:
+	case listNavPrev(msg):
 		if m.configMemoryCursor > 0 {
 			m.configMemoryCursor--
 		}
 		return m, nil
-	case msg.Code == tea.KeyDown:
+	case listNavNext(msg):
 		if m.configMemoryCursor < len(rows)-1 {
 			m.configMemoryCursor++
 		}

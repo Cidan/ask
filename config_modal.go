@@ -160,20 +160,20 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.clearConfigModal(), nil
 	}
 	items := m.configItemsAll()
-	switch msg.Code {
-	case tea.KeyEsc:
+	switch {
+	case msg.Code == tea.KeyEsc:
 		return m.clearConfigModal(), nil
-	case tea.KeyUp:
+	case listNavPrev(msg):
 		if m.configCursor > 0 {
 			m.configCursor--
 		}
 		return m, nil
-	case tea.KeyDown:
+	case listNavNext(msg):
 		if m.configCursor < len(items)-1 {
 			m.configCursor++
 		}
 		return m, nil
-	case tea.KeyEnter:
+	case msg.Code == tea.KeyEnter:
 		if m.configCursor < 0 || m.configCursor >= len(items) {
 			return m.clearConfigModal(), nil
 		}
@@ -225,26 +225,26 @@ func (m model) updateConfigGlobalPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd
 		return m, nil
 	}
 	items := m.filteredGlobalConfigItems()
-	switch msg.Code {
-	case tea.KeyEsc:
+	switch {
+	case msg.Code == tea.KeyEsc:
 		m = m.closeConfigGlobalPicker()
 		return m, nil
-	case tea.KeyUp:
+	case listNavPrev(msg):
 		if m.configGlobalCursor > 0 {
 			m.configGlobalCursor--
 		}
 		return m, nil
-	case tea.KeyDown:
+	case listNavNext(msg):
 		if m.configGlobalCursor < len(items)-1 {
 			m.configGlobalCursor++
 		}
 		return m, nil
-	case tea.KeyEnter:
+	case msg.Code == tea.KeyEnter:
 		if m.configGlobalCursor < 0 || m.configGlobalCursor >= len(items) {
 			return m, nil
 		}
 		return m.handleGlobalConfigEnter(items[m.configGlobalCursor].id)
-	case tea.KeyBackspace:
+	case msg.Code == tea.KeyBackspace:
 		if m.configFilter != "" {
 			r := []rune(m.configFilter)
 			m.configFilter = string(r[:len(r)-1])
@@ -625,12 +625,12 @@ func (m model) updateThemePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m = m.previewTheme(themeIndexByName(m.configThemeBackup))
 		m = m.closeThemePicker()
 		return m, nil
-	case msg.Code == tea.KeyUp:
+	case listNavPrev(msg):
 		if m.configThemeCursor > 0 {
 			m = m.previewTheme(m.configThemeCursor - 1)
 		}
 		return m, nil
-	case msg.Code == tea.KeyDown:
+	case listNavNext(msg):
 		if m.configThemeCursor < len(themeRegistry)-1 {
 			m = m.previewTheme(m.configThemeCursor + 1)
 		}
@@ -746,12 +746,12 @@ func (m model) updateConfigProviderPicker(msg tea.KeyPressMsg) (tea.Model, tea.C
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		m = m.closeConfigProviderPicker()
 		return m, nil
-	case msg.Code == tea.KeyUp:
+	case listNavPrev(msg):
 		if m.configProviderCursor > 0 {
 			m.configProviderCursor--
 		}
 		return m, nil
-	case msg.Code == tea.KeyDown:
+	case listNavNext(msg):
 		if m.configProviderCursor < len(providerRegistry)-1 {
 			m.configProviderCursor++
 		}

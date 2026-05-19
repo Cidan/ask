@@ -241,3 +241,54 @@ func TestScreens_ModalOpenReportsAccurately(t *testing.T) {
 		t.Errorf("cancelTurnConfirming should report modalOpen=true")
 	}
 }
+
+// TestScreens_SlashMenuEmacsListNav covers the popover gate end-to-end
+// through model.Update: a slash-prefix expands the auto-complete menu;
+// Ctrl+N must advance m.menuIdx instead of being consumed by
+// ActionScreenPRs (Ctrl+P) or falling into chat-input history recall.
+// The screen-switch dispatcher reads m.popoverOpen() — this wires the
+// real flow so future regressions show up here, not in production.
+func TestScreens_SlashMenuEmacsListNav(t *testing.T) {
+	isolateHome(t)
+	invalidateKeyMapCache()
+	defer invalidateKeyMapCache()
+
+	m := newTestModel(t, newFakeProvider())
+	// "/" matches the fakeProvider's /new plus the universal builtins
+	// (/config, /provider, /workflows) — at least 4 candidates, plenty
+	// of room for the cursor to advance and retreat.
+	m.input.SetValue("/")
+	if !m.popoverOpen() {
+		t.Fatalf("setup: a slash-prefix should surface the auto-complete popover; popoverOpen=false")
+	}
+	items := m.filterSlashCmds()
+	if len(items) < 2 {
+		t.Fatalf("setup: need >=2 slash candidates for nav to be observable; got %d", len(items))
+	}
+
+	// Ctrl+N — should advance the menu cursor one row, even though
+	// Ctrl+P would otherwise route to ActionScreenPRs.
+	out, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	mm := out.(model)
+	if mm.screen == screenPRs {
+		t.Fatalf("Ctrl+N with slash menu open must NOT have switched to PR screen")
+	}
+	if mm.menuIdx != 1 {
+		t.Errorf("Ctrl+N should advance menuIdx; got %d want 1", mm.menuIdx)
+	}
+	if mm.input.Value() != "/" {
+		t.Errorf("Ctrl+N should not type into the input; input=%q", mm.input.Value())
+	}
+
+	// Ctrl+P — should move the cursor back. The default keymap binds
+	// Ctrl+P to ActionScreenPRs; if the popover gate fails this would
+	// flip to the PR screen instead.
+	out, _ = mm.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	mm = out.(model)
+	if mm.screen == screenPRs {
+		t.Fatalf("Ctrl+P with slash menu open must NOT have switched to PR screen")
+	}
+	if mm.menuIdx != 0 {
+		t.Errorf("Ctrl+P should retreat menuIdx; got %d want 0", mm.menuIdx)
+	}
+}

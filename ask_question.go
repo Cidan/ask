@@ -372,12 +372,12 @@ func (m model) updateAsk(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	ans := &m.askAnswers[m.askTab]
 
 	switch {
-	case msg.Code == tea.KeyUp:
+	case listNavPrev(msg):
 		if m.askCursor > 0 {
 			m.askCursor--
 		}
 		return m, nil
-	case msg.Code == tea.KeyDown:
+	case listNavNext(msg):
 		if m.askCursor < len(q.options)-1 {
 			m.askCursor++
 		}

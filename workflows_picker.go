@@ -42,12 +42,12 @@ func (m model) updateWorkflowPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		m = m.closeWorkflowPicker()
 		return m, nil
-	case msg.Code == tea.KeyUp:
+	case listNavPrev(msg):
 		if pkr.Cursor > 0 {
 			pkr.Cursor--
 		}
 		return m, nil
-	case msg.Code == tea.KeyDown:
+	case listNavNext(msg):
 		if pkr.Cursor < len(pkr.Items)-1 {
 			pkr.Cursor++
 		}

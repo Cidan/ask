@@ -117,6 +117,33 @@ func TestSwitcher_Level0UpStopsAtZero(t *testing.T) {
 	}
 }
 
+// TestSwitcher_Level0EmacsListNav verifies Ctrl+P / Ctrl+N drive the
+// provider cursor the same way ↑ / ↓ do. The dispatcher routes
+// directly through modeProviderSwitch (no popoverOpen gate involved),
+// so this confirms the picker handler natively recognises emacs keys.
+func TestSwitcher_Level0EmacsListNav(t *testing.T) {
+	m, _, _ := providerSwitcherFixture(t)
+	m = m.openProviderSwitch()
+
+	m = stepKey(t, m, pressKey('n', tea.ModCtrl))
+	if m.providerSwitchProvIdx != 1 {
+		t.Errorf("Ctrl+N cursor: got %d want 1", m.providerSwitchProvIdx)
+	}
+	// Ctrl+N at last index clamps.
+	m = stepKey(t, m, pressKey('n', tea.ModCtrl))
+	if m.providerSwitchProvIdx != 1 {
+		t.Errorf("Ctrl+N at end should clamp; got %d", m.providerSwitchProvIdx)
+	}
+	m = stepKey(t, m, pressKey('p', tea.ModCtrl))
+	if m.providerSwitchProvIdx != 0 {
+		t.Errorf("Ctrl+P cursor: got %d want 0", m.providerSwitchProvIdx)
+	}
+	m = stepKey(t, m, pressKey('p', tea.ModCtrl))
+	if m.providerSwitchProvIdx != 0 {
+		t.Errorf("Ctrl+P at top should clamp; got %d", m.providerSwitchProvIdx)
+	}
+}
+
 func TestSwitcher_Level0EscCancelsWithoutChange(t *testing.T) {
 	m, p1, _ := providerSwitcherFixture(t)
 	m.provider = p1
