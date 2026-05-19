@@ -64,6 +64,70 @@ func TestEnterTopLevel_ProjectRow_OpensSubmenu(t *testing.T) {
 	}
 }
 
+func TestConfigTopLevelAndSubmenus_EmacsListNav(t *testing.T) {
+	isolateHome(t)
+	m := newTestModel(t, newFakeProvider())
+	m = m.startConfigModal()
+
+	mi, _ := m.updateConfigModal(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	m = mi.(model)
+	if m.configCursor != 1 {
+		t.Fatalf("top-level Ctrl+N cursor=%d want 1", m.configCursor)
+	}
+	mi, _ = m.updateConfigModal(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	m = mi.(model)
+	if m.configCursor != 0 {
+		t.Fatalf("top-level Ctrl+P cursor=%d want 0", m.configCursor)
+	}
+
+	m = m.openConfigGlobalPicker()
+	mi, _ = m.updateConfigModal(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	m = mi.(model)
+	if m.configGlobalCursor != 1 {
+		t.Fatalf("global Ctrl+N cursor=%d want 1", m.configGlobalCursor)
+	}
+	mi, _ = m.updateConfigModal(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	m = mi.(model)
+	if m.configGlobalCursor != 0 {
+		t.Fatalf("global Ctrl+P cursor=%d want 0", m.configGlobalCursor)
+	}
+
+	m = m.closeConfigGlobalPicker()
+	m = m.openConfigProjectPicker()
+	mi, _ = m.updateConfigModal(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	m = mi.(model)
+	if m.configProjectCursor != 1 {
+		t.Fatalf("project Ctrl+N cursor=%d want 1", m.configProjectCursor)
+	}
+	mi, _ = m.updateConfigModal(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	m = mi.(model)
+	if m.configProjectCursor != 0 {
+		t.Fatalf("project Ctrl+P cursor=%d want 0", m.configProjectCursor)
+	}
+}
+
+func TestThemePicker_EmacsListNav(t *testing.T) {
+	if len(themeRegistry) < 2 {
+		t.Skip("need at least two themes")
+	}
+	orig := activeTheme
+	t.Cleanup(func() { applyTheme(orig) })
+	m := newTestModel(t, newFakeProvider())
+	m = m.startConfigModal()
+	m = m.openThemePicker()
+
+	mi, _ := m.updateThemePicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	m = mi.(model)
+	if m.configThemeCursor != 1 {
+		t.Fatalf("Ctrl+N cursor=%d want 1", m.configThemeCursor)
+	}
+	mi, _ = m.updateThemePicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	m = mi.(model)
+	if m.configThemeCursor != 0 {
+		t.Fatalf("Ctrl+P cursor=%d want 0", m.configThemeCursor)
+	}
+}
+
 func TestProjectPicker_DefaultsToNoneProvider(t *testing.T) {
 	isolateHome(t)
 	m := newTestModel(t, newFakeProvider())

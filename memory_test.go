@@ -592,6 +592,26 @@ func TestUpdateConfigMemoryPicker_EscClosesOnly(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigMemoryPicker_EmacsListNav(t *testing.T) {
+	isolateHome(t)
+	resetMemoryService(t)
+
+	m := newTestModel(t, newFakeProvider())
+	m = m.startConfigModal()
+	m = m.openConfigMemoryPicker()
+
+	newM, _ := m.updateConfigMemoryPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	mm := newM.(model)
+	if mm.configMemoryCursor != 1 {
+		t.Fatalf("Ctrl+N cursor=%d want 1", mm.configMemoryCursor)
+	}
+	newM, _ = mm.updateConfigMemoryPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	mm = newM.(model)
+	if mm.configMemoryCursor != 0 {
+		t.Fatalf("Ctrl+P cursor=%d want 0", mm.configMemoryCursor)
+	}
+}
+
 func TestConfigItemsAll_IncludesMemoryRow(t *testing.T) {
 	// The /config main list must surface the Memory entry; without it
 	// the submenu is unreachable from the UI.

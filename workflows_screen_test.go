@@ -388,6 +388,37 @@ func TestWorkflowsBuilder_RenderProviderPickerOverBase(t *testing.T) {
 	}
 }
 
+func TestWorkflowsBuilderSubpickers_EmacsListNav(t *testing.T) {
+	p1 := newFakeProvider()
+	p1.id = "claude"
+	p2 := newFakeProvider()
+	p2.id = "codex"
+	withRegisteredProviders(t, p1, p2)
+
+	m := newTestModel(t, p1)
+	m.workflowsBuilder = &workflowsBuilderState{providerPicker: true}
+	m2, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	if m2.workflowsBuilder.providerCursor != 1 {
+		t.Fatalf("provider Ctrl+N cursor=%d want 1", m2.workflowsBuilder.providerCursor)
+	}
+	m3, _, _ := workflowsScreen{}.updateKey(m2, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	if m3.workflowsBuilder.providerCursor != 0 {
+		t.Fatalf("provider Ctrl+P cursor=%d want 0", m3.workflowsBuilder.providerCursor)
+	}
+
+	m3.workflowsBuilder.providerPicker = false
+	m3.workflowsBuilder.modelPicker = true
+	m3.workflowsBuilder.modelPickerOpts = []string{"default", "sonnet"}
+	m4, _, _ := workflowsScreen{}.updateKey(m3, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	if m4.workflowsBuilder.modelCursor != 1 {
+		t.Fatalf("model Ctrl+N cursor=%d want 1", m4.workflowsBuilder.modelCursor)
+	}
+	m5, _, _ := workflowsScreen{}.updateKey(m4, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	if m5.workflowsBuilder.modelCursor != 0 {
+		t.Fatalf("model Ctrl+P cursor=%d want 0", m5.workflowsBuilder.modelCursor)
+	}
+}
+
 func TestWorkflowsBuilder_RenderPromptOverlayOverBase(t *testing.T) {
 	ta := newPromptTextarea("review changes")
 	b := &workflowsBuilderState{

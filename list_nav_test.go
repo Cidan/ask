@@ -110,6 +110,29 @@ func TestPopoverOpen_PathPicker(t *testing.T) {
 	}
 }
 
+func TestPopoverOpen_AskPopoversOnlyWhenVisible(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.providerSlashCmds = []providerSlashEntry{{Name: "alpha"}, {Name: "beta"}}
+	m.input.SetValue("/")
+	if !m.popoverOpen() {
+		t.Fatalf("slash menu on ask screen should make popoverOpen=true")
+	}
+	m.screen = screenIssues
+	if m.popoverOpen() {
+		t.Errorf("dirty slash input on issues screen should not count as a visible popover")
+	}
+	m.screen = screenAsk
+	m.shellMode = true
+	if m.popoverOpen() {
+		t.Errorf("slash menu should not count as a popover in shell mode")
+	}
+	m.shellMode = false
+	m.busy = true
+	if m.popoverOpen() {
+		t.Errorf("slash menu should not count as a popover while busy")
+	}
+}
+
 func TestPopoverOpen_WorkflowsBuilderSubpicker(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.workflowsBuilder = &workflowsBuilderState{}
@@ -117,6 +140,10 @@ func TestPopoverOpen_WorkflowsBuilderSubpicker(t *testing.T) {
 		t.Errorf("workflows builder without a sub-picker open should not popoverOpen")
 	}
 	m.workflowsBuilder.providerPicker = true
+	if m.popoverOpen() {
+		t.Errorf("hidden workflows builder provider sub-picker should not make popoverOpen=true")
+	}
+	m.screen = screenWorkflows
 	if !m.popoverOpen() {
 		t.Errorf("workflows builder provider sub-picker should make popoverOpen=true")
 	}
@@ -124,6 +151,81 @@ func TestPopoverOpen_WorkflowsBuilderSubpicker(t *testing.T) {
 	m.workflowsBuilder.modelPicker = true
 	if !m.popoverOpen() {
 		t.Errorf("workflows builder model sub-picker should make popoverOpen=true")
+	}
+}
+
+func TestPopoverOpen_WorkflowPickerOnlyOnScreensThatRenderIt(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m = m.openWorkflowPicker(
+		[]workflowDef{{Name: "alpha"}},
+		issueWorkflowSource(issueRef{Provider: "github", Project: "x/y", Number: 1}),
+	)
+	if !m.popoverOpen() {
+		t.Fatalf("workflow picker should be visible on ask")
+	}
+	m.screen = screenIssues
+	if !m.popoverOpen() {
+		t.Fatalf("workflow picker should be visible on issues")
+	}
+	m.screen = screenWorkflows
+	if m.popoverOpen() {
+		t.Errorf("workflow picker hidden behind workflows screen should not make popoverOpen=true")
+	}
+}
+
+func TestKeymapDispatch_CtrlPWithHiddenSlashPopoverStillSwitchesPRs(t *testing.T) {
+	isolateHome(t)
+	invalidateKeyMapCache()
+	defer invalidateKeyMapCache()
+
+	prev := githubPRScreenProvider
+	prov := newFakeIssueProvider()
+	prov.configured = true
+	prov.columns = []KanbanColumnSpec{{Label: "Open", Query: &fakeQuery{statusMatch: "open"}}}
+	githubPRScreenProvider = prov
+	t.Cleanup(func() { githubPRScreenProvider = prev })
+
+	m := newTestModel(t, newFakeProvider())
+	m.screen = screenIssues
+	m.input.SetValue("/")
+	if m.popoverOpen() {
+		t.Fatalf("setup: slash input on issues must not count as a visible popover")
+	}
+
+	out, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	mm := out.(model)
+	if mm.screen != screenPRs {
+		t.Fatalf("Ctrl+P should switch to PRs when no visible popover owns it, got screen %v", mm.screen)
+	}
+}
+
+func TestKeymapDispatch_ReboundArrowDefersToVisiblePopover(t *testing.T) {
+	isolateHome(t)
+	km := DefaultKeyMap()
+	km[ActionScreenPRs] = KeyBinding{Code: tea.KeyDown}
+	setKeyMapForTesting(km)
+	defer invalidateKeyMapCache()
+
+	prev := githubPRScreenProvider
+	prov := newFakeIssueProvider()
+	prov.configured = true
+	prov.columns = []KanbanColumnSpec{{Label: "Open", Query: &fakeQuery{statusMatch: "open"}}}
+	githubPRScreenProvider = prov
+	t.Cleanup(func() { githubPRScreenProvider = prev })
+
+	m := newTestModel(t, newFakeProvider())
+	m.input.SetValue("/")
+	if !m.popoverOpen() {
+		t.Fatalf("setup: slash menu should be open")
+	}
+
+	out, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	mm := out.(model)
+	if mm.screen != screenAsk {
+		t.Fatalf("visible popover should keep rebound Down from switching screens; got %v", mm.screen)
+	}
+	if mm.menuIdx != 1 {
+		t.Fatalf("Down should navigate the slash menu; menuIdx=%d want 1", mm.menuIdx)
 	}
 }
 

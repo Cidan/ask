@@ -1116,14 +1116,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		// the detail view returned by Enter), which keeps Ctrl+I from
 		// surprising a user mid-read.
 		km := currentKeyMap()
-		// Surgical gate: when a lightweight popover (slash menu / path
-		// completion / workflow picker) is open and the user pressed the
-		// emacs list-nav variant of an arrow key, let the popover
-		// consume it for cursor movement instead of firing
-		// ActionScreenPRs. Other screen-switch shortcuts (Ctrl+I /
-		// Ctrl+W / Ctrl+O) still take precedence here so a popover
-		// can't trap the user.
-		deferToPopover := isCtrlListNav(msg) && m.popoverOpen()
+		// Ctrl+P is both ActionScreenPRs and popup list navigation; a
+		// visible popover gets first claim on list-navigation keys.
+		deferToPopover := (listNavPrev(msg) || listNavNext(msg)) && m.popoverOpen()
 		if km.Matches(ActionScreenIssues, msg) && !m.modalOpen() && !deferToPopover {
 			if m.screen == screenIssues {
 				if s := m.issueStateForScreen(screenIssues); s != nil {
@@ -1309,10 +1304,6 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	menuOpen := !m.busy && m.historyIdx < 0 && len(items) > 0
 	pickOpen := !m.busy && m.pathPickerActive() && len(m.pathMatches) > 0
 
-	// Emacs list-nav (Ctrl+P / Ctrl+N) on the slash menu / path picker.
-	// History recall stays on plain arrows only — Ctrl+P at a closed
-	// popover belongs to ActionScreenPRs and the keymap dispatcher
-	// already handled it before we got here.
 	if (pickOpen || menuOpen) && isCtrlListNav(msg) {
 		if pickOpen {
 			switch {
