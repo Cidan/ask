@@ -159,7 +159,7 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
 		return m.clearConfigModal(), nil
 	}
-	items := m.configItemsAll()
+	items := m.filteredConfigItems()
 	switch msg.Code {
 	case tea.KeyEsc:
 		return m.clearConfigModal(), nil
@@ -186,8 +186,24 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.clearConfigModal(), nil
+	case tea.KeyBackspace:
+		if m.configFilter != "" {
+			r := []rune(m.configFilter)
+			m.configFilter = string(r[:len(r)-1])
+			m.configCursor = 0
+		}
+		return m, nil
+	}
+	if configTextInputKey(msg) {
+		m.configFilter += msg.Text
+		m.configCursor = 0
+		return m, nil
 	}
 	return m, nil
+}
+
+func configTextInputKey(msg tea.KeyPressMsg) bool {
+	return msg.Text != "" && stripKeyLockModifiers(msg.Mod)&^tea.ModShift == 0
 }
 
 // openConfigGlobalPicker opens the Global Options submenu — the
@@ -195,11 +211,11 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // layering. Cursor + filter reset on entry so the user lands on
 // the first row.
 //
-// NOTE: configFilter is currently a single field shared with the
-// (now empty) top-level filter. It's reset on open and on close
-// here so the layers don't see each other's strings, but the next
-// submenu that wants its own filter should split this into
-// per-picker fields rather than reusing the shared slot.
+// NOTE: configFilter is a single field shared with the top-level
+// "Global / Project" filter. It's reset on open and on close here so
+// the layers don't see each other's strings; the next submenu that
+// wants its own filter should split this into per-picker fields
+// rather than reusing the shared slot.
 func (m model) openConfigGlobalPicker() model {
 	m.configGlobalPickerActive = true
 	m.configGlobalCursor = 0
@@ -252,7 +268,7 @@ func (m model) updateConfigGlobalPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd
 		}
 		return m, nil
 	}
-	if msg.Text != "" && msg.Mod&^tea.ModShift == 0 {
+	if configTextInputKey(msg) {
 		m.configFilter += msg.Text
 		m.configGlobalCursor = 0
 		return m, nil
