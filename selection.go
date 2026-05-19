@@ -155,24 +155,7 @@ func (m model) buildCopyText() string {
 	return strings.Join(parts, "\n\n")
 }
 
-// buildVisualCopyText assembles a WYSIWYG clipboard payload from the
-// selection: only the cells the user can see highlighted contribute,
-// not the surrounding entry source. Used by the macOS auto-copy path
-// (selecting a single word from a multi-paragraph response copies
-// just that word, matching what every other terminal app does on a
-// drag-release). The right-click path stays on [buildCopyText] so
-// the deliberate "grab the whole response as raw markdown" affordance
-// is still available — see that function's comment for the rationale.
-//
-// Per-row walk uses [selectionRenderMask] for the exact column span
-// painted on screen (left-margin clamp included), then [xansi.Cut]
-// for cell-aware slicing on ANSI-styled lines, then [xansi.Strip] to
-// flatten styling and trim trailing fill whitespace. Rows that fall
-// outside any entry (the blank separators between entries) yield ""
-// so multi-entry drags keep the on-screen gap as a blank line in the
-// payload. Trailing empty rows are dropped so a drag that overshoots
-// the bottom of the content doesn't produce a payload that ends in
-// newlines.
+// buildVisualCopyText returns the rendered cells under the selection.
 func (m model) buildVisualCopyText() string {
 	b, ok := m.selectionRange()
 	if !ok {
