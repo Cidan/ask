@@ -155,6 +155,54 @@ func (m model) buildCopyText() string {
 	return strings.Join(parts, "\n\n")
 }
 
+// buildVisualCopyText assembles a WYSIWYG clipboard payload from the
+// selection: only the cells the user can see highlighted contribute,
+// not the surrounding entry source. Used by the macOS auto-copy path
+// (selecting a single word from a multi-paragraph response copies
+// just that word, matching what every other terminal app does on a
+// drag-release). The right-click path stays on [buildCopyText] so
+// the deliberate "grab the whole response as raw markdown" affordance
+// is still available — see that function's comment for the rationale.
+//
+// Per-row walk uses [selectionRenderMask] for the exact column span
+// painted on screen (left-margin clamp included), then [xansi.Cut]
+// for cell-aware slicing on ANSI-styled lines, then [xansi.Strip] to
+// flatten styling and trim trailing fill whitespace. Rows that fall
+// outside any entry (the blank separators between entries) yield ""
+// so multi-entry drags keep the on-screen gap as a blank line in the
+// payload. Trailing empty rows are dropped so a drag that overshoots
+// the bottom of the content doesn't produce a payload that ends in
+// newlines.
+func (m model) buildVisualCopyText() string {
+	b, ok := m.selectionRange()
+	if !ok {
+		return ""
+	}
+	ranges := m.entryRowRanges()
+	rows := make([]string, 0, b.maxRow-b.minRow+1)
+	for r := b.minRow; r <= b.maxRow; r++ {
+		line, inEntry := m.lineAtContentRow(r, ranges)
+		if !inEntry {
+			rows = append(rows, "")
+			continue
+		}
+		start, end, ok := m.selectionRenderMask(r, lipgloss.Width(line), ranges)
+		if !ok {
+			rows = append(rows, "")
+			continue
+		}
+		slice := xansi.Strip(xansi.Cut(line, start, end))
+		rows = append(rows, strings.TrimRight(slice, " \t"))
+	}
+	for len(rows) > 0 && rows[len(rows)-1] == "" {
+		rows = rows[:len(rows)-1]
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+	return strings.Join(rows, "\n")
+}
+
 // entryCopyText returns the clipboard-friendly form of an entry's
 // source. histResponse and histUser entries store their content
 // verbatim in entry.text (raw markdown / raw user input), so we emit
