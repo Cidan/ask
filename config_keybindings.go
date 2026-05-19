@@ -57,10 +57,9 @@ func (m model) updateConfigKeybindingsPicker(msg tea.KeyPressMsg) (tea.Model, te
 		// recovery path from inside the picker — they would have to
 		// remember the default key to capture it back, or hand-edit
 		// ~/.config/ask/ask.json. 'r' is safe to overload here because
-		// row-navigation mode treats every other key (besides ↑↓ Enter
-		// Esc Ctrl+C) as a no-op; capture mode is the only place where
-		// 'r' could be recorded *as* a binding, and we don't shadow
-		// that path.
+		// row-navigation mode ignores unrelated keys; capture mode is
+		// the only place where 'r' could be recorded as a binding, and
+		// we don't shadow that path.
 		if m.configKeybindingsCursor < 0 || m.configKeybindingsCursor >= len(actionMeta) {
 			return m, nil
 		}

@@ -161,6 +161,48 @@ func TestWorkflowsBuilder_LeftCursorDrivesRightMode(t *testing.T) {
 	}
 }
 
+func TestWorkflowsBuilderTopLevel_IgnoresEmacsListNav(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.workflowsBuilder = &workflowsBuilderState{
+		items: []workflowDef{{
+			Name:  "wf",
+			Steps: []workflowStep{{Name: "step"}},
+		}},
+		focus: workflowsBuilderFocusLeft,
+	}
+	m.workflowsBuilder.syncRightFromLeft()
+
+	m1, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	if m1.workflowsBuilder.listCursor != 0 {
+		t.Fatalf("left pane Ctrl+N cursor=%d want 0", m1.workflowsBuilder.listCursor)
+	}
+	m2, _, _ := workflowsScreen{}.updateKey(m1, tea.KeyPressMsg{Code: tea.KeyDown})
+	if m2.workflowsBuilder.listCursor != 1 {
+		t.Fatalf("left pane Down cursor=%d want 1", m2.workflowsBuilder.listCursor)
+	}
+
+	m2.workflowsBuilder.focus = workflowsBuilderFocusRight
+	m3, _, _ := workflowsScreen{}.updateKey(m2, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	if m3.workflowsBuilder.stepsCursor != 0 {
+		t.Fatalf("steps pane Ctrl+N cursor=%d want 0", m3.workflowsBuilder.stepsCursor)
+	}
+	m4, _, _ := workflowsScreen{}.updateKey(m3, tea.KeyPressMsg{Code: tea.KeyDown})
+	if m4.workflowsBuilder.stepsCursor != 1 {
+		t.Fatalf("steps pane Down cursor=%d want 1", m4.workflowsBuilder.stepsCursor)
+	}
+
+	m4.workflowsBuilder.rightMode = workflowsBuilderRightStep
+	m4.workflowsBuilder.stepFieldCursor = workflowsStepFieldName
+	m5, _, _ := workflowsScreen{}.updateKey(m4, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	if m5.workflowsBuilder.stepFieldCursor != workflowsStepFieldName {
+		t.Fatalf("step pane Ctrl+N cursor=%d want %d", m5.workflowsBuilder.stepFieldCursor, workflowsStepFieldName)
+	}
+	m6, _, _ := workflowsScreen{}.updateKey(m5, tea.KeyPressMsg{Code: tea.KeyDown})
+	if m6.workflowsBuilder.stepFieldCursor != workflowsStepFieldProvider {
+		t.Fatalf("step pane Down cursor=%d want %d", m6.workflowsBuilder.stepFieldCursor, workflowsStepFieldProvider)
+	}
+}
+
 // TestWorkflowsBuilder_DeleteBlockedWhileRunning covers the safety
 // guard: the user cannot delete a workflow that's actively running.
 func TestWorkflowsBuilder_DeleteBlockedWhileRunning(t *testing.T) {

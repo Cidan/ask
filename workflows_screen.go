@@ -943,13 +943,13 @@ func (b *workflowsBuilderState) renderBase(width, height int) string {
 // narrow pane.
 func (b *workflowsBuilderState) activeHint() string {
 	if b.focus == workflowsBuilderFocusLeft {
-		return "enter open · r rename · d delete · esc back"
+		return "↑/↓ navigate · enter open · r rename · d delete · esc back"
 	}
 	switch b.rightMode {
 	case workflowsBuilderRightSteps:
-		return "enter edit · d delete · tab focus left · esc back"
+		return "↑/↓ navigate · enter edit · d delete · tab focus left · esc back"
 	case workflowsBuilderRightStep:
-		return "enter edit · esc back · tab focus left"
+		return "↑/↓ navigate · enter edit · esc back · tab focus left"
 	}
 	return "tab focus left"
 }
