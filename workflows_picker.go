@@ -123,7 +123,7 @@ func (m model) renderWorkflowPicker() string {
 		}
 	}
 
-	help := dimStyle.Render("↑/↓ choose · enter run · esc cancel")
+	help := dimStyle.Render("enter run · esc cancel")
 	body := strings.Join([]string{
 		title,
 		"",

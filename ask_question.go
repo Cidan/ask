@@ -960,7 +960,7 @@ func (m model) renderAskHelp() string {
 		if m.cursorOnCustom() {
 			return askHelpStyle.Render("type model · enter select · esc cancel")
 		}
-		return askHelpStyle.Render("↑↓ navigate · enter select · esc cancel")
+		return askHelpStyle.Render("enter select · esc cancel")
 	}
 	if m.cursorOnCustom() {
 		return askHelpStyle.Render("type answer · shift+enter newline · enter confirm · ←→ tab · esc cancel")
@@ -973,5 +973,5 @@ func (m model) renderAskHelp() string {
 	if q.kind == qPickMany {
 		pick = "space toggle · enter next"
 	}
-	return askHelpStyle.Render("↑↓ navigate · " + pick + " · ←→ tab · n note · esc cancel")
+	return askHelpStyle.Render(pick + " · ←→ tab · n note · esc cancel")
 }

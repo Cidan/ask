@@ -259,7 +259,7 @@ func TestKeybindingsPickerWidthCapsToTerminal(t *testing.T) {
 	if got := lipgloss.Width(label) + lipgloss.Width(binding) + 1; got > innerW {
 		t.Errorf("fitted cells width=%d exceeds inner width=%d", got, innerW)
 	}
-	if got := lipgloss.Width(truncateForRow("↑↓ navigate · enter rebind · esc close", innerW)); got > innerW {
+	if got := lipgloss.Width(truncateForRow("enter rebind · r reset · u unbind · esc close", innerW)); got > innerW {
 		t.Errorf("help width=%d exceeds inner width=%d", got, innerW)
 	}
 }

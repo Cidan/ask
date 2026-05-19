@@ -404,7 +404,7 @@ func (m model) viewConfigMemoryPicker() string {
 		"",
 		configHelpStyle.Render(endpoint),
 		"",
-		themePickerHelpStyle.Render("↑↓ navigate · enter open/toggle · esc close"),
+		themePickerHelpStyle.Render("enter open/toggle · esc close"),
 	)
 
 	return themePickerBoxStyle.Render(strings.Join(body, "\n"))

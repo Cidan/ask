@@ -430,7 +430,7 @@ func (m model) viewConfigModal() string {
 		rows = append(rows, strings.Repeat(" ", innerW))
 	}
 
-	help := configHelpStyle.Render("tab switch selection • ↑/↓ choose • enter confirm • esc cancel")
+	help := configHelpStyle.Render("tab switch selection • enter confirm • esc cancel")
 
 	body := strings.Join([]string{
 		title,
@@ -458,7 +458,7 @@ func (m model) viewConfigGlobalPicker() string {
 		promptLine: filterPromptLine(m.configFilter, "Type to filter"),
 		items:      m.filteredGlobalConfigItems(),
 		cursor:     m.configGlobalCursor,
-		helpText:   "↑/↓ choose · enter confirm · esc back",
+		helpText:   "enter confirm · esc back",
 	})
 }
 
@@ -681,7 +681,7 @@ func (m model) viewThemePicker() string {
 		rows = append(rows, line)
 	}
 
-	help := themePickerHelpStyle.Render("↑↓ preview · enter save · esc cancel")
+	help := themePickerHelpStyle.Render("enter save · esc cancel")
 
 	body := strings.Join([]string{
 		title,
@@ -780,7 +780,7 @@ func (m model) viewConfigProviderPicker() string {
 		opts = append(opts, p.DisplayName())
 	}
 	rows := renderSwitcherRows(opts, m.configProviderCursor, innerW)
-	help := themePickerHelpStyle.Render("↑↓ navigate · enter save · esc cancel")
+	help := themePickerHelpStyle.Render("enter save · esc cancel")
 	body := strings.Join([]string{title, "", strings.Join(rows, "\n"), "", help}, "\n")
 	return themePickerBoxStyle.Render(body)
 }

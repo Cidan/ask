@@ -176,7 +176,7 @@ func (m model) viewConfigKeybindingsPicker() string {
 			actionMeta[m.configKeybindingsCursor].Label +
 			" (currently " + displayBinding(km.Binding(actionMeta[m.configKeybindingsCursor].Action)) + ")."
 	}
-	const helpFooter = "↑↓ navigate · enter rebind · r reset · u unbind · esc close"
+	const helpFooter = "enter rebind · r reset · u unbind · esc close"
 	for _, g := range actionGroups {
 		innerW = keybindingsExpandInnerWidth(m.width, innerW, g.Heading)
 	}

@@ -943,13 +943,13 @@ func (b *workflowsBuilderState) renderBase(width, height int) string {
 // narrow pane.
 func (b *workflowsBuilderState) activeHint() string {
 	if b.focus == workflowsBuilderFocusLeft {
-		return "↑/↓ navigate · enter open · r rename · d delete · esc back"
+		return "enter open · r rename · d delete · esc back"
 	}
 	switch b.rightMode {
 	case workflowsBuilderRightSteps:
-		return "↑/↓ navigate · enter edit · d delete · tab focus left · esc back"
+		return "enter edit · d delete · tab focus left · esc back"
 	case workflowsBuilderRightStep:
-		return "↑/↓ navigate · enter edit · esc back · tab focus left"
+		return "enter edit · esc back · tab focus left"
 	}
 	return "tab focus left"
 }
@@ -1385,7 +1385,7 @@ func (b *workflowsBuilderState) renderProviderPicker(width, height int) string {
 		promptLine: configPromptStyle.Render("> ") + dimStyle.Render("Pick the agent CLI for this step"),
 		items:      rows,
 		cursor:     b.providerCursor,
-		helpText:   "↑/↓ navigate · enter pick · esc cancel",
+		helpText:   "enter pick · esc cancel",
 	})
 }
 
@@ -1404,7 +1404,7 @@ func (b *workflowsBuilderState) renderModelPicker(width, height int) string {
 		promptLine: configPromptStyle.Render("> ") + dimStyle.Render("Pick the model for this step"),
 		items:      rows,
 		cursor:     b.modelCursor,
-		helpText:   "↑/↓ navigate · enter pick · esc cancel",
+		helpText:   "enter pick · esc cancel",
 	})
 }
 

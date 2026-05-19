@@ -403,7 +403,7 @@ func (m model) viewConfigProjectPicker() string {
 		promptLine: filterPromptLine(m.configFilter, "Type to filter"),
 		items:      m.filteredProjectPickerItems(),
 		cursor:     m.configProjectCursor,
-		helpText:   "↑/↓ choose · enter open/cycle · esc back",
+		helpText:   "enter open/cycle · esc back",
 	})
 }
 

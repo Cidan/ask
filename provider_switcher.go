@@ -313,7 +313,7 @@ func (m model) viewProviderSwitch() string {
 	}
 	rows := renderSwitcherRows(opts, m.providerSwitchProvIdx, innerW)
 
-	help := themePickerHelpStyle.Render("↑↓ navigate · enter pick model · esc cancel")
+	help := themePickerHelpStyle.Render("enter pick model · esc cancel")
 
 	body := strings.Join([]string{
 		title,
