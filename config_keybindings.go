@@ -36,16 +36,12 @@ func (m model) updateConfigKeybindingsPicker(msg tea.KeyPressMsg) (tea.Model, te
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		m = m.closeConfigKeybindingsPicker()
 		return m, nil
-	case msg.Code == tea.KeyUp:
-		if m.configKeybindingsCursor > 0 {
-			m.configKeybindingsCursor--
-		}
+	case listNavPrev(msg):
+		m.configKeybindingsCursor = listNavWrap(m.configKeybindingsCursor, -1, len(actionMeta))
 		m.configKeybindingsError = ""
 		return m, nil
-	case msg.Code == tea.KeyDown:
-		if m.configKeybindingsCursor < len(actionMeta)-1 {
-			m.configKeybindingsCursor++
-		}
+	case listNavNext(msg):
+		m.configKeybindingsCursor = listNavWrap(m.configKeybindingsCursor, +1, len(actionMeta))
 		m.configKeybindingsError = ""
 		return m, nil
 	case msg.Code == tea.KeyEnter:
@@ -180,7 +176,7 @@ func (m model) viewConfigKeybindingsPicker() string {
 			actionMeta[m.configKeybindingsCursor].Label +
 			" (currently " + displayBinding(km.Binding(actionMeta[m.configKeybindingsCursor].Action)) + ")."
 	}
-	const helpFooter = "↑↓ navigate · enter rebind · r reset · u unbind · esc close"
+	const helpFooter = "enter rebind · r reset · u unbind · esc close"
 	for _, g := range actionGroups {
 		innerW = keybindingsExpandInnerWidth(m.width, innerW, g.Heading)
 	}

@@ -82,15 +82,11 @@ func (m model) updateProviderSwitchLevel0(msg tea.KeyPressMsg) (tea.Model, tea.C
 	switch {
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		return m.closeProviderSwitch(), nil
-	case msg.Code == tea.KeyUp:
-		if m.providerSwitchProvIdx > 0 {
-			m.providerSwitchProvIdx--
-		}
+	case listNavPrev(msg):
+		m.providerSwitchProvIdx = listNavWrap(m.providerSwitchProvIdx, -1, len(provs))
 		return m, nil
-	case msg.Code == tea.KeyDown:
-		if m.providerSwitchProvIdx < len(provs)-1 {
-			m.providerSwitchProvIdx++
-		}
+	case listNavNext(msg):
+		m.providerSwitchProvIdx = listNavWrap(m.providerSwitchProvIdx, +1, len(provs))
 		return m, nil
 	case msg.Code == tea.KeyEnter:
 		// Fork the picker source once — for codex this does a live
@@ -317,7 +313,7 @@ func (m model) viewProviderSwitch() string {
 	}
 	rows := renderSwitcherRows(opts, m.providerSwitchProvIdx, innerW)
 
-	help := themePickerHelpStyle.Render("↑↓ navigate · enter pick model · esc cancel")
+	help := themePickerHelpStyle.Render("enter pick model · esc cancel")
 
 	body := strings.Join([]string{
 		title,

@@ -620,15 +620,11 @@ func (m model) workflowsBuilderUpdateProviderPicker(msg tea.KeyPressMsg) (model,
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		b.providerPicker = false
 		return m, nil, true
-	case msg.Code == tea.KeyUp:
-		if b.providerCursor > 0 {
-			b.providerCursor--
-		}
+	case listNavPrev(msg):
+		b.providerCursor = listNavWrap(b.providerCursor, -1, len(providerRegistry))
 		return m, nil, true
-	case msg.Code == tea.KeyDown:
-		if b.providerCursor < len(providerRegistry)-1 {
-			b.providerCursor++
-		}
+	case listNavNext(msg):
+		b.providerCursor = listNavWrap(b.providerCursor, +1, len(providerRegistry))
 		return m, nil, true
 	case msg.Code == tea.KeyEnter:
 		if b.providerCursor < 0 || b.providerCursor >= len(providerRegistry) {
@@ -660,15 +656,11 @@ func (m model) workflowsBuilderUpdateModelPicker(msg tea.KeyPressMsg) (model, te
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		b.modelPicker = false
 		return m, nil, true
-	case msg.Code == tea.KeyUp:
-		if b.modelCursor > 0 {
-			b.modelCursor--
-		}
+	case listNavPrev(msg):
+		b.modelCursor = listNavWrap(b.modelCursor, -1, len(b.modelPickerOpts))
 		return m, nil, true
-	case msg.Code == tea.KeyDown:
-		if b.modelCursor < len(b.modelPickerOpts)-1 {
-			b.modelCursor++
-		}
+	case listNavNext(msg):
+		b.modelCursor = listNavWrap(b.modelCursor, +1, len(b.modelPickerOpts))
 		return m, nil, true
 	case msg.Code == tea.KeyEnter:
 		if b.modelCursor < 0 || b.modelCursor >= len(b.modelPickerOpts) {
@@ -951,13 +943,13 @@ func (b *workflowsBuilderState) renderBase(width, height int) string {
 // narrow pane.
 func (b *workflowsBuilderState) activeHint() string {
 	if b.focus == workflowsBuilderFocusLeft {
-		return "↑/↓ navigate · enter open · r rename · d delete · esc back"
+		return "enter open · r rename · d delete · esc back"
 	}
 	switch b.rightMode {
 	case workflowsBuilderRightSteps:
-		return "↑/↓ navigate · enter edit · d delete · tab focus left · esc back"
+		return "enter edit · d delete · tab focus left · esc back"
 	case workflowsBuilderRightStep:
-		return "↑/↓ navigate · enter edit · esc back · tab focus left"
+		return "enter edit · esc back · tab focus left"
 	}
 	return "tab focus left"
 }
@@ -1393,7 +1385,7 @@ func (b *workflowsBuilderState) renderProviderPicker(width, height int) string {
 		promptLine: configPromptStyle.Render("> ") + dimStyle.Render("Pick the agent CLI for this step"),
 		items:      rows,
 		cursor:     b.providerCursor,
-		helpText:   "↑/↓ navigate · enter pick · esc cancel",
+		helpText:   "enter pick · esc cancel",
 	})
 }
 
@@ -1412,7 +1404,7 @@ func (b *workflowsBuilderState) renderModelPicker(width, height int) string {
 		promptLine: configPromptStyle.Render("> ") + dimStyle.Render("Pick the model for this step"),
 		items:      rows,
 		cursor:     b.modelCursor,
-		helpText:   "↑/↓ navigate · enter pick · esc cancel",
+		helpText:   "enter pick · esc cancel",
 	})
 }
 

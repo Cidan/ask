@@ -105,6 +105,51 @@ func TestWorkflowPicker_EnterEmptyItemsIsNoop(t *testing.T) {
 	}
 }
 
+// TestWorkflowPicker_EmacsListNav covers Ctrl+P / Ctrl+N as
+// arrow-key equivalents — the bindings are hardcoded into the picker
+// handler so unbinding a customizable keymap action can't lock the
+// user out of cursor movement.
+func TestWorkflowPicker_EmacsListNav(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	items := []workflowDef{
+		{Name: "alpha"},
+		{Name: "beta"},
+		{Name: "gamma"},
+	}
+	m = m.openWorkflowPicker(items, issueWorkflowSource(issueRef{Provider: "github", Project: "x/y", Number: 1}))
+
+	// Ctrl+N → down to beta.
+	out, _ := m.updateWorkflowPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	mm := out.(model)
+	if mm.workflowPicker.Cursor != 1 {
+		t.Errorf("Ctrl+N cursor: got %d want 1", mm.workflowPicker.Cursor)
+	}
+	// Ctrl+N again → gamma.
+	out, _ = mm.updateWorkflowPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	mm = out.(model)
+	if mm.workflowPicker.Cursor != 2 {
+		t.Errorf("second Ctrl+N cursor: got %d want 2", mm.workflowPicker.Cursor)
+	}
+	// Ctrl+N past the end wraps back to alpha.
+	out, _ = mm.updateWorkflowPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	mm = out.(model)
+	if mm.workflowPicker.Cursor != 0 {
+		t.Errorf("Ctrl+N past end should wrap to 0; got %d", mm.workflowPicker.Cursor)
+	}
+	// Ctrl+P at the top wraps to gamma.
+	out, _ = mm.updateWorkflowPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	mm = out.(model)
+	if mm.workflowPicker.Cursor != 2 {
+		t.Errorf("Ctrl+P past top should wrap to last; got %d", mm.workflowPicker.Cursor)
+	}
+	// Ctrl+P retreats normally afterwards.
+	out, _ = mm.updateWorkflowPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	mm = out.(model)
+	if mm.workflowPicker.Cursor != 1 {
+		t.Errorf("Ctrl+P cursor: got %d want 1", mm.workflowPicker.Cursor)
+	}
+}
+
 // TestWorkflowPicker_StepsCountFormatting locks the human-readable
 // step count format the picker shows alongside each pipeline name.
 func TestWorkflowPicker_StepsCountFormatting(t *testing.T) {

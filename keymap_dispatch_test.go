@@ -155,6 +155,25 @@ func TestConfigKeybindingsPicker_CapturePersistsToDisk(t *testing.T) {
 	}
 }
 
+func TestConfigKeybindingsPicker_EmacsListNav(t *testing.T) {
+	isolateHome(t)
+	invalidateKeyMapCache()
+	defer invalidateKeyMapCache()
+
+	m := newTestModel(t, newFakeProvider())
+	m.mode = modeConfig
+	m.configKeybindingsPickerActive = true
+
+	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	if m2.configKeybindingsCursor != 1 {
+		t.Fatalf("Ctrl+N cursor=%d want 1", m2.configKeybindingsCursor)
+	}
+	m3, _ := runUpdate(t, m2, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	if m3.configKeybindingsCursor != 0 {
+		t.Fatalf("Ctrl+P cursor=%d want 0", m3.configKeybindingsCursor)
+	}
+}
+
 func TestConfigKeybindingsPicker_CaptureStripsLockModifiers(t *testing.T) {
 	isolateHome(t)
 	invalidateKeyMapCache()
@@ -240,7 +259,7 @@ func TestKeybindingsPickerWidthCapsToTerminal(t *testing.T) {
 	if got := lipgloss.Width(label) + lipgloss.Width(binding) + 1; got > innerW {
 		t.Errorf("fitted cells width=%d exceeds inner width=%d", got, innerW)
 	}
-	if got := lipgloss.Width(truncateForRow("↑↓ navigate · enter rebind · esc close", innerW)); got > innerW {
+	if got := lipgloss.Width(truncateForRow("enter rebind · r reset · u unbind · esc close", innerW)); got > innerW {
 		t.Errorf("help width=%d exceeds inner width=%d", got, innerW)
 	}
 }

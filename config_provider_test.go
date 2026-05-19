@@ -157,6 +157,22 @@ func TestConfigProviderPicker_EnterSavesDefault(t *testing.T) {
 	}
 }
 
+func TestConfigProviderPicker_EmacsListNav(t *testing.T) {
+	m := configProviderFixture(t)
+	m = m.openConfigProviderPicker()
+
+	mi, _ := m.updateConfigProviderPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	m = mi.(model)
+	if m.configProviderCursor != 1 {
+		t.Fatalf("Ctrl+N cursor=%d want 1", m.configProviderCursor)
+	}
+	mi, _ = m.updateConfigProviderPicker(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	m = mi.(model)
+	if m.configProviderCursor != 0 {
+		t.Fatalf("Ctrl+P cursor=%d want 0", m.configProviderCursor)
+	}
+}
+
 func TestConfigProviderPicker_DoesNotSwitchCurrentTab(t *testing.T) {
 	// Picking a new default in /config must NOT swap the current tab's
 	// provider. Only new tabs pick up cfg.Provider on newTab.

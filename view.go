@@ -1751,7 +1751,7 @@ func (m model) renderPathBox() string {
 func (m model) viewPicker() string {
 	var b strings.Builder
 	b.WriteString(promptStyle.Render("select a session"))
-	b.WriteString(dimStyle.Render("  (↑/↓ navigate · enter to resume · esc to cancel)"))
+	b.WriteString(dimStyle.Render("  (enter to resume · esc to cancel)"))
 	b.WriteString("\n\n")
 	for i, s := range m.sessions {
 		preview := s.preview
