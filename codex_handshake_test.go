@@ -253,6 +253,31 @@ func TestCodexHandshake_SendsDeveloperInstructions(t *testing.T) {
 	}
 }
 
+// A worktree cwd must add the same cwd-pinning clause codex's
+// developerInstructions carries that claude's --append-system-prompt
+// does, so /provider swaps mid-tab keep the steering consistent.
+func TestCodexHandshake_DeveloperInstructionsWorktreeClause(t *testing.T) {
+	worktreeCwd := "/home/u/proj/.claude/worktrees/cosy-dancing-otter"
+	serverOut := `{"id":2,"result":{"thread":{"id":"tid"}}}` + "\n"
+	_, stdin, err := fakeHandshake(t, serverOut, ProviderSessionArgs{Cwd: worktreeCwd})
+	if err != nil {
+		t.Fatalf("handshake err: %v", err)
+	}
+	frames := decodeFrames(t, stdin.Bytes())
+	params, _ := frames[2]["params"].(map[string]any)
+	got, _ := params["developerInstructions"].(string)
+	if !strings.HasPrefix(got, askSteeringPrompt) {
+		t.Fatalf("developerInstructions should start with askSteeringPrompt; got %q", got)
+	}
+	extra := strings.TrimPrefix(got, askSteeringPrompt)
+	if !strings.Contains(extra, worktreeCwd) {
+		t.Errorf("worktree clause should name cwd %q; got %q", worktreeCwd, extra)
+	}
+	if !strings.Contains(extra, "dedicated git worktree") {
+		t.Errorf("worktree clause missing pin phrasing; got %q", extra)
+	}
+}
+
 // decodeFrames splits the stdin byte stream at newlines and JSON-parses each
 // frame.
 func decodeFrames(t *testing.T, raw []byte) []map[string]any {

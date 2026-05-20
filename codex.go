@@ -399,8 +399,9 @@ func codexHandshake(stdin io.Writer, sc *bufio.Scanner, state *codexState, args 
 	// same machine-pace steering regardless of provider. Applied to
 	// both thread/start and thread/resume; codex layers it on top of
 	// its own system prompt rather than replacing it (developerInstructions
-	// is the appendable slot; baseInstructions would replace).
-	params["developerInstructions"] = askSteeringPrompt
+	// is the appendable slot; baseInstructions would replace). In a
+	// worktree session the prompt grows a cwd-pinning clause.
+	params["developerInstructions"] = steeringPromptFor(args)
 	if err := codexWriteJSON(stdin, codexRequest(codexThreadStartID, method, params)); err != nil {
 		return err
 	}

@@ -19,6 +19,25 @@ You must value correct and complete implementations instead of conservative "thi
 
 You must never rely on your internal memory to guide you on how a system works. You must always read documentation, code, search the web, and gather thoughtful research. Never implement or suggest implementations for a system or process in which you have not directly observed the correct path to the behavior, the API, the documentation, or the functions to be implemented or called yourself.`
 
+// steeringPromptFor returns askSteeringPrompt with an extra clause
+// appended when args.Cwd points inside `.claude/worktrees/<name>`. The
+// clause pins the agent to that worktree directory so workflow steps
+// (which run unattended with permissions skipped) can't wander into
+// the project root or a sibling worktree and modify the wrong tree.
+// Chat sessions in a worktree get the same clause; non-worktree
+// sessions get the base prompt unchanged so legitimate cross-repo
+// reads (CLAUDE.md's /tmp reference clones, etc.) aren't constrained.
+func steeringPromptFor(args ProviderSessionArgs) string {
+	if worktreeNameFromCwd(args.Cwd) == "" {
+		return askSteeringPrompt
+	}
+	return askSteeringPrompt + "\n\n" +
+		"Your working directory is `" + args.Cwd + "`. " +
+		"This is a dedicated git worktree — treat it as the project root for this session. " +
+		"Do not `cd` outside it, and confine all edits, writes, and file creation to paths inside it. " +
+		"Read-only references to other locations (for example, /tmp clones of upstream repos for documentation) are fine, but never modify anything outside this directory."
+}
+
 // Provider is an agent-CLI backend (claude, codex, gemini, …). Each
 // implementation owns its own subprocess lifecycle, wire-protocol
 // translation into tea.Msgs, the commands it supports, and where/how

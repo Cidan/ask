@@ -78,7 +78,9 @@ func TestClaudeCLIArgs_SkipAllPermissions(t *testing.T) {
 // askSteeringPrompt must ride on every claude spawn (probe + real)
 // as --append-system-prompt so the agent keeps acting at machine pace
 // and the system-prompt prefix stays cache-stable between the probe
-// and the real run.
+// and the real run. Outside a worktree the payload is bare
+// askSteeringPrompt; inside one it grows a cwd-pinning clause naming
+// the worktree path.
 func TestClaudeCLIArgs_AppendsAskSteeringPrompt(t *testing.T) {
 	for _, probe := range []bool{false, true} {
 		args := claudeCLIArgs(ProviderSessionArgs{}, probe)
@@ -86,6 +88,44 @@ func TestClaudeCLIArgs_AppendsAskSteeringPrompt(t *testing.T) {
 		if got != askSteeringPrompt {
 			t.Errorf("probe=%v: --append-system-prompt=%q want askSteeringPrompt", probe, got)
 		}
+	}
+}
+
+// In a worktree session the steering prompt must grow a clause naming
+// the worktree cwd so the agent doesn't wander out of it. Project-root
+// or unrelated cwds leave the prompt unchanged.
+func TestClaudeCLIArgs_AppendsWorktreeClause(t *testing.T) {
+	cases := []struct {
+		name       string
+		cwd        string
+		wantClause bool
+	}{
+		{"worktree cwd", "/home/u/proj/.claude/worktrees/tasty-jumping-fox", true},
+		{"project root cwd", "/home/u/proj", false},
+		{"empty cwd", "", false},
+		{"unrelated path", "/tmp/scratch", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			argv := claudeCLIArgs(ProviderSessionArgs{Cwd: c.cwd}, false)
+			got := argAfter(argv, "--append-system-prompt")
+			if !strings.HasPrefix(got, askSteeringPrompt) {
+				t.Fatalf("--append-system-prompt should start with askSteeringPrompt; got %q", got)
+			}
+			extra := strings.TrimPrefix(got, askSteeringPrompt)
+			if !c.wantClause {
+				if extra != "" {
+					t.Errorf("cwd=%q should not append a worktree clause; got extra %q", c.cwd, extra)
+				}
+				return
+			}
+			if !strings.Contains(extra, c.cwd) {
+				t.Errorf("worktree clause should name the cwd %q; got %q", c.cwd, extra)
+			}
+			if !strings.Contains(extra, "dedicated git worktree") {
+				t.Errorf("worktree clause missing the pin phrasing; got %q", extra)
+			}
+		})
 	}
 }
 
