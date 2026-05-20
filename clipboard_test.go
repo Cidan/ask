@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -233,5 +235,254 @@ func TestClipboardCopyText_OSC52FiresEvenWhenBinaryMissing(t *testing.T) {
 	}
 	if !emitted {
 		t.Errorf("OSC 52 must fire before the binary lookup loop, regardless of binary availability")
+	}
+}
+
+// withPasteImageStubs pins clipboardGOOS and saves/restores every
+// per-platform paste seam (wl-paste pair + osascript pair) at test
+// cleanup. Callers then override only the seams the case exercises;
+// the un-overridden ones still point at the saved defaults but won't
+// fire because clipboardGOOS gates the switch.
+func withPasteImageStubs(t *testing.T, goos string) {
+	t.Helper()
+	prevGOOS := clipboardGOOS
+	prevWlList, prevWlRead := wlPasteListTypesFn, wlPasteReadFn
+	prevInfo, prevExtract := darwinClipboardInfoFn, darwinClipboardExtractFn
+	t.Cleanup(func() {
+		clipboardGOOS = prevGOOS
+		wlPasteListTypesFn, wlPasteReadFn = prevWlList, prevWlRead
+		darwinClipboardInfoFn, darwinClipboardExtractFn = prevInfo, prevExtract
+	})
+	clipboardGOOS = goos
+}
+
+func TestPasteImageFromClipboard_UnsupportedGOOS(t *testing.T) {
+	withPasteImageStubs(t, "plan9")
+	_, _, err := pasteImageFromClipboard()
+	if err == nil || !strings.Contains(err.Error(), "plan9") {
+		t.Fatalf("expected unsupported-OS error mentioning plan9, got %v", err)
+	}
+}
+
+func TestPasteImageWayland_PrefersFirstAcceptedMime(t *testing.T) {
+	withPasteImageStubs(t, "linux")
+	var askedMime string
+	payload := []byte("\x89PNG\r\n\x1a\nFAKE")
+	wlPasteListTypesFn = func() ([]byte, error) {
+		return []byte("text/plain\nimage/png\nimage/jpeg\n"), nil
+	}
+	wlPasteReadFn = func(mime string) ([]byte, error) {
+		askedMime = mime
+		return payload, nil
+	}
+	data, mime, err := pasteImageFromClipboard()
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if mime != "image/png" {
+		t.Errorf("mime=%q, want image/png (first accepted in list)", mime)
+	}
+	if askedMime != "image/png" {
+		t.Errorf("wlPasteReadFn called with %q, want image/png", askedMime)
+	}
+	if !bytes.Equal(data, payload) {
+		t.Errorf("data mismatch")
+	}
+}
+
+func TestPasteImageWayland_ListFailurePreservesLegacyErrorString(t *testing.T) {
+	withPasteImageStubs(t, "linux")
+	wlPasteListTypesFn = func() ([]byte, error) {
+		return nil, errors.New("exec: wl-paste not found")
+	}
+	_, _, err := pasteImageFromClipboard()
+	if err == nil {
+		t.Fatal("expected error from wl-paste --list-types failure")
+	}
+	// Users have been seeing this exact phrasing forever — keep it
+	// stable so grep / docs / muscle memory still find it.
+	want := "wl-paste failed (clipboard empty or wl-paste missing)"
+	if err.Error() != want {
+		t.Errorf("err=%q, want %q", err.Error(), want)
+	}
+}
+
+func TestPasteImageWayland_NoImageInClipboard(t *testing.T) {
+	withPasteImageStubs(t, "linux")
+	wlPasteListTypesFn = func() ([]byte, error) {
+		return []byte("text/plain\ntext/html\n"), nil
+	}
+	wlPasteReadFn = func(mime string) ([]byte, error) {
+		t.Fatalf("read should not fire when no accepted mime in list")
+		return nil, nil
+	}
+	_, _, err := pasteImageFromClipboard()
+	if err == nil || !strings.Contains(err.Error(), "no image in clipboard") {
+		t.Fatalf("expected no-image error, got %v", err)
+	}
+}
+
+func TestPasteImageWayland_EmptyData(t *testing.T) {
+	withPasteImageStubs(t, "linux")
+	wlPasteListTypesFn = func() ([]byte, error) {
+		return []byte("image/png\n"), nil
+	}
+	wlPasteReadFn = func(mime string) ([]byte, error) {
+		return []byte{}, nil
+	}
+	_, _, err := pasteImageFromClipboard()
+	if err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("expected empty-image error, got %v", err)
+	}
+}
+
+func TestPasteImageDarwin_DetectsPNGFirst(t *testing.T) {
+	withPasteImageStubs(t, "darwin")
+	// Real `clipboard info` output advertises many classes for the
+	// same image — we want PNG to win regardless of where it lands.
+	darwinClipboardInfoFn = func() ([]byte, error) {
+		return []byte("«class PNGf», 22272, «class AVIF», 4977, JPEG picture, 4630, TIFF picture, 58646"), nil
+	}
+	payload := []byte("\x89PNG\r\n\x1a\nfake-bytes")
+	var extractedClass, gotDst string
+	darwinClipboardExtractFn = func(className, dstPath string) error {
+		extractedClass, gotDst = className, dstPath
+		return os.WriteFile(dstPath, payload, 0o644)
+	}
+	data, mime, err := pasteImageFromClipboard()
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if mime != "image/png" {
+		t.Errorf("mime=%q, want image/png", mime)
+	}
+	if extractedClass != "«class PNGf»" {
+		t.Errorf("extract class=%q, want «class PNGf»", extractedClass)
+	}
+	if gotDst == "" {
+		t.Errorf("extract called with empty dstPath")
+	}
+	if !bytes.Equal(data, payload) {
+		t.Errorf("data mismatch: got %x want %x", data, payload)
+	}
+	// Temp file must be cleaned up.
+	if _, err := os.Stat(gotDst); !os.IsNotExist(err) {
+		t.Errorf("temp file %q still exists after paste; expected cleanup", gotDst)
+	}
+}
+
+func TestPasteImageDarwin_AcceptsJPEGPictureAlias(t *testing.T) {
+	// macOS often advertises JPEG under the human alias rather than
+	// «class JPEG». Both must trigger detection; the coercion target
+	// is always the four-char-code form.
+	withPasteImageStubs(t, "darwin")
+	darwinClipboardInfoFn = func() ([]byte, error) {
+		return []byte("JPEG picture, 12345, TIFF picture, 8888"), nil
+	}
+	var extractedClass string
+	darwinClipboardExtractFn = func(className, dstPath string) error {
+		extractedClass = className
+		return os.WriteFile(dstPath, []byte("\xff\xd8\xff\xe0jpeg"), 0o644)
+	}
+	_, mime, err := pasteImageFromClipboard()
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if mime != "image/jpeg" {
+		t.Errorf("mime=%q, want image/jpeg via JPEG-picture alias", mime)
+	}
+	if extractedClass != "«class JPEG»" {
+		t.Errorf("extract class=%q, want «class JPEG»", extractedClass)
+	}
+}
+
+func TestPasteImageDarwin_AcceptsGIFPictureAlias(t *testing.T) {
+	withPasteImageStubs(t, "darwin")
+	darwinClipboardInfoFn = func() ([]byte, error) {
+		return []byte("GIF picture, 4027"), nil
+	}
+	var extractedClass string
+	darwinClipboardExtractFn = func(className, dstPath string) error {
+		extractedClass = className
+		return os.WriteFile(dstPath, []byte("GIF89a..."), 0o644)
+	}
+	_, mime, err := pasteImageFromClipboard()
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if mime != "image/gif" {
+		t.Errorf("mime=%q, want image/gif via GIF-picture alias", mime)
+	}
+	if extractedClass != "«class GIFf»" {
+		t.Errorf("extract class=%q, want «class GIFf»", extractedClass)
+	}
+}
+
+func TestPasteImageDarwin_NoImageClass(t *testing.T) {
+	withPasteImageStubs(t, "darwin")
+	darwinClipboardInfoFn = func() ([]byte, error) {
+		return []byte("«class utf8», 60, string, 60"), nil
+	}
+	darwinClipboardExtractFn = func(className, dstPath string) error {
+		t.Fatalf("extract should not be called when no image class detected")
+		return nil
+	}
+	_, _, err := pasteImageFromClipboard()
+	if err == nil || !strings.Contains(err.Error(), "no image in clipboard") {
+		t.Fatalf("expected no-image error, got %v", err)
+	}
+}
+
+func TestPasteImageDarwin_InfoSubprocessFailure(t *testing.T) {
+	withPasteImageStubs(t, "darwin")
+	darwinClipboardInfoFn = func() ([]byte, error) {
+		return nil, errors.New("exec: osascript not found")
+	}
+	darwinClipboardExtractFn = func(className, dstPath string) error {
+		t.Fatalf("extract should not be called when info call failed")
+		return nil
+	}
+	_, _, err := pasteImageFromClipboard()
+	if err == nil || !strings.Contains(err.Error(), "osascript") {
+		t.Fatalf("expected osascript error, got %v", err)
+	}
+}
+
+func TestPasteImageDarwin_ExtractFailureCleansTemp(t *testing.T) {
+	withPasteImageStubs(t, "darwin")
+	darwinClipboardInfoFn = func() ([]byte, error) {
+		return []byte("«class PNGf», 100"), nil
+	}
+	var seenDst string
+	darwinClipboardExtractFn = func(className, dstPath string) error {
+		seenDst = dstPath
+		// The extract command failed — temp file may exist as a
+		// zero-byte placeholder (CreateTemp made it), but defer
+		// os.Remove must still wipe it.
+		return errors.New("applescript: write failed")
+	}
+	_, _, err := pasteImageFromClipboard()
+	if err == nil || !strings.Contains(err.Error(), "osascript extract") {
+		t.Fatalf("expected extract error, got %v", err)
+	}
+	if seenDst == "" {
+		t.Fatal("extract was never called")
+	}
+	if _, statErr := os.Stat(seenDst); !os.IsNotExist(statErr) {
+		t.Errorf("temp file %q still exists after extract failure; expected cleanup", seenDst)
+	}
+}
+
+func TestPasteImageDarwin_EmptyData(t *testing.T) {
+	withPasteImageStubs(t, "darwin")
+	darwinClipboardInfoFn = func() ([]byte, error) {
+		return []byte("«class PNGf», 100"), nil
+	}
+	darwinClipboardExtractFn = func(className, dstPath string) error {
+		return os.WriteFile(dstPath, []byte{}, 0o644)
+	}
+	_, _, err := pasteImageFromClipboard()
+	if err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("expected empty-image error, got %v", err)
 	}
 }
