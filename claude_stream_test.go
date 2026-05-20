@@ -630,6 +630,121 @@ func TestReadClaudeStream_ResultErrorWithBodyKeepsBody(t *testing.T) {
 	}
 }
 
+// NumTurns and PermissionDenials are plumbed verbatim from the
+// result event so the UI/debug log can distinguish a clean end_turn
+// from a hook- or permission-amputated loop. NumTurns of 1 with
+// non-zero denials, for example, is a strong signal that a denial
+// short-circuited the chain — useful in debug forensics even when
+// IsError stays false.
+func TestReadClaudeStream_ResultExtractsNumTurnsAndDenials(t *testing.T) {
+	ev := map[string]any{
+		"type":               "result",
+		"subtype":            "success",
+		"session_id":         "s",
+		"is_error":           false,
+		"result":             "ok",
+		"num_turns":          float64(3),
+		"permission_denials": []any{map[string]any{"tool": "Bash"}, map[string]any{"tool": "Edit"}},
+	}
+	b, _ := json.Marshal(ev)
+	msgs := runStream(t, string(b))
+	var done *providerDoneMsg
+	for _, m := range msgs {
+		if d, ok := m.(providerDoneMsg); ok {
+			done = &d
+		}
+	}
+	if done == nil {
+		t.Fatalf("no providerDoneMsg: %#v", msgs)
+	}
+	if done.res.NumTurns != 3 {
+		t.Errorf("NumTurns=%d want 3", done.res.NumTurns)
+	}
+	if done.res.PermissionDenials != 2 {
+		t.Errorf("PermissionDenials=%d want 2", done.res.PermissionDenials)
+	}
+	// A success result with permission denials but no other defect
+	// must NOT be promoted to error — denials are informational.
+	if done.res.IsError {
+		t.Errorf("denials-only success must not be promoted to error: %+v", done.res)
+	}
+}
+
+// A `deferred_tool_use` on the result event means a PreToolUse hook
+// returned `permissionDecision: "defer"` and the agent loop has
+// paused, not completed. Ask cannot resume a deferred tool, so the
+// parser must promote this to an error result with a clear message —
+// otherwise workflow steps silently advance on a half-finished step
+// (which is exactly the OMC code-simplifier failure mode the result-
+// field plumbing was added to defend against, modulo the specific
+// hook decision used).
+func TestReadClaudeStream_ResultDeferredToolUsePromotesToError(t *testing.T) {
+	ev := map[string]any{
+		"type":       "result",
+		"subtype":    "success",
+		"session_id": "s",
+		"is_error":   false,
+		"deferred_tool_use": map[string]any{
+			"id":    "toolu_def_1",
+			"name":  "Bash",
+			"input": map[string]any{"command": "ls -la"},
+		},
+	}
+	b, _ := json.Marshal(ev)
+	msgs := runStream(t, string(b))
+	var done *providerDoneMsg
+	for _, m := range msgs {
+		if d, ok := m.(providerDoneMsg); ok {
+			done = &d
+		}
+	}
+	if done == nil {
+		t.Fatalf("no providerDoneMsg: %#v", msgs)
+	}
+	if done.res.DeferredToolUse == nil {
+		t.Fatalf("DeferredToolUse not plumbed: %+v", done.res)
+	}
+	if done.res.DeferredToolUse.ID != "toolu_def_1" || done.res.DeferredToolUse.Name != "Bash" {
+		t.Errorf("deferred fields wrong: %+v", done.res.DeferredToolUse)
+	}
+	if !done.res.IsError {
+		t.Errorf("deferred_tool_use must promote to IsError=true: %+v", done.res)
+	}
+	if !strings.Contains(done.res.Result, "deferred") {
+		t.Errorf("Result should mention the deferred state: %q", done.res.Result)
+	}
+}
+
+// A deferred_tool_use that arrives ALONGSIDE a pre-populated `result`
+// body must NOT have that body overwritten — the upstream message
+// (whatever produced it) is more specific than our synthesized
+// fallback.
+func TestReadClaudeStream_ResultDeferredKeepsExistingBody(t *testing.T) {
+	ev := map[string]any{
+		"type":       "result",
+		"subtype":    "success",
+		"session_id": "s",
+		"is_error":   false,
+		"result":     "user-facing reason from upstream",
+		"deferred_tool_use": map[string]any{
+			"id":   "toolu_def_2",
+			"name": "Edit",
+		},
+	}
+	b, _ := json.Marshal(ev)
+	msgs := runStream(t, string(b))
+	for _, m := range msgs {
+		if d, ok := m.(providerDoneMsg); ok {
+			if !d.res.IsError {
+				t.Errorf("deferred_tool_use must still flip IsError: %+v", d.res)
+			}
+			if d.res.Result != "user-facing reason from upstream" {
+				t.Errorf("Result body overwritten by defer synth: %q", d.res.Result)
+			}
+		}
+	}
+}
+
 func TestReadClaudeStream_AlwaysEmitsExitedLast(t *testing.T) {
 	msgs := runStream(t, `{"type":"system","subtype":"init","cwd":"/"}`)
 	if len(msgs) == 0 {

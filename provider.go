@@ -17,7 +17,9 @@ const askSteeringPrompt = `You are an AI LLM and can work at super human speeds.
 
 You must value correct and complete implementations instead of conservative "thin" wrappers or "v1" shapes. Never, ever think in terms of "first version" or "for now" or "we can expand on this later" as these are human constructs that are not correct for you and your way of working.
 
-You must never rely on your internal memory to guide you on how a system works. You must always read documentation, code, search the web, and gather thoughtful research. Never implement or suggest implementations for a system or process in which you have not directly observed the correct path to the behavior, the API, the documentation, or the functions to be implemented or called yourself.`
+You must never rely on your internal memory to guide you on how a system works. You must always read documentation, code, search the web, and gather thoughtful research. Never implement or suggest implementations for a system or process in which you have not directly observed the correct path to the behavior, the API, the documentation, or the functions to be implemented or called yourself.
+
+End the turn only when the work you committed to in your text is actually done. Do not write a closing sentence that promises future work ("Let me X next", "I will then Y", "Then I'll commit") without immediately performing that work via tool calls in the same turn. The turn ends the moment you stop emitting tool_use blocks — there is no implicit continuation, no follow-up prompt, no human listening to say "go on." If you genuinely have more work to do, do it now; if you genuinely don't, do not narrate hypothetical follow-ups.`
 
 // steeringPromptFor returns askSteeringPrompt with an extra clause
 // appended when args.Cwd points inside `.claude/worktrees/<name>`. The
@@ -259,12 +261,35 @@ type providerProc struct {
 // the Anthropic Agent SDK exposes on its ResultMessage so the UI can
 // surface *why* a turn ended (refusal, max_turns, max_budget, etc.)
 // rather than a generic "error".
+//
+// NumTurns, PermissionDenials, and DeferredToolUse plumb additional
+// ResultMessage fields so a hook- or permission-induced premature
+// stop is distinguishable from a clean end_turn. Without these,
+// workflow steps can advance silently when a user-supplied hook (or
+// future bug) terminates the agent loop while the model still
+// believed work remained — see the OMC code-simplifier Stop-hook
+// incident at the changelog for the motivating case.
 type providerResult struct {
-	IsError    bool
-	Result     string
-	SessionID  string
-	Subtype    string
-	StopReason string
+	IsError           bool
+	Result            string
+	SessionID         string
+	Subtype           string
+	StopReason        string
+	NumTurns          int
+	PermissionDenials int
+	DeferredToolUse   *deferredToolUse
+}
+
+// deferredToolUse mirrors ResultMessage.deferred_tool_use from the
+// Anthropic Agent SDK. The CLI emits it when a PreToolUse hook
+// returns `permissionDecision: "defer"`: the agent loop stops, and
+// the deferred call is attached so the caller can inspect and
+// optionally resume. Ask has no resume surface for this, so workflow
+// steps treat a non-nil value as a step failure.
+type deferredToolUse struct {
+	ID    string
+	Name  string
+	Input map[string]any
 }
 
 // providerSlashEntry is a dynamically-discovered slash command entry
