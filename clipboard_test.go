@@ -4,7 +4,11 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -336,6 +340,53 @@ func TestPasteImageWayland_EmptyData(t *testing.T) {
 	}
 }
 
+func TestPasteImageWayland_ReadFailurePropagates(t *testing.T) {
+	withPasteImageStubs(t, "linux")
+	wlPasteListTypesFn = func() ([]byte, error) {
+		return []byte("image/png\n"), nil
+	}
+	wlPasteReadFn = func(mime string) ([]byte, error) {
+		return nil, errors.New("read failed")
+	}
+	_, _, err := pasteImageFromClipboard()
+	if err == nil || !strings.Contains(err.Error(), "read failed") {
+		t.Fatalf("expected read failure to propagate, got %v", err)
+	}
+}
+
+func TestPasteImageCmd_EmitsImagePastedMsgShape(t *testing.T) {
+	withPasteImageStubs(t, "linux")
+	var payloadBuf bytes.Buffer
+	img := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.NRGBA{A: 255})
+	if err := png.Encode(&payloadBuf, img); err != nil {
+		t.Fatalf("encode png fixture: %v", err)
+	}
+	payload := payloadBuf.Bytes()
+	wlPasteListTypesFn = func() ([]byte, error) {
+		return []byte("image/png\n"), nil
+	}
+	wlPasteReadFn = func(mime string) ([]byte, error) {
+		return payload, nil
+	}
+	got, ok := pasteImageCmd()().(imagePastedMsg)
+	if !ok {
+		t.Fatalf("cmd returned %T, want imagePastedMsg", got)
+	}
+	if got.err != nil {
+		t.Fatalf("unexpected err: %v", got.err)
+	}
+	if got.mime != "image/png" {
+		t.Errorf("mime=%q, want image/png", got.mime)
+	}
+	if !bytes.Equal(got.data, payload) {
+		t.Errorf("data mismatch")
+	}
+	if len(got.pngForKitty) == 0 || got.width != 1 || got.height != 1 {
+		t.Errorf("kitty preview shape = bytes:%d %dx%d, want nonempty 1x1", len(got.pngForKitty), got.width, got.height)
+	}
+}
+
 func TestPasteImageDarwin_DetectsPNGFirst(t *testing.T) {
 	withPasteImageStubs(t, "darwin")
 	// Real `clipboard info` output advertises many classes for the
@@ -448,6 +499,25 @@ func TestPasteImageDarwin_InfoSubprocessFailure(t *testing.T) {
 	}
 }
 
+func TestPasteImageDarwin_CreateTempFailure(t *testing.T) {
+	withPasteImageStubs(t, "darwin")
+	darwinClipboardInfoFn = func() ([]byte, error) {
+		return []byte("«class PNGf», 100"), nil
+	}
+	darwinClipboardExtractFn = func(className, dstPath string) error {
+		t.Fatalf("extract should not be called when temp creation failed")
+		return nil
+	}
+	missingTempDir := filepath.Join(t.TempDir(), "missing")
+	t.Setenv("TMPDIR", missingTempDir)
+	t.Setenv("TMP", missingTempDir)
+	t.Setenv("TEMP", missingTempDir)
+	_, _, err := pasteImageFromClipboard()
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected temp creation failure, got %v", err)
+	}
+}
+
 func TestPasteImageDarwin_ExtractFailureCleansTemp(t *testing.T) {
 	withPasteImageStubs(t, "darwin")
 	darwinClipboardInfoFn = func() ([]byte, error) {
@@ -470,6 +540,28 @@ func TestPasteImageDarwin_ExtractFailureCleansTemp(t *testing.T) {
 	}
 	if _, statErr := os.Stat(seenDst); !os.IsNotExist(statErr) {
 		t.Errorf("temp file %q still exists after extract failure; expected cleanup", seenDst)
+	}
+}
+
+func TestPasteImageDarwin_ReadFileFailureCleansTemp(t *testing.T) {
+	withPasteImageStubs(t, "darwin")
+	darwinClipboardInfoFn = func() ([]byte, error) {
+		return []byte("«class PNGf», 100"), nil
+	}
+	var seenDst string
+	darwinClipboardExtractFn = func(className, dstPath string) error {
+		seenDst = dstPath
+		return os.Remove(dstPath)
+	}
+	_, _, err := pasteImageFromClipboard()
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected read-file failure, got %v", err)
+	}
+	if seenDst == "" {
+		t.Fatal("extract was never called")
+	}
+	if _, statErr := os.Stat(seenDst); !os.IsNotExist(statErr) {
+		t.Errorf("temp file %q still exists after read failure; expected cleanup", seenDst)
 	}
 }
 

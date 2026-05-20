@@ -117,12 +117,12 @@ func clipboardEmitOSC52(s string) error {
 }
 
 type imagePastedMsg struct {
-	data       []byte
-	mime       string
+	data        []byte
+	mime        string
 	pngForKitty []byte
-	width      int
-	height     int
-	err        error
+	width       int
+	height      int
+	err         error
 }
 
 var acceptedImageMimes = map[string]bool{
@@ -263,7 +263,10 @@ func pasteImageDarwin() ([]byte, string, error) {
 		return nil, "", err
 	}
 	tmpPath := tmp.Name()
-	tmp.Close()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, "", err
+	}
 	defer os.Remove(tmpPath)
 	if err := darwinClipboardExtractFn(className, tmpPath); err != nil {
 		return nil, "", fmt.Errorf("osascript extract: %w", err)
