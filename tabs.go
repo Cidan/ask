@@ -514,13 +514,7 @@ func (a app) renderTabBar() string {
 	parts := make([]string, 0, len(a.tabs))
 	usedWidth := 0
 	for i, t := range a.tabs {
-		label := tabBarLabel(t)
-		var styled string
-		if i == a.active {
-			styled = tabBarActiveStyle.Render(label)
-		} else {
-			styled = tabBarInactiveStyle.Render(label)
-		}
+		styled := renderTabPill(t, i == a.active)
 		if i > 0 {
 			usedWidth += 1 // single-space separator
 		}
@@ -547,9 +541,28 @@ func tabBarLabel(t *model) string {
 	if label == "" {
 		label = "?"
 	}
-	// Tag busy tabs so background work is discoverable at a glance.
-	if t.busy {
-		label = "▸ " + label
+	return label
+}
+
+// renderTabPill builds the styled tab segment. Inactive busy tabs
+// get a ▸ painted in the theme's tabActive color so the running
+// indicator pops from the muted label and stays theme-consistent.
+// Active busy tabs render the ▸ in the regular active style — the
+// pill's own background is already tabActive, and you don't need
+// to scan for the tab you're already focused on.
+func renderTabPill(t *model, active bool) string {
+	label := tabBarLabel(t)
+	if active {
+		body := " " + label + " "
+		if t.busy {
+			body = " ▸ " + label + " "
+		}
+		return tabBarActiveStyle.Render(body)
 	}
-	return " " + label + " "
+	if t.busy {
+		return tabBarInactiveStyle.Render(" ") +
+			tabBarBusyInactiveStyle.Render("▸") +
+			tabBarInactiveStyle.Render(" "+label+" ")
+	}
+	return tabBarInactiveStyle.Render(" " + label + " ")
 }

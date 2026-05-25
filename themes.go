@@ -519,8 +519,9 @@ var (
 	themePickerHelpStyle  lipgloss.Style
 	themePickerRowStyle   lipgloss.Style
 
-	tabBarActiveStyle   lipgloss.Style
-	tabBarInactiveStyle lipgloss.Style
+	tabBarActiveStyle       lipgloss.Style
+	tabBarInactiveStyle     lipgloss.Style
+	tabBarBusyInactiveStyle lipgloss.Style
 
 	themeBackground color.Color
 	themeForeground color.Color
@@ -646,6 +647,12 @@ func applyTheme(t theme) {
 		Background(t.tabActive).
 		Bold(true)
 	tabBarInactiveStyle = lipgloss.NewStyle().Foreground(t.muted)
+	// Inactive busy tabs paint the ▸ in the theme's tabActive color so
+	// each theme picks its own play-button hue and the indicator pops
+	// from the muted label. The active tab pill is already tabActive,
+	// so its busy glyph stays in the regular active style — there's
+	// nothing to scan for when you're already looking at it.
+	tabBarBusyInactiveStyle = lipgloss.NewStyle().Foreground(t.tabActive).Bold(true)
 }
 
 func init() {

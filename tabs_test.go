@@ -228,6 +228,60 @@ func TestApp_ViewPinsTabBarToBottomDuringIssuesLoad(t *testing.T) {
 	}
 }
 
+// Inactive busy tabs must render the ▸ with the dedicated busy style
+// (theme's tabActive color, bold) so the running indicator pops from
+// the muted label and the user can scan the strip at a glance.
+func TestRenderTabBar_BusyGlyphUsesDedicatedStyleForInactiveTab(t *testing.T) {
+	a := testAppWithTwoTabs(t)
+	a.tabs[0].busy = true
+	a.active = 1
+	a.width = 80
+
+	bar := a.renderTabBar()
+
+	wantGlyph := tabBarBusyInactiveStyle.Render("▸")
+	if !strings.Contains(bar, wantGlyph) {
+		t.Errorf("inactive busy tab missing tabActive-styled glyph in bar:\n  bar=%q\n  want substring=%q", bar, wantGlyph)
+	}
+	// The non-busy active tab must not carry a ▸ — so exactly one ▸
+	// should appear in the bar.
+	if got := strings.Count(bar, "▸"); got != 1 {
+		t.Errorf("bar has %d ▸ glyphs, want 1 (busy inactive tab only):\n%q", got, bar)
+	}
+}
+
+// Active busy tabs still surface the ▸ but in the regular active
+// style — the pill background is already the highlight color, and
+// the user doesn't need to scan for the tab they're already on.
+func TestRenderTabBar_BusyGlyphOnActiveTabRendersInActiveStyle(t *testing.T) {
+	a := testAppWithTwoTabs(t)
+	a.tabs[1].busy = true // active tab is index 1
+	a.width = 80
+
+	bar := a.renderTabBar()
+
+	if !strings.Contains(bar, "▸") {
+		t.Errorf("active busy tab missing ▸ glyph in bar:\n%q", bar)
+	}
+	// The active busy glyph must NOT be styled with the inactive busy
+	// style (warn-on-nothing) — only inactive busy tabs use that.
+	unwanted := tabBarBusyInactiveStyle.Render("▸")
+	if strings.Contains(bar, unwanted) {
+		t.Errorf("active busy tab incorrectly uses inactive-busy style:\n  bar=%q\n  unwanted substring=%q", bar, unwanted)
+	}
+}
+
+// No tab is busy → no ▸ glyph in the bar at all.
+func TestRenderTabBar_IdleTabsHaveNoBusyGlyph(t *testing.T) {
+	a := testAppWithTwoTabs(t)
+	a.width = 80
+
+	bar := a.renderTabBar()
+	if strings.Contains(bar, "▸") {
+		t.Errorf("idle tab bar contains ▸:\n%q", bar)
+	}
+}
+
 func TestApp_VirtualSessionMaterializedStaysOnOwningTab(t *testing.T) {
 	a := testAppWithTwoTabs(t)
 	a.tabs[0].virtualSessionID = "vs-shared"
