@@ -943,16 +943,14 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 				// Degenerate click — no selection, no clipboard write.
 				m.clearSelection()
 			case clipboardGOOS == "darwin":
-				// macOS terminals (iTerm2, Terminal.app) intercept both
-				// Cmd+C and right-click before the inner app sees them,
-				// so the explicit copy verbs are unreachable. Auto-copy
-				// on drag-release + clear gives users a "select + Cmd+V
-				// elsewhere" flow that doesn't need terminal config.
-				// The disappearing highlight is the user-facing receipt.
-				// Read the selection before clearing — buildCopyText
-				// short-circuits when neither selDragging nor selActive
-				// is set, so clearSelection() must come after.
-				if text := m.buildCopyText(); text != "" {
+				// iTerm2 and Terminal.app intercept Cmd+C and right-
+				// click before the app sees them; auto-copy on drag-
+				// release routes the visual selection (not the source)
+				// to the clipboard so selecting one word copies that
+				// word. clearSelection must run after buildVisualCopyText
+				// — the latter short-circuits without selDragging /
+				// selActive.
+				if text := m.buildVisualCopyText(); text != "" {
 					copyCmd = copyTextSilentCmd(m.toast, text)
 				}
 				m.clearSelection()

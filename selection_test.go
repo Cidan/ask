@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	lipgloss "charm.land/lipgloss/v2"
 )
 
 func TestSelectionRange_NoSelection(t *testing.T) {
@@ -53,13 +54,13 @@ func TestSelectionContains_SingleRow(t *testing.T) {
 		row, col int
 		want     bool
 	}{
-		{3, 4, false},   // before
-		{3, 5, true},    // start (inclusive)
-		{3, 8, true},    // middle
-		{3, 12, true},   // end (inclusive)
-		{3, 13, false},  // after
-		{2, 8, false},   // wrong row
-		{4, 8, false},   // wrong row
+		{3, 4, false},  // before
+		{3, 5, true},   // start (inclusive)
+		{3, 8, true},   // middle
+		{3, 12, true},  // end (inclusive)
+		{3, 13, false}, // after
+		{2, 8, false},  // wrong row
+		{4, 8, false},  // wrong row
 	}
 	for _, c := range cases {
 		if got := m.selectionContains(c.row, c.col); got != c.want {
@@ -102,9 +103,9 @@ func TestEntryRowRanges_TracksHeightsWithSeparator(t *testing.T) {
 	}
 	got := m.entryRowRanges()
 	want := [][2]int{
-		{0, 1},  // 1-row user, then separator at row 1
-		{2, 5},  // 3-row response (rows 2,3,4), separator at row 5
-		{6, 7},  // 1-row prerendered
+		{0, 1}, // 1-row user, then separator at row 1
+		{2, 5}, // 3-row response (rows 2,3,4), separator at row 5
+		{6, 7}, // 1-row prerendered
 	}
 	if len(got) != len(want) {
 		t.Fatalf("len mismatch got=%v want=%v", got, want)
@@ -520,10 +521,6 @@ func TestUpdateMouseRelease_DegenerateSelectionClears(t *testing.T) {
 	}
 }
 
-// Drag-end auto-copies the selection on macOS (where Cmd+C and right-
-// click are both intercepted by iTerm2 before reaching the inner app)
-// so the selected text lands on the system clipboard without needing
-// terminal config. See copyTextSilentCmd for the why.
 func TestUpdateMouseRelease_DarwinAutoCopiesSelectionSilently(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.toast = NewToastModel(40, time.Second)
@@ -532,7 +529,7 @@ func TestUpdateMouseRelease_DarwinAutoCopiesSelectionSilently(t *testing.T) {
 	}
 	m.selDragging = true
 	m.selAnchor = cellPos{row: 0, col: 0}
-	m.selFocus = cellPos{row: 0, col: 10}
+	m.selFocus = cellPos{row: 0, col: 13}
 
 	var copied string
 	withClipboardStubs(t, "darwin",
@@ -542,7 +539,7 @@ func TestUpdateMouseRelease_DarwinAutoCopiesSelectionSilently(t *testing.T) {
 			return nil
 		})
 
-	m2, cmd := runUpdate(t, m, tea.MouseReleaseMsg{X: 10, Y: 0, Button: tea.MouseLeft})
+	m2, cmd := runUpdate(t, m, tea.MouseReleaseMsg{X: 13, Y: 0, Button: tea.MouseLeft})
 	if m2.selDragging || m2.selActive {
 		t.Errorf("auto-copy must clear both selDragging and selActive (disappearing highlight is the receipt); got selDragging=%v selActive=%v", m2.selDragging, m2.selActive)
 	}
@@ -552,8 +549,8 @@ func TestUpdateMouseRelease_DarwinAutoCopiesSelectionSilently(t *testing.T) {
 	if msg := cmd(); msg != nil {
 		t.Errorf("auto-copy must stay silent on success; got %T %+v", msg, msg)
 	}
-	if copied != "auto-copy source" {
-		t.Errorf("clipboard payload=%q want %q (whole-entry source)", copied, "auto-copy source")
+	if copied != "auto-copy" {
+		t.Errorf("clipboard payload=%q want %q (visual slice only, not whole-entry source)", copied, "auto-copy")
 	}
 }
 
@@ -782,6 +779,223 @@ func TestBuildCopyText_HistResponseKeepsRawMarkdownNotRendered(t *testing.T) {
 	if got != want {
 		t.Errorf("histResponse raw markdown:\n got %q\nwant %q", got, want)
 	}
+}
+
+func TestBuildVisualCopyText_NoSelectionReturnsEmpty(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.history = []historyEntry{
+		{kind: histResponse, text: "anything", rendered: "     anything"},
+	}
+	if got := m.buildVisualCopyText(); got != "" {
+		t.Errorf("no selection should yield no payload; got %q", got)
+	}
+}
+
+func TestBuildVisualCopyText_DegenerateZeroLengthReturnsEmpty(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.history = []historyEntry{
+		{kind: histResponse, text: "anything", rendered: "     anything"},
+	}
+	m.selDragging = true
+	m.selAnchor = cellPos{row: 0, col: 7}
+	m.selFocus = cellPos{row: 0, col: 7}
+	if got := m.buildVisualCopyText(); got != "" {
+		t.Errorf("anchor==focus should yield no payload; got %q", got)
+	}
+}
+
+func TestBuildVisualCopyText_PartialSingleRowCopiesOnlyTheSlice(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.history = []historyEntry{
+		{kind: histResponse, text: "hello world from claude", rendered: "     hello world from claude"},
+	}
+	m.selActive = true
+	m.selAnchor = cellPos{row: 0, col: 11}
+	m.selFocus = cellPos{row: 0, col: 15}
+	got := m.buildVisualCopyText()
+	want := "world"
+	if got != want {
+		t.Errorf("partial single-row visual copy:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestBuildVisualCopyText_MultiRowBlockHonorsFirstMiddleLast(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.history = []historyEntry{
+		{
+			kind:       histResponse,
+			text:       "ignored visual copy walks wrapped rows, not source",
+			wrapped:    []string{"     alpha bravo", "     charlie delta", "     echo foxtrot"},
+			wrappedFor: 80,
+		},
+	}
+	m.selActive = true
+	m.selAnchor = cellPos{row: 0, col: 11}
+	m.selFocus = cellPos{row: 2, col: 10}
+	got := m.buildVisualCopyText()
+	want := "bravo\ncharlie delta\necho f"
+	if got != want {
+		t.Errorf("multi-row block visual copy:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestBuildVisualCopyText_StripsAnsiFromPrerenderedSlice(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.history = []historyEntry{
+		{kind: histPrerendered, text: "     \x1b[36mfile.go\x1b[0m"},
+	}
+	m.selActive = true
+	m.selAnchor = cellPos{row: 0, col: 5}
+	m.selFocus = cellPos{row: 0, col: 11}
+	got := m.buildVisualCopyText()
+	want := "file.go"
+	if got != want {
+		t.Errorf("prerendered ANSI strip:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestBuildVisualCopyText_MarginOnlyDragYieldsEmpty(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.history = []historyEntry{
+		{kind: histResponse, text: "source body", rendered: "     source body"},
+	}
+	m.selActive = true
+	m.selAnchor = cellPos{row: 0, col: 0}
+	m.selFocus = cellPos{row: 0, col: 3}
+	if got := m.buildVisualCopyText(); got != "" {
+		t.Errorf("margin-only drag must produce empty payload; got %q", got)
+	}
+}
+
+func TestBuildVisualCopyText_MultiEntrySpansSeparatorAsBlankLine(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.history = []historyEntry{
+		{kind: histResponse, text: "entry-one", rendered: "     entry-one"},
+		{kind: histResponse, text: "entry-two", rendered: "     entry-two"},
+	}
+	m.selActive = true
+	m.selAnchor = cellPos{row: 0, col: 5}
+	m.selFocus = cellPos{row: 2, col: 13}
+	got := m.buildVisualCopyText()
+	want := "entry-one\n\nentry-two"
+	if got != want {
+		t.Errorf("multi-entry visual copy:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestBuildVisualCopyText_TrimsTrailingFillWhitespace(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.history = []historyEntry{
+		{
+			kind:       histResponse,
+			text:       "fmt.Println(\"x\")",
+			wrapped:    []string{"     \x1b[38;5;81mfmt.Println(\"x\")           \x1b[0m"},
+			wrappedFor: 80,
+		},
+	}
+	m.selActive = true
+	m.selAnchor = cellPos{row: 0, col: 5}
+	m.selFocus = cellPos{row: 0, col: 31}
+	got := m.buildVisualCopyText()
+	want := "fmt.Println(\"x\")"
+	if got != want {
+		t.Errorf("trailing fill must be trimmed:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestBuildVisualCopyText_WideGraphemesUseCellRanges(t *testing.T) {
+	line := "     A界🙂B"
+	start := lipgloss.Width("     A")
+	end := start + lipgloss.Width("界🙂") - 1
+	m := newTestModel(t, newFakeProvider())
+	m.history = []historyEntry{
+		{kind: histResponse, text: "ignored", rendered: line},
+	}
+	m.selActive = true
+	m.selAnchor = cellPos{row: 0, col: start}
+	m.selFocus = cellPos{row: 0, col: end}
+	got := m.buildVisualCopyText()
+	want := "界🙂"
+	if got != want {
+		t.Errorf("wide grapheme visual copy:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestBuildVisualCopyText_CutsInsideAnsiSpan(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.history = []historyEntry{
+		{kind: histResponse, text: "ignored", rendered: "     pre \x1b[31mred-text\x1b[0m done"},
+	}
+	m.selActive = true
+	m.selAnchor = cellPos{row: 0, col: 10}
+	m.selFocus = cellPos{row: 0, col: 14}
+	got := m.buildVisualCopyText()
+	want := "ed-te"
+	if got != want {
+		t.Errorf("ANSI boundary visual copy:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestBuildVisualCopyText_RenderedFallbackWithInternalNewlines(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.history = []historyEntry{
+		{
+			kind:     histResponse,
+			text:     "ignored",
+			rendered: "     first line\n     second line\n     third line",
+		},
+	}
+	m.selActive = true
+	m.selAnchor = cellPos{row: 1, col: 5}
+	m.selFocus = cellPos{row: 1, col: 10}
+	got := m.buildVisualCopyText()
+	want := "second"
+	if got != want {
+		t.Errorf("rendered fallback visual copy:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestBuildVisualCopyText_FallbackRowsKeepSeparator(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.history = []historyEntry{
+		{kind: histPrerendered, text: "     one"},
+		{kind: histPrerendered, text: "     two"},
+	}
+	m.selActive = true
+	m.selAnchor = cellPos{row: 0, col: 5}
+	m.selFocus = cellPos{row: 2, col: 7}
+	got := m.buildVisualCopyText()
+	want := "one\n\ntwo"
+	if got != want {
+		t.Errorf("fallback separator visual copy:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestBuildVisualCopyText_EmptyHistoryAndOvershootReturnOnlyContent(t *testing.T) {
+	t.Run("empty history", func(t *testing.T) {
+		m := newTestModel(t, newFakeProvider())
+		m.selActive = true
+		m.selAnchor = cellPos{row: 0, col: 5}
+		m.selFocus = cellPos{row: 3, col: 10}
+		if got := m.buildVisualCopyText(); got != "" {
+			t.Errorf("empty history should yield no payload; got %q", got)
+		}
+	})
+
+	t.Run("past last row", func(t *testing.T) {
+		m := newTestModel(t, newFakeProvider())
+		m.history = []historyEntry{
+			{kind: histResponse, text: "ignored", rendered: "     short"},
+		}
+		m.selActive = true
+		m.selAnchor = cellPos{row: 0, col: 5}
+		m.selFocus = cellPos{row: 5, col: 99}
+		got := m.buildVisualCopyText()
+		want := "short"
+		if got != want {
+			t.Errorf("overshoot visual copy:\n got %q\nwant %q", got, want)
+		}
+	})
 }
 
 func TestCopySelectionAndClear_ClipboardErrorSurfacesToast(t *testing.T) {
