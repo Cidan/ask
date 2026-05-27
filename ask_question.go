@@ -568,7 +568,7 @@ func renderCancelConfirmBox(title, sub string, choice int) string {
 		yes = askConfirmBtnActiveStyle.Render("Yes")
 	}
 	buttons := lipgloss.JoinHorizontal(lipgloss.Top, no, "   ", yes)
-	help := askHelpStyle.Render("←→ switch · enter confirm · esc back")
+	help := askHelpStyle.Render("y yes · n/esc no · ←→ switch · enter confirm")
 	body := strings.Join([]string{
 		askPromptStyle.Render(title),
 		dimStyle.Render(sub),
