@@ -240,7 +240,7 @@ func (m model) updateConfigProjectPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 		}
 		return m, nil
 	}
-	if msg.Text != "" && msg.Mod&^tea.ModShift == 0 {
+	if configTextInputKey(msg) {
 		m.configFilter += msg.Text
 		m.configProjectCursor = 0
 		return m, nil
@@ -346,7 +346,7 @@ func (m model) updateConfigProjectFieldInput(msg tea.KeyPressMsg) (tea.Model, te
 		}
 		return m, nil
 	}
-	if msg.Text != "" && msg.Mod&^tea.ModShift == 0 {
+	if configTextInputKey(msg) {
 		m.configProjectFieldDraft += msg.Text
 		return m, nil
 	}
