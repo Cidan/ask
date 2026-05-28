@@ -24,7 +24,9 @@ func TestIsLinearImageURL_AcceptsAndRejects(t *testing.T) {
 	}{
 		{"https://uploads.linear.app/abc/img.png", true},
 		{"https://UPLOADS.LINEAR.APP/abc/img.png", true},
-		{"http://uploads.linear.app/abc/img.png", true},
+		// http:// is refused so the auth token is never sent in plaintext,
+		// even when the host is otherwise legitimate.
+		{"http://uploads.linear.app/abc/img.png", false},
 		{"https://uploads.linear.app/abc/img.png?token=x", true},
 		{"https://example.com/abc.png", false},
 		{"https://uploads.linear.app.evil.com/img.png", false},
@@ -38,6 +40,36 @@ func TestIsLinearImageURL_AcceptsAndRejects(t *testing.T) {
 				t.Errorf("isLinearImageURL(%q)=%v want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestLinearImageCheckRedirect_BlocksOffHostRedirects(t *testing.T) {
+	mkReq := func(raw string) *http.Request {
+		req, _ := http.NewRequest("GET", raw, nil)
+		return req
+	}
+	// Same host, https — allowed.
+	if err := linearImageCheckRedirect(mkReq("https://uploads.linear.app/a/2.png"), nil); err != nil {
+		t.Errorf("same-host redirect blocked: %v", err)
+	}
+	// Off-host redirect — blocked.
+	err := linearImageCheckRedirect(mkReq("https://evil.example.com/x.png"), nil)
+	if err == nil || !strings.Contains(err.Error(), "blocked redirect") {
+		t.Errorf("off-host redirect not blocked: %v", err)
+	}
+	// Downgrade to http — blocked (isLinearImageURL refuses http).
+	err = linearImageCheckRedirect(mkReq("http://uploads.linear.app/a/p.png"), nil)
+	if err == nil || !strings.Contains(err.Error(), "blocked redirect") {
+		t.Errorf("plaintext redirect not blocked: %v", err)
+	}
+	// Too many hops — blocked.
+	via := make([]*http.Request, 5)
+	for i := range via {
+		via[i] = mkReq("https://uploads.linear.app/b")
+	}
+	err = linearImageCheckRedirect(mkReq("https://uploads.linear.app/c"), via)
+	if err == nil || !strings.Contains(err.Error(), "too many redirects") {
+		t.Errorf("redirect cap not enforced: %v", err)
 	}
 }
 
@@ -378,6 +410,27 @@ func TestLinearFetchImageOverHTTP_HTTPErrorReturnsError(t *testing.T) {
 	}
 }
 
+// Defense-in-depth: even with CheckRedirect refusing off-host hops,
+// a 30x that somehow lands on the response (e.g. CheckRedirect
+// returning ErrUseLastResponse) should still fail rather than be
+// treated as a successful body.
+func TestLinearFetchImageOverHTTP_RejectsThreeXXResponses(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "https://elsewhere.example.com/x.png")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer srv.Close()
+	cli := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	_, _, err := linearFetchImageOverHTTP(context.Background(), cli, srv.URL)
+	if err == nil || !strings.Contains(err.Error(), "302") {
+		t.Errorf("err=%v want HTTP 302 surfaced", err)
+	}
+}
+
 func TestLinearFetchImageOverHTTP_CapsResponseSize(t *testing.T) {
 	// Stream way more than the cap to ensure io.LimitReader is wired up.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -412,6 +465,54 @@ func TestLinearIssueProvider_FetchImage_RejectsNonLinearHost(t *testing.T) {
 	_, _, err := p.fetchImage(context.Background(), cfg, "https://evil.example.com/x.png")
 	if err == nil || !strings.Contains(err.Error(), "non-linear host") {
 		t.Errorf("err=%v want host-gate refusal", err)
+	}
+}
+
+// End-to-end: a 30x from uploads.linear.app pointing at a third-party
+// host must fail BEFORE the auth header reaches that host. Failing
+// open here would leak the Linear API key to whatever the CDN
+// redirects to.
+func TestLinearIssueProvider_FetchImage_RefusesOffHostRedirect(t *testing.T) {
+	var leaked string
+	finalSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaked = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("LEAK"))
+	}))
+	defer finalSrv.Close()
+
+	uploadsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, finalSrv.URL, http.StatusFound)
+	}))
+	defer uploadsSrv.Close()
+
+	rewriter := &hostRewriteTransport{from: "uploads.linear.app", to: uploadsSrv.Listener.Addr().String()}
+	p := mcpLinearProvider()
+	p.mu.Lock()
+	p.httpClient = &http.Client{
+		Transport: &linearAPIKeyRoundTripper{base: rewriter, token: "lin_api_x"},
+		Timeout:   linearGraphQLCallTimeout,
+	}
+	p.cachedEndpoint = "https://api.linear.app/graphql"
+	p.cachedToken = "lin_api_x"
+	p.mu.Unlock()
+	t.Cleanup(func() {
+		p.mu.Lock()
+		p.httpClient = nil
+		p.cachedEndpoint = ""
+		p.cachedToken = ""
+		p.mu.Unlock()
+	})
+
+	_, _, err := p.fetchImage(context.Background(), linearMCPConfig{Token: "lin_api_x"}, "https://uploads.linear.app/abc/img.png")
+	if err == nil {
+		t.Fatal("expected redirect-block error, got nil")
+	}
+	if !strings.Contains(err.Error(), "blocked redirect") && !strings.Contains(err.Error(), "host gate") {
+		t.Errorf("err=%v want host-gate redirect rejection", err)
+	}
+	if leaked != "" {
+		t.Errorf("Authorization leaked to off-host hop: %q — fetch should have failed before this handler ran", leaked)
 	}
 }
 

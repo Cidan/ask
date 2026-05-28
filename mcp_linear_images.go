@@ -76,15 +76,19 @@ func linearExtractImageURLs(description string, comments []string) []linearImage
 	return out
 }
 
-// isLinearImageURL accepts only https/http URLs whose host matches
+// isLinearImageURL accepts only https URLs whose host matches
 // uploads.linear.app exactly (case-insensitive). External images
 // pasted into a Linear description are deliberately ignored.
+//
+// HTTPS is required because the auth round-tripper attaches the
+// Linear API key on every fetch; a plaintext http:// URL would
+// leak the key to anyone observing the network.
 func isLinearImageURL(raw string) bool {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return false
 	}
-	if u.Scheme != "https" && u.Scheme != "http" {
+	if u.Scheme != "https" {
 		return false
 	}
 	return strings.EqualFold(u.Host, linearImageHost)
@@ -196,13 +200,18 @@ func pluralS(n int) string {
 }
 
 // fetchImage implements linearImageFetcher on linearIssueProvider.
-// Reuses the same cached http.Client that callGraphQL primes so the
+// Reuses the same cached transport that callGraphQL primes so the
 // Authorization round-tripper attaches the personal API key without
 // duplicating the cache invalidation logic on token rotation.
 //
-// SECURITY: the host gate runs here before any HTTP call so the API
-// key never round-trips to a non-Linear CDN, even if a malicious
-// description points at one.
+// SECURITY: two host-gate layers protect the API key.
+//  1. The pre-flight check on rawURL refuses anything that isn't an
+//     https://uploads.linear.app URL outright.
+//  2. The image client wraps the shared transport with a CheckRedirect
+//     that re-runs the same gate on every hop. A 30x from
+//     uploads.linear.app to a third-party host would otherwise let
+//     net/http follow the redirect with the auth header still attached;
+//     re-gating fails the request closed instead.
 func (p *linearIssueProvider) fetchImage(ctx context.Context, cfg linearMCPConfig, rawURL string) ([]byte, string, error) {
 	if !isLinearImageURL(rawURL) {
 		return nil, "", fmt.Errorf("linear image: refusing to fetch non-linear host %q", rawURL)
@@ -223,10 +232,29 @@ func (p *linearIssueProvider) fetchImage(ctx context.Context, cfg linearMCPConfi
 		p.teamIDCache = nil
 		p.teamIDMu.Unlock()
 	}
-	cli := p.httpClient
+	transport := p.httpClient.Transport
 	p.mu.Unlock()
 
-	return linearFetchImageOverHTTP(ctx, cli, rawURL)
+	imageClient := &http.Client{
+		Transport:     transport,
+		Timeout:       linearGraphQLCallTimeout,
+		CheckRedirect: linearImageCheckRedirect,
+	}
+	return linearFetchImageOverHTTP(ctx, imageClient, rawURL)
+}
+
+// linearImageCheckRedirect re-runs isLinearImageURL against every
+// redirect target so the auth round-tripper cannot leak the API key
+// to a non-Linear host that uploads.linear.app might redirect to.
+// Also caps redirect chains so a misbehaving CDN can't loop us.
+func linearImageCheckRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 5 {
+		return fmt.Errorf("linear image: too many redirects")
+	}
+	if !isLinearImageURL(req.URL.String()) {
+		return fmt.Errorf("linear image: blocked redirect to %q (host gate)", req.URL.Host)
+	}
+	return nil
 }
 
 // linearFetchImageOverHTTP is the pure HTTP+parse step behind
@@ -253,7 +281,12 @@ func linearFetchImageOverHTTP(ctx context.Context, cli *http.Client, rawURL stri
 		return nil, "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
+	// Reject 3xx as well as 4xx/5xx: with CheckRedirect refusing
+	// off-host hops, an in-host 30x still indicates the request
+	// didn't actually produce image bytes. Anything other than 200
+	// (e.g. 204, 206) likewise has no usable body for our cap+sniff
+	// logic, so fail closed.
+	if resp.StatusCode != http.StatusOK {
 		return nil, "", fmt.Errorf("linear image: HTTP %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, linearImageMaxBytesEach+1))
