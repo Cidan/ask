@@ -487,7 +487,8 @@ func (b *mcpBridge) linearGetTool(ctx context.Context, req *mcp.CallToolRequest,
 	teamKey := pc.MCP.Linear.TeamKey
 	out := linearGetOutput{Issue: linearIssueDetailViewOf(it, teamKey)}
 	body, _ := json.Marshal(out)
-	return okResult(string(body)), out, nil
+	res := linearBuildIssueResult(ctx, p, pc.MCP.Linear, string(body), it.description, linearCommentBodies(it.comments))
+	return res, out, nil
 }
 
 func (b *mcpBridge) linearUpdateTool(ctx context.Context, req *mcp.CallToolRequest, in linearUpdateInput) (*mcp.CallToolResult, linearUpdateOutput, error) {
@@ -516,7 +517,8 @@ func (b *mcpBridge) linearUpdateTool(ctx context.Context, req *mcp.CallToolReque
 	}
 	out := linearUpdateOutput{Issue: linearIssueDetailViewOf(it, postTeamKey)}
 	body, _ := json.Marshal(out)
-	return okResult(string(body)), out, nil
+	res := linearBuildIssueResult(ctx, p, pc.MCP.Linear, string(body), it.description, linearCommentBodies(it.comments))
+	return res, out, nil
 }
 
 // linearUpdateInputToOptions translates the wire-shape (JSON-friendly,
