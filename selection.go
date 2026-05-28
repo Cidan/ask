@@ -118,47 +118,16 @@ func (m model) entryRowRanges() [][2]int {
 	return out
 }
 
-// buildCopyText assembles the clipboard payload from the entries the
-// selection touches. Any entry whose rendered rows overlap the
-// selection — and where at least one of those rows yields a non-empty
-// post-margin mask — contributes its full source text to the payload.
-// Entries are joined with a blank line, mirroring the on-screen gap.
+// buildVisualCopyText assembles the clipboard payload from the
+// highlighted cells only (WYSIWYG): a partial drag copies exactly what
+// the user selected — a word, a line, a block — not the whole entry.
+// Both copy gestures use it: the Linux/BSD right-click
+// (copySelectionAndClear) and the macOS auto-copy on drag-release.
 //
-// The rationale is faithfulness on paste: glamour rewraps and styles
-// response markdown (and outputStyle pads every prerendered entry with
-// a 5-col left gutter), so the rendered rows contain soft-wrap newlines
-// and block-fill whitespace that don't exist in the source. Copying the
-// source instead means the clipboard payload pastes cleanly into an
-// editor, the next prompt, or another chat. The cost is that a partial
-// intra-entry drag escalates to copying the whole entry — but
-// partial-paragraph copy is rarely the user's intent in a chat
-// transcript, and the rendered→source character mapping is not 1:1.
-func (m model) buildCopyText() string {
-	if _, ok := m.selectionRange(); !ok {
-		return ""
-	}
-	ranges := m.entryRowRanges()
-	parts := make([]string, 0, len(ranges))
-	for i, rr := range ranges {
-		if !m.entryRowSelectionTouches(rr, ranges) {
-			continue
-		}
-		p := entryCopyText(m.history[i])
-		if p == "" {
-			continue
-		}
-		parts = append(parts, p)
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return strings.Join(parts, "\n\n")
-}
-
-// buildVisualCopyText is the WYSIWYG counterpart of buildCopyText:
-// only the highlighted cells contribute. The macOS auto-copy path
-// uses it so a partial drag copies a word, not the whole entry's
-// raw markdown source.
+// Copying the visual slice (rather than each touched entry's raw
+// source) means the clipboard matches what the user highlighted on
+// screen. ANSI styling is stripped and trailing block-fill whitespace
+// is trimmed per row so the payload pastes as clean plain text.
 func (m model) buildVisualCopyText() string {
 	b, ok := m.selectionRange()
 	if !ok {
@@ -187,64 +156,6 @@ func (m model) buildVisualCopyText() string {
 		return ""
 	}
 	return strings.Join(rows, "\n")
-}
-
-// entryCopyText returns the clipboard-friendly form of an entry's
-// source. histResponse and histUser entries store their content
-// verbatim in entry.text (raw markdown / raw user input), so we emit
-// them as-is. histPrerendered entries have already been routed through
-// outputStyle.Render(...) at append time, so we strip ANSI, peel the
-// shared 5-col left margin, and trim trailing whitespace per line —
-// that cleanup is what makes tool outputs / errors / info banners
-// paste as plain readable text instead of dragging the rendered
-// gutter and code-block fill along.
-func entryCopyText(e historyEntry) string {
-	src := strings.TrimRight(e.text, "\n\r")
-	if src == "" {
-		return ""
-	}
-	if e.kind != histPrerendered {
-		return src
-	}
-	plain := xansi.Strip(src)
-	lines := strings.Split(plain, "\n")
-	for i, line := range lines {
-		if len(line) >= chatLeftMarginCols && strings.TrimSpace(line[:chatLeftMarginCols]) == "" {
-			line = line[chatLeftMarginCols:]
-		}
-		lines[i] = strings.TrimRight(line, " \t")
-	}
-	for len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	return strings.Join(lines, "\n")
-}
-
-// entryRowSelectionTouches reports whether at least one row in the
-// half-open range rr is meaningfully inside the current selection.
-// "Meaningfully" = the row's selectionRenderMask is non-empty, so a
-// drag that lives entirely inside the left-margin gutter (where every
-// row clamps to nothing on screen) does not count as touching the
-// entry. The check intentionally mirrors the on-screen highlight, so
-// the user only ever copies entries they could see selected.
-func (m model) entryRowSelectionTouches(rr [2]int, ranges [][2]int) bool {
-	b, ok := m.selectionRange()
-	if !ok {
-		return false
-	}
-	if rr[1] <= b.minRow || rr[0] > b.maxRow {
-		return false
-	}
-	for r := rr[0]; r < rr[1]; r++ {
-		line, inEntry := m.lineAtContentRow(r, ranges)
-		if !inEntry {
-			continue
-		}
-		if _, _, ok := m.selectionRenderMask(r, lipgloss.Width(line), ranges); ok {
-			return true
-		}
-	}
-	return false
 }
 
 // lineAtContentRow returns the rendered line at chat-content row r and
@@ -286,15 +197,16 @@ func (m *model) clearSelection() {
 }
 
 // copySelectionAndClear is the right-click handler entry point: it
-// builds the buffer-text payload from the current selection, kicks off
-// an async clipboard write, and clears the selection synchronously so
-// the highlight disappears immediately. The returned tea.Cmd carries
-// the clipboard write and the resulting toast (success or failure).
+// builds the WYSIWYG clipboard payload from the highlighted cells,
+// kicks off an async clipboard write, and clears the selection
+// synchronously so the highlight disappears immediately. The returned
+// tea.Cmd carries the clipboard write and the resulting toast (success
+// or failure).
 //
 // Right-clicking with no active selection is a no-op (no toast, no
 // clipboard call); the caller in update.go gates on selActive.
 func (m model) copySelectionAndClear() (tea.Model, tea.Cmd) {
-	text := m.buildCopyText()
+	text := m.buildVisualCopyText()
 	(&m).clearSelection()
 	m.lastContentFP = ""
 	if text == "" {

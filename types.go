@@ -422,8 +422,8 @@ type model struct {
 	// scrolling and resizes. selDragging is true while the left button
 	// is held; selActive is true once the user releases with a non-zero
 	// range, until something clears it (right-click copy, mode change,
-	// new turn). buildCopyText/selectionContains/selectionRange consume
-	// these.
+	// new turn). buildVisualCopyText/selectionContains/selectionRange
+	// consume these.
 	selDragging bool
 	selActive   bool
 	selAnchor   cellPos
