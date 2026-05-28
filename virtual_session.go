@@ -384,10 +384,13 @@ type NeutralTurn struct {
 }
 
 // neutralTurnsFromHistory flattens a UI history slice to the
-// provider-neutral turn list. histPrerendered entries (tool blocks,
-// diff blocks) are deliberately skipped — they're noise when
-// seeding the target provider with conversational context and the
-// tools aren't portable across provider schemas anyway.
+// provider-neutral completed-turn list. histPrerendered entries (tool
+// blocks, diff blocks, errors) are deliberately skipped — they're noise
+// when seeding the target provider with conversational context and the
+// tools aren't portable across provider schemas anyway. A trailing user
+// turn without an assistant response is also skipped: it represents an
+// in-flight or failed provider turn, not stable history a target provider
+// can safely resume from.
 func neutralTurnsFromHistory(history []historyEntry) []NeutralTurn {
 	out := make([]NeutralTurn, 0, len(history))
 	for _, e := range history {
@@ -397,6 +400,9 @@ func neutralTurnsFromHistory(history []historyEntry) []NeutralTurn {
 		case histResponse:
 			out = append(out, NeutralTurn{Role: "assistant", Text: e.text})
 		}
+	}
+	for len(out) > 0 && out[len(out)-1].Role == "user" {
+		out = out[:len(out)-1]
 	}
 	return out
 }
