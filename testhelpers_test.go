@@ -183,12 +183,50 @@ func withRegisteredProviders(t *testing.T, provs ...Provider) {
 	t.Cleanup(func() { providerRegistry = prev })
 }
 
+// TestMain isolates the whole package from the developer's real
+// environment. $HOME/$XDG point at a throwaway dir so currentKeyMap and
+// loadConfig see an empty config and fall back to compiled defaults
+// (otherwise a contributor's custom keybindings flip Ctrl+P/O/Z tests),
+// and the process cwd is restored after the run so a stray production
+// os.Chdir (closeTab / cd / shell) can't escape the suite. Per-test
+// helpers (isolateHome, newTestModel) layer finer isolation on top.
+func TestMain(m *testing.M) {
+	origWd, _ := os.Getwd()
+	home, err := os.MkdirTemp("", "ask-test-home-*")
+	if err != nil {
+		panic(err)
+	}
+	if resolved, e := filepath.EvalSymlinks(home); e == nil {
+		home = resolved
+	}
+	os.Setenv("HOME", home)
+	os.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	os.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	invalidateKeyMapCache()
+
+	code := m.Run()
+
+	if origWd != "" {
+		_ = os.Chdir(origWd)
+	}
+	_ = os.RemoveAll(home)
+	os.Exit(code)
+}
+
 // isolateHome pins $HOME, $XDG_CONFIG_HOME and $XDG_CACHE_HOME at a
 // tmp dir so tests never read or write the caller's real ~/.config,
 // ~/.claude, or ~/.cache state (e.g. the ask-usage plugin cache).
 func isolateHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
+	// On macOS t.TempDir() lives under /var/folders, a symlink to
+	// /private/var/folders. Production code resolves cwd through
+	// filepath.EvalSymlinks (e.g. memoryProjectRoot), so a raw /var path
+	// here would key project config under a different root than the
+	// runtime sees. Resolve up front so tests and production agree.
+	if resolved, err := filepath.EvalSymlinks(home); err == nil {
+		home = resolved
+	}
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
@@ -262,6 +300,13 @@ func runJJ(t *testing.T, dir string, args ...string) string {
 // they want specific fake behavior.
 func newTestModel(t *testing.T, prov Provider) model {
 	t.Helper()
+	// Production paths exercised through a model (closeTab, the cd
+	// handler, shell mode) call os.Chdir. Capture cwd now and restore
+	// it after the test so a stray chdir can't leak into later
+	// relative-path tests (e.g. the usage-plugin file reads).
+	if wd, err := os.Getwd(); err == nil {
+		t.Cleanup(func() { _ = os.Chdir(wd) })
+	}
 	ta := textarea.New()
 	ta.SetHeight(3)
 	ta.DynamicHeight = true
