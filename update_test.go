@@ -962,6 +962,46 @@ func TestUpdate_LockModifiersStrippedFromArrowKeys(t *testing.T) {
 	}
 }
 
+func TestUpdate_SessionPickerEmacsListNav(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.mode = modeSessionPicker
+	m.sessions = []sessionEntry{{id: "A"}, {id: "B"}, {id: "C"}}
+
+	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	if m2.pickerIdx != 1 {
+		t.Fatalf("Ctrl+N should advance session picker cursor, got %d", m2.pickerIdx)
+	}
+	m3, _ := runUpdate(t, m2, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	if m3.pickerIdx != 0 {
+		t.Fatalf("Ctrl+P should retreat session picker cursor, got %d", m3.pickerIdx)
+	}
+}
+
+func TestUpdate_AskModalEmacsListNavKeepsPlainNForNotes(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m = m.startAsk([]question{{
+		kind:    qPickOne,
+		prompt:  "pick one",
+		options: []string{"a", "b"},
+	}})
+
+	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
+	if m2.askCursor != 1 {
+		t.Fatalf("Ctrl+N should advance ask cursor, got %d", m2.askCursor)
+	}
+	if m2.askEditing != askEditNone {
+		t.Fatalf("Ctrl+N must not open note editor; askEditing=%v", m2.askEditing)
+	}
+	m3, _ := runUpdate(t, m2, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
+	if m3.askCursor != 0 {
+		t.Fatalf("Ctrl+P should retreat ask cursor, got %d", m3.askCursor)
+	}
+	m4, _ := runUpdate(t, m3, tea.KeyPressMsg{Code: 'n'})
+	if m4.askEditing != askEditNote {
+		t.Fatalf("plain n should still open note editor; askEditing=%v", m4.askEditing)
+	}
+}
+
 func TestUpdate_HistoryLoadedAppendsEntriesOnResume(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.sessionID = "S-1"

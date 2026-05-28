@@ -42,15 +42,11 @@ func (m model) updateWorkflowPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		m = m.closeWorkflowPicker()
 		return m, nil
-	case msg.Code == tea.KeyUp:
-		if pkr.Cursor > 0 {
-			pkr.Cursor--
-		}
+	case listNavPrev(msg):
+		pkr.Cursor = listNavWrap(pkr.Cursor, -1, len(pkr.Items))
 		return m, nil
-	case msg.Code == tea.KeyDown:
-		if pkr.Cursor < len(pkr.Items)-1 {
-			pkr.Cursor++
-		}
+	case listNavNext(msg):
+		pkr.Cursor = listNavWrap(pkr.Cursor, +1, len(pkr.Items))
 		return m, nil
 	case msg.Code == tea.KeyEnter:
 		if len(pkr.Items) == 0 {
@@ -127,7 +123,7 @@ func (m model) renderWorkflowPicker() string {
 		}
 	}
 
-	help := dimStyle.Render("↑/↓ choose · enter run · esc cancel")
+	help := dimStyle.Render("enter run · esc cancel")
 	body := strings.Join([]string{
 		title,
 		"",

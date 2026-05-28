@@ -1114,7 +1114,10 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		// the detail view returned by Enter), which keeps Ctrl+I from
 		// surprising a user mid-read.
 		km := currentKeyMap()
-		if km.Matches(ActionScreenIssues, msg) && !m.modalOpen() {
+		// Ctrl+P is both ActionScreenPRs and popup list navigation; a
+		// visible popover gets first claim on list-navigation keys.
+		deferToPopover := (listNavPrev(msg) || listNavNext(msg)) && m.popoverOpen()
+		if km.Matches(ActionScreenIssues, msg) && !m.modalOpen() && !deferToPopover {
 			if m.screen == screenIssues {
 				if s := m.issueStateForScreen(screenIssues); s != nil {
 					s.cycleView()
@@ -1143,7 +1146,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			return m.enterIssueScreen(screenIssues, provider, pc)
 		}
-		if km.Matches(ActionScreenPRs, msg) && !m.modalOpen() {
+		if km.Matches(ActionScreenPRs, msg) && !m.modalOpen() && !deferToPopover {
 			if m.screen == screenPRs {
 				if s := m.issueStateForScreen(screenPRs); s != nil {
 					s.cycleView()
@@ -1161,7 +1164,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			return m.enterIssueScreen(screenPRs, provider, pc)
 		}
-		if km.Matches(ActionScreenWorkflows, msg) && !m.modalOpen() {
+		if km.Matches(ActionScreenWorkflows, msg) && !m.modalOpen() && !deferToPopover {
 			// Workflows screen: drop issue-screen cache on the way
 			// out mirrors Ctrl+I's "cancel in-flight" hygiene so a
 			// later return to issues re-fetches cleanly.
@@ -1176,7 +1179,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			return m, nil
 		}
-		if km.Matches(ActionScreenAsk, msg) && !m.modalOpen() {
+		if km.Matches(ActionScreenAsk, msg) && !m.modalOpen() && !deferToPopover {
 			// Leaving issues: drop cache + cancel in-flight so re-entry
 			// doesn't stack duplicate chunks onto the chain. Carry
 			// state lives on the kanban view, so we re-insert the
@@ -1299,19 +1302,34 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	menuOpen := !m.busy && m.historyIdx < 0 && len(items) > 0
 	pickOpen := !m.busy && m.pathPickerActive() && len(m.pathMatches) > 0
 
+	if (pickOpen || menuOpen) && isCtrlListNav(msg) {
+		if pickOpen {
+			switch {
+			case listNavPrev(msg):
+				m.pathIdx = listNavWrap(m.pathIdx, -1, len(m.pathMatches))
+			case listNavNext(msg):
+				m.pathIdx = listNavWrap(m.pathIdx, +1, len(m.pathMatches))
+			}
+			return m, nil
+		}
+		switch {
+		case listNavPrev(msg):
+			m.menuIdx = listNavWrap(m.menuIdx, -1, len(items))
+		case listNavNext(msg):
+			m.menuIdx = listNavWrap(m.menuIdx, +1, len(items))
+		}
+		return m, nil
+	}
+
 	if msg.Mod == 0 {
 		switch msg.Code {
 		case tea.KeyUp:
 			if pickOpen {
-				if m.pathIdx > 0 {
-					m.pathIdx--
-				}
+				m.pathIdx = listNavWrap(m.pathIdx, -1, len(m.pathMatches))
 				return m, nil
 			}
 			if menuOpen {
-				if m.menuIdx > 0 {
-					m.menuIdx--
-				}
+				m.menuIdx = listNavWrap(m.menuIdx, -1, len(items))
 				return m, nil
 			}
 			if m.historyIdx >= 0 || m.input.Line() == 0 {
@@ -1321,15 +1339,11 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		case tea.KeyDown:
 			if pickOpen {
-				if m.pathIdx < len(m.pathMatches)-1 {
-					m.pathIdx++
-				}
+				m.pathIdx = listNavWrap(m.pathIdx, +1, len(m.pathMatches))
 				return m, nil
 			}
 			if menuOpen {
-				if m.menuIdx < len(items)-1 {
-					m.menuIdx++
-				}
+				m.menuIdx = listNavWrap(m.menuIdx, +1, len(items))
 				return m, nil
 			}
 			if m.historyIdx >= 0 {
@@ -1718,19 +1732,15 @@ func (m model) updatePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeInput
 		return m, nil
 	}
-	switch msg.Code {
-	case tea.KeyEsc:
+	switch {
+	case msg.Code == tea.KeyEsc:
 		m.mode = modeInput
 		return m, nil
-	case tea.KeyUp:
-		if m.pickerIdx > 0 {
-			m.pickerIdx--
-		}
-	case tea.KeyDown:
-		if m.pickerIdx < len(m.sessions)-1 {
-			m.pickerIdx++
-		}
-	case tea.KeyEnter:
+	case listNavPrev(msg):
+		m.pickerIdx = listNavWrap(m.pickerIdx, -1, len(m.sessions))
+	case listNavNext(msg):
+		m.pickerIdx = listNavWrap(m.pickerIdx, +1, len(m.sessions))
+	case msg.Code == tea.KeyEnter:
 		if len(m.sessions) > 0 {
 			return m.resumeVirtualSession(m.sessions[m.pickerIdx])
 		}

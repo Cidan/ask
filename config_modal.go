@@ -160,20 +160,16 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.clearConfigModal(), nil
 	}
 	items := m.filteredConfigItems()
-	switch msg.Code {
-	case tea.KeyEsc:
+	switch {
+	case msg.Code == tea.KeyEsc:
 		return m.clearConfigModal(), nil
-	case tea.KeyUp:
-		if m.configCursor > 0 {
-			m.configCursor--
-		}
+	case listNavPrev(msg):
+		m.configCursor = listNavWrap(m.configCursor, -1, len(items))
 		return m, nil
-	case tea.KeyDown:
-		if m.configCursor < len(items)-1 {
-			m.configCursor++
-		}
+	case listNavNext(msg):
+		m.configCursor = listNavWrap(m.configCursor, +1, len(items))
 		return m, nil
-	case tea.KeyEnter:
+	case msg.Code == tea.KeyEnter:
 		if m.configCursor < 0 || m.configCursor >= len(items) {
 			return m.clearConfigModal(), nil
 		}
@@ -186,7 +182,7 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.clearConfigModal(), nil
-	case tea.KeyBackspace:
+	case msg.Code == tea.KeyBackspace:
 		if m.configFilter != "" {
 			r := []rune(m.configFilter)
 			m.configFilter = string(r[:len(r)-1])
@@ -241,26 +237,22 @@ func (m model) updateConfigGlobalPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd
 		return m, nil
 	}
 	items := m.filteredGlobalConfigItems()
-	switch msg.Code {
-	case tea.KeyEsc:
+	switch {
+	case msg.Code == tea.KeyEsc:
 		m = m.closeConfigGlobalPicker()
 		return m, nil
-	case tea.KeyUp:
-		if m.configGlobalCursor > 0 {
-			m.configGlobalCursor--
-		}
+	case listNavPrev(msg):
+		m.configGlobalCursor = listNavWrap(m.configGlobalCursor, -1, len(items))
 		return m, nil
-	case tea.KeyDown:
-		if m.configGlobalCursor < len(items)-1 {
-			m.configGlobalCursor++
-		}
+	case listNavNext(msg):
+		m.configGlobalCursor = listNavWrap(m.configGlobalCursor, +1, len(items))
 		return m, nil
-	case tea.KeyEnter:
+	case msg.Code == tea.KeyEnter:
 		if m.configGlobalCursor < 0 || m.configGlobalCursor >= len(items) {
 			return m, nil
 		}
 		return m.handleGlobalConfigEnter(items[m.configGlobalCursor].id)
-	case tea.KeyBackspace:
+	case msg.Code == tea.KeyBackspace:
 		if m.configFilter != "" {
 			r := []rune(m.configFilter)
 			m.configFilter = string(r[:len(r)-1])
@@ -454,7 +446,7 @@ func (m model) viewConfigModal() string {
 		rows = append(rows, strings.Repeat(" ", innerW))
 	}
 
-	help := configHelpStyle.Render("tab switch selection • ↑/↓ choose • enter confirm • esc cancel")
+	help := configHelpStyle.Render("tab switch selection • enter confirm • esc cancel")
 
 	body := strings.Join([]string{
 		title,
@@ -482,7 +474,7 @@ func (m model) viewConfigGlobalPicker() string {
 		promptLine: filterPromptLine(m.configFilter, "Type to filter"),
 		items:      m.filteredGlobalConfigItems(),
 		cursor:     m.configGlobalCursor,
-		helpText:   "↑/↓ choose · enter confirm · esc back",
+		helpText:   "enter confirm · esc back",
 	})
 }
 
@@ -641,15 +633,11 @@ func (m model) updateThemePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m = m.previewTheme(themeIndexByName(m.configThemeBackup))
 		m = m.closeThemePicker()
 		return m, nil
-	case msg.Code == tea.KeyUp:
-		if m.configThemeCursor > 0 {
-			m = m.previewTheme(m.configThemeCursor - 1)
-		}
+	case listNavPrev(msg):
+		m = m.previewTheme(listNavWrap(m.configThemeCursor, -1, len(themeRegistry)))
 		return m, nil
-	case msg.Code == tea.KeyDown:
-		if m.configThemeCursor < len(themeRegistry)-1 {
-			m = m.previewTheme(m.configThemeCursor + 1)
-		}
+	case listNavNext(msg):
+		m = m.previewTheme(listNavWrap(m.configThemeCursor, +1, len(themeRegistry)))
 		return m, nil
 	case msg.Code == tea.KeyEnter:
 		theme := m.themeName
@@ -709,7 +697,7 @@ func (m model) viewThemePicker() string {
 		rows = append(rows, line)
 	}
 
-	help := themePickerHelpStyle.Render("↑↓ preview · enter save · esc cancel")
+	help := themePickerHelpStyle.Render("enter save · esc cancel")
 
 	body := strings.Join([]string{
 		title,
@@ -762,15 +750,11 @@ func (m model) updateConfigProviderPicker(msg tea.KeyPressMsg) (tea.Model, tea.C
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		m = m.closeConfigProviderPicker()
 		return m, nil
-	case msg.Code == tea.KeyUp:
-		if m.configProviderCursor > 0 {
-			m.configProviderCursor--
-		}
+	case listNavPrev(msg):
+		m.configProviderCursor = listNavWrap(m.configProviderCursor, -1, len(providerRegistry))
 		return m, nil
-	case msg.Code == tea.KeyDown:
-		if m.configProviderCursor < len(providerRegistry)-1 {
-			m.configProviderCursor++
-		}
+	case listNavNext(msg):
+		m.configProviderCursor = listNavWrap(m.configProviderCursor, +1, len(providerRegistry))
 		return m, nil
 	case msg.Code == tea.KeyEnter:
 		if m.configProviderCursor < 0 || m.configProviderCursor >= len(providerRegistry) {
@@ -812,7 +796,7 @@ func (m model) viewConfigProviderPicker() string {
 		opts = append(opts, p.DisplayName())
 	}
 	rows := renderSwitcherRows(opts, m.configProviderCursor, innerW)
-	help := themePickerHelpStyle.Render("↑↓ navigate · enter save · esc cancel")
+	help := themePickerHelpStyle.Render("enter save · esc cancel")
 	body := strings.Join([]string{title, "", strings.Join(rows, "\n"), "", help}, "\n")
 	return themePickerBoxStyle.Render(body)
 }

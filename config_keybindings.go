@@ -36,16 +36,12 @@ func (m model) updateConfigKeybindingsPicker(msg tea.KeyPressMsg) (tea.Model, te
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		m = m.closeConfigKeybindingsPicker()
 		return m, nil
-	case msg.Code == tea.KeyUp:
-		if m.configKeybindingsCursor > 0 {
-			m.configKeybindingsCursor--
-		}
+	case listNavPrev(msg):
+		m.configKeybindingsCursor = listNavWrap(m.configKeybindingsCursor, -1, len(actionMeta))
 		m.configKeybindingsError = ""
 		return m, nil
-	case msg.Code == tea.KeyDown:
-		if m.configKeybindingsCursor < len(actionMeta)-1 {
-			m.configKeybindingsCursor++
-		}
+	case listNavNext(msg):
+		m.configKeybindingsCursor = listNavWrap(m.configKeybindingsCursor, +1, len(actionMeta))
 		m.configKeybindingsError = ""
 		return m, nil
 	case msg.Code == tea.KeyEnter:
@@ -61,10 +57,9 @@ func (m model) updateConfigKeybindingsPicker(msg tea.KeyPressMsg) (tea.Model, te
 		// recovery path from inside the picker — they would have to
 		// remember the default key to capture it back, or hand-edit
 		// ~/.config/ask/ask.json. 'r' is safe to overload here because
-		// row-navigation mode treats every other key (besides ↑↓ Enter
-		// Esc Ctrl+C) as a no-op; capture mode is the only place where
-		// 'r' could be recorded *as* a binding, and we don't shadow
-		// that path.
+		// row-navigation mode ignores unrelated keys; capture mode is
+		// the only place where 'r' could be recorded as a binding, and
+		// we don't shadow that path.
 		if m.configKeybindingsCursor < 0 || m.configKeybindingsCursor >= len(actionMeta) {
 			return m, nil
 		}
@@ -180,7 +175,7 @@ func (m model) viewConfigKeybindingsPicker() string {
 			actionMeta[m.configKeybindingsCursor].Label +
 			" (currently " + displayBinding(km.Binding(actionMeta[m.configKeybindingsCursor].Action)) + ")."
 	}
-	const helpFooter = "↑↓ navigate · enter rebind · r reset · u unbind · esc close"
+	const helpFooter = "enter rebind · r reset · u unbind · esc close"
 	for _, g := range actionGroups {
 		innerW = keybindingsExpandInnerWidth(m.width, innerW, g.Heading)
 	}

@@ -192,15 +192,11 @@ func (m model) updateConfigProjectPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		m = m.closeConfigProjectPicker()
 		return m, nil
-	case msg.Code == tea.KeyUp:
-		if m.configProjectCursor > 0 {
-			m.configProjectCursor--
-		}
+	case listNavPrev(msg):
+		m.configProjectCursor = listNavWrap(m.configProjectCursor, -1, len(rows))
 		return m, nil
-	case msg.Code == tea.KeyDown:
-		if m.configProjectCursor < len(rows)-1 {
-			m.configProjectCursor++
-		}
+	case listNavNext(msg):
+		m.configProjectCursor = listNavWrap(m.configProjectCursor, +1, len(rows))
 		return m, nil
 	case msg.Code == tea.KeyEnter:
 		if m.configProjectCursor < 0 || m.configProjectCursor >= len(rows) {
@@ -407,7 +403,7 @@ func (m model) viewConfigProjectPicker() string {
 		promptLine: filterPromptLine(m.configFilter, "Type to filter"),
 		items:      m.filteredProjectPickerItems(),
 		cursor:     m.configProjectCursor,
-		helpText:   "↑/↓ choose · enter open/cycle · esc back",
+		helpText:   "enter open/cycle · esc back",
 	})
 }
 

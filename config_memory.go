@@ -205,15 +205,11 @@ func (m model) updateConfigMemoryPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		m = m.closeConfigMemoryPicker()
 		return m, nil
-	case msg.Code == tea.KeyUp:
-		if m.configMemoryCursor > 0 {
-			m.configMemoryCursor--
-		}
+	case listNavPrev(msg):
+		m.configMemoryCursor = listNavWrap(m.configMemoryCursor, -1, len(rows))
 		return m, nil
-	case msg.Code == tea.KeyDown:
-		if m.configMemoryCursor < len(rows)-1 {
-			m.configMemoryCursor++
-		}
+	case listNavNext(msg):
+		m.configMemoryCursor = listNavWrap(m.configMemoryCursor, +1, len(rows))
 		return m, nil
 	case msg.Code == tea.KeyEnter:
 		if m.configMemoryCursor < 0 || m.configMemoryCursor >= len(rows) {
@@ -408,7 +404,7 @@ func (m model) viewConfigMemoryPicker() string {
 		"",
 		configHelpStyle.Render(endpoint),
 		"",
-		themePickerHelpStyle.Render("↑↓ navigate · enter open/toggle · esc close"),
+		themePickerHelpStyle.Render("enter open/toggle · esc close"),
 	)
 
 	return themePickerBoxStyle.Render(strings.Join(body, "\n"))
