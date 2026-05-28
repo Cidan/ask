@@ -110,6 +110,16 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		m = normalizeKeyPressMsg(m)
 		km := currentKeyMap()
+		// A modal or inline popover in the active tab owns the list-nav
+		// keys (Ctrl+P/Ctrl+N) for its own cursor. Defer them to the tab
+		// even when the user has bound tab.prev/tab.next onto those keys,
+		// so in-list navigation wins while a modal is up. Outside a modal
+		// they fall through to the tab switching below.
+		if isCtrlListNav(m) {
+			if at := a.activeTab(); at.modalOpen() || at.popoverOpen() {
+				return a.dispatchActive(msg)
+			}
+		}
 		switch {
 		case km.Matches(ActionAppSuspend, m):
 			return a.suspendApp()

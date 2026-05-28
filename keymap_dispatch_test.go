@@ -86,6 +86,67 @@ func TestApp_TabNavigationIgnoresLockModifiers(t *testing.T) {
 	}
 }
 
+// TestApp_TabNavDefersToModalListNav proves the app-level tab switcher
+// yields Ctrl+P/Ctrl+N to a modal in the active tab. With tab.prev /
+// tab.next rebound onto those keys (a real user config), pressing
+// Ctrl+N while a modal list — here the /config keybindings picker — is
+// open must navigate that list, NOT switch tabs. Without the deferral
+// the app layer would intercept the key before the tab ever saw it.
+func TestApp_TabNavDefersToModalListNav(t *testing.T) {
+	isolateHome(t)
+	setKeyMapForTesting(KeyMap{
+		ActionTabPrev:    {Mod: tea.ModCtrl, Code: 'p'},
+		ActionTabNext:    {Mod: tea.ModCtrl, Code: 'n'},
+		ActionTabNew:     defaultKeyBindings[ActionTabNew],
+		ActionAppSuspend: defaultKeyBindings[ActionAppSuspend],
+	})
+	defer invalidateKeyMapCache()
+
+	a := testAppWithTwoTabs(t)
+	a.active = 0
+	a.tabs[0].mode = modeConfig
+	a.tabs[0].configKeybindingsPickerActive = true
+
+	newA, _ := a.Update(ctrlKey('n'))
+	a2, ok := newA.(app)
+	if !ok {
+		t.Fatalf("Update returned %T, want app", newA)
+	}
+	if a2.active != 0 {
+		t.Fatalf("Ctrl+N with a modal open must not switch tabs; active=%d", a2.active)
+	}
+	if got := a2.tabs[0].configKeybindingsCursor; got != 1 {
+		t.Errorf("Ctrl+N should advance the modal's list cursor; got %d want 1", got)
+	}
+}
+
+// TestApp_TabNavSwitchesWithoutModal is the companion guard: with the
+// same Ctrl+N → tab.next rebind but no modal open, Ctrl+N must still do
+// its normal job and switch tabs. The deferral is conditional on a
+// modal/popover owning the keyboard, not a blanket suppression.
+func TestApp_TabNavSwitchesWithoutModal(t *testing.T) {
+	isolateHome(t)
+	setKeyMapForTesting(KeyMap{
+		ActionTabPrev:    {Mod: tea.ModCtrl, Code: 'p'},
+		ActionTabNext:    {Mod: tea.ModCtrl, Code: 'n'},
+		ActionTabNew:     defaultKeyBindings[ActionTabNew],
+		ActionAppSuspend: defaultKeyBindings[ActionAppSuspend],
+	})
+	defer invalidateKeyMapCache()
+
+	a := testAppWithTwoTabs(t)
+	a.active = 0 // default tab state: modeInput, empty input — no modal/popover
+
+	newA, _ := a.Update(ctrlKey('n'))
+	a2, ok := newA.(app)
+	if !ok {
+		t.Fatalf("Update returned %T, want app", newA)
+	}
+	if a2.active != 1 {
+		t.Errorf("Ctrl+N with no modal open must switch tabs; active=%d", a2.active)
+	}
+}
+
 func TestUpdate_ScreenShortcutIgnoresLockModifiers(t *testing.T) {
 	isolateHome(t)
 	invalidateKeyMapCache()
