@@ -222,10 +222,12 @@ func claudeCLIArgs(args ProviderSessionArgs, probe bool) []string {
 	if args.SkipAllPermissions {
 		out = append(out, "--dangerously-skip-permissions")
 	}
-	// askSteeringPrompt rides on every claude spawn (probe + real) so
+	// steeringPromptFor rides on every claude spawn (probe + real) so
 	// the system-prompt prefix stays cache-stable and codex's
-	// developerInstructions has a matching counterpart.
-	out = append(out, "--append-system-prompt", askSteeringPrompt)
+	// developerInstructions has a matching counterpart. In a worktree
+	// session the prompt grows a cwd-pinning clause; outside worktrees
+	// it's the bare askSteeringPrompt.
+	out = append(out, "--append-system-prompt", steeringPromptFor(args))
 	if args.PluginDir != "" {
 		out = append(out, "--plugin-dir", args.PluginDir)
 	}
@@ -604,6 +606,37 @@ func readClaudeStream(stdout io.Reader, proc *providerProc, ch chan tea.Msg) {
 			pending.IsError, _ = ev["is_error"].(bool)
 			pending.Subtype, _ = ev["subtype"].(string)
 			pending.StopReason, _ = ev["stop_reason"].(string)
+			if nt, ok := ev["num_turns"].(float64); ok {
+				pending.NumTurns = int(nt)
+			}
+			if denials, ok := ev["permission_denials"].([]any); ok {
+				pending.PermissionDenials = len(denials)
+			}
+			if d, ok := ev["deferred_tool_use"].(map[string]any); ok {
+				dID, _ := d["id"].(string)
+				dName, _ := d["name"].(string)
+				dInput, _ := d["input"].(map[string]any)
+				pending.DeferredToolUse = &deferredToolUse{ID: dID, Name: dName, Input: dInput}
+			}
+			debugLog("result subtype=%q stop_reason=%q num_turns=%d is_error=%v denials=%d deferred=%v",
+				pending.Subtype, pending.StopReason, pending.NumTurns,
+				pending.IsError, pending.PermissionDenials, pending.DeferredToolUse != nil)
+			// A `deferred_tool_use` on the result event means a
+			// PreToolUse hook returned `permissionDecision: "defer"`
+			// and the agent loop has *paused*, not completed — the
+			// model still believes work remains but the CLI handed
+			// the deferred call back to the caller to inspect and
+			// resume. Ask has no resume surface here, so promote the
+			// pause to an error result: the chat UI shows what
+			// happened, and workflow steps fail loudly instead of
+			// silently advancing on a half-finished step.
+			if pending.DeferredToolUse != nil && !pending.IsError {
+				pending.IsError = true
+				if pending.Result == "" {
+					pending.Result = "agent loop paused on deferred tool call (" +
+						pending.DeferredToolUse.Name + "); ask does not resume deferred tools"
+				}
+			}
 			// Per the SDK contract, `result` (the text body) is only
 			// populated on subtype=success. On error subtypes the
 			// upstream caller would otherwise see a bare "error: " —

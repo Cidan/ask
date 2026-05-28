@@ -68,10 +68,31 @@ func (m *model) recordAssistantText(text string) {
 	m.currentTurn.response.WriteString(text)
 }
 
-// flushMemoryTurn writes the accumulated turn observations to memmy
-// and resets state. Best-effort: a closed service quietly no-ops via
-// memoryWrite; embedder errors are debug-logged but do not interrupt
-// the user-facing flow.
+// flushMemoryTurn snapshots the accumulated turn, resets state, and
+// dispatches the writes to a background goroutine. Returns immediately
+// so the Bubble Tea Update loop is never blocked on memmy I/O —
+// memmy.Write chunks the message into sliding windows, embeds them via
+// Gemini, then issues per-chunk PutNode + vector-index Insert + edge
+// writes to Neo4j; on a turn that touched many files with a sizeable
+// response, that's thousands of Neo4j round-trips and minutes of real
+// time. Best-effort: errors land in debugLog and a closed service is
+// a silent no-op via memoryWrite. State is reset inline so a stray
+// second turnCompleteMsg can't double-fire.
+func (m *model) flushMemoryTurn() {
+	if work := m.captureMemoryFlush(); work != nil {
+		go work()
+	}
+}
+
+// captureMemoryFlush snapshots the per-turn observation buffer, resets
+// m.currentTurn, applies the no-I/O quality gates, and returns a
+// closure that performs the actual memmy.Write calls. Returns nil when
+// the turn should be skipped (no tools recorded, empty prompt,
+// low-signal, or missing cwd).
+//
+// The split exists so production (flushMemoryTurn) can run the closure
+// in a goroutine while tests can invoke it inline to assert on Stats
+// without racing the dispatch.
 //
 // Two kinds of writes go out:
 //
@@ -86,17 +107,17 @@ func (m *model) recordAssistantText(text string) {
 // AND yielded < 100 chars of response are skipped entirely. Catches
 // "what's 2+2" / "thanks!" turns without also catching genuine
 // conceptual conversation, which usually crosses 100 chars.
-func (m *model) flushMemoryTurn() {
+func (m *model) captureMemoryFlush() func() {
 	t := m.currentTurn
 	// Always reset first — a slow Write must not double-fire if a
 	// second turnCompleteMsg arrives before this one returns.
 	m.currentTurn = memoryTurn{}
 	if t.tools == nil {
-		return
+		return nil
 	}
 	prompt := strings.TrimSpace(t.prompt)
 	if prompt == "" {
-		return
+		return nil
 	}
 	response := strings.TrimSpace(t.response.String())
 	fileList := sortedSetKeys(t.files)
@@ -105,33 +126,35 @@ func (m *model) flushMemoryTurn() {
 	// response. Conversational pings ("ok", "thanks") deserve no
 	// permanent residue in the corpus.
 	if len(toolList) == 0 && len(fileList) == 0 && len(response) < 100 {
-		return
+		return nil
 	}
 	cwd := m.cwd
 	if cwd == "" {
-		return
+		return nil
 	}
 
-	ctx := context.Background()
-	// One Write per file touched. Each per-file snippet first tries
-	// to extract sentences that mention the file by path or basename,
-	// then falls back to the response's leading content — so the
-	// node's text concentrates around that specific subject when the
-	// assistant talked about it explicitly, and stays generic
-	// otherwise.
-	for _, file := range fileList {
-		snippet := outcomeSnippet(perFileSnippet(response, file), memoryCaptureOutcomeChars)
-		obs := formatPerFileObservation(file, prompt, snippet)
-		if err := memoryWrite(ctx, cwd, obs); err != nil {
-			debugLog("memory write per-file %s: %v", file, err)
+	return func() {
+		ctx := context.Background()
+		// One Write per file touched. Each per-file snippet first
+		// tries to extract sentences that mention the file by path or
+		// basename, then falls back to the response's leading content
+		// — so the node's text concentrates around that specific
+		// subject when the assistant talked about it explicitly, and
+		// stays generic otherwise.
+		for _, file := range fileList {
+			snippet := outcomeSnippet(perFileSnippet(response, file), memoryCaptureOutcomeChars)
+			obs := formatPerFileObservation(file, prompt, snippet)
+			if err := memoryWrite(ctx, cwd, obs); err != nil {
+				debugLog("memory write per-file %s: %v", file, err)
+			}
 		}
-	}
-	// One Write for the turn-level summary. memmy's chunker may
-	// further split this into 1-2 nodes; the leading prompt: line
-	// keeps the embedding anchored even when chunked.
-	summary := formatTurnSummary(prompt, toolList, fileList, outcomeSnippet(response, memoryCaptureOutcomeChars))
-	if err := memoryWrite(ctx, cwd, summary); err != nil {
-		debugLog("memory write turn-summary: %v", err)
+		// One Write for the turn-level summary. memmy's chunker may
+		// further split this into 1-2 nodes; the leading prompt: line
+		// keeps the embedding anchored even when chunked.
+		summary := formatTurnSummary(prompt, toolList, fileList, outcomeSnippet(response, memoryCaptureOutcomeChars))
+		if err := memoryWrite(ctx, cwd, summary); err != nil {
+			debugLog("memory write turn-summary: %v", err)
+		}
 	}
 }
 

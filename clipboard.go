@@ -117,12 +117,12 @@ func clipboardEmitOSC52(s string) error {
 }
 
 type imagePastedMsg struct {
-	data       []byte
-	mime       string
+	data        []byte
+	mime        string
 	pngForKitty []byte
-	width      int
-	height     int
-	err        error
+	width       int
+	height      int
+	err         error
 }
 
 var acceptedImageMimes = map[string]bool{
@@ -132,29 +132,55 @@ var acceptedImageMimes = map[string]bool{
 	"image/webp": true,
 }
 
+// Image-paste subprocess seams — tests stub these instead of forking
+// wl-paste / osascript. The Linux pair maps to wl-paste's two-step
+// type listing + typed read; the Darwin pair maps to osascript reading
+// `clipboard info` and coercing the clipboard to a four-char-code class
+// that writes the raw bytes to a temp file.
+var (
+	wlPasteListTypesFn = func() ([]byte, error) {
+		return exec.Command("wl-paste", "--list-types").Output()
+	}
+	wlPasteReadFn = func(mime string) ([]byte, error) {
+		return exec.Command("wl-paste", "--type", mime, "--no-newline").Output()
+	}
+	darwinClipboardInfoFn = func() ([]byte, error) {
+		return exec.Command("osascript", "-e", "clipboard info").Output()
+	}
+	darwinClipboardExtractFn = func(className, dstPath string) error {
+		script := fmt.Sprintf(
+			"set img to (the clipboard as %s)\n"+
+				"set fd to open for access POSIX file %q with write permission\n"+
+				"set eof of fd to 0\n"+
+				"write img to fd\n"+
+				"close access fd",
+			className, dstPath)
+		return exec.Command("osascript", "-e", script).Run()
+	}
+)
+
+// darwinImageClasses lists the MIME types we accept from the macOS
+// pasteboard, paired with the AppleScript four-char-code coercion
+// target and the marker substrings `clipboard info` uses to advertise
+// the type. Order is preference order: PNG first because macOS
+// auto-converts screenshots to PNG and Claude renders it without a
+// re-encode. JPEG / GIF appear under either the «class XXXX» literal
+// or the human alias ("JPEG picture", "GIF picture") — we accept both.
+var darwinImageClasses = []struct {
+	className string
+	mime      string
+	infoTags  []string
+}{
+	{"«class PNGf»", "image/png", []string{"«class PNGf»"}},
+	{"«class JPEG»", "image/jpeg", []string{"«class JPEG»", "JPEG picture"}},
+	{"«class GIFf»", "image/gif", []string{"«class GIFf»", "GIF picture"}},
+}
+
 func pasteImageCmd() tea.Cmd {
 	return func() tea.Msg {
-		listOut, err := exec.Command("wl-paste", "--list-types").Output()
-		if err != nil {
-			return imagePastedMsg{err: errors.New("wl-paste failed (clipboard empty or wl-paste missing)")}
-		}
-		var mime string
-		for _, t := range strings.Split(string(listOut), "\n") {
-			t = strings.TrimSpace(t)
-			if acceptedImageMimes[t] {
-				mime = t
-				break
-			}
-		}
-		if mime == "" {
-			return imagePastedMsg{err: errors.New("no image in clipboard")}
-		}
-		data, err := exec.Command("wl-paste", "--type", mime, "--no-newline").Output()
+		data, mime, err := pasteImageFromClipboard()
 		if err != nil {
 			return imagePastedMsg{err: err}
-		}
-		if len(data) == 0 {
-			return imagePastedMsg{err: errors.New("clipboard image was empty")}
 		}
 		msg := imagePastedMsg{data: data, mime: mime}
 		if png, w, h, derr := encodeToPNG(data); derr == nil {
@@ -164,4 +190,93 @@ func pasteImageCmd() tea.Cmd {
 		}
 		return msg
 	}
+}
+
+// pasteImageFromClipboard dispatches by clipboardGOOS to the per-platform
+// reader. Linux uses wl-paste (no X11 fallback — see CLAUDE.md); macOS
+// uses osascript to coerce the system pasteboard to a known image class.
+func pasteImageFromClipboard() ([]byte, string, error) {
+	switch clipboardGOOS {
+	case "linux":
+		return pasteImageWayland()
+	case "darwin":
+		return pasteImageDarwin()
+	default:
+		return nil, "", fmt.Errorf("image paste not supported on %s", clipboardGOOS)
+	}
+}
+
+func pasteImageWayland() ([]byte, string, error) {
+	listOut, err := wlPasteListTypesFn()
+	if err != nil {
+		return nil, "", errors.New("wl-paste failed (clipboard empty or wl-paste missing)")
+	}
+	var mime string
+	for _, t := range strings.Split(string(listOut), "\n") {
+		t = strings.TrimSpace(t)
+		if acceptedImageMimes[t] {
+			mime = t
+			break
+		}
+	}
+	if mime == "" {
+		return nil, "", errors.New("no image in clipboard")
+	}
+	data, err := wlPasteReadFn(mime)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(data) == 0 {
+		return nil, "", errors.New("clipboard image was empty")
+	}
+	return data, mime, nil
+}
+
+// pasteImageDarwin coerces the macOS pasteboard to a known image class
+// via osascript. `the clipboard as «class XXXX»` returns the raw bytes
+// for that representation; AppleScript writes them to a temp file and
+// we read them back. Verified against a /System PNG: output is
+// byte-identical to the source (no AppleScript wrapper header).
+func pasteImageDarwin() ([]byte, string, error) {
+	info, err := darwinClipboardInfoFn()
+	if err != nil {
+		return nil, "", fmt.Errorf("osascript failed: %w", err)
+	}
+	infoStr := string(info)
+	var className, mime string
+	for _, c := range darwinImageClasses {
+		for _, tag := range c.infoTags {
+			if strings.Contains(infoStr, tag) {
+				className, mime = c.className, c.mime
+				break
+			}
+		}
+		if className != "" {
+			break
+		}
+	}
+	if className == "" {
+		return nil, "", errors.New("no image in clipboard")
+	}
+	tmp, err := os.CreateTemp("", "askclip-*.bin")
+	if err != nil {
+		return nil, "", err
+	}
+	tmpPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, "", err
+	}
+	defer os.Remove(tmpPath)
+	if err := darwinClipboardExtractFn(className, tmpPath); err != nil {
+		return nil, "", fmt.Errorf("osascript extract: %w", err)
+	}
+	data, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(data) == 0 {
+		return nil, "", errors.New("clipboard image was empty")
+	}
+	return data, mime, nil
 }

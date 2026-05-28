@@ -155,6 +155,40 @@ func (m model) buildCopyText() string {
 	return strings.Join(parts, "\n\n")
 }
 
+// buildVisualCopyText is the WYSIWYG counterpart of buildCopyText:
+// only the highlighted cells contribute. The macOS auto-copy path
+// uses it so a partial drag copies a word, not the whole entry's
+// raw markdown source.
+func (m model) buildVisualCopyText() string {
+	b, ok := m.selectionRange()
+	if !ok {
+		return ""
+	}
+	ranges := m.entryRowRanges()
+	rows := make([]string, 0, b.maxRow-b.minRow+1)
+	for r := b.minRow; r <= b.maxRow; r++ {
+		line, inEntry := m.lineAtContentRow(r, ranges)
+		if !inEntry {
+			rows = append(rows, "")
+			continue
+		}
+		start, end, ok := m.selectionRenderMask(r, lipgloss.Width(line), ranges)
+		if !ok {
+			rows = append(rows, "")
+			continue
+		}
+		slice := xansi.Strip(xansi.Cut(line, start, end))
+		rows = append(rows, strings.TrimRight(slice, " \t"))
+	}
+	for len(rows) > 0 && rows[len(rows)-1] == "" {
+		rows = rows[:len(rows)-1]
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+	return strings.Join(rows, "\n")
+}
+
 // entryCopyText returns the clipboard-friendly form of an entry's
 // source. histResponse and histUser entries store their content
 // verbatim in entry.text (raw markdown / raw user input), so we emit

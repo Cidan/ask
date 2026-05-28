@@ -280,6 +280,12 @@ func TestFlushMemoryTurn_WritesPerFileAndSummary(t *testing.T) {
 	// Substantive turn: 2 files touched, a real prompt, real outcome.
 	// Expectation: at least one node per file plus the summary node
 	// land in the corpus.
+	//
+	// Drives the writer closure inline rather than going through
+	// flushMemoryTurn (which fires the writes on a goroutine) — that
+	// way the test can read Stats without racing the dispatch. The
+	// goroutine wrapper is a one-liner so this still exercises the
+	// substantive logic.
 	isolateHome(t)
 	resetMemoryService(t)
 	openFakeMemoryService(t)
@@ -291,7 +297,11 @@ func TestFlushMemoryTurn_WritesPerFileAndSummary(t *testing.T) {
 	(&m).recordToolCall("Read", map[string]any{"file_path": "/tmp/proj/claude.go"})
 	(&m).recordAssistantText("Updated /tmp/proj/session.go to try the canonical cwd first, then fall back. Verified the resume flow on a renamed worktree.")
 
-	(&m).flushMemoryTurn()
+	work := (&m).captureMemoryFlush()
+	if work == nil {
+		t.Fatal("captureMemoryFlush returned nil for a substantive turn")
+	}
+	work()
 
 	stats, err := memorySvc.Stats(context.Background(), recallStatsReq())
 	if err != nil {
@@ -301,6 +311,33 @@ func TestFlushMemoryTurn_WritesPerFileAndSummary(t *testing.T) {
 	// Write. Just assert we wrote ≥ 1 node per file plus the summary.
 	if stats.NodeCount < 3 {
 		t.Errorf("expected at least 3 nodes (2 per-file + 1 summary), got %d", stats.NodeCount)
+	}
+}
+
+func TestFlushMemoryTurn_DispatchesWritesAsync(t *testing.T) {
+	// flushMemoryTurn must not block on memmy I/O: it kicks the
+	// writer off onto a goroutine and returns immediately. Belt-and-
+	// suspenders for the fix that moved writes off the Bubble Tea
+	// Update loop after observing minute-scale UI lockups on large
+	// turns. We don't try to assert "writes finished" here — that's
+	// covered by TestFlushMemoryTurn_WritesPerFileAndSummary via the
+	// synchronous captureMemoryFlush path; this case only proves the
+	// dispatcher returns before the write completes by checking that
+	// state is reset by the time flushMemoryTurn returns even though
+	// the actual Stats node count may still be 0.
+	isolateHome(t)
+	resetMemoryService(t)
+	openFakeMemoryService(t)
+
+	m := newTestModel(t, newFakeProvider())
+	m.cwd = "/tmp/proj"
+	(&m).resetMemoryTurn("dispatch check")
+	(&m).recordToolCall("Edit", map[string]any{"file_path": "/tmp/proj/a.go"})
+	(&m).recordAssistantText("Did the work, the answer is X. Things look good now.")
+
+	(&m).flushMemoryTurn()
+	if m.currentTurn.tools != nil {
+		t.Errorf("flushMemoryTurn should reset state synchronously before dispatching, got %v", m.currentTurn.tools)
 	}
 }
 
