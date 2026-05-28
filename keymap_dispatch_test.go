@@ -102,22 +102,133 @@ func TestApp_TabNavDefersToModalListNav(t *testing.T) {
 	})
 	defer invalidateKeyMapCache()
 
-	a := testAppWithTwoTabs(t)
-	a.active = 0
-	a.tabs[0].mode = modeConfig
-	a.tabs[0].configKeybindingsPickerActive = true
+	for _, tc := range []struct {
+		name       string
+		key        tea.KeyPressMsg
+		wantCursor int
+	}{
+		{"next", ctrlKey('n'), 1},
+		{"prev", ctrlKey('p'), len(actionMeta) - 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testAppWithTwoTabs(t)
+			a.active = 0
+			a.tabs[0].mode = modeConfig
+			a.tabs[0].configKeybindingsPickerActive = true
 
-	newA, _ := a.Update(ctrlKey('n'))
-	a2, ok := newA.(app)
-	if !ok {
-		t.Fatalf("Update returned %T, want app", newA)
+			newA, _ := a.Update(tc.key)
+			a2, ok := newA.(app)
+			if !ok {
+				t.Fatalf("Update returned %T, want app", newA)
+			}
+			if a2.active != 0 {
+				t.Fatalf("%s with a modal list open must not switch tabs; active=%d", tc.key.String(), a2.active)
+			}
+			if got := a2.tabs[0].configKeybindingsCursor; got != tc.wantCursor {
+				t.Errorf("%s should move the modal list cursor; got %d want %d", tc.key.String(), got, tc.wantCursor)
+			}
+		})
 	}
-	if a2.active != 0 {
-		t.Fatalf("Ctrl+N with a modal open must not switch tabs; active=%d", a2.active)
+}
+
+func TestApp_TabNavSwitchesWhenModalDoesNotOwnListNav(t *testing.T) {
+	isolateHome(t)
+	setKeyMapForTesting(KeyMap{
+		ActionTabPrev:    {Mod: tea.ModCtrl, Code: 'p'},
+		ActionTabNext:    {Mod: tea.ModCtrl, Code: 'n'},
+		ActionTabNew:     defaultKeyBindings[ActionTabNew],
+		ActionAppSuspend: defaultKeyBindings[ActionAppSuspend],
+	})
+	defer invalidateKeyMapCache()
+
+	cases := []struct {
+		name  string
+		setup func(*model)
+	}{
+		{"cancel turn confirm", func(m *model) { m.cancelTurnConfirming = true }},
+		{"close tab confirm", func(m *model) { m.closeTabConfirming = true }},
+		{"merge PR confirm", func(m *model) { m.mergePRConfirming = true }},
+		{"approval", func(m *model) { m.mode = modeApproval }},
 	}
-	if got := a2.tabs[0].configKeybindingsCursor; got != 1 {
-		t.Errorf("Ctrl+N should advance the modal's list cursor; got %d want 1", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testAppWithTwoTabs(t)
+			a.active = 0
+			tc.setup(a.tabs[0])
+
+			newA, _ := a.Update(ctrlKey('n'))
+			a2, ok := newA.(app)
+			if !ok {
+				t.Fatalf("Update returned %T, want app", newA)
+			}
+			if a2.active != 1 {
+				t.Errorf("Ctrl+N should switch tabs when %s does not own list navigation; active=%d", tc.name, a2.active)
+			}
+		})
 	}
+}
+
+func TestApp_CtrlListNavDeferralKeepsHigherPriorityAppActions(t *testing.T) {
+	isolateHome(t)
+	defer invalidateKeyMapCache()
+
+	t.Run("suspend", func(t *testing.T) {
+		setKeyMapForTesting(KeyMap{
+			ActionAppSuspend: {Mod: tea.ModCtrl, Code: 'n'},
+			ActionTabNew:     defaultKeyBindings[ActionTabNew],
+			ActionTabPrev:    {Mod: tea.ModCtrl, Code: 'p'},
+			ActionTabNext:    {Mod: tea.ModCtrl, Code: 'n'},
+		})
+
+		a := testAppWithTwoTabs(t)
+		a.active = 0
+		a.tabs[0].mode = modeConfig
+		a.tabs[0].configKeybindingsPickerActive = true
+
+		newA, cmd := a.Update(ctrlKey('n'))
+		a2, ok := newA.(app)
+		if !ok {
+			t.Fatalf("Update returned %T, want app", newA)
+		}
+		if cmd == nil {
+			t.Fatal("Ctrl+N rebound to suspend must not be swallowed by list-nav deferral")
+		}
+		if msg := cmd(); msg != (tea.SuspendMsg{}) {
+			t.Fatalf("cmd should yield tea.SuspendMsg{}, got %T", msg)
+		}
+		if !a2.suspending {
+			t.Error("suspend action should set app.suspending")
+		}
+		if got := a2.tabs[0].configKeybindingsCursor; got != 0 {
+			t.Errorf("suspend should win before modal list nav; cursor=%d", got)
+		}
+	})
+
+	t.Run("new tab", func(t *testing.T) {
+		setKeyMapForTesting(KeyMap{
+			ActionAppSuspend: defaultKeyBindings[ActionAppSuspend],
+			ActionTabNew:     {Mod: tea.ModCtrl, Code: 'n'},
+			ActionTabPrev:    {Mod: tea.ModCtrl, Code: 'p'},
+			ActionTabNext:    {Mod: tea.ModCtrl, Code: 'n'},
+		})
+
+		a := testAppWithTwoTabs(t)
+		a.active = 0
+		a.tabs[0].mode = modeConfig
+		a.tabs[0].configKeybindingsPickerActive = true
+
+		newA, _ := a.Update(ctrlKey('n'))
+		a2, ok := newA.(app)
+		if !ok {
+			t.Fatalf("Update returned %T, want app", newA)
+		}
+		if len(a2.tabs) != 3 || a2.active != 2 {
+			t.Fatalf("Ctrl+N rebound to tab.new should open a third active tab; len=%d active=%d", len(a2.tabs), a2.active)
+		}
+		if got := a2.tabs[0].configKeybindingsCursor; got != 0 {
+			t.Errorf("tab.new should win before modal list nav; cursor=%d", got)
+		}
+	})
 }
 
 // TestApp_TabNavSwitchesWithoutModal is the companion guard: with the

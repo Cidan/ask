@@ -93,6 +93,39 @@ func (a app) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+func (m model) ownsCtrlListNav() bool {
+	if m.popoverOpen() {
+		return true
+	}
+	switch m.mode {
+	case modeSessionPicker, modeProviderSwitch:
+		return true
+	case modeAskQuestion:
+		return m.askOwnsCtrlListNav()
+	case modeConfig:
+		return m.configOwnsCtrlListNav()
+	default:
+		return false
+	}
+}
+
+func (m model) askOwnsCtrlListNav() bool {
+	if m.askConfirmingCancel || m.askOllamaActive || m.askEditing == askEditNote || m.isOnConfirmTab() {
+		return false
+	}
+	return m.askTab >= 0 && m.askTab < len(m.askQuestions)
+}
+
+func (m model) configOwnsCtrlListNav() bool {
+	if m.configMemoryPickerActive && m.configMemoryFieldEditing != "" {
+		return false
+	}
+	if m.configProjectPickerActive && m.configProjectFieldEditing != "" {
+		return false
+	}
+	return true
+}
+
 func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case closeTabMsg:
@@ -110,21 +143,13 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		m = normalizeKeyPressMsg(m)
 		km := currentKeyMap()
-		// A modal or inline popover in the active tab owns the list-nav
-		// keys (Ctrl+P/Ctrl+N) for its own cursor. Defer them to the tab
-		// even when the user has bound tab.prev/tab.next onto those keys,
-		// so in-list navigation wins while a modal is up. Outside a modal
-		// they fall through to the tab switching below.
-		if isCtrlListNav(m) {
-			if at := a.activeTab(); at.modalOpen() || at.popoverOpen() {
-				return a.dispatchActive(msg)
-			}
-		}
 		switch {
 		case km.Matches(ActionAppSuspend, m):
 			return a.suspendApp()
 		case km.Matches(ActionTabNew, m):
 			return a.openTab()
+		case isCtrlListNav(m) && a.activeTab().ownsCtrlListNav():
+			return a.dispatchActive(msg)
 		case km.Matches(ActionTabPrev, m):
 			return a.switchTab(a.active - 1)
 		case km.Matches(ActionTabNext, m):
