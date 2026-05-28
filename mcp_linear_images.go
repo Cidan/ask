@@ -34,6 +34,15 @@ const (
 	linearImageMaxBytesEach  = 4 * 1024 * 1024 // 4 MB cap per image
 	linearImageMaxBytesTotal = 8 * 1024 * 1024 // 8 MB cumulative cap
 	linearImageFetchTimeout  = 15 * time.Second
+	// linearImageMaxAttempts bounds total fetch attempts so an issue
+	// littered with broken or oversized image links can't drag the
+	// tool call out to minutes. The success cap above only stops once
+	// linearImageMaxCount images have been *kept*; without a separate
+	// attempt cap, dozens of failing refs would each consume up to
+	// linearImageFetchTimeout. Set generously above the success cap
+	// so a few transient failures still let downstream good URLs
+	// through.
+	linearImageMaxAttempts = linearImageMaxCount * 2
 )
 
 // linearImageMarkdownRe matches markdown image syntax `![alt](url)`.
@@ -110,19 +119,29 @@ type linearImageFetcher interface {
 }
 
 // linearGatherImages walks refs in order, stopping when either the
-// count or cumulative-bytes cap is exhausted. Per-image failures are
-// counted into dropped and otherwise swallowed so a broken CDN entry
-// can't take down the whole tool call.
+// success-count cap or the total-attempts cap is exhausted. Per-image
+// failures are counted into dropped and otherwise swallowed so a
+// broken CDN entry can't take down the whole tool call.
+//
+// The attempt cap is what keeps a stale issue with dozens of broken
+// upload links from dragging the tool call into the minutes — without
+// it, len(images) wouldn't advance and the loop would issue one
+// linearImageFetchTimeout-bounded request per ref.
 func linearGatherImages(ctx context.Context, f linearImageFetcher, cfg linearMCPConfig, refs []linearImageRef) (images []linearFetchedImage, dropped int) {
 	if f == nil || len(refs) == 0 {
 		return nil, 0
 	}
 	total := 0
-	for _, r := range refs {
-		if len(images) >= linearImageMaxCount {
-			dropped++
-			continue
+	attempts := 0
+	for i, r := range refs {
+		if len(images) >= linearImageMaxCount || attempts >= linearImageMaxAttempts {
+			// Caps reached. Count every remaining ref as dropped
+			// in one shot and exit, so we don't keep iterating
+			// the list to no effect.
+			dropped += len(refs) - i
+			break
 		}
+		attempts++
 		ictx, cancel := context.WithTimeout(ctx, linearImageFetchTimeout)
 		body, mime, err := f.fetchImage(ictx, cfg, r.URL)
 		cancel()

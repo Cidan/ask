@@ -266,6 +266,33 @@ func TestLinearGatherImages_FetchErrorCountedAsDropped(t *testing.T) {
 	}
 }
 
+// When every fetch fails, the success cap never advances; without the
+// attempt cap the loop would issue one fetch per ref and a stale issue
+// with dozens of broken uploads would hang the tool call for minutes.
+// Verify the attempt cap stops the gather at linearImageMaxAttempts
+// and credits the remaining refs as dropped.
+func TestLinearGatherImages_AttemptCapBoundsAllFailures(t *testing.T) {
+	const refCount = linearImageMaxAttempts + 4
+	refs := make([]linearImageRef, refCount)
+	resp := map[string]fakeImageResponse{}
+	for i := range refs {
+		u := fmt.Sprintf("https://uploads.linear.app/broken/%d.png", i)
+		refs[i] = linearImageRef{URL: u, Source: "description"}
+		resp[u] = fakeImageResponse{err: errors.New("404 not found")}
+	}
+	f := &fakeLinearImageFetcher{responses: resp}
+	images, dropped := linearGatherImages(context.Background(), f, linearMCPConfig{}, refs)
+	if len(images) != 0 {
+		t.Errorf("all fetches failed but kept=%d", len(images))
+	}
+	if dropped != refCount {
+		t.Errorf("dropped=%d want %d (every ref accounted for)", dropped, refCount)
+	}
+	if len(f.calls) != linearImageMaxAttempts {
+		t.Errorf("fetched %d times, want %d (attempt cap)", len(f.calls), linearImageMaxAttempts)
+	}
+}
+
 func TestLinearGatherImages_NilFetcher(t *testing.T) {
 	refs := []linearImageRef{{URL: "https://uploads.linear.app/a/1.png", Source: "description"}}
 	images, dropped := linearGatherImages(context.Background(), nil, linearMCPConfig{}, refs)
