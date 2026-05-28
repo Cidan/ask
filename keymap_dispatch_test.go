@@ -168,11 +168,16 @@ func TestApp_TabNavSwitchesWhenModalDoesNotOwnListNav(t *testing.T) {
 	}
 }
 
-func TestApp_CtrlListNavDeferralKeepsHigherPriorityAppActions(t *testing.T) {
+// TestApp_ModalListNavWinsOverReboundAppActions proves the deferral runs
+// before every app-level action, not just tab switching: when a modal
+// owns list navigation, Ctrl+P/Ctrl+N navigate the list regardless of
+// what the user has bound onto them (suspend, new tab, ...). Without the
+// gate sitting first, those binds would shadow in-modal navigation.
+func TestApp_ModalListNavWinsOverReboundAppActions(t *testing.T) {
 	isolateHome(t)
 	defer invalidateKeyMapCache()
 
-	t.Run("suspend", func(t *testing.T) {
+	t.Run("suspend rebound onto Ctrl+N", func(t *testing.T) {
 		setKeyMapForTesting(KeyMap{
 			ActionAppSuspend: {Mod: tea.ModCtrl, Code: 'n'},
 			ActionTabNew:     defaultKeyBindings[ActionTabNew],
@@ -190,21 +195,20 @@ func TestApp_CtrlListNavDeferralKeepsHigherPriorityAppActions(t *testing.T) {
 		if !ok {
 			t.Fatalf("Update returned %T, want app", newA)
 		}
-		if cmd == nil {
-			t.Fatal("Ctrl+N rebound to suspend must not be swallowed by list-nav deferral")
+		if a2.suspending {
+			t.Error("modal list-nav must win: Ctrl+N should not suspend the app")
 		}
-		if msg := cmd(); msg != (tea.SuspendMsg{}) {
-			t.Fatalf("cmd should yield tea.SuspendMsg{}, got %T", msg)
+		if cmd != nil {
+			if msg := cmd(); msg == (tea.SuspendMsg{}) {
+				t.Fatal("Ctrl+N should navigate the modal, not emit tea.SuspendMsg")
+			}
 		}
-		if !a2.suspending {
-			t.Error("suspend action should set app.suspending")
-		}
-		if got := a2.tabs[0].configKeybindingsCursor; got != 0 {
-			t.Errorf("suspend should win before modal list nav; cursor=%d", got)
+		if got := a2.tabs[0].configKeybindingsCursor; got != 1 {
+			t.Errorf("Ctrl+N should advance the modal list cursor; got %d want 1", got)
 		}
 	})
 
-	t.Run("new tab", func(t *testing.T) {
+	t.Run("new-tab rebound onto Ctrl+N", func(t *testing.T) {
 		setKeyMapForTesting(KeyMap{
 			ActionAppSuspend: defaultKeyBindings[ActionAppSuspend],
 			ActionTabNew:     {Mod: tea.ModCtrl, Code: 'n'},
@@ -222,11 +226,11 @@ func TestApp_CtrlListNavDeferralKeepsHigherPriorityAppActions(t *testing.T) {
 		if !ok {
 			t.Fatalf("Update returned %T, want app", newA)
 		}
-		if len(a2.tabs) != 3 || a2.active != 2 {
-			t.Fatalf("Ctrl+N rebound to tab.new should open a third active tab; len=%d active=%d", len(a2.tabs), a2.active)
+		if len(a2.tabs) != 2 || a2.active != 0 {
+			t.Fatalf("modal list-nav must win: Ctrl+N should not open a tab; len=%d active=%d", len(a2.tabs), a2.active)
 		}
-		if got := a2.tabs[0].configKeybindingsCursor; got != 0 {
-			t.Errorf("tab.new should win before modal list nav; cursor=%d", got)
+		if got := a2.tabs[0].configKeybindingsCursor; got != 1 {
+			t.Errorf("Ctrl+N should advance the modal list cursor; got %d want 1", got)
 		}
 	})
 }

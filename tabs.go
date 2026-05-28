@@ -144,12 +144,18 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = normalizeKeyPressMsg(m)
 		km := currentKeyMap()
 		switch {
+		// A modal or inline popover that navigates with Ctrl+P/Ctrl+N
+		// owns those keys: defer them to the active tab before any
+		// app-level keymap action, so whatever the user has bound onto
+		// Ctrl+P/Ctrl+N (tab switch, new tab, suspend, ...) cannot shadow
+		// in-modal list navigation. Outside such a modal the keys fall
+		// through to the normal app actions below.
+		case isCtrlListNav(m) && a.activeTab().ownsCtrlListNav():
+			return a.dispatchActive(msg)
 		case km.Matches(ActionAppSuspend, m):
 			return a.suspendApp()
 		case km.Matches(ActionTabNew, m):
 			return a.openTab()
-		case isCtrlListNav(m) && a.activeTab().ownsCtrlListNav():
-			return a.dispatchActive(msg)
 		case km.Matches(ActionTabPrev, m):
 			return a.switchTab(a.active - 1)
 		case km.Matches(ActionTabNext, m):
