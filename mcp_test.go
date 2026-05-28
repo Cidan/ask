@@ -7,9 +7,12 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestNewMCPBridge_AllocatesEphemeralPort(t *testing.T) {
@@ -535,4 +538,83 @@ func TestMCPBridge_StopIsIdempotentWithHTTPServer(t *testing.T) {
 	}
 	b.stop()
 	b.stop() // must not panic / hang on a server that's already shut down
+}
+
+// textOf concatenates the text content blocks of a tool result.
+func textOf(res *mcp.CallToolResult) string {
+	var b strings.Builder
+	for _, c := range res.Content {
+		if tc, ok := c.(*mcp.TextContent); ok {
+			b.WriteString(tc.Text)
+		}
+	}
+	return b.String()
+}
+
+// A headless reply (workflow tab) must produce an IsError result whose
+// text tells the agent it is headless and to proceed on its own — and
+// must NOT read like a user cancellation, which is the whole point of
+// the separate signal.
+func TestBuildAskResult_Headless(t *testing.T) {
+	res, out, err := buildAskResult(askReply{headless: true}, askInput{})
+	if err != nil {
+		t.Fatalf("buildAskResult: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("headless result should be a non-nil IsError result; got %+v", res)
+	}
+	txt := textOf(res)
+	if !strings.Contains(strings.ToLower(txt), "headless") {
+		t.Errorf("headless notice should mention headless; got %q", txt)
+	}
+	if strings.Contains(txt, "cancelled the dialog") {
+		t.Errorf("headless notice must not be the user-cancellation message; got %q", txt)
+	}
+	if !out.Cancelled {
+		t.Errorf("structured output should mark the question unanswered (Cancelled=true); got %+v", out)
+	}
+}
+
+// A genuine user cancellation keeps its existing wording, distinct from
+// the headless notice.
+func TestBuildAskResult_Cancelled(t *testing.T) {
+	res, out, err := buildAskResult(askReply{cancelled: true}, askInput{})
+	if err != nil {
+		t.Fatalf("buildAskResult: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("cancelled result should be a non-nil IsError result; got %+v", res)
+	}
+	if !strings.Contains(textOf(res), "cancelled the dialog") {
+		t.Errorf("cancelled result text=%q want user-cancellation wording", textOf(res))
+	}
+	if !out.Cancelled {
+		t.Errorf("Cancelled should be true; got %+v", out)
+	}
+}
+
+// An answered reply marshals the answers into both the text block and
+// the structured output, with no error flag.
+func TestBuildAskResult_Answered(t *testing.T) {
+	in := askInput{Questions: []mcpQuestion{{
+		Kind: "pick_one", Options: []mcpOption{{Label: "a"}, {Label: "b"}},
+	}}}
+	resp := askReply{answers: []qAnswer{{picks: map[int]bool{0: true}}}}
+	res, out, err := buildAskResult(resp, in)
+	if err != nil {
+		t.Fatalf("buildAskResult: %v", err)
+	}
+	if res == nil || res.IsError {
+		t.Fatalf("answered result must be a non-nil non-error result; got %+v", res)
+	}
+	if len(out.Answers) != 1 || len(out.Answers[0].Picks) != 1 || out.Answers[0].Picks[0] != "a" {
+		t.Fatalf("answers not threaded into structured output: %+v", out)
+	}
+	var parsed askOutput
+	if err := json.Unmarshal([]byte(textOf(res)), &parsed); err != nil {
+		t.Fatalf("answered text should be a JSON askOutput: %v (text=%q)", err, textOf(res))
+	}
+	if len(parsed.Answers) != 1 || len(parsed.Answers[0].Picks) != 1 || parsed.Answers[0].Picks[0] != "a" {
+		t.Errorf("round-trip answers=%+v", parsed)
+	}
 }

@@ -315,9 +315,14 @@ field. View consequences:
   (cancel = mark failed), and viewport scroll keys (Up/Down/PgUp/
   PgDn/g/G/j/k/Home/End) are honoured. Everything else is absorbed.
 - `askToolRequestMsg` and `approvalRequestMsg` arriving on a
-  workflow tab auto-cancel/auto-deny so the chain doesn't stall on
-  a modal that has no human to dismiss it. Workflow tabs run with
-  `skipAllPermissions = true` regardless of the global toggle.
+  workflow tab are answered without a modal so the chain doesn't
+  stall on a prompt that has no human to dismiss it. Ask replies
+  with `askReply{headless: true}`, which `buildAskResult` turns into
+  an `IsError` notice (`workflowHeadlessAskNotice`) telling the agent
+  it is headless and to proceed on its own judgment — not the
+  misleading "user cancelled the dialog" a real Esc produces.
+  Approval auto-denies. Workflow tabs run with `skipAllPermissions =
+  true` regardless of the global toggle.
 - `closeTab` on a still-running workflow tab marks the run as
   failed before tearing down — the user closing the tab is the
   verdict, no graceful drain.

@@ -223,6 +223,40 @@ func TestUpdate_AskToolRequestWhileAlreadyOpenRepliesCancelled(t *testing.T) {
 	}
 }
 
+// A workflow tab runs headless: an ask_user_question request must not
+// open the modal, must not stash askReply, and must reply with the
+// headless signal (not a user cancellation) so the agent learns it is
+// headless and proceeds on its own instead of hanging forever.
+func TestUpdate_AskToolRequestOnWorkflowTabRepliesHeadless(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.workflowRun = &workflowRunState{}
+	reply := make(chan askReply, 1)
+	m2, _ := runUpdate(t, m, askToolRequestMsg{
+		tabID: m.id,
+		questions: []question{{
+			kind: qPickOne, prompt: "q?", options: []string{"a", "b"},
+		}},
+		reply: reply,
+	})
+	if m2.mode == modeAskQuestion {
+		t.Errorf("workflow tab must not open the ask modal; mode=%v", m2.mode)
+	}
+	if m2.askReply != nil {
+		t.Error("workflow tab must not stash askReply — there is no user to submit it")
+	}
+	select {
+	case r := <-reply:
+		if !r.headless {
+			t.Errorf("expected headless reply; got %+v", r)
+		}
+		if r.cancelled {
+			t.Errorf("headless reply must not double as a user cancellation; got %+v", r)
+		}
+	default:
+		t.Error("reply channel should have received a headless response")
+	}
+}
+
 func TestUpdate_ApprovalRequestWhileAskOpenDenies(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.mode = modeAskQuestion

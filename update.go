@@ -786,11 +786,13 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 	case askToolRequestMsg:
 		debugLog("askToolRequestMsg questions=%d", len(msg.questions))
 		if m.workflowRun != nil {
-			// Workflow tabs have no input affordance — the agent
-			// gets `cancelled: true` immediately so it doesn't sit
-			// waiting on a user answer that will never come.
+			// Workflow tabs run headless — no input affordance and no
+			// user to answer. Reply with the headless signal so the
+			// agent gets a clear "you are headless, proceed on your
+			// own" notice (not a misleading "user cancelled" error) and
+			// never sits waiting on an answer that will never come.
 			if msg.reply != nil {
-				msg.reply <- askReply{cancelled: true}
+				msg.reply <- askReply{headless: true}
 			}
 			return m, nil
 		}

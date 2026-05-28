@@ -57,6 +57,12 @@ type askOutput struct {
 type askReply struct {
 	answers   []qAnswer
 	cancelled bool
+	// headless is set when the request targets a workflow tab, which
+	// runs with no user present to answer. buildAskResult turns it into
+	// a clear "you are headless, proceed on your own" notice
+	// (workflowHeadlessAskNotice) rather than the misleading
+	// user-cancellation error a real Esc would produce.
+	headless bool
 }
 
 type askToolRequestMsg struct {
@@ -122,6 +128,17 @@ Diagram format (pick_diagram only; strict):
 
 Set allow_custom=true on pick_one or pick_many to append an Enter-your-own
 option that accepts free-form multi-line text from the user.`
+
+// workflowHeadlessAskNotice is returned to the agent when it calls
+// ask_user_question from a workflow tab. Workflow steps run headless —
+// there is no user at the terminal to answer — so instead of stranding
+// the chain on a modal nobody can dismiss (or returning a misleading
+// "user cancelled" error), we tell the agent it is headless and to
+// decide on its own.
+const workflowHeadlessAskNotice = "This step is running headless as part of an automated workflow. " +
+	"There is no user available to answer questions, so ask_user_question cannot be used here. " +
+	"Do not ask questions — proceed using your best judgment with the information you already have, " +
+	"making and clearly stating any reasonable assumptions where a choice is required."
 
 // teaProgramPtr is shared by every tab's mcpBridge. main.go stores the
 // *tea.Program into it after tea.NewProgram so bridges can route tool
@@ -333,13 +350,31 @@ func (b *mcpBridge) askTool(ctx context.Context, req *mcp.CallToolRequest, in as
 	}
 	select {
 	case resp := <-reply:
-		if resp.cancelled {
-			out := askOutput{Cancelled: true}
-			return &mcp.CallToolResult{
-				Content: []mcp.Content{&mcp.TextContent{Text: "user cancelled the dialog"}},
-				IsError: true,
-			}, out, nil
-		}
+		return buildAskResult(resp, in)
+	case <-ctx.Done():
+		return nil, askOutput{}, ctx.Err()
+	}
+}
+
+// buildAskResult turns a reply from the ask modal (or a headless
+// workflow auto-response) into the tool result returned to the calling
+// agent. Split out of askTool so the three response shapes — headless,
+// cancelled, answered — are unit-testable without standing up a
+// tea.Program, mirroring how buildApprovalBody factors the approval
+// tool's wire shape.
+func buildAskResult(resp askReply, in askInput) (*mcp.CallToolResult, askOutput, error) {
+	switch {
+	case resp.headless:
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: workflowHeadlessAskNotice}},
+			IsError: true,
+		}, askOutput{Cancelled: true}, nil
+	case resp.cancelled:
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "user cancelled the dialog"}},
+			IsError: true,
+		}, askOutput{Cancelled: true}, nil
+	default:
 		out := askOutput{Answers: convertMCPAnswers(in.Questions, resp.answers)}
 		body, err := json.Marshal(out)
 		if err != nil {
@@ -348,8 +383,6 @@ func (b *mcpBridge) askTool(ctx context.Context, req *mcp.CallToolRequest, in as
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: string(body)}},
 		}, out, nil
-	case <-ctx.Done():
-		return nil, askOutput{}, ctx.Err()
 	}
 }
 

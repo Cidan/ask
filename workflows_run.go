@@ -88,7 +88,8 @@ func (m model) startWorkflowStep() (tea.Model, tea.Cmd) {
 	// Force skip-permissions on for workflow steps; the user opted
 	// into the workflow, and a permission modal would freeze the
 	// chain (the tab can't surface ask/approval modals — see the
-	// askToolRequestMsg/approvalRequestMsg auto-cancel branches).
+	// askToolRequestMsg headless reply / approvalRequestMsg auto-deny
+	// branches).
 	m.skipAllPermissions = true
 	workflowTracker().markStep(r.Source.Key(), r.StepIdx)
 	prompt := buildWorkflowStepPrompt(step, r.Source, r.stepLog)
