@@ -21,7 +21,14 @@ import (
 // methods are dispatched directly, not through the MCP transport).
 func newLinearMCPTestBridge(t *testing.T, cfgFn func(*projectConfig)) (*mcpBridge, string) {
 	t.Helper()
-	cwd := isolateHome(t)
+	// Canonicalize once and use the same path for seed + bridge.
+	// setCwd runs cwd through memoryProjectRoot (EvalSymlinks) before
+	// storing, so on macOS — where t.TempDir() returns a /var/folders/...
+	// path that resolves to /private/var/folders/... — the bridge would
+	// otherwise read its config under a different projectKey than the
+	// seed wrote, and every handler call would fail the
+	// "active issue provider" gate.
+	cwd := memoryProjectRoot(isolateHome(t))
 	if cfgFn != nil {
 		cfg, _ := loadConfig()
 		pc := loadProjectConfig(cfg, cwd)
