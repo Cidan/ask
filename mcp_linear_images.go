@@ -36,13 +36,21 @@ const (
 	linearImageFetchTimeout  = 15 * time.Second
 	// linearImageMaxAttempts bounds total fetch attempts so an issue
 	// littered with broken or oversized image links can't drag the
-	// tool call out to minutes. The success cap above only stops once
+	// tool call out. The success cap above only stops once
 	// linearImageMaxCount images have been *kept*; without a separate
 	// attempt cap, dozens of failing refs would each consume up to
 	// linearImageFetchTimeout. Set generously above the success cap
 	// so a few transient failures still let downstream good URLs
 	// through.
 	linearImageMaxAttempts = linearImageMaxCount * 2
+	// linearImageGatherDeadline bounds the wall-clock time the whole
+	// gather step can spend, regardless of how many individual fetches
+	// it takes. linearImageFetchTimeout is per-request and could still
+	// add up to linearImageMaxAttempts × linearImageFetchTimeout in
+	// the worst case where every attempt hangs near its own timeout.
+	// The cumulative cap is what guarantees linear_get_issue stays
+	// snappy even on stale issues with many broken upload links.
+	linearImageGatherDeadline = 30 * time.Second
 )
 
 // linearImageMarkdownRe matches markdown image syntax `![alt](url)`.
@@ -118,23 +126,29 @@ type linearImageFetcher interface {
 	fetchImage(ctx context.Context, cfg linearMCPConfig, rawURL string) (data []byte, mimeType string, err error)
 }
 
-// linearGatherImages walks refs in order, stopping when either the
-// success-count cap or the total-attempts cap is exhausted. Per-image
-// failures are counted into dropped and otherwise swallowed so a
-// broken CDN entry can't take down the whole tool call.
+// linearGatherImages walks refs in order, stopping when any of three
+// caps trips: linearImageMaxCount successes, linearImageMaxAttempts
+// total fetches, or linearImageGatherDeadline wall-clock elapsed.
+// Per-image failures are counted into dropped and otherwise swallowed
+// so a broken CDN entry can't take down the whole tool call.
 //
-// The attempt cap is what keeps a stale issue with dozens of broken
-// upload links from dragging the tool call into the minutes — without
-// it, len(images) wouldn't advance and the loop would issue one
-// linearImageFetchTimeout-bounded request per ref.
+// The gather deadline is what guarantees a snappy tool call on stale
+// issues with many broken upload links. linearImageFetchTimeout is
+// per-request, so without a cumulative bound the attempts cap alone
+// would still let a hung CDN consume attempts × timeout seconds. The
+// per-fetch ctx is derived from gatherCtx so the last in-flight
+// request is cancelled the moment the deadline trips.
 func linearGatherImages(ctx context.Context, f linearImageFetcher, cfg linearMCPConfig, refs []linearImageRef) (images []linearFetchedImage, dropped int) {
 	if f == nil || len(refs) == 0 {
 		return nil, 0
 	}
+	gatherCtx, cancelGather := context.WithTimeout(ctx, linearImageGatherDeadline)
+	defer cancelGather()
+
 	total := 0
 	attempts := 0
 	for i, r := range refs {
-		if len(images) >= linearImageMaxCount || attempts >= linearImageMaxAttempts {
+		if len(images) >= linearImageMaxCount || attempts >= linearImageMaxAttempts || gatherCtx.Err() != nil {
 			// Caps reached. Count every remaining ref as dropped
 			// in one shot and exit, so we don't keep iterating
 			// the list to no effect.
@@ -142,7 +156,7 @@ func linearGatherImages(ctx context.Context, f linearImageFetcher, cfg linearMCP
 			break
 		}
 		attempts++
-		ictx, cancel := context.WithTimeout(ctx, linearImageFetchTimeout)
+		ictx, cancel := context.WithTimeout(gatherCtx, linearImageFetchTimeout)
 		body, mime, err := f.fetchImage(ictx, cfg, r.URL)
 		cancel()
 		if err != nil {

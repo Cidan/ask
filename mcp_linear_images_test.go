@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -151,13 +152,21 @@ type fakeImageResponse struct {
 	data []byte
 	mime string
 	err  error
+	// hang causes the fake fetcher to block until ctx is cancelled,
+	// returning ctx.Err(). Used by the gather-deadline test to simulate
+	// upstream URLs that accept the connection but never respond.
+	hang bool
 }
 
-func (f *fakeLinearImageFetcher) fetchImage(_ context.Context, _ linearMCPConfig, rawURL string) ([]byte, string, error) {
+func (f *fakeLinearImageFetcher) fetchImage(ctx context.Context, _ linearMCPConfig, rawURL string) ([]byte, string, error) {
 	f.calls = append(f.calls, rawURL)
 	r, ok := f.responses[rawURL]
 	if !ok {
 		return nil, "", fmt.Errorf("no fake response for %q", rawURL)
+	}
+	if r.hang {
+		<-ctx.Done()
+		return nil, "", ctx.Err()
 	}
 	return r.data, r.mime, r.err
 }
@@ -263,6 +272,45 @@ func TestLinearGatherImages_FetchErrorCountedAsDropped(t *testing.T) {
 	}
 	if dropped != 1 {
 		t.Errorf("dropped=%d want 1", dropped)
+	}
+}
+
+// Even with the attempt cap, a CDN that accepts each connection but
+// never responds would still consume attempts × linearImageFetchTimeout
+// of wall time. The cumulative gather deadline must short-circuit the
+// whole loop the moment ctx fires. We drive that by passing a short
+// parent ctx — gatherCtx's WithTimeout inherits whichever deadline is
+// sooner, so the gather should return in well under a second despite
+// many hanging refs.
+func TestLinearGatherImages_GatherDeadlineBoundsWallTime(t *testing.T) {
+	const refCount = 20
+	refs := make([]linearImageRef, refCount)
+	resp := map[string]fakeImageResponse{}
+	for i := range refs {
+		u := fmt.Sprintf("https://uploads.linear.app/hang/%d.png", i)
+		refs[i] = linearImageRef{URL: u, Source: "description"}
+		resp[u] = fakeImageResponse{hang: true}
+	}
+	f := &fakeLinearImageFetcher{responses: resp}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	images, dropped := linearGatherImages(ctx, f, linearMCPConfig{}, refs)
+	elapsed := time.Since(start)
+
+	if len(images) != 0 {
+		t.Errorf("kept=%d images, want 0 (every fetch hung)", len(images))
+	}
+	if dropped != refCount {
+		t.Errorf("dropped=%d want %d (every ref accounted for)", dropped, refCount)
+	}
+	// linearImageMaxAttempts × linearImageFetchTimeout = 120s would be
+	// the unbounded worst case. With the deadline we should be back
+	// well under 1s.
+	if elapsed > time.Second {
+		t.Errorf("gather took %v, want <1s — cumulative deadline not respected", elapsed)
 	}
 }
 
