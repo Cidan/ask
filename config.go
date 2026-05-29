@@ -163,15 +163,77 @@ type workflowDef struct {
 	Steps []workflowStep `json:"steps,omitempty"`
 }
 
-// workflowStep is one stage of a workflow. Provider+Model nail the
-// agent CLI for that step (so a single workflow can chain claude→
-// codex→claude); empty Model defers to the provider's saved default.
-// Prompt is the user-typed instruction for that step.
+// workflowStep is one stage of a workflow. A step is one of two kinds,
+// discriminated by Kind:
+//
+//   - Kind == "" (workflowStepKindAgent): a leaf agent step.
+//     Provider+Model nail the agent CLI for that step (so a single
+//     workflow can chain claude→codex→claude); empty Model defers to
+//     the provider's saved default; Prompt is the user-typed
+//     instruction.
+//   - Kind == "loop" (workflowStepKindLoop): a loop container. Steps
+//     holds the inner agent steps run in order each iteration;
+//     MaxIterations caps the iteration count (0 ⇒
+//     workflowLoopDefaultMaxIterations); ExitCondition is the free-text
+//     goal injected into every inner step's prompt so the agent knows
+//     when to break.
+//
+// Loops nest exactly one layer deep: a loop's inner Steps must all be
+// agent steps. That invariant is enforced by validation (validateSteps)
+// and by the builder never offering "+ New loop" inside a loop, rather
+// than by the type system, so the on-disk shape stays a flat
+// []workflowStep that all the pre-loop code keeps walking unchanged.
+//
+// An empty Kind keeps every workflow authored before loops existed
+// byte-identical on disk: the zero value is an agent step.
 type workflowStep struct {
-	Name     string `json:"name"`
-	Provider string `json:"provider"`
+	Name string `json:"name"`
+	Kind string `json:"kind,omitempty"`
+
+	// Agent-step fields (Kind == "").
+	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
-	Prompt   string `json:"prompt"`
+	Prompt   string `json:"prompt,omitempty"`
+
+	// Loop-step fields (Kind == "loop").
+	Steps         []workflowStep `json:"steps,omitempty"`
+	MaxIterations int            `json:"maxIterations,omitempty"`
+	ExitCondition string         `json:"exitCondition,omitempty"`
+}
+
+const (
+	// workflowStepKindAgent is the zero-value step kind: a leaf agent
+	// step that dispatches one provider subprocess. Stored as "" so
+	// pre-loop workflows round-trip unchanged.
+	workflowStepKindAgent = ""
+	// workflowStepKindLoop marks a loop container step whose inner
+	// Steps run repeatedly until an agent registers a break.
+	workflowStepKindLoop = "loop"
+)
+
+const (
+	// workflowLoopBreak ends the loop and resumes the chain after it.
+	workflowLoopBreak = "break"
+	// workflowLoopContinue runs another iteration of the loop.
+	workflowLoopContinue = "continue"
+)
+
+// workflowLoopDefaultMaxIterations bounds a loop whose MaxIterations is
+// left at 0 ("no explicit limit"). A loop still needs a hard ceiling so
+// a chain of "continue" decisions can't spin forever; the user raises
+// it explicitly when a workflow legitimately needs more passes.
+const workflowLoopDefaultMaxIterations = 10
+
+// isLoop reports whether the step is a loop container.
+func (s workflowStep) isLoop() bool { return s.Kind == workflowStepKindLoop }
+
+// effectiveMaxIterations returns the iteration cap actually enforced at
+// runtime: the authored MaxIterations when positive, else the default.
+func (s workflowStep) effectiveMaxIterations() int {
+	if s.MaxIterations > 0 {
+		return s.MaxIterations
+	}
+	return workflowLoopDefaultMaxIterations
 }
 
 // workflowSession is the disk-persisted run record. Only terminal

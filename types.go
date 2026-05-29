@@ -654,16 +654,35 @@ type model struct {
 type workflowRunState struct {
 	Workflow workflowDef
 	Source   workflowSource
-	StepIdx  int
 
-	// stepLog accumulates the assistant non-tool text emitted by
-	// each completed step so step N+1's prompt can include a
-	// `Previous step output:` block for context. One entry per
-	// completed step in order.
+	// StepIdx is the top-level cursor: the index into Workflow.Steps of
+	// the step (agent or loop) currently executing. While inside a loop
+	// it points at the loop step and `loop` carries the inner position.
+	StepIdx int
+
+	// loop is non-nil while the runner is executing inside a loop step
+	// (Workflow.Steps[StepIdx].isLoop()). It tracks the inner cursor,
+	// iteration count, and the bounded per-iteration context. Nil for
+	// the linear portions of the chain.
+	loop *loopRunFrame
+
+	// pendingLoopSignal holds the break/continue intent the current
+	// inner step registered via the workflow_loop MCP tool this turn.
+	// Reset to nil at every dispatch and consumed by advanceWorkflowStep
+	// when the turn completes — the tool only records intent; the runner
+	// acts on it at turn boundaries.
+	pendingLoopSignal *loopSignal
+
+	// stepLog accumulates the assistant non-tool text emitted by each
+	// completed top-level step so the next step's prompt can include a
+	// `Previous step output:` block. A loop contributes only its final
+	// iteration's inner outputs here, on exit — intermediate iterations
+	// stay scoped to the loop frame so the linear log doesn't balloon.
 	stepLog []string
 
 	// currentStep accumulates assistantTextMsg payloads for the
-	// in-flight step. Rolled into stepLog on workflowRunStepDoneMsg.
+	// in-flight step. Rolled into the appropriate log on
+	// workflowRunStepDoneMsg.
 	currentStep strings.Builder
 
 	// done flips true once the final step exits cleanly. The banner
@@ -674,6 +693,48 @@ type workflowRunState struct {
 	// error and the chain aborts at this step.
 	failed       bool
 	failedReason string
+}
+
+// loopRunFrame is the per-loop execution cursor, live only while the
+// runner is inside a loop step. innerIdx walks the loop's inner steps;
+// iteration is 1-based. The three text fields implement the bounded
+// context policy: an inner step sees the linear log (frozen at loop
+// entry) plus, for the head step, the previous iteration's tail output,
+// or for downstream steps, the current iteration's prior outputs.
+type loopRunFrame struct {
+	innerIdx  int
+	iteration int
+
+	// retry counts consecutive tail re-prompts within the current
+	// iteration. Bumped each time the tail finishes without registering
+	// an intent (the runner re-dispatches the tail, "hammering" it until
+	// it decides). Surfaced in the banner; reset when the iteration
+	// advances or the loop exits.
+	retry int
+
+	// iterationLog holds the inner-step outputs produced so far in the
+	// current iteration, in order. Reset at each iteration boundary;
+	// committed to the run's stepLog when the loop exits.
+	iterationLog []string
+
+	// prevTail is the last inner step's output from the previous
+	// iteration, fed to the head step so a kick-back actually reaches
+	// the next pass. Empty on iteration 1.
+	prevTail string
+
+	// lastTailText is the tail step's most recent output when it
+	// finished without registering an intent, fed back into the retry
+	// prompt so the agent can decide without redoing the work.
+	lastTailText string
+}
+
+// loopSignal is the break/continue intent an inner step registers via
+// the workflow_loop MCP tool. decision is workflowLoopBreak or
+// workflowLoopContinue; reason is the agent's short justification,
+// surfaced in the log/banner.
+type loopSignal struct {
+	decision string
+	reason   string
 }
 
 // workflowPickerState is the small centered modal that lets the user

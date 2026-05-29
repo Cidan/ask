@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"image"
+	"strconv"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -42,6 +43,16 @@ const (
 	workflowsStepFieldProvider
 	workflowsStepFieldModel
 	workflowsStepFieldPrompt
+)
+
+// Loop-step detail fields reuse stepFieldCursor (an int) but a loop has
+// a different field set than an agent step: Name, Max iterations, Exit
+// condition. Field 0 (Name) is shared with the agent layout so the
+// inline-rename-on-typing path doesn't need to branch.
+const (
+	wsLoopFieldName    = 0
+	wsLoopFieldMaxIter = 1
+	wsLoopFieldExit    = 2
 )
 
 // workflowsBuilderState bundles every per-tab editor surface so the
@@ -94,10 +105,12 @@ type workflowsBuilderState struct {
 	modelCursor     int
 	modelPickerOpts []string
 
-	// prompt is the in-flight multi-line textarea editor for the
-	// step prompt. Non-nil while open; Enter inserts a newline,
-	// Ctrl+S commits, Esc cancels.
-	prompt *textarea.Model
+	// prompt is the in-flight multi-line textarea editor. Non-nil while
+	// open; Enter inserts a newline, Ctrl+S commits, Esc cancels. It is
+	// reused for both an agent step's Prompt and a loop's ExitCondition;
+	// promptTarget says which field the value commits to.
+	prompt       *textarea.Model
+	promptTarget string
 
 	// confirming is "delete-workflow" / "delete-step" / "" — the
 	// destructive confirm overlay's mode flag.
@@ -189,11 +202,13 @@ func (b *workflowsBuilderState) refreshItems() {
 	if b.listCursor < 0 {
 		b.listCursor = 0
 	}
-	if idx, ok := b.selectedWorkflowIdx(); ok {
-		steps := b.items[idx].Steps
-		maxSteps := len(steps) // valid range: 0 (+ New step) .. len(steps)
-		if b.stepsCursor > maxSteps {
-			b.stepsCursor = maxSteps
+	if _, ok := b.selectedWorkflowIdx(); ok {
+		maxRow := len(b.stepRows()) - 1 // flat-row list; clamp to last row
+		if b.stepsCursor > maxRow {
+			b.stepsCursor = maxRow
+		}
+		if b.stepsCursor < 0 {
+			b.stepsCursor = 0
 		}
 	}
 }
@@ -224,19 +239,126 @@ func (b *workflowsBuilderState) selectedWorkflowIdx() (int, bool) {
 	return b.listCursor - 1, true
 }
 
-// selectedStepIdx maps the right(steps) cursor to a step index for
-// the selected workflow. ok=false when the cursor is on "+ New step"
-// or no workflow is selected.
-func (b *workflowsBuilderState) selectedStepIdx() (workflowIdx, stepIdx int, ok bool) {
-	wIdx, hasWorkflow := b.selectedWorkflowIdx()
-	if !hasWorkflow {
-		return 0, 0, false
+// The right(steps) pane is a flat list of navigable rows derived from
+// the selected workflow's step tree. stepsCursor indexes into this
+// list. The layout is:
+//
+//	row 0          "+ New step"        (creates a top-level agent step)
+//	rows 1..K      the step tree       (agent steps, and for each loop:
+//	                                     header, indented children, and a
+//	                                     trailing "+ add step")
+//	row K+1        "+ New loop"         (creates a top-level loop)
+//
+// "+ New step" stays at row 0 so the create-step affordance is where the
+// cursor starts, and "+ New loop" sits at the bottom so row 1 remains
+// the first real step regardless of loop nesting.
+type stepRowKind int
+
+const (
+	stepRowNewStep stepRowKind = iota
+	stepRowAgent
+	stepRowLoopHeader
+	stepRowLoopChild
+	stepRowLoopAdd
+	stepRowNewLoop
+)
+
+type stepRow struct {
+	kind     stepRowKind
+	topIdx   int // index into the workflow's Steps (tree rows)
+	innerIdx int // index into a loop's Steps (loop-child rows)
+}
+
+// stepTarget identifies a concrete step the cursor/detail pane acts on.
+// innerIdx < 0 means a top-level step (agent or loop header); isLoop
+// distinguishes a loop header from a top-level agent step.
+type stepTarget struct {
+	wIdx     int
+	topIdx   int
+	innerIdx int
+	isLoop   bool
+}
+
+// stepRows flattens the selected workflow's step tree into the
+// navigable row list. Returns nil when no workflow is selected.
+func (b *workflowsBuilderState) stepRows() []stepRow {
+	wIdx, ok := b.selectedWorkflowIdx()
+	if !ok {
+		return nil
 	}
-	steps := b.items[wIdx].Steps
-	if b.stepsCursor <= 0 || b.stepsCursor > len(steps) {
-		return wIdx, 0, false
+	rows := []stepRow{{kind: stepRowNewStep}}
+	for i, s := range b.items[wIdx].Steps {
+		if s.isLoop() {
+			rows = append(rows, stepRow{kind: stepRowLoopHeader, topIdx: i})
+			for j := range s.Steps {
+				rows = append(rows, stepRow{kind: stepRowLoopChild, topIdx: i, innerIdx: j})
+			}
+			rows = append(rows, stepRow{kind: stepRowLoopAdd, topIdx: i})
+		} else {
+			rows = append(rows, stepRow{kind: stepRowAgent, topIdx: i})
+		}
 	}
-	return wIdx, b.stepsCursor - 1, true
+	return append(rows, stepRow{kind: stepRowNewLoop})
+}
+
+// currentStepRow returns the row under the steps cursor.
+func (b *workflowsBuilderState) currentStepRow() (stepRow, bool) {
+	rows := b.stepRows()
+	if b.stepsCursor < 0 || b.stepsCursor >= len(rows) {
+		return stepRow{}, false
+	}
+	return rows[b.stepsCursor], true
+}
+
+// currentStepTarget resolves the cursor row to a concrete step target.
+// ok=false when the row is an affordance ("+ New step" / "+ add step" /
+// "+ New loop") rather than a real step.
+func (b *workflowsBuilderState) currentStepTarget() (stepTarget, bool) {
+	wIdx, ok := b.selectedWorkflowIdx()
+	if !ok {
+		return stepTarget{}, false
+	}
+	row, ok := b.currentStepRow()
+	if !ok {
+		return stepTarget{}, false
+	}
+	switch row.kind {
+	case stepRowAgent:
+		return stepTarget{wIdx: wIdx, topIdx: row.topIdx, innerIdx: -1}, true
+	case stepRowLoopHeader:
+		return stepTarget{wIdx: wIdx, topIdx: row.topIdx, innerIdx: -1, isLoop: true}, true
+	case stepRowLoopChild:
+		return stepTarget{wIdx: wIdx, topIdx: row.topIdx, innerIdx: row.innerIdx}, true
+	}
+	return stepTarget{}, false
+}
+
+// stepAt returns a pointer to the step a target names, for in-place
+// edits before commitItems. Assumes t came from currentStepTarget so
+// the indices are in range.
+func (b *workflowsBuilderState) stepAt(t stepTarget) *workflowStep {
+	w := &b.items[t.wIdx]
+	if t.innerIdx < 0 {
+		return &w.Steps[t.topIdx]
+	}
+	return &w.Steps[t.topIdx].Steps[t.innerIdx]
+}
+
+// focusStepRow points the cursor at the row matching (topIdx, innerIdx)
+// — innerIdx < 0 for a top-level step or loop header. Used after a
+// create so the new step is selected.
+func (b *workflowsBuilderState) focusStepRow(topIdx, innerIdx int) {
+	for i, r := range b.stepRows() {
+		if innerIdx < 0 {
+			if (r.kind == stepRowAgent || r.kind == stepRowLoopHeader) && r.topIdx == topIdx {
+				b.stepsCursor = i
+				return
+			}
+		} else if r.kind == stepRowLoopChild && r.topIdx == topIdx && r.innerIdx == innerIdx {
+			b.stepsCursor = i
+			return
+		}
+	}
 }
 
 // commitItems writes b.items back to disk and re-hydrates so any
@@ -302,6 +424,29 @@ func (b *workflowsBuilderState) uniqueStepName(seed string) string {
 	for _, s := range b.items[wIdx].Steps {
 		taken[s.Name] = struct{}{}
 	}
+	return uniqueNameFrom(taken, seed)
+}
+
+// uniqueInnerStepName returns a step name not used by any inner step of
+// the loop at loopTopIdx.
+func (b *workflowsBuilderState) uniqueInnerStepName(loopTopIdx int, seed string) string {
+	if seed == "" {
+		seed = "step"
+	}
+	wIdx, ok := b.selectedWorkflowIdx()
+	if !ok || loopTopIdx < 0 || loopTopIdx >= len(b.items[wIdx].Steps) {
+		return seed
+	}
+	taken := make(map[string]struct{})
+	for _, s := range b.items[wIdx].Steps[loopTopIdx].Steps {
+		taken[s.Name] = struct{}{}
+	}
+	return uniqueNameFrom(taken, seed)
+}
+
+// uniqueNameFrom returns seed if free, else seed-2, seed-3, … until one
+// isn't in taken. Shared by the workflow/step/inner-step name helpers.
+func uniqueNameFrom(taken map[string]struct{}, seed string) string {
 	if _, clash := taken[seed]; !clash {
 		return seed
 	}
@@ -414,7 +559,7 @@ func (m model) workflowsBuilderUpdateRightSteps(msg tea.KeyPressMsg) (model, tea
 		b.focus = workflowsBuilderFocusLeft
 		return m, nil, true
 	}
-	steps := b.items[wIdx].Steps
+	rows := b.stepRows()
 	switch {
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		// Esc on right(steps) returns focus to left.
@@ -429,41 +574,19 @@ func (m model) workflowsBuilderUpdateRightSteps(msg tea.KeyPressMsg) (model, tea
 		}
 		return m, nil, true
 	case msg.Code == tea.KeyDown:
-		if b.stepsCursor < len(steps) {
+		if b.stepsCursor < len(rows)-1 {
 			b.stepsCursor++
 		}
 		return m, nil, true
 	case msg.Code == tea.KeyEnter:
-		if b.stepsCursor == 0 {
-			// "+ New step" → create + drop into step details.
-			if guard := b.runningGuard(); guard != "" {
-				b.toast = guard
-				return m, nil, true
-			}
-			defaultProvider := ""
-			if len(providerRegistry) > 0 {
-				defaultProvider = providerRegistry[0].ID()
-			}
-			b.items[wIdx].Steps = append(steps, workflowStep{
-				Name:     b.uniqueStepName("step"),
-				Provider: defaultProvider,
-			})
-			if err := b.commitItems(); err != nil {
-				b.toast = "save failed: " + err.Error()
-				return m, nil, true
-			}
-			// Jump cursor onto the new step.
-			b.stepsCursor = len(b.items[wIdx].Steps)
-			b.rightMode = workflowsBuilderRightStep
-			b.stepFieldCursor = workflowsStepFieldName
+		return m.workflowsStepsEnter(wIdx)
+	case msg.Mod == 0 && msg.Code == 'd':
+		row, ok := b.currentStepRow()
+		if !ok {
 			return m, nil, true
 		}
-		// Enter on an existing step → step details.
-		b.rightMode = workflowsBuilderRightStep
-		b.stepFieldCursor = workflowsStepFieldName
-		return m, nil, true
-	case msg.Mod == 0 && msg.Code == 'd':
-		if b.stepsCursor == 0 {
+		if row.kind != stepRowAgent && row.kind != stepRowLoopHeader && row.kind != stepRowLoopChild {
+			// "+ New step" / "+ add step" / "+ New loop" aren't deletable.
 			return m, nil, true
 		}
 		if guard := b.runningGuard(); guard != "" {
@@ -477,14 +600,106 @@ func (m model) workflowsBuilderUpdateRightSteps(msg tea.KeyPressMsg) (model, tea
 	return m, nil, true
 }
 
+// workflowsStepsEnter dispatches Enter on the steps pane by the kind of
+// the row under the cursor: affordance rows create a step/loop/inner
+// step; a real step (or loop header) opens its detail pane.
+func (m model) workflowsStepsEnter(wIdx int) (model, tea.Cmd, bool) {
+	b := m.workflowsBuilder
+	row, ok := b.currentStepRow()
+	if !ok {
+		return m, nil, true
+	}
+	switch row.kind {
+	case stepRowNewStep:
+		if guard := b.runningGuard(); guard != "" {
+			b.toast = guard
+			return m, nil, true
+		}
+		b.addAgentStep(wIdx, -1)
+	case stepRowLoopAdd:
+		if guard := b.runningGuard(); guard != "" {
+			b.toast = guard
+			return m, nil, true
+		}
+		b.addAgentStep(wIdx, row.topIdx)
+	case stepRowNewLoop:
+		if guard := b.runningGuard(); guard != "" {
+			b.toast = guard
+			return m, nil, true
+		}
+		b.addLoop(wIdx)
+	case stepRowAgent, stepRowLoopHeader, stepRowLoopChild:
+		b.rightMode = workflowsBuilderRightStep
+		b.stepFieldCursor = workflowsStepFieldName
+	}
+	return m, nil, true
+}
+
+// addAgentStep appends a new agent step and drops into its detail pane.
+// loopTopIdx < 0 appends a top-level step; otherwise it appends an inner
+// step to the loop at that top-level index.
+func (b *workflowsBuilderState) addAgentStep(wIdx, loopTopIdx int) {
+	defaultProvider := ""
+	if len(providerRegistry) > 0 {
+		defaultProvider = providerRegistry[0].ID()
+	}
+	if loopTopIdx < 0 {
+		b.items[wIdx].Steps = append(b.items[wIdx].Steps, workflowStep{
+			Name:     b.uniqueStepName("step"),
+			Provider: defaultProvider,
+		})
+		if err := b.commitItems(); err != nil {
+			b.toast = "save failed: " + err.Error()
+			return
+		}
+		b.focusStepRow(len(b.items[wIdx].Steps)-1, -1)
+	} else {
+		loop := &b.items[wIdx].Steps[loopTopIdx]
+		loop.Steps = append(loop.Steps, workflowStep{
+			Name:     b.uniqueInnerStepName(loopTopIdx, "step"),
+			Provider: defaultProvider,
+		})
+		if err := b.commitItems(); err != nil {
+			b.toast = "save failed: " + err.Error()
+			return
+		}
+		b.focusStepRow(loopTopIdx, len(b.items[wIdx].Steps[loopTopIdx].Steps)-1)
+	}
+	b.rightMode = workflowsBuilderRightStep
+	b.stepFieldCursor = workflowsStepFieldName
+}
+
+// addLoop appends a new empty loop step and drops into its detail pane
+// so the user can set the exit condition / iteration cap before adding
+// inner steps via the loop's "+ add step" row.
+func (b *workflowsBuilderState) addLoop(wIdx int) {
+	b.items[wIdx].Steps = append(b.items[wIdx].Steps, workflowStep{
+		Name: b.uniqueStepName("loop"),
+		Kind: workflowStepKindLoop,
+	})
+	if err := b.commitItems(); err != nil {
+		b.toast = "save failed: " + err.Error()
+		return
+	}
+	b.focusStepRow(len(b.items[wIdx].Steps)-1, -1)
+	b.rightMode = workflowsBuilderRightStep
+	b.stepFieldCursor = workflowsStepFieldName
+}
+
 // ----- Right(step) pane -----
 
 func (m model) workflowsBuilderUpdateRightStep(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 	b := m.workflowsBuilder
-	wIdx, sIdx, ok := b.selectedStepIdx()
+	t, ok := b.currentStepTarget()
 	if !ok {
 		b.rightMode = workflowsBuilderRightSteps
 		return m, nil, true
+	}
+	// Loops have three fields (Name/MaxIter/Exit); agent steps have four
+	// (Name/Provider/Model/Prompt). Both share field 0 = Name.
+	maxField := int(workflowsStepFieldPrompt)
+	if t.isLoop {
+		maxField = wsLoopFieldExit
 	}
 	switch {
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
@@ -503,7 +718,7 @@ func (m model) workflowsBuilderUpdateRightStep(msg tea.KeyPressMsg) (model, tea.
 		}
 		return m, nil, true
 	case msg.Code == tea.KeyDown:
-		if b.stepFieldCursor < workflowsStepFieldPrompt {
+		if int(b.stepFieldCursor) < maxField {
 			b.stepFieldCursor++
 		}
 		return m, nil, true
@@ -512,24 +727,13 @@ func (m model) workflowsBuilderUpdateRightStep(msg tea.KeyPressMsg) (model, tea.
 			b.toast = guard
 			return m, nil, true
 		}
-		step := b.items[wIdx].Steps[sIdx]
-		switch b.stepFieldCursor {
-		case workflowsStepFieldName:
-			b.renaming = "step"
-			b.renameDraft = step.Name
-		case workflowsStepFieldProvider:
-			b.providerPicker = true
-			b.providerCursor = indexOfRegisteredProvider(step.Provider)
-		case workflowsStepFieldModel:
-			b.modelPickerOpts = modelOptionsForProvider(step.Provider)
-			b.modelPicker = true
-			b.modelCursor = indexOfModel(b.modelPickerOpts, step.Model)
-		case workflowsStepFieldPrompt:
-			ta := newPromptTextarea(step.Prompt)
-			b.prompt = &ta
+		if t.isLoop {
+			return m.workflowsLoopFieldEnter(t)
 		}
-		return m, nil, true
+		return m.workflowsAgentFieldEnter(t)
 	}
+	// Field 0 (Name) starts an inline rename on a printable key /
+	// backspace, for both agent steps and loops.
 	if b.stepFieldCursor == workflowsStepFieldName && msg.Mod&^tea.ModShift == 0 {
 		if guard := b.runningGuard(); guard != "" {
 			b.toast = guard
@@ -541,7 +745,7 @@ func (m model) workflowsBuilderUpdateRightStep(msg tea.KeyPressMsg) (model, tea.
 			b.renameDraft = msg.Text
 			return m, nil, true
 		case msg.Code == tea.KeyBackspace:
-			r := []rune(b.items[wIdx].Steps[sIdx].Name)
+			r := []rune(b.stepAt(t).Name)
 			if len(r) > 0 {
 				r = r[:len(r)-1]
 			}
@@ -549,6 +753,55 @@ func (m model) workflowsBuilderUpdateRightStep(msg tea.KeyPressMsg) (model, tea.
 			b.renameDraft = string(r)
 			return m, nil, true
 		}
+	}
+	return m, nil, true
+}
+
+// workflowsAgentFieldEnter opens the editor for the focused field of an
+// agent step (Name rename, Provider/Model pickers, Prompt textarea).
+func (m model) workflowsAgentFieldEnter(t stepTarget) (model, tea.Cmd, bool) {
+	b := m.workflowsBuilder
+	step := b.stepAt(t)
+	switch b.stepFieldCursor {
+	case workflowsStepFieldName:
+		b.renaming = "step"
+		b.renameDraft = step.Name
+	case workflowsStepFieldProvider:
+		b.providerPicker = true
+		b.providerCursor = indexOfRegisteredProvider(step.Provider)
+	case workflowsStepFieldModel:
+		b.modelPickerOpts = modelOptionsForProvider(step.Provider)
+		b.modelPicker = true
+		b.modelCursor = indexOfModel(b.modelPickerOpts, step.Model)
+	case workflowsStepFieldPrompt:
+		ta := newPromptTextarea(step.Prompt)
+		b.prompt = &ta
+		b.promptTarget = "prompt"
+	}
+	return m, nil, true
+}
+
+// workflowsLoopFieldEnter opens the editor for the focused field of a
+// loop step (Name rename, Max-iterations numeric inline editor, Exit-
+// condition textarea).
+func (m model) workflowsLoopFieldEnter(t stepTarget) (model, tea.Cmd, bool) {
+	b := m.workflowsBuilder
+	step := b.stepAt(t)
+	switch int(b.stepFieldCursor) {
+	case wsLoopFieldName:
+		b.renaming = "step"
+		b.renameDraft = step.Name
+	case wsLoopFieldMaxIter:
+		b.renaming = "maxiter"
+		if step.MaxIterations > 0 {
+			b.renameDraft = itoa(step.MaxIterations)
+		} else {
+			b.renameDraft = ""
+		}
+	case wsLoopFieldExit:
+		ta := newPromptTextarea(step.ExitCondition)
+		b.prompt = &ta
+		b.promptTarget = "exit"
 	}
 	return m, nil, true
 }
@@ -632,8 +885,8 @@ func (m model) workflowsBuilderUpdateProviderPicker(msg tea.KeyPressMsg) (model,
 			return m, nil, true
 		}
 		newID := providerRegistry[b.providerCursor].ID()
-		if wIdx, sIdx, ok := b.selectedStepIdx(); ok {
-			step := &b.items[wIdx].Steps[sIdx]
+		if t, ok := b.currentStepTarget(); ok && !t.isLoop {
+			step := b.stepAt(t)
 			if step.Provider != newID {
 				step.Provider = newID
 				step.Model = "" // reset to provider default; user picks fresh
@@ -668,8 +921,8 @@ func (m model) workflowsBuilderUpdateModelPicker(msg tea.KeyPressMsg) (model, te
 			return m, nil, true
 		}
 		picked := b.modelPickerOpts[b.modelCursor]
-		if wIdx, sIdx, ok := b.selectedStepIdx(); ok {
-			b.items[wIdx].Steps[sIdx].Model = picked
+		if t, ok := b.currentStepTarget(); ok && !t.isLoop {
+			b.stepAt(t).Model = picked
 			if err := b.commitItems(); err != nil {
 				b.toast = "save failed: " + err.Error()
 			}
@@ -690,6 +943,11 @@ func (m model) workflowsBuilderUpdateRename(msg tea.KeyPressMsg) (model, tea.Cmd
 		b.renameDraft = ""
 		return m, nil, true
 	case msg.Code == tea.KeyEnter:
+		// Max-iterations is a number, not a name: empty means "use the
+		// default cap", so it skips the non-empty check below.
+		if b.renaming == "maxiter" {
+			return m.commitLoopMaxIter()
+		}
 		draft := strings.TrimSpace(b.renameDraft)
 		if draft == "" {
 			b.toast = "name cannot be empty"
@@ -710,19 +968,27 @@ func (m model) workflowsBuilderUpdateRename(msg tea.KeyPressMsg) (model, tea.Cmd
 			}
 			b.items[wIdx].Name = draft
 		case "step":
-			wIdx, sIdx, ok := b.selectedStepIdx()
+			t, ok := b.currentStepTarget()
 			if !ok {
 				b.renaming = ""
 				return m, nil, true
 			}
-			steps := b.items[wIdx].Steps
-			for i, s := range steps {
-				if i != sIdx && s.Name == draft {
-					b.toast = "another step in this workflow already uses that name"
-					return m, nil, true
+			if t.innerIdx < 0 {
+				for i, s := range b.items[t.wIdx].Steps {
+					if i != t.topIdx && s.Name == draft {
+						b.toast = "another step in this workflow already uses that name"
+						return m, nil, true
+					}
+				}
+			} else {
+				for j, s := range b.items[t.wIdx].Steps[t.topIdx].Steps {
+					if j != t.innerIdx && s.Name == draft {
+						b.toast = "another step in this loop already uses that name"
+						return m, nil, true
+					}
 				}
 			}
-			steps[sIdx].Name = draft
+			b.stepAt(t).Name = draft
 		}
 		if err := b.commitItems(); err != nil {
 			b.toast = "save failed: " + err.Error()
@@ -743,6 +1009,32 @@ func (m model) workflowsBuilderUpdateRename(msg tea.KeyPressMsg) (model, tea.Cmd
 	return m, nil, true
 }
 
+// commitLoopMaxIter parses the max-iterations draft and writes it to the
+// focused loop. An empty draft means 0 (use the default cap); a negative
+// or non-numeric value is rejected with a toast.
+func (m model) commitLoopMaxIter() (model, tea.Cmd, bool) {
+	b := m.workflowsBuilder
+	draft := strings.TrimSpace(b.renameDraft)
+	n := 0
+	if draft != "" {
+		v, err := strconv.Atoi(draft)
+		if err != nil || v < 0 {
+			b.toast = "max iterations must be a non-negative whole number"
+			return m, nil, true
+		}
+		n = v
+	}
+	if t, ok := b.currentStepTarget(); ok && t.isLoop {
+		b.stepAt(t).MaxIterations = n
+		if err := b.commitItems(); err != nil {
+			b.toast = "save failed: " + err.Error()
+		}
+	}
+	b.renaming = ""
+	b.renameDraft = ""
+	return m, nil, true
+}
+
 // ----- Sub-modal: prompt textarea -----
 
 func (m model) workflowsBuilderUpdatePrompt(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
@@ -753,16 +1045,23 @@ func (m model) workflowsBuilderUpdatePrompt(msg tea.KeyPressMsg) (model, tea.Cmd
 	switch {
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		b.prompt = nil
+		b.promptTarget = ""
 		return m, nil, true
 	case msg.Mod == tea.ModCtrl && msg.Code == 's':
 		val := b.prompt.Value()
-		if wIdx, sIdx, ok := b.selectedStepIdx(); ok {
-			b.items[wIdx].Steps[sIdx].Prompt = val
+		if t, ok := b.currentStepTarget(); ok {
+			step := b.stepAt(t)
+			if b.promptTarget == "exit" {
+				step.ExitCondition = val
+			} else {
+				step.Prompt = val
+			}
 			if err := b.commitItems(); err != nil {
 				b.toast = "save failed: " + err.Error()
 			}
 		}
 		b.prompt = nil
+		b.promptTarget = ""
 		return m, nil, true
 	}
 	upd, cmd := b.prompt.Update(msg)
@@ -811,15 +1110,25 @@ func (m model) workflowsBuilderUpdateConfirm(msg tea.KeyPressMsg) (model, tea.Cm
 				b.listCursor = len(b.items)
 			}
 		case "delete-step":
-			wIdx, sIdx, ok := b.selectedStepIdx()
-			if !ok {
+			row, ok := b.currentStepRow()
+			wIdx, wok := b.selectedWorkflowIdx()
+			if !ok || !wok {
 				b.confirming = ""
 				return m, nil, true
 			}
-			steps := b.items[wIdx].Steps
-			b.items[wIdx].Steps = append(steps[:sIdx], steps[sIdx+1:]...)
-			if b.stepsCursor > len(b.items[wIdx].Steps) {
-				b.stepsCursor = len(b.items[wIdx].Steps)
+			switch row.kind {
+			case stepRowAgent, stepRowLoopHeader:
+				steps := b.items[wIdx].Steps
+				b.items[wIdx].Steps = append(steps[:row.topIdx], steps[row.topIdx+1:]...)
+			case stepRowLoopChild:
+				inner := b.items[wIdx].Steps[row.topIdx].Steps
+				b.items[wIdx].Steps[row.topIdx].Steps = append(inner[:row.innerIdx], inner[row.innerIdx+1:]...)
+			default:
+				b.confirming = ""
+				return m, nil, true
+			}
+			if maxRow := len(b.stepRows()) - 1; b.stepsCursor > maxRow {
+				b.stepsCursor = maxRow
 			}
 			b.rightMode = workflowsBuilderRightSteps
 		}
@@ -1013,54 +1322,93 @@ func (b *workflowsBuilderState) renderRightSteps(width, height int) string {
 	wf := b.items[wIdx]
 	innerW := workflowsPaneInnerWidth(width)
 	cols := computeWorkflowStepColumns(innerW)
-	rows := []string{
-		renderWorkflowsListRow("+ New step", innerW, b.stepsCursor == 0, b.focus == workflowsBuilderFocusRight),
-	}
-	for _, s := range wf.Steps {
-		rows = append(rows, renderWorkflowStepRow(
-			s,
-			cols,
-			innerW,
-			len(rows) == b.stepsCursor,
-			b.focus == workflowsBuilderFocusRight,
-		))
+	active := b.focus == workflowsBuilderFocusRight
+	treeRows := b.stepRows()
+	rows := make([]string, 0, len(treeRows))
+	for i, row := range treeRows {
+		rows = append(rows, b.renderStepTreeRow(row, wf, cols, innerW, i == b.stepsCursor, active))
 	}
 	return renderWorkflowsPane(workflowsPaneArgs{
 		width:    width,
 		height:   height,
 		title:    "Workflow · " + wf.Name,
-		subtitle: fmt.Sprintf("%s — runs sequentially", stepsCount(len(wf.Steps))),
+		subtitle: fmt.Sprintf("%s — runs top to bottom", stepsCount(len(wf.Steps))),
 		header:   renderWorkflowStepHeader(cols, innerW),
 		rows:     rows,
 		cursor:   b.stepsCursor,
-		active:   b.focus == workflowsBuilderFocusRight,
+		active:   active,
 	})
 }
 
+// renderStepTreeRow renders one flat-row of the steps pane: the two
+// create affordances, top-level agent steps, and loop groups (a "⟳"
+// header, "▏"-railed inner children, and an indented "+ add step").
+func (b *workflowsBuilderState) renderStepTreeRow(row stepRow, wf workflowDef, cols workflowStepColumns, innerW int, selected, activePane bool) string {
+	switch row.kind {
+	case stepRowNewStep:
+		return renderWorkflowsListRow("+ New step", innerW, selected, activePane)
+	case stepRowNewLoop:
+		return renderWorkflowsListRow("+ New loop", innerW, selected, activePane)
+	case stepRowAgent:
+		return renderWorkflowStepRow(wf.Steps[row.topIdx], cols, innerW, selected, activePane)
+	case stepRowLoopHeader:
+		s := wf.Steps[row.topIdx]
+		meta := fmt.Sprintf("max %d", s.effectiveMaxIterations())
+		return renderWorkflowStepCols("⟳ "+s.Name, "loop", meta, cols, innerW, selected, activePane)
+	case stepRowLoopChild:
+		s := wf.Steps[row.topIdx].Steps[row.innerIdx]
+		return renderWorkflowStepCols("▏ "+s.Name,
+			workflowProviderDisplay(s.Provider), workflowModelDisplay(s.Model),
+			cols, innerW, selected, activePane)
+	case stepRowLoopAdd:
+		return renderWorkflowStepCols("▏ + add step", "", "", cols, innerW, selected, activePane)
+	}
+	return strings.Repeat(" ", innerW)
+}
+
 func (b *workflowsBuilderState) renderRightStep(width, height int) string {
-	wIdx, sIdx, ok := b.selectedStepIdx()
+	t, ok := b.currentStepTarget()
 	if !ok {
 		return b.renderRightSteps(width, height)
 	}
-	step := b.items[wIdx].Steps[sIdx]
-	promptPreview := step.Prompt
-	if len(promptPreview) > 60 {
-		promptPreview = promptPreview[:57] + "…"
-	}
-	rows := []string{
-		renderWorkflowDetailRow("Name", step.Name, workflowsPaneInnerWidth(width), int(b.stepFieldCursor) == 0, b.focus == workflowsBuilderFocusRight),
-		renderWorkflowDetailRow("Provider", workflowProviderDisplay(step.Provider), workflowsPaneInnerWidth(width), int(b.stepFieldCursor) == 1, b.focus == workflowsBuilderFocusRight),
-		renderWorkflowDetailRow("Model", workflowModelDisplay(step.Model), workflowsPaneInnerWidth(width), int(b.stepFieldCursor) == 2, b.focus == workflowsBuilderFocusRight),
-		renderWorkflowDetailRow("Prompt", workflowPromptPreview(promptPreview), workflowsPaneInnerWidth(width), int(b.stepFieldCursor) == 3, b.focus == workflowsBuilderFocusRight),
+	step := b.stepAt(t)
+	innerW := workflowsPaneInnerWidth(width)
+	active := b.focus == workflowsBuilderFocusRight
+	cursor := int(b.stepFieldCursor)
+
+	var rows []string
+	title := "Step · " + step.Name
+	if t.isLoop {
+		title = "Loop · " + step.Name
+		maxDisplay := "default (10)"
+		if step.MaxIterations > 0 {
+			maxDisplay = itoa(step.MaxIterations)
+		}
+		rows = []string{
+			renderWorkflowDetailRow("Name", step.Name, innerW, cursor == wsLoopFieldName, active),
+			renderWorkflowDetailRow("Max iters", maxDisplay, innerW, cursor == wsLoopFieldMaxIter, active),
+			renderWorkflowDetailRow("Exit when", workflowPromptPreview(step.ExitCondition), innerW, cursor == wsLoopFieldExit, active),
+		}
+	} else {
+		promptPreview := step.Prompt
+		if len(promptPreview) > 60 {
+			promptPreview = promptPreview[:57] + "…"
+		}
+		rows = []string{
+			renderWorkflowDetailRow("Name", step.Name, innerW, cursor == int(workflowsStepFieldName), active),
+			renderWorkflowDetailRow("Provider", workflowProviderDisplay(step.Provider), innerW, cursor == int(workflowsStepFieldProvider), active),
+			renderWorkflowDetailRow("Model", workflowModelDisplay(step.Model), innerW, cursor == int(workflowsStepFieldModel), active),
+			renderWorkflowDetailRow("Prompt", workflowPromptPreview(promptPreview), innerW, cursor == int(workflowsStepFieldPrompt), active),
+		}
 	}
 	return renderWorkflowsPane(workflowsPaneArgs{
 		width:    width,
 		height:   height,
-		title:    "Step · " + step.Name,
-		subtitle: b.items[wIdx].Name,
+		title:    title,
+		subtitle: b.items[t.wIdx].Name,
 		rows:     rows,
-		cursor:   int(b.stepFieldCursor),
-		active:   b.focus == workflowsBuilderFocusRight,
+		cursor:   cursor,
+		active:   active,
 	})
 }
 
@@ -1314,10 +1662,20 @@ func renderWorkflowStepHeader(cols workflowStepColumns, width int) string {
 }
 
 func renderWorkflowStepRow(step workflowStep, cols workflowStepColumns, width int, selected, activePane bool) string {
+	return renderWorkflowStepCols(step.Name,
+		workflowProviderDisplay(step.Provider), workflowModelDisplay(step.Model),
+		cols, width, selected, activePane)
+}
+
+// renderWorkflowStepCols lays the three column strings into the step
+// grid and applies the row's selection styling. Shared by agent steps,
+// loop headers, and loop children so every row in the pane aligns to the
+// same Name/Provider/Model columns regardless of kind.
+func renderWorkflowStepCols(nameCol, providerCol, modelCol string, cols workflowStepColumns, width int, selected, activePane bool) string {
 	line := strings.Join([]string{
-		padRight(truncateForRow(step.Name, cols.Name), cols.Name),
-		padRight(truncateForRow(workflowProviderDisplay(step.Provider), cols.Provider), cols.Provider),
-		padRight(truncateForRow(workflowModelDisplay(step.Model), cols.Model), cols.Model),
+		padRight(truncateForRow(nameCol, cols.Name), cols.Name),
+		padRight(truncateForRow(providerCol, cols.Provider), cols.Provider),
+		padRight(truncateForRow(modelCol, cols.Model), cols.Model),
 	}, " ")
 	line = padRight(line, width)
 	if !selected {
@@ -1411,10 +1769,14 @@ func (b *workflowsBuilderState) renderModelPicker(width, height int) string {
 func (b *workflowsBuilderState) renderRename(width, height int) string {
 	title := "Rename"
 	hint := "Type a new name; enter to save, esc to cancel"
-	if b.renaming == "step" {
+	switch b.renaming {
+	case "step":
 		title = "Rename step"
-	} else if b.renaming == "workflow" {
+	case "workflow":
 		title = "Rename workflow"
+	case "maxiter":
+		title = "Max iterations"
+		hint = "Whole number (blank = default of 10); enter to save"
 	}
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -1471,8 +1833,12 @@ func (b *workflowsBuilderState) renderConfirm(width, height int) string {
 			target = "workflow \"" + b.items[wIdx].Name + "\""
 		}
 	case "delete-step":
-		if wIdx, sIdx, ok := b.selectedStepIdx(); ok {
-			target = "step \"" + b.items[wIdx].Steps[sIdx].Name + "\""
+		if t, ok := b.currentStepTarget(); ok {
+			kind := "step"
+			if t.isLoop {
+				kind = "loop"
+			}
+			target = kind + " \"" + b.stepAt(t).Name + "\""
 		}
 	}
 	box := lipgloss.NewStyle().

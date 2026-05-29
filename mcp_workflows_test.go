@@ -1060,3 +1060,106 @@ func TestWorkflowMCP_TenantsByCwd(t *testing.T) {
 		t.Errorf("B leaked or missed; got %+v", outB.Workflows)
 	}
 }
+
+// ----- loops -----
+
+// TestWorkflowCreate_LoopRoundTrip creates a workflow with a loop step
+// via the MCP tool and asserts the loop shape persists to disk and reads
+// back through workflow_get.
+func TestWorkflowCreate_LoopRoundTrip(t *testing.T) {
+	b, cwd := newWorkflowMCPTestBridge(t, 1)
+	in := workflowCreateInput{
+		Name: "cr",
+		Steps: []workflowStepView{
+			{Name: "scaffold", Provider: "fake", Prompt: "build"},
+			{Name: "qa", Kind: "loop", MaxIterations: 3, ExitCondition: "tests green",
+				Steps: []workflowInnerStepView{
+					{Name: "fix", Provider: "fake", Prompt: "fix it"},
+					{Name: "review", Provider: "fake", Model: "m-one", Prompt: "review it"},
+				}},
+			{Name: "ship", Provider: "fake", Prompt: "finalize"},
+		},
+	}
+	res, _, err := b.workflowCreateTool(context.Background(), newCallToolReq(), in)
+	if err != nil {
+		t.Fatalf("create err: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("create should succeed; got %+v", res)
+	}
+
+	items := readWorkflows(t, cwd)
+	if len(items) != 1 || len(items[0].Steps) != 3 {
+		t.Fatalf("disk shape: %+v", items)
+	}
+	loop := items[0].Steps[1]
+	if !loop.isLoop() {
+		t.Fatalf("step 1 should be a loop; got kind %q", loop.Kind)
+	}
+	if loop.MaxIterations != 3 || loop.ExitCondition != "tests green" {
+		t.Errorf("loop config not persisted: maxIter=%d exit=%q", loop.MaxIterations, loop.ExitCondition)
+	}
+	if loop.Provider != "" || loop.Prompt != "" {
+		t.Errorf("loop step should carry no provider/prompt; got provider=%q prompt=%q", loop.Provider, loop.Prompt)
+	}
+	if len(loop.Steps) != 2 || loop.Steps[1].Name != "review" || loop.Steps[1].Model != "m-one" {
+		t.Errorf("inner steps not persisted: %+v", loop.Steps)
+	}
+
+	_, gout, err := b.workflowGetTool(context.Background(), newCallToolReq(), workflowGetInput{Name: "cr"})
+	if err != nil {
+		t.Fatalf("get err: %v", err)
+	}
+	gloop := gout.Workflow.Steps[1]
+	if gloop.Kind != "loop" || gloop.MaxIterations != 3 || len(gloop.Steps) != 2 {
+		t.Errorf("get loop view: %+v", gloop)
+	}
+	if gloop.Steps[0].Name != "fix" || gloop.Steps[1].Name != "review" {
+		t.Errorf("get inner steps: %+v", gloop.Steps)
+	}
+}
+
+// TestValidateSteps_LoopRules covers the loop-specific validation: empty
+// loop, negative cap, and bad inner provider are rejected; a valid loop
+// and an unknown kind are handled correctly.
+func TestValidateSteps_LoopRules(t *testing.T) {
+	withRegisteredProviders(t, newFakeProvider())
+
+	if err := validateSteps([]workflowStepView{{Name: "l", Kind: "loop"}}); err == nil {
+		t.Error("a loop with no inner steps should be rejected")
+	}
+	if err := validateSteps([]workflowStepView{{
+		Name: "l", Kind: "loop", MaxIterations: -1,
+		Steps: []workflowInnerStepView{{Name: "a", Provider: "fake"}},
+	}}); err == nil {
+		t.Error("negative maxIterations should be rejected")
+	}
+	if err := validateSteps([]workflowStepView{{
+		Name: "l", Kind: "loop",
+		Steps: []workflowInnerStepView{{Name: "a", Provider: "nope"}},
+	}}); err == nil {
+		t.Error("an inner step with an unknown provider should be rejected")
+	}
+	if err := validateSteps([]workflowStepView{{
+		Name: "l", Kind: "loop",
+		Steps: []workflowInnerStepView{{Name: "a", Provider: "fake"}},
+	}}); err != nil {
+		t.Errorf("a valid loop should pass; got %v", err)
+	}
+	if err := validateSteps([]workflowStepView{{Name: "x", Kind: "bogus"}}); err == nil {
+		t.Error("an unknown step kind should be rejected")
+	}
+}
+
+// TestWorkflowLoopTool_RejectsBadDecision: the loop-control tool rejects
+// a decision that isn't break/continue before touching the program.
+func TestWorkflowLoopTool_RejectsBadDecision(t *testing.T) {
+	b, _ := newWorkflowMCPTestBridge(t, 1)
+	res, _, err := b.workflowLoopTool(context.Background(), newCallToolReq(), workflowLoopInput{Decision: "banana"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !res.IsError {
+		t.Error("an invalid decision should produce an IsError result")
+	}
+}

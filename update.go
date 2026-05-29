@@ -828,6 +828,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 	case workflowRunStepDoneMsg:
 		return m.workflowRunHandleStepDone(msg)
 
+	case workflowLoopSignalMsg:
+		return m.handleWorkflowLoopSignal(msg)
+
 	case workflowStatusChangedMsg:
 		// Status changed somewhere — invalidate cached frame so the
 		// kanban (if visible) repaints with the new icon. The

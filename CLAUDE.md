@@ -105,10 +105,10 @@ exercised by the user; code alone won't catch layout regressions.
 | `session_test.go`          | `~/.claude/projects/` parsing + history loading.                 |
 | `config_test.go`           | `loadConfig` / `saveConfig` / ollama validation.                 |
 | `update_test.go`           | `model.Update` dispatcher behavior via `fakeProvider`.           |
-| `workflows_test.go`        | Workflow tracker (markWorking/markFinal/lookup/clear), schema round-trip, prompt assembly, glyph table. |
-| `workflows_screen_test.go` | Workflows builder state machine — add/rename/delete persistence + edit-while-running guard. |
+| `workflows_test.go`        | Workflow tracker (markWorking/markFinal/lookup/clear), schema round-trip (incl. loop steps), prompt assembly, glyph table, `effectiveMaxIterations`. |
+| `workflows_screen_test.go` | Workflows builder state machine — add/rename/delete persistence + edit-while-running guard + loop tree (`stepRows`, add loop/inner, edit max-iters, delete loop/child). |
 | `workflows_picker_test.go` | Picker open/navigate/Enter dispatches `spawnWorkflowTabMsg`. |
-| `workflows_run_test.go`    | Step runner — advance, finalise, fail, idempotent finalise, unknown-provider rejection. |
+| `workflows_run_test.go`    | Step runner — advance, finalise, fail, idempotent finalise, unknown-provider rejection; loop decision table (iterate / tail break / early non-tail break / tail-silence re-prompt / max-iter soft-exit), enter-loop, bounded context, `workflow_loop` signal handling. |
 | `issues_workflow_test.go`  | `f` keybind dispatch on the issues screen — toast / picker / focus-existing-tab. |
 | `chat_workflow_test.go`    | `Ctrl+F` chat-source flow — transcript filter, key uniqueness, prompt assembly, dispatcher gates (busy/empty/no-workflows/workflow-tab), end-to-end picker → spawn. |
 | `keymap_test.go`           | `ParseKeyBinding` / `KeyBinding.String` round-trip, default keymap coverage, load-from-config (unknown/malformed entries skipped, empty-string unbinds), `currentKeyMap` invalidation. |
@@ -270,8 +270,10 @@ the same builder / runner.
 |------|---------|
 | `workflowsConfig{Items, Sessions}` | Per-project block. |
 | `workflowDef{Name, Steps}` | One named pipeline. |
-| `workflowStep{Name, Provider, Model, Prompt}` | One stage (a fresh subprocess at run time). |
+| `workflowStep{Name, Kind, …}` | Tagged union. `Kind==""` is an agent step (`Provider`/`Model`/`Prompt`, a fresh subprocess at run time). `Kind=="loop"` is a loop container (`Steps` inner agent steps, `MaxIterations`, `ExitCondition`). Empty `Kind` keeps pre-loop workflows byte-identical on disk. |
 | `workflowSession{Workflow, StepIndex, Status, StartedAt, UpdatedAt}` | Disk-persisted run record — terminal statuses only. |
+
+Loops are exactly one layer deep — a loop's inner `Steps` must all be agent steps. The on-disk `workflowStep` is recursive, but the MCP wire views use a distinct non-recursive `workflowInnerStepView` for inner steps (the SDK's JSON-schema generator rejects self-referential types, and the separate type makes a nested loop structurally inexpressible). Enforced by `validateSteps` and by the builder never offering "+ New loop" inside a loop.
 
 ### Runtime tracker
 
@@ -348,14 +350,60 @@ runner doesn't need to know about provider-specific stream shapes:
   `workflowAdvanceCmd(tabID, errStepError(stderrTail))`
 
 The advance handler kills the proc, rolls the captured per-step
-text into `stepLog`, and either dispatches `workflowRunStartStepMsg`
-for the next step or finalises (`done` on chain end, `failed` on
-error).
+text into the appropriate log, mutates the cursor, and either
+dispatches `workflowRunStartStepMsg` for the next step (deferred so
+the next proc spawns at a clean Update boundary) or finalises
+(`done` on chain end, `failed` on error). The cursor is `StepIdx`
+(top-level) plus an optional `*loopRunFrame` while inside a loop —
+see "Loop steps" below.
+
+### Loop steps
+
+A loop step (`Kind=="loop"`) runs its inner agent steps repeatedly
+until an inner step registers a **break** (or `MaxIterations` is
+reached). The runtime (`workflows_run.go`):
+
+- **Cursor.** `workflowRunState.loop` (`*loopRunFrame`) is non-nil
+  while inside a loop; it tracks `innerIdx`, `iteration` (1-based),
+  `retry`, and the bounded per-iteration context (`iterationLog`,
+  `prevTail`, `lastTailText`). `startWorkflowStep` enters the loop
+  (creates the frame) the first time `StepIdx` lands on a loop step;
+  `exitLoop` commits the final iteration's outputs to `stepLog` and
+  clears the frame.
+- **Register vs. execute.** The `workflow_loop` MCP tool only
+  *records* intent on `pendingLoopSignal` (it blocks on an ack so the
+  intent is set before the turn ends — same routing as
+  `askToolRequestMsg`). The runner *acts* on it at `turnCompleteMsg`.
+  Decision table in `advanceWorkflowStep`: any inner step's `break`
+  exits immediately (skipping the rest of the iteration); a non-tail
+  step otherwise proceeds to the next inner step; the **tail** step's
+  `continue` starts the next iteration (or soft-exits at the cap);
+  the tail registering **nothing** re-prompts the tail in place
+  (`retry++`, no advance) — it keeps re-prompting until the agent
+  registers (Ctrl+C is the manual escape).
+- **Bounded context** (`contextForDispatch`): linear steps see the
+  full `stepLog`; inside a loop the linear log is frozen and the head
+  inner step additionally sees the previous iteration's tail output
+  (`prevTail`) while downstream steps see the current iteration's
+  prior outputs. A tail re-prompt also carries the tail's own prior
+  output so it can decide without redoing the work.
+- **Cap.** `MaxIterations==0` ⇒ `workflowLoopDefaultMaxIterations`
+  (10). Hitting the cap soft-exits (proceeds, never fails).
+- **Instructions** are auto-injected by `buildWorkflowStepPrompt`
+  (the `*loopPromptCtx` arg): iteration/goal banner, the
+  `workflow_loop` how-to, a tail-only "you MUST register" clause, and
+  a reminder on a re-prompt.
+
+The `workflow_loop` MCP tool lives on every bridge (`mcp_workflows.go`)
+so both claude (`--mcp-config`) and codex (`-c mcp_servers.ask.url`)
+step agents can call it. Live loop progress (start / iteration /
+break / limit) is logged to the tab history via `loopNoteLine` and the
+banner's running line shows `⟳ <loop> · iter N/max · <inner>`.
 
 ### Step prompt assembly
 
-`buildWorkflowStepPrompt(step, issue, log)` produces the full user
-turn for step N:
+`buildWorkflowStepPrompt(step, source, prevOutputs, loop)` produces
+the full user turn for a step (`loop` is nil for linear steps):
 
 ```
 <step.Prompt>
@@ -383,15 +431,21 @@ with `/config`. Three navigation levels:
 
 | Level | Cursor over | Keys |
 |-------|------------|------|
-| List (workflowsLevelList) | workflows + "+ New" | enter open / r rename / d delete / esc back to ask |
-| Steps (workflowsLevelSteps) | steps + "+ New step" | enter edit / r rename workflow / d delete step / esc list |
-| Step (workflowsLevelStep) | Name / Provider / Model / Prompt | enter edits the field / esc back to steps |
+| List (left pane) | workflows + "+ New" | enter open / r rename / d delete / esc back to ask |
+| Steps (right pane) | the step tree + affordances | enter edit/create / d delete / tab focus left / esc list |
+| Step (right pane) | agent: Name/Provider/Model/Prompt · loop: Name/Max iters/Exit | enter edits the field / esc back to steps |
 
-The Prompt row opens a multi-line `textarea.Model` overlay
-(`workflows_screen.go:newPromptTextarea`) with Ctrl+S to save and
-Esc to cancel. Provider/Model rows pop tiny pickers populated from
-`providerRegistry` / `modelPickerOptions(...)`. Every commit writes
-to disk immediately, so navigating up/back is never a save action.
+The steps pane is a **flat list of navigable rows** derived from the
+step tree (`stepRows()` — `stepsCursor` indexes it, the single source
+of truth). Row 0 is "+ New step"; loops render as a `⟳` header with
+`▏`-railed indented inner steps and a trailing "+ add step"; the last
+row is "+ New loop". Enter on an affordance creates a step/loop/inner
+step and drops into its detail; Enter on a real step/loop opens its
+detail. The detail pane branches on kind: an agent step shows
+Provider/Model pickers + a Prompt `textarea`; a loop shows an inline
+numeric Max-iterations editor (`renaming=="maxiter"`) and an Exit-
+condition `textarea` (the textarea is shared, `promptTarget` says
+which field it commits to). Every commit writes to disk immediately.
 
 ### Edit guards
 

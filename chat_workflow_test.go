@@ -165,7 +165,7 @@ func TestBuildWorkflowStepPrompt_ChatSource(t *testing.T) {
 		},
 	}
 
-	step0 := buildWorkflowStepPrompt(step, source, nil)
+	step0 := buildWorkflowStepPrompt(step, source, nil, nil)
 	if !strings.Contains(step0, "Summarise.") {
 		t.Errorf("step 0 must include user prompt; got %q", step0)
 	}
@@ -186,7 +186,7 @@ func TestBuildWorkflowStepPrompt_ChatSource(t *testing.T) {
 		t.Errorf("chat source must NOT emit issue-style Reference line; got %q", step0)
 	}
 
-	stepN := buildWorkflowStepPrompt(step, source, []string{"prior step output text"})
+	stepN := buildWorkflowStepPrompt(step, source, []string{"prior step output text"}, nil)
 	if !strings.Contains(stepN, "Previous step output:") {
 		t.Errorf("step N must include previous-step block; got %q", stepN)
 	}

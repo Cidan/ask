@@ -31,10 +31,25 @@ import (
 
 type workflowListInput struct{}
 
-type workflowListStepView struct {
+// workflowInnerListStepView is an agent step inside a loop, in the
+// trimmed list shape. It has no Kind/Steps fields on purpose: the MCP
+// SDK's JSON-schema generator rejects self-referential Go types, and a
+// separate inner type also makes a nested loop structurally
+// inexpressible over the wire (the one-layer-deep rule).
+type workflowInnerListStepView struct {
 	Name     string `json:"name" jsonschema:"step name"`
 	Provider string `json:"provider" jsonschema:"provider id (claude, codex, ...)"`
 	Model    string `json:"model,omitempty" jsonschema:"model id (empty = provider default)"`
+}
+
+type workflowListStepView struct {
+	Name     string `json:"name" jsonschema:"step name"`
+	Kind     string `json:"kind,omitempty" jsonschema:"empty for an agent step; 'loop' for a loop container"`
+	Provider string `json:"provider,omitempty" jsonschema:"provider id (claude, codex, ...); agent steps only"`
+	Model    string `json:"model,omitempty" jsonschema:"model id (empty = provider default)"`
+
+	Steps         []workflowInnerListStepView `json:"steps,omitempty" jsonschema:"inner steps run each iteration; loop steps only"`
+	MaxIterations int                         `json:"maxIterations,omitempty" jsonschema:"iteration cap; loop steps only (0 = default)"`
 }
 
 type workflowListItem struct {
@@ -50,11 +65,30 @@ type workflowGetInput struct {
 	Name string `json:"name" jsonschema:"workflow name"`
 }
 
-type workflowStepView struct {
+// workflowInnerStepView is an agent step inside a loop, in the full
+// shape (carries the prompt). Like workflowInnerListStepView it has no
+// Kind/Steps fields: the schema must stay non-recursive, and a nested
+// loop must be impossible to express.
+type workflowInnerStepView struct {
 	Name     string `json:"name" jsonschema:"step name"`
 	Provider string `json:"provider" jsonschema:"provider id (claude, codex, ...)"`
 	Model    string `json:"model,omitempty" jsonschema:"model id (empty = provider default)"`
-	Prompt   string `json:"prompt" jsonschema:"user-authored prompt for this step"`
+	Prompt   string `json:"prompt,omitempty" jsonschema:"user-authored prompt for this step"`
+}
+
+type workflowStepView struct {
+	Name string `json:"name" jsonschema:"step name"`
+	Kind string `json:"kind,omitempty" jsonschema:"empty for an agent step; 'loop' for a loop container"`
+
+	// Agent-step fields (kind == "").
+	Provider string `json:"provider,omitempty" jsonschema:"provider id (claude, codex, ...); required for agent steps"`
+	Model    string `json:"model,omitempty" jsonschema:"model id (empty = provider default)"`
+	Prompt   string `json:"prompt,omitempty" jsonschema:"user-authored prompt; agent steps only"`
+
+	// Loop-step fields (kind == "loop").
+	Steps         []workflowInnerStepView `json:"steps,omitempty" jsonschema:"inner agent steps run in order each iteration; loop steps only (loops cannot nest)"`
+	MaxIterations int                     `json:"maxIterations,omitempty" jsonschema:"iteration cap; loop steps only (0 = default of 10)"`
+	ExitCondition string                  `json:"exitCondition,omitempty" jsonschema:"free-text goal injected into inner step prompts so the agent knows when to call workflow_loop with break; loop steps only"`
 }
 
 type workflowDefView struct {
@@ -104,6 +138,37 @@ type workflowRunOutput struct {
 	StartedAt  string `json:"started_at" jsonschema:"RFC3339 timestamp marking dispatch"`
 }
 
+type workflowLoopInput struct {
+	Decision string `json:"decision" jsonschema:"break to end the loop now, or continue to run another iteration"`
+	Reason   string `json:"reason,omitempty" jsonschema:"short justification for the decision, surfaced in the workflow log"`
+}
+
+type workflowLoopOutput struct {
+	Registered bool   `json:"registered" jsonschema:"true when the intent was recorded against an active loop"`
+	Decision   string `json:"decision" jsonschema:"the decision that was registered, echoed back"`
+	Note       string `json:"note" jsonschema:"human-readable status"`
+}
+
+// workflowLoopReply is the model's answer to a workflowLoopSignalMsg.
+// registered is true when the run was inside a live loop and the intent
+// landed; note is the human-readable status echoed back to the agent.
+type workflowLoopReply struct {
+	registered bool
+	note       string
+}
+
+// workflowLoopSignalMsg carries a workflow_loop tool call from the MCP
+// bridge to the owning workflow tab. The tool blocks on `reply` (like
+// askToolRequestMsg) so the intent is guaranteed recorded before the
+// agent's turn ends — the runner reads it at turnComplete. tabID routes
+// the message to the right tab via dispatchByTabID.
+type workflowLoopSignalMsg struct {
+	tabID    int
+	decision string
+	reason   string
+	reply    chan workflowLoopReply
+}
+
 // ----- Tool descriptions -----
 
 const (
@@ -117,15 +182,21 @@ Returns the workflow with all steps in execution order. Errors when the named wo
 
 	workflowCreateToolDescription = `Create a new workflow in the current project.
 
-The name must be non-empty and not collide with any existing workflow. Each step's name must be non-empty; provider must be a registered agent CLI (claude, codex, ...); model is optional (empty = provider default); prompt may be empty.
+The name must be non-empty and not collide with any existing workflow.
 
-Errors on duplicate name, empty step name, or unknown provider.`
+Each step is one of two kinds:
+  - Agent step (kind omitted or ""): name required; provider must be a registered agent CLI (claude, codex, ...); model optional (empty = provider default); prompt may be empty.
+  - Loop step (kind="loop"): name required; steps holds one or more inner agent steps run in order each iteration; maxIterations is an optional cap (0 = default of 10); exitCondition is free text describing when the loop should stop. Loops cannot be nested — a loop's inner steps must all be agent steps.
+
+A loop repeats its inner steps until an inner agent calls the workflow_loop tool with decision="break" (or maxIterations is reached). The final inner step of each iteration must register a decision; the exitCondition text is injected into the inner prompts to guide that call.
+
+Errors on duplicate name, empty step name, unknown provider, a nested loop, or a loop with no inner steps.`
 
 	workflowEditToolDescription = `Edit an existing workflow.
 
-Pass new_name to rename. Pass steps to replace the entire steps array (full-replace semantics — no per-step CRUD). Omit a field to leave it unchanged.
+Pass new_name to rename. Pass steps to replace the entire steps array (full-replace semantics — no per-step CRUD). Omit a field to leave it unchanged. Steps follow the same agent/loop shape documented on workflow_create.
 
-Errors when the workflow doesn't exist, when new_name collides with another workflow, when a step has an empty name, when a step has an unknown provider, or when the workflow is currently running anywhere in this process.`
+Errors when the workflow doesn't exist, when new_name collides with another workflow, when a step is malformed (empty name, unknown provider, nested loop, empty loop), or when the workflow is currently running anywhere in this process.`
 
 	workflowDeleteToolDescription = `Delete a workflow from the current project.
 
@@ -136,6 +207,17 @@ Errors when the workflow doesn't exist or is currently running.`
 Fire-and-forget: returns immediately with the session key. The workflow runs in a fresh tab; the user can switch to it with the tab bar to watch progress. Pass append to thread an arbitrary text blob into step 1's user prompt under a "Reference:" header; omit it to run the workflow with no extra context.
 
 Errors when the workflow doesn't exist, when it has no steps, or when the UI isn't ready to spawn a tab.`
+
+	workflowLoopToolDescription = `Register your break/continue intent for the loop you are currently running inside.
+
+You will see this is relevant when your step prompt says you are running inside a workflow loop. Call this tool with:
+  - decision="break" when the loop's exit condition is met — end the loop and let the workflow move on to the next step.
+  - decision="continue" to run another iteration of the loop.
+Always include a short reason.
+
+This only RECORDS your intent; it does NOT end your turn or exit the loop immediately. Keep working and finish your turn normally — when your turn completes, the workflow acts on the most recent decision you registered. If you are the final step of the loop's iteration and your turn ends without a registered decision, you will be re-prompted to make one.
+
+Has no effect when called outside a loop.`
 )
 
 // mcpSpawnWorkflowTab is the indirection workflow_run uses to dispatch
@@ -198,16 +280,42 @@ func validateProviderID(id string) error {
 }
 
 // validateSteps screens each step in `steps` for the rules common to
-// create / edit. Non-empty step name, registered provider, model is
-// free-text but trimmed.
+// create / edit. Agent steps need a non-empty name and a registered
+// provider. Loop steps need a non-empty name, at least one inner step,
+// a non-negative MaxIterations, and inner steps that are themselves
+// valid agent steps — loops cannot nest, so an inner loop is rejected.
 func validateSteps(steps []workflowStepView) error {
 	for i, s := range steps {
 		name := strings.TrimSpace(s.Name)
 		if name == "" {
 			return fmt.Errorf("step %d: name is required", i+1)
 		}
-		if err := validateProviderID(s.Provider); err != nil {
-			return fmt.Errorf("step %d (%q): %w", i+1, name, err)
+		switch s.Kind {
+		case workflowStepKindLoop:
+			if len(s.Steps) == 0 {
+				return fmt.Errorf("step %d (%q): a loop must contain at least one inner step", i+1, name)
+			}
+			if s.MaxIterations < 0 {
+				return fmt.Errorf("step %d (%q): maxIterations cannot be negative", i+1, name)
+			}
+			// Inner steps are workflowInnerStepView, which has no Kind/
+			// Steps fields, so a nested loop is structurally impossible
+			// here — we only check name and provider.
+			for j, inner := range s.Steps {
+				iname := strings.TrimSpace(inner.Name)
+				if iname == "" {
+					return fmt.Errorf("step %d (%q) inner step %d: name is required", i+1, name, j+1)
+				}
+				if err := validateProviderID(inner.Provider); err != nil {
+					return fmt.Errorf("step %d (%q) inner step %d (%q): %w", i+1, name, j+1, iname, err)
+				}
+			}
+		case workflowStepKindAgent:
+			if err := validateProviderID(s.Provider); err != nil {
+				return fmt.Errorf("step %d (%q): %w", i+1, name, err)
+			}
+		default:
+			return fmt.Errorf("step %d (%q): unknown kind %q", i+1, name, s.Kind)
 		}
 	}
 	return nil
@@ -219,6 +327,30 @@ func validateSteps(steps []workflowStepView) error {
 // the shape produced by the builder UI (which also stores nil for the
 // no-steps case).
 func stepsViewToDef(in []workflowStepView) []workflowStep {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]workflowStep, 0, len(in))
+	for _, s := range in {
+		step := workflowStep{Name: strings.TrimSpace(s.Name), Kind: s.Kind}
+		if s.Kind == workflowStepKindLoop {
+			step.Steps = innerStepsViewToDef(s.Steps)
+			step.MaxIterations = s.MaxIterations
+			step.ExitCondition = strings.TrimSpace(s.ExitCondition)
+		} else {
+			step.Provider = strings.TrimSpace(s.Provider)
+			step.Model = strings.TrimSpace(s.Model)
+			step.Prompt = s.Prompt
+		}
+		out = append(out, step)
+	}
+	return out
+}
+
+// innerStepsViewToDef converts a loop's inner agent-step wire shapes to
+// the on-disk workflowStep slice (Kind stays empty — inner steps are
+// always agent steps).
+func innerStepsViewToDef(in []workflowInnerStepView) []workflowStep {
 	if len(in) == 0 {
 		return nil
 	}
@@ -240,7 +372,28 @@ func stepsViewToDef(in []workflowStepView) []workflowStep {
 func stepsDefToView(in []workflowStep) []workflowStepView {
 	out := make([]workflowStepView, 0, len(in))
 	for _, s := range in {
-		out = append(out, workflowStepView{
+		v := workflowStepView{Name: s.Name, Kind: s.Kind}
+		if s.isLoop() {
+			v.Steps = innerStepsDefToView(s.Steps)
+			v.MaxIterations = s.MaxIterations
+			v.ExitCondition = s.ExitCondition
+		} else {
+			v.Provider = s.Provider
+			v.Model = s.Model
+			v.Prompt = s.Prompt
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// innerStepsDefToView projects a loop's inner steps into the full inner
+// wire shape. Returns an empty (non-nil) slice so JSON marshals `[]`
+// rather than `null`, matching the rest of the view conversions.
+func innerStepsDefToView(in []workflowStep) []workflowInnerStepView {
+	out := make([]workflowInnerStepView, 0, len(in))
+	for _, s := range in {
+		out = append(out, workflowInnerStepView{
 			Name:     s.Name,
 			Provider: s.Provider,
 			Model:    s.Model,
@@ -255,7 +408,25 @@ func stepsDefToView(in []workflowStep) []workflowStepView {
 func stepsDefToListView(in []workflowStep) []workflowListStepView {
 	out := make([]workflowListStepView, 0, len(in))
 	for _, s := range in {
-		out = append(out, workflowListStepView{
+		v := workflowListStepView{Name: s.Name, Kind: s.Kind}
+		if s.isLoop() {
+			v.Steps = innerStepsDefToListView(s.Steps)
+			v.MaxIterations = s.MaxIterations
+		} else {
+			v.Provider = s.Provider
+			v.Model = s.Model
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// innerStepsDefToListView is the trimmed inner-step projection used by
+// workflow_list — drops the prompt to keep the listing payload small.
+func innerStepsDefToListView(in []workflowStep) []workflowInnerListStepView {
+	out := make([]workflowInnerListStepView, 0, len(in))
+	for _, s := range in {
+		out = append(out, workflowInnerListStepView{
 			Name:     s.Name,
 			Provider: s.Provider,
 			Model:    s.Model,
@@ -559,14 +730,10 @@ func (b *mcpBridge) workflowRunTool(_ context.Context, _ *mcp.CallToolRequest, i
 	// workflow saved before a provider was unregistered (or hand-
 	// edited on disk) would crash the runner mid-step. Catch it here
 	// so the LLM gets a clear error instead of a workflow tab that
-	// fails on step N for opaque reasons.
-	for i, s := range w.Steps {
-		if strings.TrimSpace(s.Name) == "" {
-			return errResult(fmt.Sprintf("step %d has an empty name; fix the workflow before running", i+1)), workflowRunOutput{}, nil
-		}
-		if err := validateProviderID(s.Provider); err != nil {
-			return errResult(fmt.Sprintf("step %d (%q): %v", i+1, s.Name, err)), workflowRunOutput{}, nil
-		}
+	// fails on step N for opaque reasons. validateSteps walks loop
+	// containers too, so a malformed loop is rejected up front.
+	if err := validateSteps(stepsDefToView(w.Steps)); err != nil {
+		return errResult(fmt.Sprintf("workflow %q is invalid: %v", name, err)), workflowRunOutput{}, nil
 	}
 
 	source := textWorkflowSource(b.tabID, in.Append)
@@ -587,7 +754,42 @@ func (b *mcpBridge) workflowRunTool(_ context.Context, _ *mcp.CallToolRequest, i
 		}, nil
 }
 
-// registerWorkflowTools wires the six workflow CRUD/run tools onto
+// workflowLoopTool records an inner loop step's break/continue intent.
+// It does not tenant on cwd (loop control is about the live run on this
+// tab, not project data); instead it routes a workflowLoopSignalMsg to
+// the owning tab and blocks on the reply so the intent is recorded
+// before the agent's turn ends. The runner consumes the intent at
+// turnComplete — see advanceWorkflowStep.
+func (b *mcpBridge) workflowLoopTool(ctx context.Context, _ *mcp.CallToolRequest, in workflowLoopInput) (*mcp.CallToolResult, workflowLoopOutput, error) {
+	decision := strings.TrimSpace(in.Decision)
+	if decision != workflowLoopBreak && decision != workflowLoopContinue {
+		return errResult(fmt.Sprintf("decision must be %q or %q", workflowLoopBreak, workflowLoopContinue)),
+			workflowLoopOutput{}, nil
+	}
+	p := teaProgramPtr.Load()
+	if p == nil {
+		return errResult("ask UI not ready"), workflowLoopOutput{}, nil
+	}
+	reply := make(chan workflowLoopReply, 1)
+	p.Send(workflowLoopSignalMsg{
+		tabID:    b.tabID,
+		decision: decision,
+		reason:   strings.TrimSpace(in.Reason),
+		reply:    reply,
+	})
+	select {
+	case resp := <-reply:
+		return okResult(resp.note), workflowLoopOutput{
+			Registered: resp.registered,
+			Decision:   decision,
+			Note:       resp.note,
+		}, nil
+	case <-ctx.Done():
+		return nil, workflowLoopOutput{}, ctx.Err()
+	}
+}
+
+// registerWorkflowTools wires the workflow CRUD/run/loop tools onto
 // b.server. Called once per bridge from newMCPBridge so every chat
 // tab carries its own typed handlers tenanted on its own cwd.
 func (b *mcpBridge) registerWorkflowTools() {
@@ -615,4 +817,8 @@ func (b *mcpBridge) registerWorkflowTools() {
 		Name:        "workflow_run",
 		Description: workflowRunToolDescription,
 	}, b.workflowRunTool)
+	mcp.AddTool(b.server, &mcp.Tool{
+		Name:        "workflow_loop",
+		Description: workflowLoopToolDescription,
+	}, b.workflowLoopTool)
 }

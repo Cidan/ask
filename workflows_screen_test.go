@@ -499,3 +499,174 @@ func TestWorkflowsBuilder_RenderRenameOverlayOverBase(t *testing.T) {
 		t.Fatalf("rendered height=%d want 24", got)
 	}
 }
+
+// seedWorkflowsBuilder writes items to disk and returns a builder model
+// parked in the right(steps) pane on the first (only) workflow.
+func seedWorkflowsBuilder(t *testing.T, items []workflowDef) (model, string) {
+	t.Helper()
+	cwd := isolateHome(t)
+	resetWorkflowTrackerForTest()
+	withRegisteredProviders(t, newFakeProvider())
+	cfg, _ := loadConfig()
+	pc := loadProjectConfig(cfg, cwd)
+	pc.Workflows.Items = items
+	cfg = upsertProjectConfig(cfg, cwd, pc)
+	if err := saveConfig(cfg); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	m := newTestModel(t, newFakeProvider())
+	m.cwd = cwd
+	m.workflowsBuilder = newWorkflowsBuilderState(cwd)
+	m.workflowsBuilder.listCursor = 1
+	m.workflowsBuilder.focus = workflowsBuilderFocusRight
+	m.workflowsBuilder.rightMode = workflowsBuilderRightSteps
+	m.workflowsBuilder.stepsCursor = 0
+	return m, cwd
+}
+
+// TestStepRows_TreeShape verifies the flat-row projection of a workflow
+// with a mix of a top-level agent step and a loop group.
+func TestStepRows_TreeShape(t *testing.T) {
+	b := &workflowsBuilderState{
+		listCursor: 1,
+		items: []workflowDef{{
+			Name: "wf",
+			Steps: []workflowStep{
+				{Name: "a", Provider: "fake"},
+				{Name: "loop", Kind: workflowStepKindLoop, Steps: []workflowStep{
+					{Name: "x", Provider: "fake"}, {Name: "y", Provider: "fake"},
+				}},
+			},
+		}},
+	}
+	rows := b.stepRows()
+	want := []stepRowKind{
+		stepRowNewStep, stepRowAgent, stepRowLoopHeader,
+		stepRowLoopChild, stepRowLoopChild, stepRowLoopAdd, stepRowNewLoop,
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("rows len=%d want %d: %+v", len(rows), len(want), rows)
+	}
+	for i, k := range want {
+		if rows[i].kind != k {
+			t.Errorf("row %d kind=%d want %d", i, rows[i].kind, k)
+		}
+	}
+	if rows[3].innerIdx != 0 || rows[4].innerIdx != 1 {
+		t.Errorf("loop children should carry inner indices; got %+v %+v", rows[3], rows[4])
+	}
+}
+
+// TestWorkflowsBuilder_AddLoopPersists: Enter on the "+ New loop" row
+// creates a loop step and drops into its detail pane.
+func TestWorkflowsBuilder_AddLoopPersists(t *testing.T) {
+	m, cwd := seedWorkflowsBuilder(t, []workflowDef{{Name: "wf"}})
+	// 0-step workflow rows: [+ New step(0), + New loop(1)].
+	m.workflowsBuilder.stepsCursor = 1
+	m2, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m2.workflowsBuilder.rightMode != workflowsBuilderRightStep {
+		t.Errorf("expected to drop into loop detail; got rightMode=%d", m2.workflowsBuilder.rightMode)
+	}
+	got := projectWorkflows(cwd)
+	if len(got) != 1 || len(got[0].Steps) != 1 || !got[0].Steps[0].isLoop() {
+		t.Fatalf("expected one loop step persisted; got %+v", got)
+	}
+}
+
+// TestWorkflowsBuilder_AddInnerStepToLoop: Enter on a loop's "+ add step"
+// row appends an inner agent step.
+func TestWorkflowsBuilder_AddInnerStepToLoop(t *testing.T) {
+	m, cwd := seedWorkflowsBuilder(t, []workflowDef{{
+		Name:  "wf",
+		Steps: []workflowStep{{Name: "loop", Kind: workflowStepKindLoop}},
+	}})
+	// rows: [+ New step(0), loopHeader(1), + add step(2), + New loop(3)].
+	m.workflowsBuilder.stepsCursor = 2
+	m2, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m2.workflowsBuilder.rightMode != workflowsBuilderRightStep {
+		t.Errorf("adding an inner step should drop into detail; got %d", m2.workflowsBuilder.rightMode)
+	}
+	got := projectWorkflows(cwd)
+	if len(got) != 1 || len(got[0].Steps) != 1 || len(got[0].Steps[0].Steps) != 1 {
+		t.Fatalf("expected one inner step in the loop; got %+v", got)
+	}
+	if got[0].Steps[0].Steps[0].Provider != "fake" {
+		t.Errorf("inner step should default to the first registered provider; got %+v", got[0].Steps[0].Steps[0])
+	}
+}
+
+// TestWorkflowsBuilder_EditLoopMaxIterPersists: opening the loop's Max
+// iterations field and entering a number persists it.
+func TestWorkflowsBuilder_EditLoopMaxIterPersists(t *testing.T) {
+	m, cwd := seedWorkflowsBuilder(t, []workflowDef{{
+		Name:  "wf",
+		Steps: []workflowStep{{Name: "loop", Kind: workflowStepKindLoop}},
+	}})
+	m.workflowsBuilder.rightMode = workflowsBuilderRightStep
+	m.workflowsBuilder.stepsCursor = 1 // the loop header row
+	m.workflowsBuilder.stepFieldCursor = wsLoopFieldMaxIter
+	m1, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m1.workflowsBuilder.renaming != "maxiter" {
+		t.Fatalf("expected maxiter editor; got renaming=%q", m1.workflowsBuilder.renaming)
+	}
+	m1.workflowsBuilder.renameDraft = "7"
+	m2, _, _ := workflowsScreen{}.updateKey(m1, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m2.workflowsBuilder.renaming != "" {
+		t.Errorf("maxiter editor should close on save; got %q", m2.workflowsBuilder.renaming)
+	}
+	got := projectWorkflows(cwd)
+	if len(got) != 1 || got[0].Steps[0].MaxIterations != 7 {
+		t.Fatalf("expected MaxIterations=7 persisted; got %+v", got)
+	}
+}
+
+// TestWorkflowsBuilder_DeleteInnerStep removes a single inner step,
+// leaving the loop in place.
+func TestWorkflowsBuilder_DeleteInnerStep(t *testing.T) {
+	m, cwd := seedWorkflowsBuilder(t, []workflowDef{{
+		Name: "wf",
+		Steps: []workflowStep{{Name: "loop", Kind: workflowStepKindLoop, Steps: []workflowStep{
+			{Name: "x", Provider: "fake"}, {Name: "y", Provider: "fake"},
+		}}},
+	}})
+	// rows: [newStep(0), loopHeader(1), child x(2), child y(3), add(4), newLoop(5)].
+	m.workflowsBuilder.stepsCursor = 2
+	m1, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: 'd'})
+	if m1.workflowsBuilder.confirming != "delete-step" {
+		t.Fatalf("expected delete-step confirm; got %q", m1.workflowsBuilder.confirming)
+	}
+	m2, _, _ := workflowsScreen{}.updateKey(m1, tea.KeyPressMsg{Code: tea.KeyTab})
+	m3, _, _ := workflowsScreen{}.updateKey(m2, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m3.workflowsBuilder.confirming != "" {
+		t.Errorf("confirm should close; got %q", m3.workflowsBuilder.confirming)
+	}
+	got := projectWorkflows(cwd)
+	if len(got[0].Steps[0].Steps) != 1 || got[0].Steps[0].Steps[0].Name != "y" {
+		t.Fatalf("expected only inner 'y' to remain; got %+v", got[0].Steps[0].Steps)
+	}
+}
+
+// TestWorkflowsBuilder_DeleteLoop removes the whole loop group when the
+// cursor is on the loop header.
+func TestWorkflowsBuilder_DeleteLoop(t *testing.T) {
+	m, cwd := seedWorkflowsBuilder(t, []workflowDef{{
+		Name: "wf",
+		Steps: []workflowStep{
+			{Name: "a", Provider: "fake"},
+			{Name: "loop", Kind: workflowStepKindLoop, Steps: []workflowStep{{Name: "x", Provider: "fake"}}},
+		},
+	}})
+	// rows: [newStep(0), agent a(1), loopHeader(2), child x(3), add(4), newLoop(5)].
+	m.workflowsBuilder.stepsCursor = 2
+	m1, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: 'd'})
+	if m1.workflowsBuilder.confirming != "delete-step" {
+		t.Fatalf("expected delete confirm on loop header; got %q", m1.workflowsBuilder.confirming)
+	}
+	m2, _, _ := workflowsScreen{}.updateKey(m1, tea.KeyPressMsg{Code: tea.KeyTab})
+	m3, _, _ := workflowsScreen{}.updateKey(m2, tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := projectWorkflows(cwd)
+	if len(got[0].Steps) != 1 || got[0].Steps[0].Name != "a" {
+		t.Fatalf("expected only agent step 'a' to remain after deleting the loop; got %+v", got[0].Steps)
+	}
+	_ = m3
+}

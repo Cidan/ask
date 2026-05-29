@@ -1245,30 +1245,57 @@ func (m model) renderWorkflowBanner() string {
 		))
 	default:
 		box = box.BorderForeground(activeTheme.accent)
-		stepName := "(unnamed)"
-		stepProvider := ""
-		stepModel := ""
-		if r.StepIdx < len(r.Workflow.Steps) {
-			s := r.Workflow.Steps[r.StepIdx]
-			if s.Name != "" {
-				stepName = s.Name
-			}
-			stepProvider = s.Provider
-			stepModel = s.Model
-		}
-		runMeta := stepProvider
-		if stepModel != "" {
-			runMeta += "/" + stepModel
-		}
-		title = promptStyle.Render("▸ workflow ") + r.Workflow.Name +
-			dimStyle.Render(fmt.Sprintf(" · step %d/%d: %s", r.StepIdx+1, len(r.Workflow.Steps), stepName))
-		line2 = dimStyle.Render(joinHintClauses(
-			sourceLabel,
-			runMeta,
-			cancelClause,
-		))
+		title, line2 = m.workflowRunningBannerLines(sourceLabel, cancelClause)
 	}
 	return box.Render(title + "\n" + line2)
+}
+
+// workflowRunningBannerLines builds the two banner lines for the active
+// (not done/failed) state. Inside a loop the title surfaces the loop's
+// name, the current iteration, and the running inner step; the tail
+// re-prompt count is shown so the user can see the runner hammering a
+// step that hasn't registered a loop decision.
+func (m model) workflowRunningBannerLines(sourceLabel, cancelClause string) (title, line2 string) {
+	r := m.workflowRun
+	stepName := "(unnamed)"
+	stepProvider := ""
+	stepModel := ""
+	stepLabel := ""
+	if r.StepIdx < len(r.Workflow.Steps) {
+		top := r.Workflow.Steps[r.StepIdx]
+		if r.loop != nil && top.isLoop() && r.loop.innerIdx < len(top.Steps) {
+			inner := top.Steps[r.loop.innerIdx]
+			if inner.Name != "" {
+				stepName = inner.Name
+			}
+			stepProvider = inner.Provider
+			stepModel = inner.Model
+			loopName := top.Name
+			if loopName == "" {
+				loopName = "loop"
+			}
+			stepLabel = fmt.Sprintf("⟳ %s · iter %d/%d · %s",
+				loopName, r.loop.iteration, top.effectiveMaxIterations(), stepName)
+			if r.loop.retry > 0 {
+				stepLabel += fmt.Sprintf(" · re-prompt #%d", r.loop.retry)
+			}
+		} else {
+			if top.Name != "" {
+				stepName = top.Name
+			}
+			stepProvider = top.Provider
+			stepModel = top.Model
+			stepLabel = stepName
+		}
+	}
+	runMeta := stepProvider
+	if stepModel != "" {
+		runMeta += "/" + stepModel
+	}
+	title = promptStyle.Render("▸ workflow ") + r.Workflow.Name +
+		dimStyle.Render(fmt.Sprintf(" · step %d/%d: %s", r.StepIdx+1, len(r.Workflow.Steps), stepLabel))
+	line2 = dimStyle.Render(joinHintClauses(sourceLabel, runMeta, cancelClause))
+	return title, line2
 }
 
 func (m model) todoBlock() string {

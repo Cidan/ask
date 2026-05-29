@@ -289,7 +289,7 @@ func TestBuildWorkflowStepPrompt(t *testing.T) {
 	step := workflowStep{Prompt: "Implement the fix."}
 	issue := issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1})
 
-	step0 := buildWorkflowStepPrompt(step, issue, nil)
+	step0 := buildWorkflowStepPrompt(step, issue, nil, nil)
 	if !strings.Contains(step0, "Implement the fix.") {
 		t.Errorf("step 0 must include user prompt; got %q", step0)
 	}
@@ -304,6 +304,7 @@ func TestBuildWorkflowStepPrompt(t *testing.T) {
 		workflowStep{Prompt: "Review."},
 		issue,
 		[]string{"first step said hello", "ignored second"},
+		nil,
 	)
 	if !strings.Contains(stepN, "Review.") {
 		t.Errorf("step N must include user prompt; got %q", stepN)
@@ -339,5 +340,56 @@ func TestIsProjectConfigEmpty(t *testing.T) {
 		Sessions: map[string]workflowSession{"k": {Status: workflowStatusDone}},
 	}}) {
 		t.Errorf("workflows-only sessions should not be empty")
+	}
+}
+
+// TestWorkflowLoop_RoundTripsOnDisk verifies a workflow containing a loop
+// step (with nested inner steps + loop config) survives a save/load cycle
+// intact, and that a plain agent step keeps an empty Kind for backward
+// compatibility.
+func TestWorkflowLoop_RoundTripsOnDisk(t *testing.T) {
+	cwd := isolateHome(t)
+	want := []workflowDef{{
+		Name: "code-review",
+		Steps: []workflowStep{
+			{Name: "scaffold", Provider: "claude", Prompt: "build it"},
+			{Name: "qa", Kind: workflowStepKindLoop, MaxIterations: 4, ExitCondition: "tests pass", Steps: []workflowStep{
+				{Name: "fix", Provider: "claude", Prompt: "fix"},
+				{Name: "review", Provider: "codex", Model: "gpt-5", Prompt: "review"},
+			}},
+			{Name: "ship", Provider: "claude", Prompt: "finalize"},
+		},
+	}}
+	cfg, _ := loadConfig()
+	pc := loadProjectConfig(cfg, cwd)
+	pc.Workflows.Items = want
+	cfg = upsertProjectConfig(cfg, cwd, pc)
+	if err := saveConfig(cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	cfg2, _ := loadConfig()
+	got := loadProjectConfig(cfg2, cwd).Workflows.Items
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("loop workflow did not round-trip:\n got=%+v\nwant=%+v", got, want)
+	}
+	if got[0].Steps[0].isLoop() {
+		t.Error("agent step should not report isLoop")
+	}
+	if got[0].Steps[0].Kind != "" {
+		t.Errorf("agent step Kind should stay empty for back-compat; got %q", got[0].Steps[0].Kind)
+	}
+	if !got[0].Steps[1].isLoop() {
+		t.Error("loop step should report isLoop")
+	}
+}
+
+// TestWorkflowStep_EffectiveMaxIterations covers the 0 ⇒ default mapping.
+func TestWorkflowStep_EffectiveMaxIterations(t *testing.T) {
+	if got := (workflowStep{}).effectiveMaxIterations(); got != workflowLoopDefaultMaxIterations {
+		t.Errorf("0 should map to the default cap %d; got %d", workflowLoopDefaultMaxIterations, got)
+	}
+	if got := (workflowStep{MaxIterations: 3}).effectiveMaxIterations(); got != 3 {
+		t.Errorf("explicit cap should win; got %d", got)
 	}
 }
