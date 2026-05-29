@@ -305,6 +305,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		wasIdle := !m.busy
 		m.busy = true
 		m.status = msg.status
+		m.lastActivity = time.Now()
 		var cmds []tea.Cmd
 		if m.streamCh != nil {
 			cmds = append(cmds, nextStreamCmd(m.streamCh))
@@ -570,6 +571,10 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if msg.proc != m.proc {
 			return m, nil
 		}
+		// providerDoneMsg fires at the end of every turn (clean or
+		// errored), so it's the universal "this session just did
+		// something" signal for the overview's idle clock.
+		m.lastActivity = time.Now()
 		debugLog("providerDoneMsg err=%v isError=%v resultLen=%d",
 			msg.err, msg.res.IsError, len(msg.res.Result))
 		m.dismissCancelTurnConfirmIfIdle()

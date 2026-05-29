@@ -123,6 +123,7 @@ func newTab(id int, cfg askConfig) (*model, error) {
 		shellOutIdx:        -1,
 		shellHistoryIdx:    -1,
 		fc:                 &frameCache{},
+		lastActivity:       time.Now(),
 	}
 	// 80 cells gives a Neo4j error (e.g. "create database 'ask_tests':
 	// connectivity: ...") room to wrap across a few lines instead of

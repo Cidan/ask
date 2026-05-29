@@ -34,6 +34,18 @@ type app struct {
 	// users who never started a session don't see a stray banner.
 	quitting    bool
 	quittingVID string
+
+	// overviewOpen drives the app-level agent overview (the cross-tab
+	// "inbox"). While true, overviewHandleKey owns the keyboard and
+	// View renders renderOverview instead of the active tab. The other
+	// fields are its sub-modes: a y/n confirm before closing a session,
+	// and an inline rename editor whose buffer is overviewRenameBuf.
+	// overviewCursor indexes into tabs. See overview.go.
+	overviewOpen         bool
+	overviewCursor       int
+	overviewConfirmClose bool
+	overviewRenaming     bool
+	overviewRenameBuf    string
 }
 
 // newApp wraps the first tab in the app struct. Config is deliberately
@@ -102,6 +114,14 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.suspending = false
 		return a, nil
 
+	case overviewTickMsg:
+		// Keep re-arming only while the overview is open; a tick that
+		// lands after it closed is a silent no-op.
+		if a.overviewOpen {
+			return a, overviewTickCmd()
+		}
+		return a, nil
+
 	case tea.WindowSizeMsg:
 		a.width = m.Width
 		a.height = m.Height
@@ -109,8 +129,15 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		m = normalizeKeyPressMsg(m)
+		// While the agent overview is up it owns the whole keyboard, so
+		// route every keystroke there before any tab/app action can fire.
+		if a.overviewOpen {
+			return a.overviewHandleKey(m)
+		}
 		km := currentKeyMap()
 		switch {
+		case km.Matches(ActionAgentOverview, m):
+			return a.openOverview()
 		case km.Matches(ActionAppSuspend, m):
 			return a.suspendApp()
 		case km.Matches(ActionTabNew, m):
@@ -124,6 +151,11 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseClickMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg,
 		tea.MouseWheelMsg, tea.PasteMsg, imagePastedMsg:
+		// The overview is keyboard-only; swallow pointer/paste events so
+		// they don't reach (and mutate) the tab hidden behind it.
+		if a.overviewOpen {
+			return a, nil
+		}
 		return a.dispatchActive(msg)
 
 	case spawnWorkflowTabMsg:
@@ -183,6 +215,19 @@ func (a app) View() tea.View {
 		// before QuitMsg fires, so cursed_renderer.close exits altscreen
 		// and the inline content lands in the host terminal scrollback.
 		return tea.View{Content: "last session: " + a.quittingVID + "\n"}
+	}
+	if a.overviewOpen {
+		// Match the normal view's terminal setup (altscreen + theme
+		// colors + mouse mode) so the overview paints over a clean ask
+		// canvas instead of leaking into the host terminal scrollback.
+		// No cursor — the rename editor draws its own inline caret.
+		return tea.View{
+			Content:         bodyContentAtHeight(a.renderOverview(), a.height),
+			AltScreen:       true,
+			MouseMode:       tea.MouseModeCellMotion,
+			BackgroundColor: themeBackground,
+			ForegroundColor: themeForeground,
+		}
 	}
 	v := a.activeTab().View()
 	if len(a.tabs) <= 1 {
