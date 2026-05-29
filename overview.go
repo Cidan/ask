@@ -133,7 +133,14 @@ func overviewRowFor(t *model, active bool) overviewRow {
 	}
 	if t.workflowRun != nil {
 		if n := len(t.workflowRun.Workflow.Steps); n > 0 {
-			row.stepInfo = fmt.Sprintf("step %d/%d", t.workflowRun.StepIdx+1, n)
+			idx := t.workflowRun.StepIdx
+			if idx < 0 {
+				idx = 0
+			}
+			if idx >= n {
+				idx = n - 1
+			}
+			row.stepInfo = fmt.Sprintf("step %d/%d", idx+1, n)
 		}
 	}
 	return row
@@ -183,17 +190,17 @@ func overviewTickCmd() tea.Cmd {
 	})
 }
 
-// overviewHandleKey owns the keyboard while the overview is open. Sub-
-// modes (rename, confirm-close) are checked first so their keys can't
-// leak into list navigation. Ctrl+G toggles the overview shut and Ctrl+C
-// also just closes it — the app quit lives on the normal screen, not
-// here.
+// overviewHandleKey owns the keyboard while the overview is open. Close
+// accelerators are checked first so the remapped overview binding still
+// toggles shut inside sub-modes. Ctrl+C also just closes it — the app
+// quit lives on the normal screen, not here.
 func (a app) overviewHandleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if currentKeyMap().Matches(ActionAgentOverview, msg) ||
+		(msg.Mod == tea.ModCtrl && (msg.Code == 'g' || msg.Code == 'c')) {
+		return a.closeOverviewState(), nil
+	}
 	if a.overviewRenaming {
 		return a.overviewRenameKey(msg)
-	}
-	if msg.Mod == tea.ModCtrl && (msg.Code == 'g' || msg.Code == 'c') {
-		return a.closeOverviewState(), nil
 	}
 	// A pending close confirm is modal: only y / n / enter / esc matter.
 	if a.overviewConfirmClose {

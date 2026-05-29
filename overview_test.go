@@ -10,6 +10,7 @@ import (
 
 func ovPress(code rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: code} }
 func ovCtrl(code rune) tea.KeyPressMsg  { return tea.KeyPressMsg{Code: code, Mod: tea.ModCtrl} }
+func ovAlt(code rune) tea.KeyPressMsg   { return tea.KeyPressMsg{Code: code, Mod: tea.ModAlt} }
 func ovType(s string) tea.KeyPressMsg   { return tea.KeyPressMsg{Code: []rune(s)[0], Text: s} }
 
 // ovApply feeds msg to the app and returns the new app value, failing if
@@ -46,7 +47,14 @@ func overviewRestoreCwd(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(wd) })
 }
 
+func overviewUseDefaultKeyMap(t *testing.T) {
+	t.Helper()
+	setKeyMapForTesting(DefaultKeyMap())
+	t.Cleanup(invalidateKeyMapCache)
+}
+
 func TestOverview_ToggleOpenClose(t *testing.T) {
+	overviewUseDefaultKeyMap(t)
 	a := testAppWithTwoTabs(t) // active = 1
 
 	res, cmd := a.Update(ovCtrl('g'))
@@ -70,6 +78,38 @@ func TestOverview_ToggleOpenClose(t *testing.T) {
 	a = ovApply(t, a, ovPress(tea.KeyEsc))
 	if a.overviewOpen {
 		t.Error("Esc should close the overview")
+	}
+}
+
+func TestOverview_ReboundToggleCloses(t *testing.T) {
+	setKeyMapForTesting(KeyMap{
+		ActionAgentOverview: {Mod: tea.ModAlt, Code: 'g'},
+	})
+	defer invalidateKeyMapCache()
+
+	a := testAppWithTwoTabs(t)
+	res, _ := a.Update(ovAlt('g'))
+	a = res.(app)
+	if !a.overviewOpen {
+		t.Fatal("rebound overview key should open the overview")
+	}
+
+	a = ovApply(t, a, ovAlt('g'))
+	if a.overviewOpen {
+		t.Error("rebound overview key should toggle the overview closed")
+	}
+}
+
+func TestOverview_CloseShortcutWinsDuringRename(t *testing.T) {
+	overviewUseDefaultKeyMap(t)
+	a := testAppWithTwoTabs(t)
+	a.overviewOpen = true
+	a.overviewRenaming = true
+	a.overviewRenameBuf = "draft"
+
+	a = ovApply(t, a, ovCtrl('g'))
+	if a.overviewOpen {
+		t.Error("Ctrl+G should close the overview even while renaming")
 	}
 }
 
@@ -103,6 +143,7 @@ func TestOverview_ViewFillsHeightAndShowsHeader(t *testing.T) {
 }
 
 func TestOverview_CursorNavWraps(t *testing.T) {
+	overviewUseDefaultKeyMap(t)
 	a := overviewAppWithThreeTabs(t) // 3 tabs, active = 0
 	a.overviewOpen = true
 	a.overviewCursor = 0
@@ -147,6 +188,7 @@ func TestOverview_CursorNavWraps(t *testing.T) {
 }
 
 func TestOverview_EnterJumpsToSessionAndCloses(t *testing.T) {
+	overviewUseDefaultKeyMap(t)
 	overviewRestoreCwd(t)
 	a := testAppWithTwoTabs(t) // active = 1
 	a.overviewOpen = true
@@ -247,9 +289,16 @@ func TestOverviewRowFor_DerivedFields(t *testing.T) {
 	if got := overviewRowFor(&wf, false).stepInfo; got != "step 2/3" {
 		t.Errorf("stepInfo=%q want %q", got, "step 2/3")
 	}
+
+	wf.workflowRun.StepIdx = len(wf.workflowRun.Workflow.Steps)
+	wf.workflowRun.done = true
+	if got := overviewRowFor(&wf, false).stepInfo; got != "step 3/3" {
+		t.Errorf("completed stepInfo=%q want capped final step %q", got, "step 3/3")
+	}
 }
 
 func TestOverview_ConfirmCloseRemovesSession(t *testing.T) {
+	overviewUseDefaultKeyMap(t)
 	overviewRestoreCwd(t)
 	a := overviewAppWithThreeTabs(t) // ids 1,2,3
 	a.overviewOpen = true
@@ -288,6 +337,7 @@ func TestOverview_ConfirmCloseRemovesSession(t *testing.T) {
 }
 
 func TestOverview_ConfirmCloseLastSessionQuits(t *testing.T) {
+	overviewUseDefaultKeyMap(t)
 	overviewRestoreCwd(t)
 	tab := newTabModelStub(t, 1, "vs-active")
 	a := app{tabs: []*model{tab}, active: 0, nextID: 2, width: 100, height: 30}
@@ -308,6 +358,7 @@ func TestOverview_ConfirmCloseLastSessionQuits(t *testing.T) {
 }
 
 func TestOverview_NewTabOpensSessionAndCloses(t *testing.T) {
+	overviewUseDefaultKeyMap(t)
 	overviewRestoreCwd(t)
 	isolateHome(t)
 	withRegisteredProviders(t, newFakeProvider())
@@ -340,6 +391,7 @@ func TestOverview_NewTabOpensSessionAndCloses(t *testing.T) {
 }
 
 func TestOverview_RenameSetsLabel(t *testing.T) {
+	overviewUseDefaultKeyMap(t)
 	a := overviewAppWithThreeTabs(t)
 	a.overviewOpen = true
 	a.overviewCursor = 1
@@ -366,6 +418,7 @@ func TestOverview_RenameSetsLabel(t *testing.T) {
 }
 
 func TestOverview_RenameEscCancels(t *testing.T) {
+	overviewUseDefaultKeyMap(t)
 	a := overviewAppWithThreeTabs(t)
 	a.tabs[0].overviewLabel = "original"
 	a.overviewOpen = true
