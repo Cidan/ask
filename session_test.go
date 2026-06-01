@@ -13,21 +13,13 @@ import (
 
 // seedClaudeProjects writes encoded project dirs under HOME/.claude/projects.
 //
-// Production `claudeCandidateSessionDirs` (session.go) encodes a main cwd by
-// replacing only `/` with `-`, then looks for sibling dirs whose names start
-// with `<main>--claude-worktrees-` — the double-dash arises because the
-// worktree cwd contains `.claude/worktrees/` and claude itself also encodes
-// `.` as `-`. Tests must therefore mirror that encoding: `/` → `-` always,
-// and `.` → `-` only when the cwd crosses into the worktree sub-path. For
-// our current fixtures the main cwd never contains dots (t.TempDir yields
-// `/tmp/TestName1234/001`), so a blanket dot replacement matches production
-// exactly. Keep test cwds free of dot segments outside `.claude/worktrees/`
-// or add per-path encoding if that ever changes.
+// It encodes the cwd with the same encodeClaudeProjectDir helper production
+// uses, so fixtures land under the exact directory names claude itself
+// creates — including cwds with underscores or dots (TestEncodeClaudeProjectDir
+// pins that encoder against claude's behavior independently).
 func seedClaudeProjects(t *testing.T, home, cwd, sessionID, body string) string {
 	t.Helper()
-	enc := strings.ReplaceAll(cwd, "/", "-")
-	enc = strings.ReplaceAll(enc, ".", "-")
-	dir := filepath.Join(home, ".claude", "projects", enc)
+	dir := filepath.Join(home, ".claude", "projects", encodeClaudeProjectDir(cwd))
 	writeFile(t, filepath.Join(dir, sessionID+".jsonl"), body)
 	return dir
 }
@@ -49,7 +41,7 @@ func TestClaudeCandidateSessionDirs_MainAndWorktrees(t *testing.T) {
 		t.Fatalf("want at least 2 dirs (main+worktree), got %d: %+v", len(dirs), dirs)
 	}
 	// Main must be first.
-	if !strings.Contains(dirs[0].dir, strings.ReplaceAll(cwd, "/", "-")) {
+	if !strings.Contains(dirs[0].dir, encodeClaudeProjectDir(cwd)) {
 		t.Errorf("first dir must be main: %+v", dirs[0])
 	}
 	if dirs[0].cwd != cwd {
@@ -97,12 +89,12 @@ func TestClaudeCandidateSessionDirs_ResolvesSymlinkedCwd(t *testing.T) {
 		t.Fatal("no dirs returned")
 	}
 	wantLiteral := filepath.Join(home, ".claude", "projects",
-		strings.ReplaceAll(link, "/", "-"))
+		encodeClaudeProjectDir(link))
 	if dirs[0].dir != wantLiteral || dirs[0].cwd != link {
 		t.Errorf("first dir must stay on literal cwd for error reporting; got %+v", dirs[0])
 	}
 	wantCanonical := filepath.Join(home, ".claude", "projects",
-		strings.ReplaceAll(resolvedCanonical, "/", "-"))
+		encodeClaudeProjectDir(resolvedCanonical))
 	var found bool
 	for _, d := range dirs {
 		if d.dir == wantCanonical {
@@ -130,6 +122,90 @@ func TestClaudeCandidateSessionDirs_EmptyCwdUsesGetwd(t *testing.T) {
 	}
 	if dirs[0].cwd != tmp {
 		t.Errorf("cwd=%q want %q", dirs[0].cwd, tmp)
+	}
+}
+
+// TestEncodeClaudeProjectDir pins ask's cwd→project-dir encoder against
+// claude's own behavior. The regression that motivated it: a home dir
+// with an underscore (`/home/antonio_wajo_ai/...`) must encode `_`→`-`
+// just like `/`→`-`, or resume can never find the dir claude created.
+func TestEncodeClaudeProjectDir(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"/home/antonio_wajo_ai/git/ask", "-home-antonio-wajo-ai-git-ask"},
+		{"/home/antonio_wajo_ai/git/ask/.claude/worktrees/lucky-sliding-pebble",
+			"-home-antonio-wajo-ai-git-ask--claude-worktrees-lucky-sliding-pebble"},
+		{"/home/u/git/BetterBags", "-home-u-git-BetterBags"},                 // case preserved
+		{"/home/u/nanomite/575748f2-be61", "-home-u-nanomite-575748f2-be61"}, // digits + dashes preserved
+	}
+	for _, c := range cases {
+		if got := encodeClaudeProjectDir(c.in); got != c.want {
+			t.Errorf("encodeClaudeProjectDir(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+
+	// Hash fallback matches a known Java-style hashCode: hashCode("ask")
+	// == 96889, which is "22rd" in base 36.
+	if got := claudeProjectDirHash("ask"); got != "22rd" {
+		t.Errorf("claudeProjectDirHash(%q) = %q, want %q", "ask", got, "22rd")
+	}
+
+	// Encoded forms over 200 chars truncate to 200 + "-" + hash, and the
+	// hash disambiguates paths sharing the same 200-char prefix.
+	long := "/" + strings.Repeat("a", 300)
+	plain := claudeProjectDirNonAlnum.ReplaceAllString(long, "-")
+	if len(plain) <= claudeProjectDirMaxLen {
+		t.Fatalf("fixture not long enough: %d", len(plain))
+	}
+	enc := encodeClaudeProjectDir(long)
+	if !strings.HasPrefix(enc, plain[:claudeProjectDirMaxLen]+"-") {
+		t.Errorf("long encoding %q must start with the 200-char prefix + '-'", enc)
+	}
+	if encodeClaudeProjectDir(long+"b") == enc {
+		t.Errorf("distinct long paths must hash to distinct dirs")
+	}
+	if encodeClaudeProjectDir(long) != enc {
+		t.Errorf("encoding must be deterministic")
+	}
+}
+
+// TestClaudeCandidateSessionDirs_UnderscoreCwd is the end-to-end
+// regression for the underscore-home bug: with a cwd under
+// `/home/<user_name>/…`, resume must still resolve both the main
+// project dir and its worktree siblings. The cwd need not exist on
+// disk — only the encoded projects dirs under the isolated HOME do.
+func TestClaudeCandidateSessionDirs_UnderscoreCwd(t *testing.T) {
+	home := isolateHome(t)
+	cwd := "/home/test_user/git/ask"
+	seedClaudeProjects(t, home, cwd, "S-main",
+		`{"type":"user","message":{"role":"user","content":"hi"}}`)
+	wtCwd := cwd + "/.claude/worktrees/lucky-sliding-pebble"
+	seedClaudeProjects(t, home, wtCwd, "S-wt",
+		`{"type":"user","message":{"role":"user","content":"wt"}}`)
+
+	// Encoder must collapse the underscore to a dash, matching claude.
+	wantMain := filepath.Join(home, ".claude", "projects", "-home-test-user-git-ask")
+	dirs, err := claudeCandidateSessionDirs(cwd)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if dirs[0].dir != wantMain {
+		t.Fatalf("main dir = %q, want %q", dirs[0].dir, wantMain)
+	}
+	if _, err := os.Stat(dirs[0].dir); err != nil {
+		t.Errorf("encoded main dir should exist on disk: %v", err)
+	}
+
+	// loadClaudeSessions must surface both the main and worktree sessions.
+	got, err := loadClaudeSessions(cwd)
+	if err != nil {
+		t.Fatalf("loadClaudeSessions: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, s := range got {
+		ids[s.id] = true
+	}
+	if !ids["S-main"] || !ids["S-wt"] {
+		t.Errorf("want both main+worktree sessions, got ids=%v", ids)
 	}
 }
 
@@ -318,9 +394,7 @@ func TestLoadClaudeSessions_SortedNewestFirst(t *testing.T) {
 	home := isolateHome(t)
 	cwd := t.TempDir()
 	seedClaudeProjects(t, home, cwd, "old", `{"type":"user","message":{"role":"user","content":"old"}}`)
-	encoded := strings.ReplaceAll(cwd, "/", "-")
-	encoded = strings.ReplaceAll(encoded, ".", "-")
-	oldPath := filepath.Join(home, ".claude", "projects", encoded, "old.jsonl")
+	oldPath := filepath.Join(home, ".claude", "projects", encodeClaudeProjectDir(cwd), "old.jsonl")
 	past := time.Now().Add(-time.Hour)
 	if err := os.Chtimes(oldPath, past, past); err != nil {
 		t.Fatalf("chtimes: %v", err)

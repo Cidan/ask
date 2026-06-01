@@ -956,8 +956,7 @@ func TestClaudeMaterialize_RoundTripsViaLoadClaudeHistory(t *testing.T) {
 		t.Errorf("nativeCwd=%q want %q", nativeCwd, resolved)
 	}
 	// File landed under HOME/.claude/projects/<enc>.
-	enc := strings.ReplaceAll(resolved, "/", "-")
-	enc = strings.ReplaceAll(enc, ".", "-")
+	enc := encodeClaudeProjectDir(resolved)
 	fp := filepath.Join(home, ".claude", "projects", enc, sid+".jsonl")
 	if _, err := os.Stat(fp); err != nil {
 		t.Fatalf("synthetic file missing at %s: %v", fp, err)
@@ -1012,14 +1011,12 @@ func TestClaudeMaterialize_ResolvesSymlinkedWorkspace(t *testing.T) {
 	if nativeCwd != resolvedCanonical {
 		t.Errorf("nativeCwd=%q want canonical %q", nativeCwd, resolvedCanonical)
 	}
-	encCanon := strings.ReplaceAll(resolvedCanonical, "/", "-")
-	encCanon = strings.ReplaceAll(encCanon, ".", "-")
+	encCanon := encodeClaudeProjectDir(resolvedCanonical)
 	canonPath := filepath.Join(home, ".claude", "projects", encCanon, sid+".jsonl")
 	if _, err := os.Stat(canonPath); err != nil {
 		t.Fatalf("synthetic file should land under canonical encoding %s: %v", canonPath, err)
 	}
-	encLink := strings.ReplaceAll(link, "/", "-")
-	encLink = strings.ReplaceAll(encLink, ".", "-")
+	encLink := encodeClaudeProjectDir(link)
 	linkPath := filepath.Join(home, ".claude", "projects", encLink, sid+".jsonl")
 	if _, err := os.Stat(linkPath); err == nil {
 		t.Errorf("synthetic file should NOT exist under symlink encoding %s", linkPath)

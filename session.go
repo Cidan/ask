@@ -5,12 +5,58 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
+
+// claudeProjectDirMaxLen mirrors the length cap claude applies before
+// falling back to a hashed directory name.
+const claudeProjectDirMaxLen = 200
+
+// claudeProjectDirNonAlnum matches every character claude rewrites to
+// `-` when turning a cwd into a `~/.claude/projects/<dir>` name.
+var claudeProjectDirNonAlnum = regexp.MustCompile(`[^a-zA-Z0-9]`)
+
+// encodeClaudeProjectDir reproduces claude's own cwd→project-dir
+// encoder (the CLI's `SM` function) character-for-character: every
+// character outside [a-zA-Z0-9] — `/`, `_`, `.`, `:`, … — becomes `-`,
+// so `/home/some_user/git/ask` maps to `-home-some-user-git-ask` and
+// its `.claude/worktrees/<name>` children to
+// `…-git-ask--claude-worktrees-<name>`. When the encoded form exceeds
+// 200 chars claude truncates and appends a base-36 hash of the original
+// path; we match that too.
+//
+// This must stay exact: a cwd containing an underscore (e.g. a
+// `/home/<user_name>/…` home) silently breaks resume otherwise — the
+// computed directory never matches the one claude created, so no
+// sessions are ever found.
+func encodeClaudeProjectDir(path string) string {
+	enc := claudeProjectDirNonAlnum.ReplaceAllString(path, "-")
+	if len(enc) <= claudeProjectDirMaxLen {
+		return enc
+	}
+	return enc[:claudeProjectDirMaxLen] + "-" + claudeProjectDirHash(path)
+}
+
+// claudeProjectDirHash mirrors claude's hashed-suffix fallback: a
+// 32-bit Java-style string hash (`h = h*31 + c`, wrapping at int32)
+// rendered as its absolute value in base 36.
+func claudeProjectDirHash(path string) string {
+	var h int32
+	for _, r := range path {
+		h = h*31 + r
+	}
+	n := int64(h)
+	if n < 0 {
+		n = -n
+	}
+	return strconv.FormatInt(n, 36)
+}
 
 // sessionDir pairs a claude project directory (`~/.claude/projects/<encoded>`)
 // with the filesystem cwd that produced it. The cwd is what we pass to
@@ -43,11 +89,12 @@ func claudeSessionPath(sessionID string, cwd string) (string, error) {
 // doesn't exist on disk (callers may still want its path for error
 // reporting).
 //
-// Claude encodes project cwd as `ReplaceAll(cwd, "/", "-")` for path
-// segments without dots, but replaces `.` with `-` too — so
-// `/foo/ask/.claude/worktrees/bar` becomes
-// `-foo-ask--claude-worktrees-bar`. We rely on that literal prefix to
-// find siblings and reconstruct the worktree path from the remainder.
+// The encoded main-cwd dir name (see encodeClaudeProjectDir) doubles
+// as the literal prefix of every worktree sibling: claude encodes
+// `<cwd>/.claude/worktrees/<name>` to
+// `<enc(cwd)>--claude-worktrees-<name>` (the `/.` collapses to `--`),
+// so we scan for that prefix to find siblings and reconstruct each
+// worktree path from the remainder.
 //
 // Symlinks: claude itself encodes from the canonical cwd (getcwd(2)),
 // while ask's os.Getwd may instead return the unresolved form when
@@ -80,7 +127,7 @@ func claudeCandidateSessionDirs(cwd string) ([]sessionDir, error) {
 	seenMain := map[string]bool{}
 	seenSibling := map[string]bool{}
 	for _, c := range cwds {
-		mainName := strings.ReplaceAll(c, "/", "-")
+		mainName := encodeClaudeProjectDir(c)
 		if !seenMain[mainName] {
 			dirs = append(dirs, sessionDir{dir: filepath.Join(base, mainName), cwd: c})
 			seenMain[mainName] = true
@@ -355,8 +402,7 @@ func writeClaudeSyntheticSession(workspace string, turns []NeutralTurn) (string,
 	if err != nil {
 		return "", "", err
 	}
-	enc := strings.ReplaceAll(workspace, "/", "-")
-	enc = strings.ReplaceAll(enc, ".", "-")
+	enc := encodeClaudeProjectDir(workspace)
 	dir := filepath.Join(home, ".claude", "projects", enc)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", "", err
