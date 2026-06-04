@@ -44,6 +44,7 @@ const (
 	ActionTabPrev         Action = "tab.prev"
 	ActionTabNext         Action = "tab.next"
 	ActionAppSuspend      Action = "app.suspend"
+	ActionAgentOverview   Action = "agent.overview"
 )
 
 // KeyBinding is a parsed Mod+Code pair. The zero value (Mod==0,
@@ -237,6 +238,7 @@ var defaultKeyBindings = map[Action]KeyBinding{
 	ActionTabPrev:         {Mod: tea.ModCtrl, Code: tea.KeyLeft},
 	ActionTabNext:         {Mod: tea.ModCtrl, Code: tea.KeyRight},
 	ActionAppSuspend:      {Mod: tea.ModCtrl, Code: 'z'},
+	ActionAgentOverview:   {Mod: tea.ModCtrl, Code: 'g'},
 }
 
 func init() {
@@ -351,6 +353,7 @@ var actionGroups = []actionMetaGroup{
 		{ActionReload, "Reload issues/PRs"},
 	}},
 	{Heading: "App", Items: []actionMetaItem{
+		{ActionAgentOverview, "Agent overview"},
 		{ActionAppSuspend, "Suspend ask"},
 	}},
 }

@@ -278,6 +278,13 @@ type focusTabMsg struct {
 	tabID int
 }
 
+// overviewTickMsg re-renders the agent overview on a slow cadence
+// while it's open so elapsed/idle ages and the "needs you" flag stay
+// fresh even when no tab is streaming (busy tabs already drive renders
+// via spinner ticks). A tick that lands after the overview closed is a
+// silent no-op — the handler stops re-arming once overviewOpen is false.
+type overviewTickMsg struct{}
+
 // spawnWorkflowTabMsg asks the app layer to open a new tab dedicated
 // to running `Workflow` against `Source`, rooted at `Cwd`. Issued by
 // the issues screen when the user hits `f` (Source carries an
@@ -579,6 +586,19 @@ type model struct {
 	historyDraft string
 
 	exitArmed bool
+
+	// lastActivity is bumped whenever the session does something
+	// observable (a turn starts streaming, a turn ends). The agent
+	// overview renders humanDuration(time.Since(lastActivity)) as the
+	// idle age of an otherwise-quiet session. Stamped in newTab so a
+	// brand-new tab reads "now" rather than the zero time.
+	lastActivity time.Time
+
+	// overviewLabel is the user-set name shown in the agent overview
+	// (set with `r` there). Empty means the overview derives a title
+	// from the workflow / first user message instead. Lives for the
+	// tab's lifetime only — tabs aren't persisted across restarts.
+	overviewLabel string
 
 	todos []todoItem
 
