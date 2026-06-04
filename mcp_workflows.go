@@ -88,7 +88,7 @@ type workflowStepView struct {
 	// Loop-step fields (kind == "loop").
 	Steps         []workflowInnerStepView `json:"steps,omitempty" jsonschema:"inner agent steps run in order each iteration; loop steps only (loops cannot nest)"`
 	MaxIterations int                     `json:"maxIterations,omitempty" jsonschema:"iteration cap; loop steps only (0 = default of 10)"`
-	ExitCondition string                  `json:"exitCondition,omitempty" jsonschema:"free-text goal injected into inner step prompts so the agent knows when to call workflow_loop with break; loop steps only"`
+	ExitCondition string                  `json:"exitCondition,omitempty" jsonschema:"free-text goal injected into inner step prompts so the agent knows when to break the loop via end_turn; loop steps only"`
 }
 
 type workflowDefView struct {
@@ -138,35 +138,35 @@ type workflowRunOutput struct {
 	StartedAt  string `json:"started_at" jsonschema:"RFC3339 timestamp marking dispatch"`
 }
 
-type workflowLoopInput struct {
-	Decision string `json:"decision" jsonschema:"break to end the loop now, or continue to run another iteration"`
-	Reason   string `json:"reason,omitempty" jsonschema:"short justification for the decision, surfaced in the workflow log"`
+type endTurnInput struct {
+	Summary  string `json:"summary" jsonschema:"required: 1-3 sentence summary of what you did this step (and what remains), recorded as this step's line in the workflow log"`
+	Decision string `json:"decision,omitempty" jsonschema:"loop control, required only on the final step of a loop iteration: 'continue' to run another iteration or 'break' to end the loop; omit when not the final step of a loop"`
 }
 
-type workflowLoopOutput struct {
-	Registered bool   `json:"registered" jsonschema:"true when the intent was recorded against an active loop"`
-	Decision   string `json:"decision" jsonschema:"the decision that was registered, echoed back"`
+type endTurnOutput struct {
+	Registered bool   `json:"registered" jsonschema:"true when the summary was recorded against the active workflow step"`
+	Decision   string `json:"decision,omitempty" jsonschema:"the loop decision that was registered, echoed back (empty when none)"`
 	Note       string `json:"note" jsonschema:"human-readable status"`
 }
 
-// workflowLoopReply is the model's answer to a workflowLoopSignalMsg.
-// registered is true when the run was inside a live loop and the intent
-// landed; note is the human-readable status echoed back to the agent.
-type workflowLoopReply struct {
+// endTurnReply is the model's answer to an endTurnSignalMsg. registered
+// is true when a workflow step was live and the summary landed; note is
+// the human-readable status echoed back to the agent.
+type endTurnReply struct {
 	registered bool
 	note       string
 }
 
-// workflowLoopSignalMsg carries a workflow_loop tool call from the MCP
-// bridge to the owning workflow tab. The tool blocks on `reply` (like
-// askToolRequestMsg) so the intent is guaranteed recorded before the
-// agent's turn ends — the runner reads it at turnComplete. tabID routes
-// the message to the right tab via dispatchByTabID.
-type workflowLoopSignalMsg struct {
+// endTurnSignalMsg carries an end_turn tool call from the MCP bridge to
+// the owning workflow tab. The tool blocks on `reply` (like
+// askToolRequestMsg) so the summary/decision is guaranteed recorded
+// before the agent's turn ends — the runner reads it at turnComplete.
+// tabID routes the message to the right tab via dispatchByTabID.
+type endTurnSignalMsg struct {
 	tabID    int
+	summary  string
 	decision string
-	reason   string
-	reply    chan workflowLoopReply
+	reply    chan endTurnReply
 }
 
 // ----- Tool descriptions -----
@@ -188,7 +188,7 @@ Each step is one of two kinds:
   - Agent step (kind omitted or ""): name required; provider must be a registered agent CLI (claude, codex, ...); model optional (empty = provider default); prompt may be empty.
   - Loop step (kind="loop"): name required; steps holds one or more inner agent steps run in order each iteration; maxIterations is an optional cap (0 = default of 10); exitCondition is free text describing when the loop should stop. Loops cannot be nested — a loop's inner steps must all be agent steps.
 
-A loop repeats its inner steps until an inner agent calls the workflow_loop tool with decision="break" (or maxIterations is reached). The final inner step of each iteration must register a decision; the exitCondition text is injected into the inner prompts to guide that call.
+A loop repeats its inner steps until an inner agent ends a turn with the end_turn tool's decision="break" (or maxIterations is reached). Every step must call end_turn with a summary; the final inner step of each iteration must additionally register a decision (continue/break). The exitCondition text is injected into the inner prompts to guide that call.
 
 Errors on duplicate name, empty step name, unknown provider, a nested loop, or a loop with no inner steps.`
 
@@ -208,16 +208,13 @@ Fire-and-forget: returns immediately with the session key. The workflow runs in 
 
 Errors when the workflow doesn't exist, when it has no steps, or when the UI isn't ready to spawn a tab.`
 
-	workflowLoopToolDescription = `Register your break/continue intent for the loop you are currently running inside.
+	endTurnToolDescription = `Report the end of your turn for the current workflow step. REQUIRED on every step.
 
-You will see this is relevant when your step prompt says you are running inside a workflow loop. Call this tool with:
-  - decision="break" when the loop's exit condition is met — end the loop and let the workflow move on to the next step.
-  - decision="continue" to run another iteration of the loop.
-Always include a short reason.
+Call this once, as the final action of your turn, with:
+  - summary: 1-3 sentences describing what you did this step and the outcome (plus anything left to do). This becomes this step's entry in the workflow log — write it for a human following along, not as a note to yourself.
+  - decision: ONLY when your step prompt says you are the final step of a workflow loop iteration. Pass "continue" to run another iteration or "break" to end the loop. Breaking should be exceptional — only when the loop's exit goal is met. Omit decision when you are not inside a loop, or not its final step (unless you are deliberately breaking the loop early).
 
-This only RECORDS your intent; it does NOT end your turn or exit the loop immediately. Keep working and finish your turn normally — when your turn completes, the workflow acts on the most recent decision you registered. If you are the final step of the loop's iteration and your turn ends without a registered decision, you will be re-prompted to make one.
-
-Has no effect when called outside a loop.`
+Calling this RECORDS your report; it does NOT end your turn early or exit a loop immediately. Finish your turn normally — the workflow acts on what you registered when your turn completes. If your turn ends without calling end_turn (or, as a loop's final step, without a decision), you will be re-prompted to provide it.`
 )
 
 // mcpSpawnWorkflowTab is the indirection workflow_run uses to dispatch
@@ -754,38 +751,44 @@ func (b *mcpBridge) workflowRunTool(_ context.Context, _ *mcp.CallToolRequest, i
 		}, nil
 }
 
-// workflowLoopTool records an inner loop step's break/continue intent.
-// It does not tenant on cwd (loop control is about the live run on this
-// tab, not project data); instead it routes a workflowLoopSignalMsg to
-// the owning tab and blocks on the reply so the intent is recorded
-// before the agent's turn ends. The runner consumes the intent at
-// turnComplete — see advanceWorkflowStep.
-func (b *mcpBridge) workflowLoopTool(ctx context.Context, _ *mcp.CallToolRequest, in workflowLoopInput) (*mcp.CallToolResult, workflowLoopOutput, error) {
+// endTurnTool records the current workflow step's end-of-turn report:
+// the required summary plus, in a loop, the optional break/continue
+// decision. It does not tenant on cwd (this is about the live run on
+// this tab, not project data); instead it routes an endTurnSignalMsg to
+// the owning tab and blocks on the reply so the report is recorded
+// before the agent's turn ends. The runner consumes it at turnComplete
+// — see advanceWorkflowStep.
+func (b *mcpBridge) endTurnTool(ctx context.Context, _ *mcp.CallToolRequest, in endTurnInput) (*mcp.CallToolResult, endTurnOutput, error) {
+	summary := strings.TrimSpace(in.Summary)
+	if summary == "" {
+		return errResult("summary is required: describe in 1-3 sentences what you did this step"),
+			endTurnOutput{}, nil
+	}
 	decision := strings.TrimSpace(in.Decision)
-	if decision != workflowLoopBreak && decision != workflowLoopContinue {
-		return errResult(fmt.Sprintf("decision must be %q or %q", workflowLoopBreak, workflowLoopContinue)),
-			workflowLoopOutput{}, nil
+	if decision != "" && decision != workflowLoopBreak && decision != workflowLoopContinue {
+		return errResult(fmt.Sprintf("decision, when provided, must be %q or %q", workflowLoopContinue, workflowLoopBreak)),
+			endTurnOutput{}, nil
 	}
 	p := teaProgramPtr.Load()
 	if p == nil {
-		return errResult("ask UI not ready"), workflowLoopOutput{}, nil
+		return errResult("ask UI not ready"), endTurnOutput{}, nil
 	}
-	reply := make(chan workflowLoopReply, 1)
-	p.Send(workflowLoopSignalMsg{
+	reply := make(chan endTurnReply, 1)
+	p.Send(endTurnSignalMsg{
 		tabID:    b.tabID,
+		summary:  summary,
 		decision: decision,
-		reason:   strings.TrimSpace(in.Reason),
 		reply:    reply,
 	})
 	select {
 	case resp := <-reply:
-		return okResult(resp.note), workflowLoopOutput{
+		return okResult(resp.note), endTurnOutput{
 			Registered: resp.registered,
 			Decision:   decision,
 			Note:       resp.note,
 		}, nil
 	case <-ctx.Done():
-		return nil, workflowLoopOutput{}, ctx.Err()
+		return nil, endTurnOutput{}, ctx.Err()
 	}
 }
 
@@ -818,7 +821,7 @@ func (b *mcpBridge) registerWorkflowTools() {
 		Description: workflowRunToolDescription,
 	}, b.workflowRunTool)
 	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "workflow_loop",
-		Description: workflowLoopToolDescription,
-	}, b.workflowLoopTool)
+		Name:        "end_turn",
+		Description: endTurnToolDescription,
+	}, b.endTurnTool)
 }

@@ -1286,6 +1286,9 @@ func (m model) workflowRunningBannerLines(sourceLabel, cancelClause string) (tit
 			stepProvider = top.Provider
 			stepModel = top.Model
 			stepLabel = stepName
+			if r.linearRetry > 0 {
+				stepLabel += fmt.Sprintf(" · re-prompt #%d", r.linearRetry)
+			}
 		}
 	}
 	runMeta := stepProvider

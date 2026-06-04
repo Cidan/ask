@@ -8,9 +8,20 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// TestAdvanceWorkflowStep_AdvancesToNextStep verifies the runner's
-// success path: advance with no error rolls the captured text into
-// the step log and emits a workflowRunStartStepMsg for the next step.
+// wfHistoryHas reports whether any history entry contains substr.
+func wfHistoryHas(m model, substr string) bool {
+	for _, e := range m.history {
+		if strings.Contains(e.text, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestAdvanceWorkflowStep_AdvancesToNextStep verifies the success path: a
+// linear step that registered an end_turn summary rolls its captured text
+// into the step log, renders its summary line, and emits a
+// workflowRunStartStepMsg for the next step.
 func TestAdvanceWorkflowStep_AdvancesToNextStep(t *testing.T) {
 	cwd := isolateHome(t)
 	resetWorkflowTrackerForTest()
@@ -27,6 +38,7 @@ func TestAdvanceWorkflowStep_AdvancesToNextStep(t *testing.T) {
 		StepIdx: 0,
 	}
 	m.workflowRun.currentStep.WriteString("first step output text")
+	m.workflowRun.pendingEndTurn = &endTurnSignal{summary: "did the work"}
 	workflowTracker().markWorking(cwd, m.workflowRun.Source.Key(), "wf", m.id)
 
 	newM, cmd := m.advanceWorkflowStep(nil)
@@ -40,6 +52,9 @@ func TestAdvanceWorkflowStep_AdvancesToNextStep(t *testing.T) {
 	if len(mm.workflowRun.stepLog) != 1 || !strings.Contains(mm.workflowRun.stepLog[0], "first step output") {
 		t.Errorf("stepLog: %+v", mm.workflowRun.stepLog)
 	}
+	if !wfHistoryHas(mm, "did the work") {
+		t.Errorf("expected the step's end_turn summary in history")
+	}
 	if cmd == nil {
 		t.Fatalf("expected next-step cmd")
 	}
@@ -49,9 +64,46 @@ func TestAdvanceWorkflowStep_AdvancesToNextStep(t *testing.T) {
 	}
 }
 
+// TestAdvanceWorkflowStep_NoEndTurnRePrompts: a linear step that ends its
+// turn without calling end_turn does not advance — it is re-prompted in
+// place with its output stashed for the reminder, and nothing is
+// committed to the step log.
+func TestAdvanceWorkflowStep_NoEndTurnRePrompts(t *testing.T) {
+	cwd := isolateHome(t)
+	resetWorkflowTrackerForTest()
+	m := newTestModel(t, newFakeProvider())
+	m.cwd = cwd
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{Name: "wf", Steps: []workflowStep{{Name: "first"}, {Name: "second"}}},
+		Source:   issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1}),
+		StepIdx:  0,
+	}
+	m.workflowRun.currentStep.WriteString("work but no end_turn")
+	workflowTracker().markWorking(cwd, m.workflowRun.Source.Key(), "wf", m.id)
+
+	newM, cmd := m.advanceWorkflowStep(nil)
+	r := newM.(model).workflowRun
+	if r.StepIdx != 0 {
+		t.Errorf("StepIdx must not advance without end_turn; got %d", r.StepIdx)
+	}
+	if r.linearRetry != 1 {
+		t.Errorf("linearRetry=%d want 1", r.linearRetry)
+	}
+	if r.linearText != "work but no end_turn" {
+		t.Errorf("linearText=%q", r.linearText)
+	}
+	if r.remind != remindNoSummary {
+		t.Errorf("remind=%v want remindNoSummary", r.remind)
+	}
+	if len(r.stepLog) != 0 {
+		t.Errorf("no summary means no stepLog commit; got %+v", r.stepLog)
+	}
+	assertStartStepCmd(t, cmd, m.id)
+}
+
 // TestAdvanceWorkflowStep_FinalisesOnLastStep covers the `done`
-// transition: when StepIdx after increment exceeds Steps length,
-// the runner finalises and writes a `done` record to disk.
+// transition: the final step registering end_turn finalises the chain and
+// writes a `done` record to disk.
 func TestAdvanceWorkflowStep_FinalisesOnLastStep(t *testing.T) {
 	cwd := isolateHome(t)
 	resetWorkflowTrackerForTest()
@@ -66,6 +118,7 @@ func TestAdvanceWorkflowStep_FinalisesOnLastStep(t *testing.T) {
 		Source:  issueWorkflowSource(issue),
 		StepIdx: 0,
 	}
+	m.workflowRun.pendingEndTurn = &endTurnSignal{summary: "all done"}
 	workflowTracker().markWorking(cwd, issue.Key(), "single", m.id)
 
 	newM, _ := m.advanceWorkflowStep(nil)
@@ -84,9 +137,9 @@ func TestAdvanceWorkflowStep_FinalisesOnLastStep(t *testing.T) {
 	}
 }
 
-// TestAdvanceWorkflowStep_FailsOnError covers the `failed` path: an
-// error from the step finalises the chain immediately, persisting
-// `failed` to disk.
+// TestAdvanceWorkflowStep_FailsOnError covers the `failed` path: an error
+// from the step finalises the chain immediately (bypassing the end_turn
+// requirement), persisting `failed` to disk.
 func TestAdvanceWorkflowStep_FailsOnError(t *testing.T) {
 	cwd := isolateHome(t)
 	resetWorkflowTrackerForTest()
@@ -155,10 +208,10 @@ func TestWorkflowFinalize_IsIdempotent(t *testing.T) {
 	}
 }
 
-// TestWorkflowAssistantText_AccumulatesOnlyOnWorkflowTab guarantees
-// the per-step buffer is only fed when the tab actually has a
-// running workflow. A regular chat tab must not feed the buffer
-// (the field is shared with the model struct).
+// TestWorkflowAssistantText_AccumulatesOnlyOnWorkflowTab guarantees the
+// per-step buffer is only fed when the tab actually has a running
+// workflow. A regular chat tab must not feed the buffer (the field is
+// shared with the model struct).
 func TestWorkflowAssistantText_AccumulatesOnlyOnWorkflowTab(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	(&m).workflowAssistantText("ignored")
@@ -175,9 +228,9 @@ func TestWorkflowAssistantText_AccumulatesOnlyOnWorkflowTab(t *testing.T) {
 }
 
 // TestStartWorkflowStep_UnknownProviderFails covers the precondition
-// check: a workflow step pointing at an unregistered provider id
-// should immediately finalise as failed rather than crash through
-// providerByID's nil fallback.
+// check: a workflow step pointing at an unregistered provider id should
+// immediately finalise as failed rather than crash through providerByID's
+// nil fallback.
 func TestStartWorkflowStep_UnknownProviderFails(t *testing.T) {
 	cwd := isolateHome(t)
 	resetWorkflowTrackerForTest()
@@ -248,13 +301,13 @@ func assertStartStepCmd(t *testing.T, cmd tea.Cmd, tabID int) {
 var loopInner2 = []workflowStep{{Name: "code", Provider: "fake"}, {Name: "review", Provider: "fake"}}
 
 // TestWorkflowLoop_TailContinueStartsNextIteration: the tail registering
-// "continue" resets the inner cursor, bumps the iteration, and carries
-// the tail output forward as the next iteration's head context.
+// "continue" resets the inner cursor, bumps the iteration, and carries the
+// tail output forward as the next iteration's head context.
 func TestWorkflowLoop_TailContinueStartsNextIteration(t *testing.T) {
 	m := loopRunModel(t, loopInner2, 5, 1, 1)
 	m.workflowRun.loop.iterationLog = []string{"code out"}
 	m.workflowRun.currentStep.WriteString("review out")
-	m.workflowRun.pendingLoopSignal = &loopSignal{decision: workflowLoopContinue, reason: "more work"}
+	m.workflowRun.pendingEndTurn = &endTurnSignal{decision: workflowLoopContinue, summary: "more work"}
 
 	newM, cmd := m.advanceWorkflowStep(nil)
 	r := newM.(model).workflowRun
@@ -273,17 +326,20 @@ func TestWorkflowLoop_TailContinueStartsNextIteration(t *testing.T) {
 	if r.loop.retry != 0 {
 		t.Errorf("retry should reset; got %d", r.loop.retry)
 	}
+	if !wfHistoryHas(newM.(model), "more work") {
+		t.Errorf("tail summary should be rendered")
+	}
 	assertStartStepCmd(t, cmd, m.id)
 }
 
-// TestWorkflowLoop_TailBreakExitsToNextStep: a break from the tail
-// commits the final iteration's outputs to the linear log, clears the
-// frame, and advances to the step after the loop.
+// TestWorkflowLoop_TailBreakExitsToNextStep: a break from the tail commits
+// the final iteration's outputs to the linear log, clears the frame, and
+// advances to the step after the loop.
 func TestWorkflowLoop_TailBreakExitsToNextStep(t *testing.T) {
 	m := loopRunModel(t, loopInner2, 5, 1, 3)
 	m.workflowRun.loop.iterationLog = []string{"code out"}
 	m.workflowRun.currentStep.WriteString("looks good")
-	m.workflowRun.pendingLoopSignal = &loopSignal{decision: workflowLoopBreak, reason: "no issues"}
+	m.workflowRun.pendingEndTurn = &endTurnSignal{decision: workflowLoopBreak, summary: "no issues"}
 
 	newM, cmd := m.advanceWorkflowStep(nil)
 	r := newM.(model).workflowRun
@@ -304,7 +360,7 @@ func TestWorkflowLoop_TailBreakExitsToNextStep(t *testing.T) {
 func TestWorkflowLoop_NonTailBreakSkipsRestOfIteration(t *testing.T) {
 	m := loopRunModel(t, loopInner2, 5, 0, 1)
 	m.workflowRun.currentStep.WriteString("early done")
-	m.workflowRun.pendingLoopSignal = &loopSignal{decision: workflowLoopBreak, reason: "trivial"}
+	m.workflowRun.pendingEndTurn = &endTurnSignal{decision: workflowLoopBreak, summary: "trivial"}
 
 	newM, _ := m.advanceWorkflowStep(nil)
 	r := newM.(model).workflowRun
@@ -319,11 +375,13 @@ func TestWorkflowLoop_NonTailBreakSkipsRestOfIteration(t *testing.T) {
 	}
 }
 
-// TestWorkflowLoop_NonTailProceedsToNextInner: a non-tail step with no
-// break simply advances to the next inner step in the same iteration.
+// TestWorkflowLoop_NonTailProceedsToNextInner: a non-tail step that
+// registers a summary with no decision simply advances to the next inner
+// step in the same iteration.
 func TestWorkflowLoop_NonTailProceedsToNextInner(t *testing.T) {
 	m := loopRunModel(t, loopInner2, 5, 0, 1)
 	m.workflowRun.currentStep.WriteString("code out")
+	m.workflowRun.pendingEndTurn = &endTurnSignal{summary: "wrote the code"}
 
 	newM, _ := m.advanceWorkflowStep(nil)
 	r := newM.(model).workflowRun
@@ -336,16 +394,47 @@ func TestWorkflowLoop_NonTailProceedsToNextInner(t *testing.T) {
 	if len(r.loop.iterationLog) != 1 || r.loop.iterationLog[0] != "code out" {
 		t.Errorf("iterationLog=%+v want [code out]", r.loop.iterationLog)
 	}
+	if !wfHistoryHas(newM.(model), "wrote the code") {
+		t.Errorf("non-tail summary should be rendered")
+	}
 }
 
-// TestWorkflowLoop_TailSilenceRePrompts: a tail that finishes without a
-// registered decision is re-prompted in place — the cursor and iteration
-// do not advance, retry increments, and the silent output is stashed for
-// the reminder rather than committed to the iteration log.
-func TestWorkflowLoop_TailSilenceRePrompts(t *testing.T) {
+// TestWorkflowLoop_NonTailNoEndTurnRePrompts: a non-tail inner step that
+// finishes without end_turn is re-prompted in place — the inner cursor
+// does not advance, retry increments, the output is stashed, and nothing
+// is committed to the iteration log.
+func TestWorkflowLoop_NonTailNoEndTurnRePrompts(t *testing.T) {
+	m := loopRunModel(t, loopInner2, 5, 0, 1)
+	m.workflowRun.currentStep.WriteString("code but no end_turn")
+
+	newM, cmd := m.advanceWorkflowStep(nil)
+	r := newM.(model).workflowRun
+	if r.loop == nil || r.loop.innerIdx != 0 {
+		t.Fatalf("non-tail with no end_turn must stay on the same inner step; got %+v", r.loop)
+	}
+	if r.loop.retry != 1 {
+		t.Errorf("retry=%d want 1", r.loop.retry)
+	}
+	if r.loop.retryText != "code but no end_turn" {
+		t.Errorf("retryText=%q", r.loop.retryText)
+	}
+	if r.remind != remindNoSummary {
+		t.Errorf("remind=%v want remindNoSummary", r.remind)
+	}
+	if len(r.loop.iterationLog) != 0 {
+		t.Errorf("no summary means no iterationLog commit; got %+v", r.loop.iterationLog)
+	}
+	assertStartStepCmd(t, cmd, m.id)
+}
+
+// TestWorkflowLoop_TailNoEndTurnRePrompts: a tail that finishes without
+// calling end_turn at all is re-prompted in place (remindNoSummary) — the
+// cursor and iteration don't advance and the silent output is stashed
+// rather than committed.
+func TestWorkflowLoop_TailNoEndTurnRePrompts(t *testing.T) {
 	m := loopRunModel(t, loopInner2, 5, 1, 2)
 	m.workflowRun.loop.iterationLog = []string{"code out"}
-	m.workflowRun.currentStep.WriteString("review without signal")
+	m.workflowRun.currentStep.WriteString("review without end_turn")
 
 	newM, cmd := m.advanceWorkflowStep(nil)
 	r := newM.(model).workflowRun
@@ -361,11 +450,46 @@ func TestWorkflowLoop_TailSilenceRePrompts(t *testing.T) {
 	if r.loop.retry != 1 {
 		t.Errorf("retry=%d want 1", r.loop.retry)
 	}
-	if r.loop.lastTailText != "review without signal" {
-		t.Errorf("lastTailText=%q", r.loop.lastTailText)
+	if r.loop.retryText != "review without end_turn" {
+		t.Errorf("retryText=%q", r.loop.retryText)
+	}
+	if r.remind != remindNoSummary {
+		t.Errorf("remind=%v want remindNoSummary", r.remind)
 	}
 	if len(r.loop.iterationLog) != 1 {
 		t.Errorf("silent attempt must NOT be appended to the iteration log; got %+v", r.loop.iterationLog)
+	}
+	assertStartStepCmd(t, cmd, m.id)
+}
+
+// TestWorkflowLoop_TailNoDecisionRePrompts: a tail that registers a
+// summary but omits the required decision is re-prompted for the decision
+// (remindNoDecision). Its summary is still surfaced.
+func TestWorkflowLoop_TailNoDecisionRePrompts(t *testing.T) {
+	m := loopRunModel(t, loopInner2, 5, 1, 2)
+	m.workflowRun.loop.iterationLog = []string{"code out"}
+	m.workflowRun.currentStep.WriteString("reviewed, didn't decide")
+	m.workflowRun.pendingEndTurn = &endTurnSignal{summary: "reviewed, unsure"}
+
+	newM, cmd := m.advanceWorkflowStep(nil)
+	r := newM.(model).workflowRun
+	if r.loop == nil {
+		t.Fatal("loop should remain active")
+	}
+	if r.loop.innerIdx != 1 {
+		t.Errorf("should stay on the tail; got innerIdx %d", r.loop.innerIdx)
+	}
+	if r.loop.iteration != 2 {
+		t.Errorf("iteration should not advance; got %d", r.loop.iteration)
+	}
+	if r.loop.retry != 1 {
+		t.Errorf("retry=%d want 1", r.loop.retry)
+	}
+	if r.remind != remindNoDecision {
+		t.Errorf("remind=%v want remindNoDecision", r.remind)
+	}
+	if !wfHistoryHas(newM.(model), "reviewed, unsure") {
+		t.Errorf("the tail's summary should be shown even on a decision re-prompt")
 	}
 	assertStartStepCmd(t, cmd, m.id)
 }
@@ -376,7 +500,7 @@ func TestWorkflowLoop_MaxIterationsSoftExit(t *testing.T) {
 	m := loopRunModel(t, loopInner2, 2, 1, 2)
 	m.workflowRun.loop.iterationLog = []string{"code out"}
 	m.workflowRun.currentStep.WriteString("still not done")
-	m.workflowRun.pendingLoopSignal = &loopSignal{decision: workflowLoopContinue, reason: "more"}
+	m.workflowRun.pendingEndTurn = &endTurnSignal{decision: workflowLoopContinue, summary: "more"}
 
 	newM, _ := m.advanceWorkflowStep(nil)
 	r := newM.(model).workflowRun
@@ -421,13 +545,21 @@ func TestStartWorkflowStep_EntersLoop(t *testing.T) {
 	}
 }
 
-// TestWorkflowLoop_ContextForDispatch exercises the bounded-context
-// policy across the linear / head / non-head / retry cases.
+// TestWorkflowLoop_ContextForDispatch exercises the bounded-context policy
+// across the linear / linear-retry / head / non-head / loop-retry cases.
 func TestWorkflowLoop_ContextForDispatch(t *testing.T) {
 	r := &workflowRunState{stepLog: []string{"pre-loop"}}
 	if got := r.contextForDispatch(); len(got) != 1 || got[0] != "pre-loop" {
 		t.Errorf("linear ctx=%v want [pre-loop]", got)
 	}
+	// A re-prompted linear step also sees its own prior output.
+	r.linearRetry = 1
+	r.linearText = "my prior output"
+	if got := r.contextForDispatch(); len(got) != 2 || got[1] != "my prior output" {
+		t.Errorf("linear retry ctx=%v want [pre-loop, my prior output]", got)
+	}
+	r.linearRetry = 0
+	r.linearText = ""
 	r.loop = &loopRunFrame{innerIdx: 0, iteration: 2, prevTail: "last review"}
 	if got := r.contextForDispatch(); len(got) != 2 || got[1] != "last review" {
 		t.Errorf("head ctx=%v want [pre-loop, last review]", got)
@@ -436,72 +568,118 @@ func TestWorkflowLoop_ContextForDispatch(t *testing.T) {
 	if got := r.contextForDispatch(); len(got) != 2 || got[1] != "code out" {
 		t.Errorf("non-head ctx=%v want [pre-loop, code out]", got)
 	}
-	r.loop = &loopRunFrame{innerIdx: 1, iteration: 1, retry: 1, iterationLog: []string{"code out"}, lastTailText: "review attempt"}
+	r.loop = &loopRunFrame{innerIdx: 1, iteration: 1, retry: 1, iterationLog: []string{"code out"}, retryText: "review attempt"}
 	if got := r.contextForDispatch(); len(got) != 3 || got[2] != "review attempt" {
 		t.Errorf("retry ctx=%v want [pre-loop, code out, review attempt]", got)
 	}
 }
 
-// TestBuildWorkflowStepPrompt_LoopInstructions verifies the auto-injected
-// loop-control guidance, the tail-only "MUST register" clause, and the
-// retry reminder.
-func TestBuildWorkflowStepPrompt_LoopInstructions(t *testing.T) {
+// TestBuildWorkflowStepPrompt_EndTurnInstructions verifies the
+// auto-injected end_turn contract: present on every step, with the loop
+// framing + tail decision clause inside a loop, the non-tail variant for
+// inner steps, and the two re-prompt reminders.
+func TestBuildWorkflowStepPrompt_EndTurnInstructions(t *testing.T) {
 	step := workflowStep{Prompt: "Review the code."}
 	src := issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 2})
 
-	tail := &loopPromptCtx{name: "review-loop", iteration: 2, maxIterations: 5, exitCondition: "no remaining issues", isTail: true}
+	tail := &stepPromptCtx{loop: &loopPromptCtx{name: "review-loop", iteration: 2, maxIterations: 5, exitCondition: "no remaining issues", isTail: true}}
 	got := buildWorkflowStepPrompt(step, src, nil, tail)
-	for _, want := range []string{"Review the code.", "review-loop", "iteration 2 of up to 5", "no remaining issues", "workflow_loop", "MUST register"} {
+	for _, want := range []string{"Review the code.", "review-loop", "iteration 2 of up to 5", "no remaining issues", "end_turn", "summary", "decision", "MUST"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("tail prompt missing %q; got:\n%s", want, got)
 		}
 	}
 	if strings.Contains(got, "REMINDER") {
-		t.Error("non-remind prompt should not include the reminder")
+		t.Error("non-remind prompt should not include a reminder")
 	}
 
-	tail.remind = true
-	if got := buildWorkflowStepPrompt(step, src, []string{"prior attempt"}, tail); !strings.Contains(got, "REMINDER") {
-		t.Error("remind prompt should include the reminder")
+	// Re-prompt for a missing decision.
+	tailRemind := &stepPromptCtx{loop: tail.loop, remind: remindNoDecision}
+	if got := buildWorkflowStepPrompt(step, src, []string{"prior attempt"}, tailRemind); !strings.Contains(got, "REMINDER") || !strings.Contains(got, "decision") {
+		t.Errorf("decision reminder missing; got:\n%s", got)
 	}
 
-	head := &loopPromptCtx{name: "review-loop", iteration: 1, maxIterations: 5, isTail: false}
-	if got := buildWorkflowStepPrompt(step, src, nil, head); strings.Contains(got, "MUST register") {
-		t.Error("non-tail prompt should not include the MUST-register clause")
+	// Non-tail inner step: end_turn contract, but no tail decision clause.
+	head := &stepPromptCtx{loop: &loopPromptCtx{name: "review-loop", iteration: 1, maxIterations: 5, isTail: false}}
+	got = buildWorkflowStepPrompt(step, src, nil, head)
+	if !strings.Contains(got, "end_turn") || !strings.Contains(got, "not its final step") {
+		t.Errorf("non-tail prompt should mention end_turn and that it's not the final step; got:\n%s", got)
+	}
+
+	// Linear step (no loop): still gets the end_turn contract, no loop framing.
+	lin := buildWorkflowStepPrompt(step, src, nil, nil)
+	if !strings.Contains(lin, "end_turn") || !strings.Contains(lin, "summary") {
+		t.Errorf("linear prompt must include the end_turn contract; got:\n%s", lin)
+	}
+	if strings.Contains(lin, "Workflow loop") {
+		t.Errorf("linear prompt must NOT include loop framing; got:\n%s", lin)
+	}
+	// No-summary reminder on a re-prompted linear step.
+	if got := buildWorkflowStepPrompt(step, src, nil, &stepPromptCtx{remind: remindNoSummary}); !strings.Contains(got, "REMINDER") {
+		t.Error("no-summary remind prompt should include the reminder")
 	}
 }
 
-// TestHandleWorkflowLoopSignal_RecordsInsideLoop: a signal arriving while
-// inside a loop records the intent and acks registered=true.
-func TestHandleWorkflowLoopSignal_RecordsInsideLoop(t *testing.T) {
+// TestStepSummaryLine renders the per-step log entry: name, provider/model
+// meta, and the agent's summary.
+func TestStepSummaryLine(t *testing.T) {
+	got := stepSummaryLine("review", "codex", "gpt-5", "found two bugs", 100)
+	for _, want := range []string{"review", "codex/gpt-5", "found two bugs"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary line missing %q; got %q", want, got)
+		}
+	}
+}
+
+// TestHandleEndTurnSignal_RecordsForLinearStep: end_turn records its
+// summary even outside a loop (every step reports), and acks registered.
+func TestHandleEndTurnSignal_RecordsForLinearStep(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
-	m.workflowRun = &workflowRunState{loop: &loopRunFrame{}}
-	reply := make(chan workflowLoopReply, 1)
-	newM, _ := m.handleWorkflowLoopSignal(workflowLoopSignalMsg{
-		tabID: m.id, decision: workflowLoopBreak, reason: "done", reply: reply,
+	m.workflowRun = &workflowRunState{}
+	reply := make(chan endTurnReply, 1)
+	newM, _ := m.handleEndTurnSignal(endTurnSignalMsg{
+		tabID: m.id, summary: "did the thing", reply: reply,
 	})
 	r := newM.(model).workflowRun
-	if r.pendingLoopSignal == nil || r.pendingLoopSignal.decision != workflowLoopBreak {
-		t.Fatalf("intent not recorded: %+v", r.pendingLoopSignal)
+	if r.pendingEndTurn == nil || r.pendingEndTurn.summary != "did the thing" {
+		t.Fatalf("summary not recorded: %+v", r.pendingEndTurn)
+	}
+	if resp := <-reply; !resp.registered {
+		t.Errorf("reply should be registered for an active step; got %+v", resp)
+	}
+}
+
+// TestHandleEndTurnSignal_RecordsDecisionInLoop: inside a loop the decision
+// rides along with the summary.
+func TestHandleEndTurnSignal_RecordsDecisionInLoop(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.workflowRun = &workflowRunState{loop: &loopRunFrame{}}
+	reply := make(chan endTurnReply, 1)
+	newM, _ := m.handleEndTurnSignal(endTurnSignalMsg{
+		tabID: m.id, summary: "looks good", decision: workflowLoopBreak, reply: reply,
+	})
+	r := newM.(model).workflowRun
+	if r.pendingEndTurn == nil || r.pendingEndTurn.decision != workflowLoopBreak {
+		t.Fatalf("decision not recorded: %+v", r.pendingEndTurn)
 	}
 	if resp := <-reply; !resp.registered {
 		t.Errorf("reply should be registered inside a loop; got %+v", resp)
 	}
 }
 
-// TestHandleWorkflowLoopSignal_NoEffectOutsideLoop: a signal with no
-// active loop records nothing and acks registered=false.
-func TestHandleWorkflowLoopSignal_NoEffectOutsideLoop(t *testing.T) {
+// TestHandleEndTurnSignal_NoEffectWhenNoRun: a signal arriving with no live
+// step (finished run) records nothing and acks registered=false.
+func TestHandleEndTurnSignal_NoEffectWhenNoRun(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
-	m.workflowRun = &workflowRunState{}
-	reply := make(chan workflowLoopReply, 1)
-	newM, _ := m.handleWorkflowLoopSignal(workflowLoopSignalMsg{
-		tabID: m.id, decision: workflowLoopContinue, reply: reply,
+	m.workflowRun = &workflowRunState{done: true}
+	reply := make(chan endTurnReply, 1)
+	newM, _ := m.handleEndTurnSignal(endTurnSignalMsg{
+		tabID: m.id, summary: "ignored", reply: reply,
 	})
-	if newM.(model).workflowRun.pendingLoopSignal != nil {
-		t.Error("must not record intent outside a loop")
+	if newM.(model).workflowRun.pendingEndTurn != nil {
+		t.Error("must not record on a finished run")
 	}
 	if resp := <-reply; resp.registered {
-		t.Errorf("reply should be not-registered outside a loop; got %+v", resp)
+		t.Errorf("reply should be not-registered on a finished run; got %+v", resp)
 	}
 }

@@ -139,7 +139,7 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.dispatchByTabID(m.tabID, msg)
 	case workflowRunStepDoneMsg:
 		return a.dispatchByTabID(m.tabID, msg)
-	case workflowLoopSignalMsg:
+	case endTurnSignalMsg:
 		return a.dispatchByTabID(m.tabID, msg)
 	case workflowStatusChangedMsg:
 		return a.broadcast(msg)

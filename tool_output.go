@@ -113,6 +113,11 @@ func nextToolOutputMode(cur toolOutputMode) toolOutputMode {
 // calls render too (as their command/inputs are still useful) — only
 // the result ack is gated on full mode in shouldRenderToolResult.
 func (m model) shouldRenderToolCall(_ toolCallMsg) bool {
+	if m.workflowRun != nil {
+		// Workflow tabs render the clean per-step summary list, not the
+		// raw transcript — no tool calls.
+		return false
+	}
 	if m.quietMode || m.toolOutputMode == toolOutputOff {
 		return false
 	}
@@ -124,6 +129,9 @@ func (m model) shouldRenderToolCall(_ toolCallMsg) bool {
 // payload is only the launch ack ("Command running in background with
 // ID: …") and the actual completion arrives via task_notification.
 func (m model) shouldRenderToolResult(msg toolResultMsg) bool {
+	if m.workflowRun != nil {
+		return false
+	}
 	if m.quietMode || m.toolOutputMode == toolOutputOff {
 		return false
 	}

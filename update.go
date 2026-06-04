@@ -441,7 +441,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if msg.proc != m.proc {
 			return m, nil
 		}
-		if m.renderDiffs && !m.quietMode {
+		if m.renderDiffs && !m.quietMode && m.workflowRun == nil {
 			m.appendHistory(renderDiffBlock(msg.filePath, msg.hunks))
 		}
 		if m.streamCh != nil {
@@ -637,9 +637,13 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		(&m).workflowAssistantText(msg.text)
 		wasIdle := !m.busy
 		m.busy = true
-		if m.quietMode {
+		switch {
+		case m.workflowRun != nil:
+			// Workflow tabs show the clean per-step summary list, not the
+			// raw stream — suppress the response text entirely.
+		case m.quietMode:
 			m.turnBuffer = append(m.turnBuffer, msg.text)
-		} else {
+		default:
 			m.appendResponse(msg.text)
 		}
 		var cmds []tea.Cmd
@@ -828,8 +832,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 	case workflowRunStepDoneMsg:
 		return m.workflowRunHandleStepDone(msg)
 
-	case workflowLoopSignalMsg:
-		return m.handleWorkflowLoopSignal(msg)
+	case endTurnSignalMsg:
+		return m.handleEndTurnSignal(msg)
 
 	case workflowStatusChangedMsg:
 		// Status changed somewhere — invalidate cached frame so the

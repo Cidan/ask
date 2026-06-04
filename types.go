@@ -666,12 +666,30 @@ type workflowRunState struct {
 	// the linear portions of the chain.
 	loop *loopRunFrame
 
-	// pendingLoopSignal holds the break/continue intent the current
-	// inner step registered via the workflow_loop MCP tool this turn.
-	// Reset to nil at every dispatch and consumed by advanceWorkflowStep
-	// when the turn completes — the tool only records intent; the runner
-	// acts on it at turn boundaries.
-	pendingLoopSignal *loopSignal
+	// pendingEndTurn holds what the current step registered via the
+	// end_turn MCP tool this turn: the always-required summary plus, in a
+	// loop, the optional break/continue decision. Reset to nil at every
+	// dispatch and consumed by advanceWorkflowStep when the turn completes
+	// — the tool only records intent; the runner acts on it at turn
+	// boundaries. A step that ends its turn with this still nil is
+	// re-prompted (every step must call end_turn).
+	pendingEndTurn *endTurnSignal
+
+	// linearRetry / linearText are the re-prompt bookkeeping for the
+	// non-loop portion of the chain — the mirror of loopRunFrame's
+	// retry / retryText. linearRetry counts how many times the current
+	// linear step has been re-prompted for a missing end_turn call;
+	// linearText stashes its prior output so the re-prompt can feed it
+	// back rather than make the step redo the work. Both reset when the
+	// linear step finally registers and advances.
+	linearRetry int
+	linearText  string
+
+	// remind records why the current dispatch is a re-prompt (a missing
+	// end_turn call, or a loop tail that omitted its decision) so
+	// buildWorkflowStepPrompt can append the matching reminder. remindNone
+	// on a normal first dispatch.
+	remind remindKind
 
 	// stepLog accumulates the assistant non-tool text emitted by each
 	// completed top-level step so the next step's prompt can include a
@@ -705,11 +723,13 @@ type loopRunFrame struct {
 	innerIdx  int
 	iteration int
 
-	// retry counts consecutive tail re-prompts within the current
-	// iteration. Bumped each time the tail finishes without registering
-	// an intent (the runner re-dispatches the tail, "hammering" it until
-	// it decides). Surfaced in the banner; reset when the iteration
-	// advances or the loop exits.
+	// retry counts consecutive re-prompts of the current inner step
+	// within this iteration. Bumped each time the step finishes without
+	// the end_turn call the runner needs (any step that skips end_turn,
+	// or a tail that omits its decision) — the runner re-dispatches it,
+	// "hammering" until it registers. Surfaced in the banner; reset when
+	// the inner cursor advances, the iteration advances, or the loop
+	// exits.
 	retry int
 
 	// iterationLog holds the inner-step outputs produced so far in the
@@ -722,19 +742,21 @@ type loopRunFrame struct {
 	// the next pass. Empty on iteration 1.
 	prevTail string
 
-	// lastTailText is the tail step's most recent output when it
-	// finished without registering an intent, fed back into the retry
-	// prompt so the agent can decide without redoing the work.
-	lastTailText string
+	// retryText is the inner step's most recent output when it finished
+	// without the end_turn call the runner needed, fed back into the
+	// re-prompt so the agent can register without redoing the work.
+	retryText string
 }
 
-// loopSignal is the break/continue intent an inner step registers via
-// the workflow_loop MCP tool. decision is workflowLoopBreak or
-// workflowLoopContinue; reason is the agent's short justification,
-// surfaced in the log/banner.
-type loopSignal struct {
+// endTurnSignal is what a step registers via the end_turn MCP tool at
+// the close of its turn. summary is the always-required 1-3 sentence
+// account of what the step did — it becomes the step's line in the
+// workflow log. decision is empty outside a loop (and ignored there);
+// inside a loop it is workflowLoopContinue / workflowLoopBreak, required
+// from the tail and an exceptional early break from any other inner step.
+type endTurnSignal struct {
 	decision string
-	reason   string
+	summary  string
 }
 
 // workflowPickerState is the small centered modal that lets the user

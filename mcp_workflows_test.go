@@ -1151,11 +1151,20 @@ func TestValidateSteps_LoopRules(t *testing.T) {
 	}
 }
 
-// TestWorkflowLoopTool_RejectsBadDecision: the loop-control tool rejects
-// a decision that isn't break/continue before touching the program.
-func TestWorkflowLoopTool_RejectsBadDecision(t *testing.T) {
+// TestEndTurnTool_Validates: the end_turn tool rejects an empty summary
+// and a decision that isn't break/continue, before touching the program.
+func TestEndTurnTool_Validates(t *testing.T) {
 	b, _ := newWorkflowMCPTestBridge(t, 1)
-	res, _, err := b.workflowLoopTool(context.Background(), newCallToolReq(), workflowLoopInput{Decision: "banana"})
+
+	res, _, err := b.endTurnTool(context.Background(), newCallToolReq(), endTurnInput{Summary: "", Decision: ""})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !res.IsError {
+		t.Error("an empty summary should produce an IsError result")
+	}
+
+	res, _, err = b.endTurnTool(context.Background(), newCallToolReq(), endTurnInput{Summary: "did x", Decision: "banana"})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}

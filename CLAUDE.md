@@ -108,7 +108,7 @@ exercised by the user; code alone won't catch layout regressions.
 | `workflows_test.go`        | Workflow tracker (markWorking/markFinal/lookup/clear), schema round-trip (incl. loop steps), prompt assembly, glyph table, `effectiveMaxIterations`. |
 | `workflows_screen_test.go` | Workflows builder state machine — add/rename/delete persistence + edit-while-running guard + loop tree (`stepRows`, add loop/inner, edit max-iters, delete loop/child). |
 | `workflows_picker_test.go` | Picker open/navigate/Enter dispatches `spawnWorkflowTabMsg`. |
-| `workflows_run_test.go`    | Step runner — advance, finalise, fail, idempotent finalise, unknown-provider rejection; loop decision table (iterate / tail break / early non-tail break / tail-silence re-prompt / max-iter soft-exit), enter-loop, bounded context, `workflow_loop` signal handling. |
+| `workflows_run_test.go`    | Step runner — advance (incl. linear no-`end_turn` re-prompt), finalise, fail, idempotent finalise, unknown-provider rejection; loop decision table (iterate / tail break / non-tail break / non-tail proceed / non-tail + tail no-`end_turn` re-prompt / tail no-decision re-prompt / max-iter soft-exit), enter-loop, bounded context, `stepSummaryLine`, `end_turn` signal handling. |
 | `issues_workflow_test.go`  | `f` keybind dispatch on the issues screen — toast / picker / focus-existing-tab. |
 | `chat_workflow_test.go`    | `Ctrl+F` chat-source flow — transcript filter, key uniqueness, prompt assembly, dispatcher gates (busy/empty/no-workflows/workflow-tab), end-to-end picker → spawn. |
 | `keymap_test.go`           | `ParseKeyBinding` / `KeyBinding.String` round-trip, default keymap coverage, load-from-config (unknown/malformed entries skipped, empty-string unbinds), `currentKeyMap` invalidation. |
@@ -312,6 +312,17 @@ field. View consequences:
   (`▸ workflow "<name>" · step 2/3: review (codex/gpt-5)`),
   completion (`✓ workflow complete`), or failure (`✗ workflow
   failed`).
+- The raw chat transcript is **suppressed** on a workflow tab: the
+  prompt user-bar (`sendToProvider`), the assistant response text
+  (`assistantTextMsg`), tool calls/results (`shouldRenderToolCall` /
+  `shouldRenderToolResult`), and diffs (`toolDiffMsg`) are all skipped
+  when `m.workflowRun != nil`. Instead the log shows one clean entry
+  per step — a `▸ name (provider/model)` header + the agent's
+  `end_turn` summary (`stepSummaryLine`) — plus dim `⟳ loop …`
+  transition and re-prompt notes (`loopNoteLine` / `workflowNoteLine`).
+  Prompt-threading (`stepLog`, the `Previous step output:` block) is
+  untouched — the agent still gets full context; only the *display*
+  changes.
 - `model.Update`'s key dispatch routes through `workflowTabHandleKey`
   before the screen handler runs: only `Ctrl+D` (close), `Ctrl+C`
   (cancel = mark failed), and viewport scroll keys (Up/Down/PgUp/
@@ -349,61 +360,86 @@ runner doesn't need to know about provider-specific stream shapes:
 - `providerExitedMsg` with non-nil err on a still-running run →
   `workflowAdvanceCmd(tabID, errStepError(stderrTail))`
 
-The advance handler kills the proc, rolls the captured per-step
-text into the appropriate log, mutates the cursor, and either
-dispatches `workflowRunStartStepMsg` for the next step (deferred so
-the next proc spawns at a clean Update boundary) or finalises
-(`done` on chain end, `failed` on error). The cursor is `StepIdx`
-(top-level) plus an optional `*loopRunFrame` while inside a loop —
-see "Loop steps" below.
+The advance handler reads the step's `end_turn` report
+(`pendingEndTurn`), appends the step's summary line to the visible
+log, rolls the captured text into the appropriate context log,
+kills the proc, mutates the cursor, and either dispatches
+`workflowRunStartStepMsg` for the next step (deferred so the next
+proc spawns at a clean Update boundary) or finalises (`done` on
+chain end, `failed` on error). The cursor is `StepIdx` (top-level)
+plus an optional `*loopRunFrame` while inside a loop — see "Loop
+steps" below. Every step must call `end_turn`; a step that ends its
+turn without it is re-prompted in place — see "Per-step `end_turn`
+reporting" below.
+
+### Per-step `end_turn` reporting
+
+Every step (linear or loop-inner) must call the `end_turn` MCP tool
+once per turn — it is the single source of the clean per-step output
+*and* the loop control. The tool (`mcp_workflows.go`) takes a required
+`summary` (1-3 sentences, rendered as the step's log line via
+`stepSummaryLine`) and an optional `decision` (`continue`/`break`, only
+meaningful in a loop). Like `ask_user_question` it blocks on an ack so
+the report lands on `pendingEndTurn` before the turn ends; the runner
+consumes it at `turnCompleteMsg` (see `handleEndTurnSignal`).
+
+A step that ends its turn **without** calling `end_turn` is re-prompted
+in place — "hammered" until it registers, Ctrl+C being the manual
+escape. The re-prompt feeds the step's own prior output back so it
+doesn't redo the work (`linearText` for a linear step,
+`loopRunFrame.retryText` inside a loop) and sets a `remindKind`
+(`remindNoSummary` / `remindNoDecision`) so the injected reminder
+explains itself. The banner shows the re-prompt count (`re-prompt #N`).
 
 ### Loop steps
 
 A loop step (`Kind=="loop"`) runs its inner agent steps repeatedly
-until an inner step registers a **break** (or `MaxIterations` is
-reached). The runtime (`workflows_run.go`):
+until a step registers a **break** (or `MaxIterations` is reached).
+The runtime (`workflows_run.go`):
 
 - **Cursor.** `workflowRunState.loop` (`*loopRunFrame`) is non-nil
   while inside a loop; it tracks `innerIdx`, `iteration` (1-based),
   `retry`, and the bounded per-iteration context (`iterationLog`,
-  `prevTail`, `lastTailText`). `startWorkflowStep` enters the loop
+  `prevTail`, `retryText`). `startWorkflowStep` enters the loop
   (creates the frame) the first time `StepIdx` lands on a loop step;
   `exitLoop` commits the final iteration's outputs to `stepLog` and
   clears the frame.
-- **Register vs. execute.** The `workflow_loop` MCP tool only
-  *records* intent on `pendingLoopSignal` (it blocks on an ack so the
-  intent is set before the turn ends — same routing as
-  `askToolRequestMsg`). The runner *acts* on it at `turnCompleteMsg`.
-  Decision table in `advanceWorkflowStep`: any inner step's `break`
-  exits immediately (skipping the rest of the iteration); a non-tail
-  step otherwise proceeds to the next inner step; the **tail** step's
-  `continue` starts the next iteration (or soft-exits at the cap);
-  the tail registering **nothing** re-prompts the tail in place
-  (`retry++`, no advance) — it keeps re-prompting until the agent
-  registers (Ctrl+C is the manual escape).
+- **Decision table** in `advanceWorkflowStep`, against the just-
+  finished inner step's `end_turn` report: no report → re-prompt the
+  same step; any step's `break` → exit the loop immediately (skipping
+  the rest of the iteration — an exceptional early exit); a non-tail
+  step with a summary and no break → next inner step; the **tail**
+  step's `continue` → next iteration (or soft-exit at the cap); the
+  tail with a summary but **no decision** → re-prompt the tail for one
+  (`remindNoDecision`). Only the tail is *required* to decide — non-
+  tail steps may break early but normally just summarise.
 - **Bounded context** (`contextForDispatch`): linear steps see the
-  full `stepLog`; inside a loop the linear log is frozen and the head
-  inner step additionally sees the previous iteration's tail output
+  full `stepLog` (a re-prompted linear step also sees its own prior
+  output); inside a loop the linear log is frozen and the head inner
+  step additionally sees the previous iteration's tail output
   (`prevTail`) while downstream steps see the current iteration's
-  prior outputs. A tail re-prompt also carries the tail's own prior
-  output so it can decide without redoing the work.
+  prior outputs. A re-prompted inner step also carries its own prior
+  output (`retryText`).
 - **Cap.** `MaxIterations==0` ⇒ `workflowLoopDefaultMaxIterations`
   (10). Hitting the cap soft-exits (proceeds, never fails).
-- **Instructions** are auto-injected by `buildWorkflowStepPrompt`
-  (the `*loopPromptCtx` arg): iteration/goal banner, the
-  `workflow_loop` how-to, a tail-only "you MUST register" clause, and
-  a reminder on a re-prompt.
+- **Instructions** are auto-injected by `buildWorkflowStepPrompt` via
+  `endTurnInstructionBlock` (the `*stepPromptCtx` arg): the universal
+  "call end_turn with a summary" contract, plus inside a loop the
+  iteration/goal banner and a position-aware decision clause (tail:
+  "you MUST also pass a decision"; non-tail: "omit decision unless
+  breaking early").
 
-The `workflow_loop` MCP tool lives on every bridge (`mcp_workflows.go`)
-so both claude (`--mcp-config`) and codex (`-c mcp_servers.ask.url`)
-step agents can call it. Live loop progress (start / iteration /
-break / limit) is logged to the tab history via `loopNoteLine` and the
+The `end_turn` MCP tool lives on every bridge (`mcp_workflows.go`) so
+both claude (`--mcp-config`) and codex (`-c mcp_servers.ask.url`) step
+agents can call it. Live loop progress (start / iteration / break /
+limit) is logged to the tab history via `loopNoteLine`, and the
 banner's running line shows `⟳ <loop> · iter N/max · <inner>`.
 
 ### Step prompt assembly
 
-`buildWorkflowStepPrompt(step, source, prevOutputs, loop)` produces
-the full user turn for a step (`loop` is nil for linear steps):
+`buildWorkflowStepPrompt(step, source, prevOutputs, pc)` produces the
+full user turn for a step. `pc *stepPromptCtx` carries the loop framing
+(`pc.loop` nil for linear steps) and the re-prompt reason (`pc.remind`):
 
 ```
 <step.Prompt>
@@ -415,12 +451,20 @@ Previous step output:        (only when log is non-empty)
 ---
 <log[1]>
 ...
+
+<end_turn contract>          (ALWAYS; loop framing + tail decision clause inside a loop)
+
+<re-prompt reminder>         (only when pc.remind != remindNone)
 ```
 
 Reference format is `<project>#<number>` (no provider prefix, no
-URL); the agent has the issue-tracker MCP wired in and resolves
-the rest itself. Whitespace is trimmed at the head and tail; the
-body stays as the user wrote it.
+URL); the agent has the issue-tracker MCP wired in and resolves the
+rest itself. The `end_turn` contract (`endTurnInstructionBlock`) is
+appended to **every** step — that's what makes the clean per-step
+output possible, so unlike pre-`end_turn` workflows a linear step's
+prompt is no longer byte-identical to the bare user prompt.
+Whitespace is trimmed at the head and tail; the body stays as the
+user wrote it.
 
 ### Builder screen (`Ctrl+W` / `/workflows`)
 
