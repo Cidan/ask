@@ -519,8 +519,9 @@ var (
 	themePickerHelpStyle  lipgloss.Style
 	themePickerRowStyle   lipgloss.Style
 
-	tabBarActiveStyle   lipgloss.Style
-	tabBarInactiveStyle lipgloss.Style
+	tabBarActiveStyle       lipgloss.Style
+	tabBarInactiveStyle     lipgloss.Style
+	tabBarBusyInactiveStyle lipgloss.Style
 
 	themeBackground color.Color
 	themeForeground color.Color
@@ -646,6 +647,7 @@ func applyTheme(t theme) {
 		Background(t.tabActive).
 		Bold(true)
 	tabBarInactiveStyle = lipgloss.NewStyle().Foreground(t.muted)
+	tabBarBusyInactiveStyle = lipgloss.NewStyle().Foreground(t.tabActive).Bold(true)
 }
 
 func init() {

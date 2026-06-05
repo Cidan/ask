@@ -228,6 +228,55 @@ func TestApp_ViewPinsTabBarToBottomDuringIssuesLoad(t *testing.T) {
 	}
 }
 
+func TestRenderTabBar_BusyGlyphUsesDedicatedStyleForInactiveTab(t *testing.T) {
+	a := testAppWithTwoTabs(t)
+	a.tabs[0].busy = true
+	a.active = 1
+	a.width = 80
+
+	bar := a.renderTabBar()
+
+	wantPill := tabBarInactiveStyle.Render(" ") +
+		tabBarBusyInactiveStyle.Render("▸") +
+		tabBarInactiveStyle.Render(" "+tabBarLabel(a.tabs[0])+" ")
+	if !strings.Contains(bar, wantPill) {
+		t.Errorf("inactive busy tab missing split-styled pill:\n  bar=%q\n  want substring=%q", bar, wantPill)
+	}
+	if got := strings.Count(bar, "▸"); got != 1 {
+		t.Errorf("bar has %d ▸ glyphs, want 1 (busy inactive tab only):\n%q", got, bar)
+	}
+}
+
+func TestRenderTabBar_BusyGlyphOnActiveTabRendersInActiveStyle(t *testing.T) {
+	a := testAppWithTwoTabs(t)
+	a.tabs[1].busy = true
+	a.width = 80
+
+	bar := a.renderTabBar()
+
+	wantPill := tabBarActiveStyle.Render(" ▸ " + tabBarLabel(a.tabs[1]) + " ")
+	if !strings.Contains(bar, wantPill) {
+		t.Errorf("active busy tab missing active-styled pill:\n  bar=%q\n  want substring=%q", bar, wantPill)
+	}
+	if got := strings.Count(bar, "▸"); got != 1 {
+		t.Errorf("bar has %d ▸ glyphs, want 1 (busy active tab only):\n%q", got, bar)
+	}
+	unwanted := tabBarBusyInactiveStyle.Render("▸")
+	if strings.Contains(bar, unwanted) {
+		t.Errorf("active busy tab incorrectly uses inactive-busy style:\n  bar=%q\n  unwanted substring=%q", bar, unwanted)
+	}
+}
+
+func TestRenderTabBar_IdleTabsHaveNoBusyGlyph(t *testing.T) {
+	a := testAppWithTwoTabs(t)
+	a.width = 80
+
+	bar := a.renderTabBar()
+	if strings.Contains(bar, "▸") {
+		t.Errorf("idle tab bar contains ▸:\n%q", bar)
+	}
+}
+
 func TestApp_VirtualSessionMaterializedStaysOnOwningTab(t *testing.T) {
 	a := testAppWithTwoTabs(t)
 	a.tabs[0].virtualSessionID = "vs-shared"
