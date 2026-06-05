@@ -544,12 +544,6 @@ func tabBarLabel(t *model) string {
 	return label
 }
 
-// renderTabPill builds the styled tab segment. Inactive busy tabs
-// get a ▸ painted in the theme's tabActive color so the running
-// indicator pops from the muted label and stays theme-consistent.
-// Active busy tabs render the ▸ in the regular active style — the
-// pill's own background is already tabActive, and you don't need
-// to scan for the tab you're already focused on.
 func renderTabPill(t *model, active bool) string {
 	label := tabBarLabel(t)
 	if active {
