@@ -148,6 +148,26 @@ func TestClaudeProvider_Metadata(t *testing.T) {
 	if !sawOllama {
 		t.Errorf("ModelPicker options missing ollama entry: %v", mp.Options)
 	}
+	// Fast-mode rows must each pair with a plain base row, and
+	// parseClaudeModel must recover that base + the fast flag — that
+	// pairing is what lets a user pick speed without losing the model.
+	opts := map[string]bool{}
+	for _, opt := range mp.Options {
+		opts[opt] = true
+	}
+	for _, fastOpt := range []string{"opus" + fastModelSuffix, "opus[1m]" + fastModelSuffix} {
+		if !opts[fastOpt] {
+			t.Errorf("ModelPicker missing fast variant %q: %v", fastOpt, mp.Options)
+			continue
+		}
+		base, fast := parseClaudeModel(fastOpt)
+		if !fast {
+			t.Errorf("parseClaudeModel(%q) should report fast", fastOpt)
+		}
+		if !opts[base] {
+			t.Errorf("fast variant %q has no plain base row %q: %v", fastOpt, base, mp.Options)
+		}
+	}
 
 	efforts := p.EffortOptions()
 	wantEffort := map[string]bool{
