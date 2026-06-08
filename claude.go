@@ -39,7 +39,7 @@ func (claudeProvider) Capabilities() ProviderCapabilities {
 func (claudeProvider) ModelPicker() ProviderPicker {
 	return ProviderPicker{
 		Prompt:      "Select Claude model",
-		Options:     []string{"default", "haiku", "sonnet", "sonnet[1m]", "opus", "opus[1m]", ollamaModelOption},
+		Options:     []string{"default", "haiku", "sonnet", "sonnet[1m]", "opus", "opus" + fastModelSuffix, "opus[1m]", "opus[1m]" + fastModelSuffix, ollamaModelOption},
 		AllowCustom: true,
 		SubConfig:   map[string]string{ollamaModelOption: "ollama"},
 	}
@@ -67,7 +67,9 @@ func (claudeProvider) BaseSlashCommands() []slashCmd {
 const askUserQuestionBlockCommand = `echo 'BLOCKED: the built-in AskUserQuestion tool is disabled here. Use the mcp__ask__ask_user_question MCP tool instead. It supports pick_one, pick_many, and pick_diagram question kinds and lets you bundle multiple questions in a single call; the user sees them as tabs and submits all answers together.' >&2; exit 2`
 
 // claudeHookSettings builds the JSON passed via --settings. It wires
-// hooks into claude across two purposes:
+// hooks into claude across two purposes, and when fastMode is true it
+// also sets the top-level "fastMode" settings key (see the note at the
+// return). Two purposes for the hooks:
 //
 // Existing infrastructure hooks:
 //   - PreToolUse[AskUserQuestion]: redirects to our MCP tool (see above).
@@ -91,7 +93,7 @@ const askUserQuestionBlockCommand = `echo 'BLOCKED: the built-in AskUserQuestion
 //
 // The hook command invokes ask itself (ask _hook <event> --port <n>) so
 // there is no external dependency on curl.
-func claudeHookSettings(mcpPort int) string {
+func claudeHookSettings(mcpPort int, fastMode bool) string {
 	exe, err := os.Executable()
 	if err != nil || exe == "" {
 		// Fall back to a PATH lookup; less reliable but better than nothing.
@@ -148,12 +150,23 @@ func claudeHookSettings(mcpPort int) string {
 			"UserPromptSubmit": []any{memoryHook("user-prompt-submit")},
 		},
 	}
+	// Fast mode is a top-level settings.json key, not a hook, and the
+	// model picker ("opus (fast)" rows) is its sole control surface. We
+	// emit it explicitly — true AND false — rather than omitting when
+	// off: --settings is the flagSettings source, which outranks the
+	// user/project/local settings claude merges, so an explicit false
+	// authoritatively overrides an ambient `fastMode: true` a user may
+	// have set globally (via /fast). Claude's headless (Agent SDK / -p)
+	// path reads fastMode from flagSettings, so this is the only conduit
+	// that reaches it; it still gates on model support, so false here
+	// (and true on a non-opus model) is a harmless no-op.
+	cfg["fastMode"] = fastMode
 	b, _ := json.Marshal(cfg)
 	return string(b)
 }
 
 // shellQuote wraps s in single quotes so it survives /bin/sh -c intact.
-// Embedded single quotes are escaped via the classic '\'' sequence.
+// Embedded single quotes are escaped via the classic '\” sequence.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
@@ -207,6 +220,25 @@ func claudeEnv(args ProviderSessionArgs) []string {
 	return env
 }
 
+// fastModelSuffix marks the fast-mode variant of a model in the picker
+// option list (e.g. "opus (fast)"). Fast mode is not a distinct model —
+// it's a Claude Code capability injected via --settings (see
+// claudeHookSettings) — so ask strips this suffix before passing
+// --model and routes the flag separately.
+const fastModelSuffix = " (fast)"
+
+// parseClaudeModel splits a stored/selected model string into the bare
+// --model value and whether the fast-mode variant was chosen. The split
+// is purely lexical: claude itself gates fast mode on model support
+// (Opus only), so the suffix is only attached to opus rows, but a stray
+// one elsewhere is a harmless no-op.
+func parseClaudeModel(raw string) (model string, fast bool) {
+	if strings.HasSuffix(raw, fastModelSuffix) {
+		return strings.TrimSuffix(raw, fastModelSuffix), true
+	}
+	return raw, false
+}
+
 // claudeCLIArgs builds the argv for `claude -p`. Passing probe=true
 // omits --include-partial-messages and the permission-prompt tool so
 // the short-lived init probe doesn't trip permissions.
@@ -216,6 +248,7 @@ func claudeCLIArgs(args ProviderSessionArgs, probe bool) []string {
 		"--output-format", "stream-json",
 		"--verbose",
 	}
+	baseModel, fastMode := parseClaudeModel(args.Model)
 	if !probe {
 		out = append(out, "--include-partial-messages")
 	}
@@ -233,18 +266,18 @@ func claudeCLIArgs(args ProviderSessionArgs, probe bool) []string {
 	}
 	if args.MCPPort > 0 {
 		out = append(out, "--mcp-config", claudeMCPConfig(args.MCPPort, args.ProjectMCP))
-		out = append(out, "--settings", claudeHookSettings(args.MCPPort))
+		out = append(out, "--settings", claudeHookSettings(args.MCPPort, fastMode))
 		if !probe {
 			out = append(out, "--permission-prompt-tool", "mcp__ask__approval_prompt")
 		}
 	}
 	switch {
-	case strings.EqualFold(args.Model, "ollama"):
+	case strings.EqualFold(baseModel, "ollama"):
 		if args.OllamaModel != "" {
 			out = append(out, "--model", args.OllamaModel)
 		}
-	case args.Model != "":
-		out = append(out, "--model", args.Model)
+	case baseModel != "":
+		out = append(out, "--model", baseModel)
 	}
 	if args.Effort != "" {
 		out = append(out, "--effort", args.Effort)

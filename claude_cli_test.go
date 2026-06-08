@@ -163,7 +163,7 @@ func TestClaudeCLIArgs_MCPConfigAndSettings(t *testing.T) {
 // the port we pass in, so claude fires them into our HTTP bridge and
 // the chip stays in sync with what's actually running.
 func TestClaudeHookSettings_RegistersSubagentHooks(t *testing.T) {
-	raw := claudeHookSettings(54321)
+	raw := claudeHookSettings(54321, false)
 	var parsed struct {
 		Hooks map[string][]struct {
 			Matcher string `json:"matcher"`
@@ -227,6 +227,74 @@ func TestClaudeHookSettings_RegistersSubagentHooks(t *testing.T) {
 				t.Errorf("SessionStart matcher missing %q: %q", want, entry.Matcher)
 			}
 		}
+	}
+}
+
+// Fast mode is a Claude Code capability the headless (Agent SDK) path
+// reads only from the --settings source, so ask injects it as a
+// top-level "fastMode" key. It's emitted explicitly both ways: true
+// when on, false when off — the explicit false outranks (flagSettings
+// precedence) any ambient fastMode a user set globally, keeping the
+// model picker authoritative.
+func TestClaudeHookSettings_FastMode(t *testing.T) {
+	type settings struct {
+		FastMode *bool `json:"fastMode"`
+	}
+	var off settings
+	if err := json.Unmarshal([]byte(claudeHookSettings(1, false)), &off); err != nil {
+		t.Fatalf("off settings not JSON: %v", err)
+	}
+	if off.FastMode == nil || *off.FastMode {
+		t.Errorf("fastMode should be explicit false when off, got %v", off.FastMode)
+	}
+	var on settings
+	if err := json.Unmarshal([]byte(claudeHookSettings(1, true)), &on); err != nil {
+		t.Fatalf("on settings not JSON: %v", err)
+	}
+	if on.FastMode == nil || !*on.FastMode {
+		t.Errorf("fastMode should be true when on, got %v", on.FastMode)
+	}
+}
+
+func TestParseClaudeModel(t *testing.T) {
+	cases := []struct {
+		in    string
+		model string
+		fast  bool
+	}{
+		{"opus", "opus", false},
+		{"opus[1m]", "opus[1m]", false},
+		{"opus" + fastModelSuffix, "opus", true},
+		{"opus[1m]" + fastModelSuffix, "opus[1m]", true},
+		{"", "", false},
+		{"ollama", "ollama", false},
+	}
+	for _, c := range cases {
+		m, f := parseClaudeModel(c.in)
+		if m != c.model || f != c.fast {
+			t.Errorf("parseClaudeModel(%q) = (%q,%v), want (%q,%v)", c.in, m, f, c.model, c.fast)
+		}
+	}
+}
+
+// A fast-mode model row ("opus (fast)") must strip down to a bare
+// --model value while routing the flag into the --settings payload (the
+// only conduit claude's headless path reads). A plain opus row strips to
+// the same --model but carries an explicit fastMode:false.
+func TestClaudeCLIArgs_FastModeFromModel(t *testing.T) {
+	on := claudeCLIArgs(ProviderSessionArgs{MCPPort: 1, Model: "opus[1m]" + fastModelSuffix}, false)
+	if got := argAfter(on, "--model"); got != "opus[1m]" {
+		t.Errorf("--model = %q, want opus[1m] (suffix stripped)", got)
+	}
+	if got := argAfter(on, "--settings"); !strings.Contains(got, `"fastMode":true`) {
+		t.Errorf("--settings missing fastMode for a (fast) model: %s", got)
+	}
+	off := claudeCLIArgs(ProviderSessionArgs{MCPPort: 1, Model: "opus[1m]"}, false)
+	if got := argAfter(off, "--model"); got != "opus[1m]" {
+		t.Errorf("--model = %q, want opus[1m]", got)
+	}
+	if got := argAfter(off, "--settings"); !strings.Contains(got, `"fastMode":false`) {
+		t.Errorf("--settings should carry explicit fastMode:false for a plain model: %s", got)
 	}
 }
 
