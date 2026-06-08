@@ -273,12 +273,13 @@ func (p *linearIssueProvider) ListIssues(ctx context.Context, cfg projectConfig,
 	}, nil
 }
 
-// GetIssue hydrates one issue with description and comments via
-// the top-level `issue(id:)` query, which accepts the shorthand
-// <TEAM>-<NUMBER> identifier as well as a UUID. We reconstruct the
-// identifier from cfg.MCP.Linear.TeamKey + the requested number.
-// Comments are pulled in the same query (single round trip) and
-// capped at 100, mirroring github's coverage.
+// GetIssue hydrates one issue with description, comments, and
+// attachments (Slack threads, linked PRs, …) via the top-level
+// `issue(id:)` query, which accepts the shorthand <TEAM>-<NUMBER>
+// identifier as well as a UUID. We reconstruct the identifier from
+// cfg.MCP.Linear.TeamKey + the requested number. Comments (capped at
+// 100, mirroring github) and attachments (capped at 50) are pulled in
+// the same query — a single round trip.
 func (p *linearIssueProvider) GetIssue(ctx context.Context, cfg projectConfig, cwd string, number int) (issue, error) {
 	if cfg.MCP.Linear.Token == "" || cfg.MCP.Linear.TeamKey == "" {
 		return issue{}, errIssueProviderNotConfigured
@@ -301,6 +302,11 @@ func (p *linearIssueProvider) GetIssue(ctx context.Context, cfg projectConfig, c
 	if out.Issue.Comments != nil {
 		for _, c := range out.Issue.Comments.Nodes {
 			it.comments = append(it.comments, linearAPIToComment(c))
+		}
+	}
+	if out.Issue.Attachments != nil {
+		for _, a := range out.Issue.Attachments.Nodes {
+			it.attachments = append(it.attachments, linearAPIToAttachment(a))
 		}
 	}
 	return it, nil
@@ -1163,15 +1169,16 @@ type linearGraphQLError struct {
 // as float64 because Linear sometimes serialises ints as JSON
 // numbers via float; we cast to int in linearAPIToIssue.
 type linearAPIIssue struct {
-	ID          string                `json:"id"`
-	Identifier  string                `json:"identifier"`
-	Number      float64               `json:"number"`
-	Title       string                `json:"title"`
-	Description string                `json:"description"`
-	CreatedAt   time.Time             `json:"createdAt"`
-	State       *linearAPIState       `json:"state"`
-	Assignee    *linearAPIUser        `json:"assignee"`
-	Comments    *linearAPICommentList `json:"comments"`
+	ID          string                   `json:"id"`
+	Identifier  string                   `json:"identifier"`
+	Number      float64                  `json:"number"`
+	Title       string                   `json:"title"`
+	Description string                   `json:"description"`
+	CreatedAt   time.Time                `json:"createdAt"`
+	State       *linearAPIState          `json:"state"`
+	Assignee    *linearAPIUser           `json:"assignee"`
+	Comments    *linearAPICommentList    `json:"comments"`
+	Attachments *linearAPIAttachmentList `json:"attachments"`
 }
 
 type linearAPIState struct {
@@ -1197,9 +1204,48 @@ type linearAPICommentList struct {
 }
 
 type linearAPIComment struct {
-	CreatedAt time.Time      `json:"createdAt"`
-	Body      string         `json:"body"`
-	User      *linearAPIUser `json:"user"`
+	CreatedAt    time.Time              `json:"createdAt"`
+	Body         string                 `json:"body"`
+	URL          string                 `json:"url"`
+	User         *linearAPIUser         `json:"user"`
+	ExternalUser *linearAPIExternalUser `json:"externalUser"`
+	BotActor     *linearAPIActorBot     `json:"botActor"`
+}
+
+// linearAPIExternalUser is the trim of ExternalUser — a participant
+// without a Linear account (e.g. a Slack user in a synced thread).
+type linearAPIExternalUser struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+}
+
+// linearAPIActorBot is the trim of ActorBot — the integration that
+// authored a synced comment. Type is the integration ("slack",
+// "github", …); UserDisplayName is the external person the bot acted
+// on behalf of (the Slack author for a synced thread reply).
+type linearAPIActorBot struct {
+	Name            string `json:"name"`
+	Type            string `json:"type"`
+	UserDisplayName string `json:"userDisplayName"`
+}
+
+type linearAPIAttachmentList struct {
+	Nodes []linearAPIAttachment `json:"nodes"`
+}
+
+// linearAPIAttachment is the trim of the GraphQL Attachment type. A
+// linked Slack thread lives here (sourceType "slack") rather than in
+// comments unless the workspace syncs the thread. Metadata is the
+// integration-specific JSONObject, kept raw and compacted by the
+// converter.
+type linearAPIAttachment struct {
+	Title      string          `json:"title"`
+	Subtitle   string          `json:"subtitle"`
+	URL        string          `json:"url"`
+	SourceType string          `json:"sourceType"`
+	BodyData   string          `json:"bodyData"`
+	Metadata   json.RawMessage `json:"metadata"`
+	CreatedAt  time.Time       `json:"createdAt"`
 }
 
 // linearWorkflowState is the trim of WorkflowState — id + type are
@@ -1246,18 +1292,59 @@ func linearAPIToIssue(li linearAPIIssue) issue {
 
 func linearAPIToComment(c linearAPIComment) issueComment {
 	author := ""
-	if c.User != nil {
+	switch {
+	case c.User != nil && c.User.DisplayName != "":
+		author = c.User.DisplayName
+	case c.User != nil && c.User.Name != "":
+		author = c.User.Name
+	case c.ExternalUser != nil && c.ExternalUser.DisplayName != "":
+		author = c.ExternalUser.DisplayName
+	case c.ExternalUser != nil && c.ExternalUser.Name != "":
+		author = c.ExternalUser.Name
+	case c.BotActor != nil && c.BotActor.UserDisplayName != "":
+		author = c.BotActor.UserDisplayName
+	case c.BotActor != nil && c.BotActor.Name != "":
+		author = c.BotActor.Name
+	}
+	// A comment with no Linear user was synced from an integration;
+	// tag the channel ("slack", …) so the reader knows the author is
+	// external. botActor.type names the integration; fall back to a
+	// generic "external" when only an externalUser is present.
+	source := ""
+	if c.User == nil {
 		switch {
-		case c.User.DisplayName != "":
-			author = c.User.DisplayName
-		case c.User.Name != "":
-			author = c.User.Name
+		case c.BotActor != nil && c.BotActor.Type != "":
+			source = c.BotActor.Type
+		case c.ExternalUser != nil:
+			source = "external"
 		}
 	}
 	return issueComment{
 		author:    author,
 		createdAt: c.CreatedAt,
 		body:      linearUnescapeText(c.Body),
+		source:    source,
+		url:       c.URL,
+	}
+}
+
+// linearAPIToAttachment maps the GraphQL Attachment trim onto the
+// provider-neutral issueAttachment. Metadata is compacted; an empty
+// JSON object / null collapses to "" so the view doesn't show noise.
+func linearAPIToAttachment(a linearAPIAttachment) issueAttachment {
+	meta := strings.TrimSpace(string(a.Metadata))
+	switch meta {
+	case "", "{}", "null":
+		meta = ""
+	}
+	return issueAttachment{
+		title:      linearUnescapeText(a.Title),
+		subtitle:   linearUnescapeText(a.Subtitle),
+		url:        a.URL,
+		sourceType: a.SourceType,
+		body:       linearUnescapeText(a.BodyData),
+		metadata:   meta,
+		createdAt:  a.CreatedAt,
 	}
 }
 
@@ -1979,7 +2066,21 @@ query AskGetIssue($id: String!) {
       nodes {
         createdAt
         body
+        url
         user { name displayName }
+        externalUser { displayName name }
+        botActor { name type userDisplayName }
+      }
+    }
+    attachments(first: 50) {
+      nodes {
+        title
+        subtitle
+        url
+        sourceType
+        bodyData
+        metadata
+        createdAt
       }
     }
   }
