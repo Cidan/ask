@@ -576,6 +576,138 @@ func TestLinearAPIToComment_AuthorFallback(t *testing.T) {
 	}
 }
 
+func TestLinearAPIToComment_ResolvesExternalAndBotAuthors(t *testing.T) {
+	// A Slack participant without a Linear account is carried via
+	// externalUser and tagged source=external.
+	ext := linearAPIToComment(linearAPIComment{
+		Body:         "from slack",
+		URL:          "https://slack.example/p1",
+		ExternalUser: &linearAPIExternalUser{DisplayName: "Dana"},
+	})
+	if ext.author != "Dana" || ext.source != "external" {
+		t.Errorf("externalUser comment=%+v", ext)
+	}
+	if ext.url != "https://slack.example/p1" {
+		t.Errorf("url=%q", ext.url)
+	}
+
+	// A synced Slack reply has no Linear user; botActor names the
+	// integration (source) and the person it acted for (author).
+	bot := linearAPIToComment(linearAPIComment{
+		Body:     "synced reply",
+		BotActor: &linearAPIActorBot{Type: "slack", UserDisplayName: "Erin"},
+	})
+	if bot.author != "Erin" || bot.source != "slack" {
+		t.Errorf("botActor comment=%+v", bot)
+	}
+
+	// A real Linear user wins and is never tagged with a source.
+	usr := linearAPIToComment(linearAPIComment{
+		Body:         "native",
+		User:         &linearAPIUser{DisplayName: "Antonio"},
+		ExternalUser: &linearAPIExternalUser{DisplayName: "ignored"},
+		BotActor:     &linearAPIActorBot{Type: "slack"},
+	})
+	if usr.author != "Antonio" || usr.source != "" {
+		t.Errorf("linear user should win untagged: author=%q source=%q", usr.author, usr.source)
+	}
+}
+
+func TestLinearAPIToAttachment_MapsFieldsAndCompactsMetadata(t *testing.T) {
+	a := linearAPIToAttachment(linearAPIAttachment{
+		Title:      "Slack thread in #eng",
+		Subtitle:   "12 replies",
+		URL:        "https://slack.example/archives/C/p123",
+		SourceType: "slack",
+		BodyData:   "first message &amp; more",
+		Metadata:   json.RawMessage(`{"channel":"eng"}`),
+	})
+	if a.title != "Slack thread in #eng" || a.sourceType != "slack" {
+		t.Errorf("attachment=%+v", a)
+	}
+	if a.body != "first message & more" {
+		t.Errorf("bodyData not unescaped: %q", a.body)
+	}
+	if a.metadata != `{"channel":"eng"}` {
+		t.Errorf("metadata=%q", a.metadata)
+	}
+	for _, raw := range []string{`{}`, `null`, ``} {
+		if got := linearAPIToAttachment(linearAPIAttachment{Metadata: json.RawMessage(raw)}); got.metadata != "" {
+			t.Errorf("metadata %q should collapse to empty, got %q", raw, got.metadata)
+		}
+	}
+}
+
+func TestLinearIssueQuery_RequestsAttachmentsAndSyncedAuthors(t *testing.T) {
+	for _, want := range []string{"attachments(", "bodyData", "sourceType", "botActor", "externalUser"} {
+		if !strings.Contains(linearIssueQuery, want) {
+			t.Errorf("linearIssueQuery missing %q", want)
+		}
+	}
+}
+
+func TestLinearProvider_GetIssue_SurfacesAttachmentsAndSyncedComments(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
+		return map[string]any{
+			"issue": map[string]any{
+				"number":      776,
+				"title":       "needs slack context",
+				"description": "see thread",
+				"state":       map[string]any{"type": "started"},
+				"createdAt":   "2026-01-20T00:00:00Z",
+				"comments": map[string]any{
+					"nodes": []any{
+						map[string]any{
+							"createdAt": "2026-02-01T10:00:00Z",
+							"body":      "synced from slack",
+							"url":       "https://slack.example/p9",
+							"botActor":  map[string]any{"type": "slack", "userDisplayName": "Dana"},
+						},
+					},
+				},
+				"attachments": map[string]any{
+					"nodes": []any{
+						map[string]any{
+							"title":      "Slack thread",
+							"subtitle":   "8 replies",
+							"url":        "https://slack.example/archives/C/p1",
+							"sourceType": "slack",
+							"bodyData":   "the discussion",
+							"metadata":   map[string]any{"channel": "eng"},
+							"createdAt":  "2026-01-21T00:00:00Z",
+						},
+					},
+				},
+			},
+		}
+	}
+	p := &linearIssueProvider{}
+	cfg := projectConfig{MCP: projectMCPConfig{Linear: linearMCPConfig{
+		Endpoint: mock.URL(), Token: "lin_api_x", TeamKey: "WAJ",
+	}}}
+	got, err := p.GetIssue(context.Background(), cfg, "/tmp", 776)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if len(got.attachments) != 1 {
+		t.Fatalf("attachments=%+v", got.attachments)
+	}
+	a := got.attachments[0]
+	if a.sourceType != "slack" || a.url != "https://slack.example/archives/C/p1" || a.body != "the discussion" {
+		t.Errorf("attachment=%+v", a)
+	}
+	if a.metadata != `{"channel":"eng"}` {
+		t.Errorf("metadata=%q", a.metadata)
+	}
+	if len(got.comments) != 1 {
+		t.Fatalf("comments=%+v", got.comments)
+	}
+	if c := got.comments[0]; c.author != "Dana" || c.source != "slack" || c.url != "https://slack.example/p9" {
+		t.Errorf("synced comment=%+v", c)
+	}
+}
+
 func TestLinearGraphQLEndpointDefault_AppliesWhenBlank(t *testing.T) {
 	got := linearGraphQLEndpointOrDefault(linearMCPConfig{})
 	if got != linearGraphQLDefaultEndpoint {
@@ -1118,11 +1250,11 @@ func TestIsLinearUUID(t *testing.T) {
 		{"00000000-0000-0000-0000-000000000000", true},
 		{"", false},
 		{"abc", false},
-		{"abc12345-1234-4567-8901-abcdef12345", false}, // 35
+		{"abc12345-1234-4567-8901-abcdef12345", false},   // 35
 		{"abc12345-1234-4567-8901-abcdef123456X", false}, // 37
-		{"abc12345-12345-456-8901-abcdef123456", false}, // misplaced hyphens
-		{"abc12345_1234_4567_8901_abcdef123456", false}, // underscores not hyphens
-		{"abcg2345-1234-4567-8901-abcdef123456", false}, // non-hex 'g'
+		{"abc12345-12345-456-8901-abcdef123456", false},  // misplaced hyphens
+		{"abc12345_1234_4567_8901_abcdef123456", false},  // underscores not hyphens
+		{"abcg2345-1234-4567-8901-abcdef123456", false},  // non-hex 'g'
 	}
 	for _, c := range cases {
 		if got := isLinearUUID(c.in); got != c.want {
