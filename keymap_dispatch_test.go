@@ -16,6 +16,7 @@ import (
 // fire — confirming the swap is real, not additive.
 func TestApp_TabNavigationHonoursKeymapOverride(t *testing.T) {
 	isolateHome(t)
+	t.Chdir(t.TempDir())
 	setKeyMapForTesting(KeyMap{
 		ActionTabNext:    {Mod: tea.ModAlt, Code: 'q'},
 		ActionTabPrev:    {Mod: tea.ModAlt, Code: 'e'},
@@ -49,6 +50,7 @@ func TestApp_TabNavigationHonoursKeymapOverride(t *testing.T) {
 // stopped working out of the box.
 func TestApp_TabNavigationDefaultsStillWork(t *testing.T) {
 	isolateHome(t)
+	t.Chdir(t.TempDir())
 	invalidateKeyMapCache()
 	defer invalidateKeyMapCache()
 
@@ -67,6 +69,7 @@ func TestApp_TabNavigationDefaultsStillWork(t *testing.T) {
 
 func TestApp_TabNavigationIgnoresLockModifiers(t *testing.T) {
 	isolateHome(t)
+	t.Chdir(t.TempDir())
 	invalidateKeyMapCache()
 	defer invalidateKeyMapCache()
 
