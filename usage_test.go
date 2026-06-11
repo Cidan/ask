@@ -118,6 +118,8 @@ func TestModelContextLimit(t *testing.T) {
 		{"fable", 1_000_000},
 		{"claude-fable-5", 1_000_000},
 		{"Fable", 1_000_000},
+		{"mythos", 1_000_000},
+		{"claude-mythos-5", 1_000_000},
 		{"sonnet", 200_000},
 		{"opus", 200_000},
 		{"default", 200_000},

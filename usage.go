@@ -136,15 +136,15 @@ func formatTTL(expires, now time.Time) string {
 }
 
 // modelContextLimit maps a claude model name to its context window size.
-// Any name containing "1m" (case-insensitive) gets the 1M tier, as does
-// the fable family, whose 1M window is the default (there is no fable[1m]
-// alias); anything else defaults to 200k. Matches the model aliases
-// registered in claudeProvider.ModelPicker() ("opus[1m]", "sonnet[1m]",
-// "fable") as well as the fully-qualified names claude returns in its
-// system/init event ("claude-fable-5").
+// Any name containing "1m" (case-insensitive) gets the 1M tier, as do
+// the fable and mythos families, whose 1M window is the default (there
+// is no fable[1m] alias); anything else defaults to 200k. Matches the
+// model aliases registered in claudeProvider.ModelPicker() ("opus[1m]",
+// "sonnet[1m]", "fable") as well as the fully-qualified names claude
+// returns in its system/init event ("claude-fable-5", "claude-mythos-5").
 func modelContextLimit(model string) int {
 	lower := strings.ToLower(model)
-	if strings.Contains(lower, "1m") || strings.Contains(lower, "fable") {
+	if strings.Contains(lower, "1m") || strings.Contains(lower, "fable") || strings.Contains(lower, "mythos") {
 		return 1_000_000
 	}
 	return 200_000
