@@ -6,12 +6,13 @@ package main
 // that the 8-retry name generator almost never collides.
 //
 // Entries are screened three ways:
-//   1. Each word reads cleanly on its own (no anatomy, violence, or
-//      slang).
-//   2. Every adjective×verb pair stays innocuous (mood-only adjectives,
-//      whimsical action verbs — no "licking", "thrusting", etc.).
-//   3. Every verb×noun pair stays innocuous (no anatomical nouns, no
-//      nouns that double as anatomical slang).
+//  1. Each word reads cleanly on its own (no anatomy, violence, or
+//     slang).
+//  2. Every adjective×verb pair stays innocuous (mood-only adjectives,
+//     whimsical action verbs — no "licking", "thrusting", etc.).
+//  3. Every verb×noun pair stays innocuous (no anatomical nouns, no
+//     nouns that double as anatomical slang).
+//
 // Adding entries? Re-screen against all three checks and keep lists at
 // exactly 50 — tests lock the count so accidental growth is loud.
 var (

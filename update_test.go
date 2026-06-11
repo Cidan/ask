@@ -815,19 +815,15 @@ func TestProviderStartDone_SendsQueuedTurns(t *testing.T) {
 func TestSessionArgs_PopulatesAllFields(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.cwd = "/cwd"
-	m.mcpPort = 7001
-	m.providerModel = "opus"
+	m.providerModel = "claude-fable-5"
 	m.providerEffort = "xhigh"
-	m.ollamaHost = "localhost:11434"
-	m.ollamaModel = "llama3"
 	m.skipAllPermissions = true
 	m.worktree = true
 	m.sessionID = "S-42"
 	m.resumeCwd = "/cwd/.claude/worktrees/alpha"
 	args := m.sessionArgs()
-	if args.Cwd != "/cwd" || args.MCPPort != 7001 || args.Model != "opus" ||
-		args.Effort != "xhigh" || args.OllamaHost != "localhost:11434" ||
-		args.OllamaModel != "llama3" || !args.SkipAllPermissions ||
+	if args.Cwd != "/cwd" || args.Model != "claude-fable-5" ||
+		args.Effort != "xhigh" || !args.SkipAllPermissions ||
 		!args.Worktree || args.SessionID != "S-42" ||
 		args.ResumeCwd != "/cwd/.claude/worktrees/alpha" {
 		t.Errorf("sessionArgs mismatch: %+v", args)
@@ -1731,73 +1727,6 @@ func TestUpdate_PasteMsgInAskModalCancelConfirmIsAbsorbed(t *testing.T) {
 	}
 	if !m2.askConfirmingCancel {
 		t.Errorf("paste must not dismiss the ask cancel confirm")
-	}
-}
-
-func TestUpdate_PasteMsgInAskModalOllamaConfigRoutesToActiveField(t *testing.T) {
-	cases := []struct {
-		name      string
-		field     int
-		host      string
-		model     string
-		content   string
-		wantHost  string
-		wantModel string
-	}{
-		{
-			name:      "host",
-			field:     0,
-			host:      "http://",
-			model:     "llama3",
-			content:   "localhost:11434",
-			wantHost:  "http://localhost:11434",
-			wantModel: "llama3",
-		},
-		{
-			name:      "model",
-			field:     1,
-			host:      "localhost:11434",
-			model:     "llama",
-			content:   "3.2",
-			wantHost:  "localhost:11434",
-			wantModel: "llama3.2",
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			m := newTestModel(t, newFakeProvider())
-			m = m.startAsk([]question{{
-				kind:    qPickOne,
-				prompt:  "pick a model",
-				options: []string{ollamaModelOption, switcherCustomRowLabel},
-			}})
-			m.askCursor = 1
-			m.askAnswers[0].custom = "custom"
-			m.askOllamaActive = true
-			m.askOllamaField = c.field
-			m.askOllamaHost = c.host
-			m.askOllamaModel = c.model
-			m.askOllamaErr = "previous error"
-			m.input.SetValue("seed")
-
-			m2, _ := runUpdate(t, m, tea.PasteMsg{Content: c.content})
-
-			if m2.askOllamaHost != c.wantHost {
-				t.Errorf("askOllamaHost=%q want %q", m2.askOllamaHost, c.wantHost)
-			}
-			if m2.askOllamaModel != c.wantModel {
-				t.Errorf("askOllamaModel=%q want %q", m2.askOllamaModel, c.wantModel)
-			}
-			if m2.askOllamaErr != "" {
-				t.Errorf("paste should clear askOllamaErr, got %q", m2.askOllamaErr)
-			}
-			if m2.askAnswers[0].custom != "custom" {
-				t.Errorf("ollama paste must not touch the underlying custom row: got %q", m2.askAnswers[0].custom)
-			}
-			if m2.input.Value() != "seed" {
-				t.Errorf("paste must not leak into the chat composer: got %q", m2.input.Value())
-			}
-		})
 	}
 }
 

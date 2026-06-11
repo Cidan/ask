@@ -69,11 +69,11 @@ var memoryFieldSpecs = map[string]memoryFieldSpec{
 		reopenOnSave: true,
 	},
 	"neo4jPort": {
-		id:           "neo4jPort",
-		title:        "Neo4j port",
-		helpHint:     "1..65535; enter to save",
-		validate:     validateNeo4jPort,
-		load:         func(c askConfig) string { return strconv.Itoa(neo4jPortOrDefault(c.Memory.Neo4j)) },
+		id:       "neo4jPort",
+		title:    "Neo4j port",
+		helpHint: "1..65535; enter to save",
+		validate: validateNeo4jPort,
+		load:     func(c askConfig) string { return strconv.Itoa(neo4jPortOrDefault(c.Memory.Neo4j)) },
 		save: func(c *askConfig, v string) {
 			n, _ := strconv.Atoi(v)
 			c.Memory.Neo4j.Port = n

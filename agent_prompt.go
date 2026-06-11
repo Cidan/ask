@@ -125,6 +125,21 @@ func buildAgentSystemPrompt(args ProviderSessionArgs) string {
 		b.WriteString("</project_instructions>")
 	}
 
+	if mem := agentMemorySystemBlock(cwd); mem != "" {
+		b.WriteString("\n\n<project_memory>\n")
+		b.WriteString(mem)
+		b.WriteString("\n</project_memory>")
+	}
+
+	if block := skillsPromptBlock(discoverSkills(cwd)); block != "" {
+		b.WriteString("\n\n")
+		b.WriteString(block)
+	}
+	if block := subagentsPromptBlock(discoverSubagents(cwd)); block != "" {
+		b.WriteString("\n\n")
+		b.WriteString(block)
+	}
+
 	b.WriteString("\n\n")
 	b.WriteString(steeringPromptFor(args))
 	return b.String()

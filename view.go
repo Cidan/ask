@@ -635,23 +635,6 @@ func (m model) View() tea.View {
 				Min: image.Pt(mX, mY),
 				Max: image.Pt(mX+mW, mY+mH),
 			})
-			if m.askOllamaActive {
-				sub := m.viewAskOllamaConfig()
-				sW := lipgloss.Width(sub)
-				sH := lipgloss.Height(sub)
-				sX := (m.width - sW) / 2
-				sY := (m.height - sH) / 2
-				if sX < 0 {
-					sX = 0
-				}
-				if sY < 0 {
-					sY = 0
-				}
-				uv.NewStyledString(sub).Draw(canvas, image.Rectangle{
-					Min: image.Pt(sX, sY),
-					Max: image.Pt(sX+sW, sY+sH),
-				})
-			}
 			if m.askConfirmingCancel {
 				confirm := m.viewAskCancelConfirm()
 				cW := lipgloss.Width(confirm)
@@ -794,8 +777,8 @@ func (m model) View() tea.View {
 					Max: image.Pt(pX+pW, pY+pH),
 				})
 			}
-			if m.configDeepSeekPickerActive {
-				picker := m.viewConfigDeepSeekPicker()
+			if m.configAPIProviderPicker != "" {
+				picker := m.viewConfigAPIProviderPicker()
 				pW := lipgloss.Width(picker)
 				pH := lipgloss.Height(picker)
 				pX := (m.width - pW) / 2
@@ -1481,55 +1464,17 @@ func (m model) providerChipFitting(maxW int) string {
 
 // providerChipSegments returns the optional trailing segments of the
 // chip in drop-last-first order (the width-degradation loop drops
-// from the tail).
-//
-// Per-provider shape:
-//   - claude: [5h, wk, ctx] — windows from the usage cache (plugin or legacy),
-//     ctx from accumulated message.usage.
-//   - codex:  [pr, sc, ctx] — primary/secondary from account/rateLimits/updated.
-//     Codex's windows aren't always 5h+7d (plan type can shift the second
-//     bucket), so we label them primary/secondary to avoid misrepresenting.
-//
-// ctx is always emitted (0% before data lands) so users see the
-// feature is live. 5h/wk and pr/sc are only emitted when their
-// provider has populated data for this session.
-func (m model) providerChipSegments(now time.Time) []string {
-	var segs []string
-	if m.provider != nil && m.provider.ID() == "codex" {
-		if m.codexUsage.hasRateLimits {
-			p := m.codexUsage.primary
-			segs = append(segs, fmt.Sprintf("pr:%d%%(%s)",
-				p.usedPercent, formatTTL(p.resetsAt, now)))
-			s := m.codexUsage.secondary
-			segs = append(segs, fmt.Sprintf("sc:%d%%(%s)",
-				s.usedPercent, formatTTL(s.resetsAt, now)))
-		}
-		limit := m.codexUsage.modelContextWindow
-		if limit <= 0 {
-			limit = modelContextLimit(m.providerModel)
-		}
-		segs = append(segs, fmt.Sprintf("ctx:%d%%",
-			contextPercent(m.codexUsage.contextTokens, limit)))
-		return segs
-	}
-	// 5h/wk windows come from claude's usage cache — only meaningful
-	// on claude tabs. An API provider (deepseek) has no quota windows,
-	// so its chip carries just the ctx segment.
-	if m.usageCache != nil && m.provider != nil && m.provider.ID() == "claude" {
-		fh := m.usageCache.FiveHour
-		segs = append(segs, fmt.Sprintf("5h:%d%%(%s)",
-			int(fh.Utilization+0.5), formatTTL(fh.ResetsAt, now)))
-		sd := m.usageCache.SevenDay
-		segs = append(segs, fmt.Sprintf("wk:%d%%(%s)",
-			int(sd.Utilization+0.5), formatTTL(sd.ResetsAt, now)))
-	}
+// from the tail). Every provider is API-billed, so the only segment
+// is the standard context-usage percentage: accumulated usage tokens
+// over the model's window. Always emitted (0% before data lands) so
+// users see the feature is live.
+func (m model) providerChipSegments(_ time.Time) []string {
 	mdl := m.modelForContext
 	if mdl == "" {
 		mdl = m.providerModel
 	}
 	ctxPct := contextPercent(m.lastUsageTokens, modelContextLimit(mdl))
-	segs = append(segs, fmt.Sprintf("ctx:%d%%", ctxPct))
-	return segs
+	return []string{fmt.Sprintf("ctx:%d%%", ctxPct)}
 }
 
 func (m model) renderProviderChip(segs []string) string {

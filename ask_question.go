@@ -65,7 +65,6 @@ func (m model) clearAsk() model {
 	m.askMode = askForMCP
 	m.askConfirmingCancel = false
 	m.askCancelChoice = 0
-	m = m.clearAskOllamaConfig()
 	return m
 }
 
@@ -82,15 +81,9 @@ func seedModelPickerSelection(selectedModel string, options []string) (int, stri
 		return 0, ""
 	}
 	switch {
-	case strings.EqualFold(selectedModel, "ollama"):
-		for i, opt := range options {
-			if opt == ollamaModelOption {
-				return i, ""
-			}
-		}
 	case selectedModel != "":
 		for i, opt := range options {
-			if strings.EqualFold(opt, switcherCustomRowLabel) || opt == ollamaModelOption {
+			if strings.EqualFold(opt, switcherCustomRowLabel) {
 				continue
 			}
 			if strings.EqualFold(opt, selectedModel) {
@@ -143,8 +136,6 @@ func (m model) pickedModelFromAsk() string {
 				continue
 			}
 			switch {
-			case q.options[idx] == ollamaModelOption:
-				return "ollama"
 			case strings.EqualFold(q.options[idx], switcherCustomRowLabel):
 				return strings.TrimSpace(ans.custom)
 			default:
@@ -175,9 +166,6 @@ func (m model) applyModelPick() (model, tea.Cmd) {
 	switch picked {
 	case "":
 		msg = "✓ model cleared (using " + m.provider.DisplayName() + " default)"
-	case "ollama":
-		cfg, _ := loadConfig()
-		msg = fmt.Sprintf("✓ model set to ollama (%s · %s)", cfg.Claude.Ollama.Host, cfg.Claude.Ollama.Model)
 	default:
 		msg = "✓ model set to " + picked
 	}
@@ -274,9 +262,6 @@ func (m model) updateAsk(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.askConfirmingCancel {
 		return m.updateAskCancelConfirm(msg)
-	}
-	if m.askOllamaActive {
-		return m.updateAskOllamaConfig(msg)
 	}
 	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
 		if m.askReply != nil {
@@ -390,9 +375,6 @@ func (m model) updateAsk(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case msg.Code == tea.KeyEnter:
-		if m.cursorOnOllamaConfig() {
-			return m.startAskOllamaConfig(), nil
-		}
 		if q.kind == qPickOne || q.kind == qPickDiagram {
 			if onCustom && ans.custom == "" {
 				return m, nil
@@ -424,9 +406,6 @@ func (m model) applyAskPaste(content string) (tea.Model, tea.Cmd) {
 	}
 	if m.askConfirmingCancel {
 		return m, nil
-	}
-	if m.askOllamaActive {
-		return m.applyAskOllamaPaste(content)
 	}
 	if m.askTab < 0 || m.askTab >= len(m.askAnswers) {
 		return m, nil

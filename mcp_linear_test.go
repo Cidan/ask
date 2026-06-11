@@ -12,22 +12,68 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// newLinearMCPTestBridge stages a minimal *mcpBridge with the cwd set
-// to an isolated tmp HOME and (optionally) the project's Linear creds
-// pre-populated. Tests that need to dispatch a real GraphQL handler
-// pass the mock server URL into the linear config slot via cfgFn.
-//
-// Pure setup helper — does not start an HTTP listener (the tool
-// methods are dispatched directly, not through the MCP transport).
-func newLinearMCPTestBridge(t *testing.T, cfgFn func(*projectConfig)) (*mcpBridge, string) {
+// linearTestTenant is the post-bridge stand-in for the old per-tab
+// mcpBridge: a cwd plus thin delegators onto the shared cores, so the
+// whole suite below keeps exercising exactly what the native tools
+// run.
+type linearTestTenant struct{ cwd string }
+
+func (b linearTestTenant) getCwd() string { return b.cwd }
+
+func (b linearTestTenant) linearListTool(ctx context.Context, _ *mcp.CallToolRequest, in linearListInput) (*mcp.CallToolResult, linearListOutput, error) {
+	return linearListCore(ctx, b.cwd, in)
+}
+
+func (b linearTestTenant) linearGetTool(ctx context.Context, _ *mcp.CallToolRequest, in linearGetInput) (*mcp.CallToolResult, linearGetOutput, error) {
+	return linearGetCore(ctx, b.cwd, in)
+}
+
+func (b linearTestTenant) linearUpdateTool(ctx context.Context, _ *mcp.CallToolRequest, in linearUpdateInput) (*mcp.CallToolResult, linearUpdateOutput, error) {
+	return linearUpdateCore(ctx, b.cwd, in)
+}
+
+func (b linearTestTenant) linearCreateCommentTool(ctx context.Context, _ *mcp.CallToolRequest, in linearCommentInput) (*mcp.CallToolResult, linearCommentOutput, error) {
+	return linearCreateCommentCore(ctx, b.cwd, in)
+}
+
+func (b linearTestTenant) linearCreateIssueTool(ctx context.Context, _ *mcp.CallToolRequest, in linearCreateInput) (*mcp.CallToolResult, linearCreateOutput, error) {
+	return linearCreateIssueCore(ctx, b.cwd, in)
+}
+
+func (b linearTestTenant) linearDeleteIssueTool(ctx context.Context, _ *mcp.CallToolRequest, in linearDeleteInput) (*mcp.CallToolResult, linearDeleteOutput, error) {
+	return linearDeleteIssueCore(ctx, b.cwd, in)
+}
+
+func (b linearTestTenant) linearListTeamsTool(ctx context.Context, _ *mcp.CallToolRequest, in linearListTeamsInput) (*mcp.CallToolResult, linearListTeamsOutput, error) {
+	return linearListTeamsCore(ctx, b.cwd, in)
+}
+
+func (b linearTestTenant) linearListUsersTool(ctx context.Context, _ *mcp.CallToolRequest, in linearListUsersInput) (*mcp.CallToolResult, linearListUsersOutput, error) {
+	return linearListUsersCore(ctx, b.cwd, in)
+}
+
+func (b linearTestTenant) linearListLabelsTool(ctx context.Context, _ *mcp.CallToolRequest, in linearListLabelsInput) (*mcp.CallToolResult, linearListLabelsOutput, error) {
+	return linearListLabelsCore(ctx, b.cwd, in)
+}
+
+func (b linearTestTenant) linearListStatesTool(ctx context.Context, _ *mcp.CallToolRequest, in linearListStatesInput) (*mcp.CallToolResult, linearListStatesOutput, error) {
+	return linearListStatesCore(ctx, b.cwd, in)
+}
+
+func (b linearTestTenant) linearListProjectsTool(ctx context.Context, _ *mcp.CallToolRequest, in linearListProjectsInput) (*mcp.CallToolResult, linearListProjectsOutput, error) {
+	return linearListProjectsCore(ctx, b.cwd, in)
+}
+
+func (b linearTestTenant) linearListCyclesTool(ctx context.Context, _ *mcp.CallToolRequest, in linearListCyclesInput) (*mcp.CallToolResult, linearListCyclesOutput, error) {
+	return linearListCyclesCore(ctx, b.cwd, in)
+}
+
+// newLinearMCPTestBridge stages a tenant with the cwd set to an
+// isolated tmp HOME and (optionally) the project's Linear creds
+// pre-populated. Canonicalized via memoryProjectRoot so the seed and
+// the reads share one projectKey on macOS /var symlinks.
+func newLinearMCPTestBridge(t *testing.T, cfgFn func(*projectConfig)) (linearTestTenant, string) {
 	t.Helper()
-	// Canonicalize once and use the same path for seed + bridge.
-	// setCwd runs cwd through memoryProjectRoot (EvalSymlinks) before
-	// storing, so on macOS — where t.TempDir() returns a /var/folders/...
-	// path that resolves to /private/var/folders/... — the bridge would
-	// otherwise read its config under a different projectKey than the
-	// seed wrote, and every handler call would fail the
-	// "active issue provider" gate.
 	cwd := memoryProjectRoot(isolateHome(t))
 	if cfgFn != nil {
 		cfg, _ := loadConfig()
@@ -38,9 +84,7 @@ func newLinearMCPTestBridge(t *testing.T, cfgFn func(*projectConfig)) (*mcpBridg
 			t.Fatalf("seed config: %v", err)
 		}
 	}
-	b := &mcpBridge{tabID: 1}
-	b.setCwd(cwd)
-	return b, cwd
+	return linearTestTenant{cwd: cwd}, cwd
 }
 
 // configuredLinearBridge is the convenience constructor used by every
@@ -51,7 +95,7 @@ func newLinearMCPTestBridge(t *testing.T, cfgFn func(*projectConfig)) (*mcpBridg
 // linear_* call as "not the active issue provider", and tests below
 // rely on that being the explicit failure mode (see the
 // NotActiveErrors family).
-func configuredLinearBridge(t *testing.T, mockURL string) (*mcpBridge, string) {
+func configuredLinearBridge(t *testing.T, mockURL string) (linearTestTenant, string) {
 	t.Helper()
 	return newLinearMCPTestBridge(t, func(pc *projectConfig) {
 		pc.Issues.Provider = "linear"
@@ -162,16 +206,15 @@ func TestLinearIssueDetailViewOf_OmitsCommentsWhenEmpty(t *testing.T) {
 // -----------------------------------------------------------------------
 
 func TestLinearProjectConfig_RejectsWhenCwdEmpty(t *testing.T) {
-	b := &mcpBridge{tabID: 1}
-	if _, ok := b.linearProjectConfig(); ok {
-		t.Error("linearProjectConfig should reject empty cwd")
+	if _, ok := linearProjectConfigFor(""); ok {
+		t.Error("linearProjectConfigFor should reject empty cwd")
 	}
 }
 
 func TestLinearProjectConfig_RejectsWhenLinearCredsMissing(t *testing.T) {
 	b, _ := newLinearMCPTestBridge(t, nil)
-	if _, ok := b.linearProjectConfig(); ok {
-		t.Error("linearProjectConfig should reject when creds absent")
+	if _, ok := linearProjectConfigFor(b.getCwd()); ok {
+		t.Error("linearProjectConfigFor should reject when creds absent")
 	}
 }
 
@@ -201,7 +244,7 @@ func TestLinearProjectConfig_RejectsPartialConfig(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			b, _ := newLinearMCPTestBridge(t, tc.fn)
-			if _, ok := b.linearProjectConfig(); ok {
+			if _, ok := linearProjectConfigFor(b.getCwd()); ok {
 				t.Errorf("partial config should be rejected: %s", tc.name)
 			}
 		})
@@ -210,7 +253,7 @@ func TestLinearProjectConfig_RejectsPartialConfig(t *testing.T) {
 
 func TestLinearProjectConfig_AcceptsFullConfig(t *testing.T) {
 	b, _ := configuredLinearBridge(t, "https://example.test/graphql")
-	pc, ok := b.linearProjectConfig()
+	pc, ok := linearProjectConfigFor(b.getCwd())
 	if !ok {
 		t.Fatal("full config should be accepted")
 	}
@@ -801,51 +844,6 @@ func TestLinearDeleteIssueTool_HonorsSuccessFalse(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------
-// Registration coverage — the four tools must show up on a live bridge
-// so future refactors don't silently drop a tool.
-// -----------------------------------------------------------------------
-
-func TestRegisterLinearTools_AddsExpectedToolNames(t *testing.T) {
-	b, err := newMCPBridge(99)
-	if err != nil {
-		t.Fatalf("newMCPBridge: %v", err)
-	}
-	t.Cleanup(b.stop)
-
-	session := connectWorkflowMCPClient(t, b.server)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	res, err := session.ListTools(ctx, &mcp.ListToolsParams{})
-	if err != nil {
-		t.Fatalf("ListTools: %v", err)
-	}
-	want := map[string]bool{
-		"linear_list_issues":    false,
-		"linear_get_issue":      false,
-		"linear_update_issue":   false,
-		"linear_create_comment": false,
-		"linear_create_issue":   false,
-		"linear_delete_issue":   false,
-		"linear_list_teams":     false,
-		"linear_list_users":     false,
-		"linear_list_labels":    false,
-		"linear_list_states":    false,
-		"linear_list_projects":  false,
-		"linear_list_cycles":    false,
-	}
-	for _, tool := range res.Tools {
-		if _, ok := want[tool.Name]; ok {
-			want[tool.Name] = true
-		}
-	}
-	for name, present := range want {
-		if !present {
-			t.Errorf("tool %q not registered on bridge", name)
-		}
-	}
-}
-
-// -----------------------------------------------------------------------
 // Helpers local to this file
 // -----------------------------------------------------------------------
 
@@ -1209,32 +1207,32 @@ func TestLinearListCyclesTool_HappyPath(t *testing.T) {
 }
 
 func TestLinearDiscoveryTools_AllRejectWhenNotActive(t *testing.T) {
-	type call func(b *mcpBridge) *mcp.CallToolResult
+	type call func(b linearTestTenant) *mcp.CallToolResult
 	cases := []struct {
 		name string
 		fn   call
 	}{
-		{"linear_list_teams", func(b *mcpBridge) *mcp.CallToolResult {
+		{"linear_list_teams", func(b linearTestTenant) *mcp.CallToolResult {
 			res, _, _ := b.linearListTeamsTool(context.Background(), &mcp.CallToolRequest{}, linearListTeamsInput{})
 			return res
 		}},
-		{"linear_list_users", func(b *mcpBridge) *mcp.CallToolResult {
+		{"linear_list_users", func(b linearTestTenant) *mcp.CallToolResult {
 			res, _, _ := b.linearListUsersTool(context.Background(), &mcp.CallToolRequest{}, linearListUsersInput{})
 			return res
 		}},
-		{"linear_list_labels", func(b *mcpBridge) *mcp.CallToolResult {
+		{"linear_list_labels", func(b linearTestTenant) *mcp.CallToolResult {
 			res, _, _ := b.linearListLabelsTool(context.Background(), &mcp.CallToolRequest{}, linearListLabelsInput{})
 			return res
 		}},
-		{"linear_list_states", func(b *mcpBridge) *mcp.CallToolResult {
+		{"linear_list_states", func(b linearTestTenant) *mcp.CallToolResult {
 			res, _, _ := b.linearListStatesTool(context.Background(), &mcp.CallToolRequest{}, linearListStatesInput{})
 			return res
 		}},
-		{"linear_list_projects", func(b *mcpBridge) *mcp.CallToolResult {
+		{"linear_list_projects", func(b linearTestTenant) *mcp.CallToolResult {
 			res, _, _ := b.linearListProjectsTool(context.Background(), &mcp.CallToolRequest{}, linearListProjectsInput{})
 			return res
 		}},
-		{"linear_list_cycles", func(b *mcpBridge) *mcp.CallToolResult {
+		{"linear_list_cycles", func(b linearTestTenant) *mcp.CallToolResult {
 			res, _, _ := b.linearListCyclesTool(context.Background(), &mcp.CallToolRequest{}, linearListCyclesInput{})
 			return res
 		}},

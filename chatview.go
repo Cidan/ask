@@ -51,7 +51,7 @@ func (c chatView) Height() int { return c.height }
 func (c *chatView) SetWidth(w int)  { c.width = w }
 func (c *chatView) SetHeight(h int) { c.height = h }
 
-func (c chatView) YOffset() int      { return c.yOffset }
+func (c chatView) YOffset() int        { return c.yOffset }
 func (c chatView) TotalLineCount() int { return c.totalLines }
 
 // VisibleLineCount returns the number of content rows actually filled by

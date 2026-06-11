@@ -1,150 +1,25 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
-	"time"
+
+	"charm.land/catwalk/pkg/catwalk"
 )
 
-// usageCache mirrors the fields we care about in ~/.claude/.usage-cache.json.
-// claude writes 0-100 floats (not 0-1) here; ResetsAt is an RFC3339 UTC
-// timestamp, left as zero time.Time when the wire field is null.
-type usageCache struct {
-	FiveHour usageWindow `json:"five_hour"`
-	SevenDay usageWindow `json:"seven_day"`
-}
-
-type usageWindow struct {
-	Utilization float64   `json:"utilization"`
-	ResetsAt    time.Time `json:"resets_at"`
-}
-
-// readUsageCache returns the freshest plan-usage snapshot we can find.
-// Preferred source is the ask-usage plugin's cache (camelCase flat
-// shape written by our SessionStart hook on every claude run); the
-// fallback is claude's own ~/.claude/.usage-cache.json (snake_case
-// nested shape, often stale because -p mode doesn't refresh it).
-// Callers never surface errors from telemetry reads — a parse failure
-// on the preferred source silently falls through to the fallback.
-func readUsageCache() (*usageCache, error) {
-	if uc := readPluginUsageCache(usagePluginCacheFile()); uc != nil {
-		return uc, nil
-	}
-	return readLegacyUsageCache()
-}
-
-// readPluginUsageCache parses the ask-usage plugin's flat camelCase
-// cache. Returns nil on any error (missing, malformed, wrong shape) so
-// callers can fall through.
-func readPluginUsageCache(path string) *usageCache {
-	if path == "" {
-		return nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			debugLog("plugin usage cache read: %v", err)
-		}
-		return nil
-	}
-	var p struct {
-		Timestamp        int64   `json:"timestamp"`
-		FiveHourPercent  float64 `json:"fiveHourPercent"`
-		WeeklyPercent    float64 `json:"weeklyPercent"`
-		FiveHourResetsAt string  `json:"fiveHourResetsAt"`
-		WeeklyResetsAt   string  `json:"weeklyResetsAt"`
-	}
-	if err := json.Unmarshal(data, &p); err != nil {
-		debugLog("plugin usage cache parse: %v", err)
-		return nil
-	}
-	uc := &usageCache{
-		FiveHour: usageWindow{Utilization: p.FiveHourPercent},
-		SevenDay: usageWindow{Utilization: p.WeeklyPercent},
-	}
-	if t, err := time.Parse(time.RFC3339, p.FiveHourResetsAt); err == nil {
-		uc.FiveHour.ResetsAt = t
-	}
-	if t, err := time.Parse(time.RFC3339, p.WeeklyResetsAt); err == nil {
-		uc.SevenDay.ResetsAt = t
-	}
-	return uc
-}
-
-// readLegacyUsageCache reads claude's own ~/.claude/.usage-cache.json.
-// Returns (nil, nil) when absent; surfaces parse errors because this
-// is the terminal fallback.
-func readLegacyUsageCache() (*usageCache, error) {
-	path := usageCachePath()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		debugLog("usage cache read: %v", err)
-		return nil, err
-	}
-	var uc usageCache
-	if err := json.Unmarshal(data, &uc); err != nil {
-		debugLog("usage cache parse: %v", err)
-		return nil, err
-	}
-	return &uc, nil
-}
-
-func usageCachePath() string {
-	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
-		return filepath.Join(dir, ".usage-cache.json")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ".usage-cache.json"
-	}
-	return filepath.Join(home, ".claude", ".usage-cache.json")
-}
-
-// formatTTL renders time remaining, compact.
-// Past/zero → "0s"; sub-minute → "Ns"; sub-hour → "Nm" (seconds dropped
-// so the chip stops ticking every second near the reset); sub-day →
-// "NhNm"; day+ → "NdNh".
-func formatTTL(expires, now time.Time) string {
-	if expires.IsZero() {
-		return "0s"
-	}
-	d := expires.Sub(now)
-	if d <= 0 {
-		return "0s"
-	}
-	totalSec := int(d.Round(time.Second) / time.Second)
-	days := totalSec / 86400
-	hours := (totalSec % 86400) / 3600
-	mins := (totalSec % 3600) / 60
-	secs := totalSec % 60
-	switch {
-	case days > 0:
-		return fmt.Sprintf("%dd%dh", days, hours)
-	case hours > 0:
-		return fmt.Sprintf("%dh%dm", hours, mins)
-	case mins > 0:
-		return fmt.Sprintf("%dm", mins)
-	default:
-		return fmt.Sprintf("%ds", secs)
-	}
-}
-
 // modelContextLimit maps a model name to its context window size.
-// DeepSeek's V4 line is a flat 1M window; for claude names, anything
-// containing "1m" (case-insensitive) gets the 1M tier and the rest
-// default to 200k. Matches the model aliases registered in
-// claudeProvider.ModelPicker() ("opus[1m]", "sonnet[1m]") as well as the
-// fully-qualified names claude returns in its system/init event.
+// DeepSeek's V4 line is a flat 1M window; anthropic/openai model ids
+// resolve through the catwalk catalog; names containing "1m" get the
+// 1M tier; everything else falls back to a conservative 200k.
 func modelContextLimit(model string) int {
 	lower := strings.ToLower(model)
 	if strings.HasPrefix(lower, "deepseek") {
 		return deepseekContextWindow
+	}
+	if m, ok := catalogModel(catwalk.InferenceProviderAnthropic, model); ok && m.ContextWindow > 0 {
+		return int(m.ContextWindow)
+	}
+	if m, ok := catalogModel(catwalk.InferenceProviderOpenAI, model); ok && m.ContextWindow > 0 {
+		return int(m.ContextWindow)
 	}
 	if strings.Contains(lower, "1m") {
 		return 1_000_000
@@ -167,34 +42,4 @@ func contextPercent(used, limit int) int {
 		return 100
 	}
 	return p
-}
-
-// codexContextTokens derives the prompt footprint of the current Codex turn
-// from thread/tokenUsage/updated. Like the Claude path, ctx should reflect
-// tokens occupying the model's input window, so we count current-turn input
-// plus cached input and deliberately ignore cumulative totals and output.
-func codexContextTokens(tokenUsage map[string]any) int {
-	last, _ := tokenUsage["last"].(map[string]any)
-	if last == nil {
-		return 0
-	}
-	return jsonInt(last["inputTokens"]) + jsonInt(last["cachedInputTokens"])
-}
-
-// assistantUsage pulls the current turn's context size out of an
-// assistant event's message.usage block. The returned int is
-// input_tokens + cache_read_input_tokens + cache_creation_input_tokens —
-// together these cover the entire transcript the model just processed.
-// output_tokens is deliberately excluded: those are what the model just
-// wrote, not what it read.
-func assistantUsage(ev map[string]any) (int, bool) {
-	msg, _ := ev["message"].(map[string]any)
-	usage, ok := msg["usage"].(map[string]any)
-	if !ok {
-		return 0, false
-	}
-	input := jsonInt(usage["input_tokens"])
-	cacheRead := jsonInt(usage["cache_read_input_tokens"])
-	cacheCreate := jsonInt(usage["cache_creation_input_tokens"])
-	return input + cacheRead + cacheCreate, true
 }

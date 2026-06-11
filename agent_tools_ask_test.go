@@ -1,16 +1,11 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/fantasy"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // swapProgramSend captures program-routed messages and lets the test
@@ -111,75 +106,5 @@ func TestAgentEndTurnTool(t *testing.T) {
 	}
 	if resp = runTool(t, tool, agentEndTurnParams{Summary: "x", Decision: "maybe"}); !resp.IsError {
 		t.Errorf("bad decision should error: %+v", resp)
-	}
-}
-
-type mcpEchoIn struct {
-	Text string `json:"text" jsonschema:"text to echo"`
-	N    int    `json:"n,omitempty" jsonschema:"repeat count"`
-}
-
-func TestConnectAgentMCP(t *testing.T) {
-	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0.1"}, nil)
-	mcp.AddTool(server, &mcp.Tool{Name: "echo", Description: "echo text back"},
-		func(ctx context.Context, req *mcp.CallToolRequest, in mcpEchoIn) (*mcp.CallToolResult, any, error) {
-			if in.Text == "fail" {
-				return &mcp.CallToolResult{
-					Content: []mcp.Content{&mcp.TextContent{Text: "boom"}},
-					IsError: true,
-				}, nil, nil
-			}
-			return &mcp.CallToolResult{
-				Content: []mcp.Content{&mcp.TextContent{Text: "echo: " + in.Text}},
-			}, nil, nil
-		})
-	mcp.AddTool(server, &mcp.Tool{Name: "end_turn", Description: "collides with native"},
-		func(ctx context.Context, req *mcp.CallToolRequest, in mcpEchoIn) (*mcp.CallToolResult, any, error) {
-			return &mcp.CallToolResult{}, nil, nil
-		})
-	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
-	ts := httptest.NewServer(handler)
-	defer ts.Close()
-
-	tools, closer, err := connectAgentMCP(context.Background(), agentMCPServer{
-		name: "test",
-		url:  ts.URL,
-		skip: map[string]bool{"end_turn": true},
-	})
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer closer()
-
-	if len(tools) != 1 {
-		t.Fatalf("want 1 tool after skip filter, got %d", len(tools))
-	}
-	tool := tools[0]
-	info := tool.Info()
-	if info.Name != "mcp__test__echo" {
-		t.Errorf("tool name %q want mcp__test__echo", info.Name)
-	}
-	if _, ok := info.Parameters["text"]; !ok {
-		t.Errorf("schema properties not extracted: %+v", info.Parameters)
-	}
-	if len(info.Required) != 1 || info.Required[0] != "text" {
-		t.Errorf("required fields wrong: %v", info.Required)
-	}
-
-	resp, err := tool.Run(context.Background(), fantasy.ToolCall{ID: "1", Name: info.Name, Input: `{"text":"hi"}`})
-	if err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if resp.IsError || resp.Content != "echo: hi" {
-		t.Errorf("echo result: %+v", resp)
-	}
-
-	resp, _ = tool.Run(context.Background(), fantasy.ToolCall{ID: "2", Name: info.Name, Input: `{"text":"fail"}`})
-	if !resp.IsError || resp.Content != "boom" {
-		t.Errorf("IsError must propagate: %+v", resp)
-	}
-
-	if _, _, err := connectAgentMCP(context.Background(), agentMCPServer{name: "down", url: "http://127.0.0.1:1/nope"}); err == nil {
-		t.Error("unreachable server must error")
 	}
 }

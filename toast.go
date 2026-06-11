@@ -36,12 +36,12 @@ type toastModel struct {
 	maxHeight int
 	duration  time.Duration
 
-	active   bool
-	text     string
-	expires  time.Time
-	style    lipgloss.Style
-	prefix   string
-	clock    func() time.Time
+	active  bool
+	text    string
+	expires time.Time
+	style   lipgloss.Style
+	prefix  string
+	clock   func() time.Time
 }
 
 // NewToastModel returns a configured toast model. maxWidth caps the

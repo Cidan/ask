@@ -2,22 +2,24 @@ package main
 
 import (
 	"bytes"
-	"encoding/base64"
-	"encoding/json"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
 
-func TestProviderRegistry_ReturnsClaudeByID(t *testing.T) {
-	// claudeProvider registers itself in init(); verify lookup works end-to-end.
-	p := providerByID("claude")
+func TestProviderRegistry_ReturnsAnthropicByID(t *testing.T) {
+	// The registry is populated by provider.go's init(); verify lookup
+	// works end-to-end and the default (first registered) is anthropic.
+	p := providerByID("anthropic")
 	if p == nil {
-		t.Fatalf("providerByID(\"claude\") returned nil; registry=%d", len(providerRegistry))
+		t.Fatalf("providerByID(\"anthropic\") returned nil; registry=%d", len(providerRegistry))
 	}
-	if p.ID() != "claude" {
-		t.Fatalf("want ID=claude, got %q", p.ID())
+	if p.ID() != "anthropic" {
+		t.Fatalf("want ID=anthropic, got %q", p.ID())
+	}
+	if def := providerByID(""); def == nil || def.ID() != "anthropic" {
+		t.Fatalf("empty id must fall back to anthropic, got %v", def)
 	}
 }
 
@@ -116,64 +118,6 @@ func TestProviderByIDStrict_EmptyRegistryMisses(t *testing.T) {
 	}
 }
 
-func TestClaudeProvider_Metadata(t *testing.T) {
-	var p claudeProvider
-	if got := p.ID(); got != "claude" {
-		t.Errorf("ID=%q want claude", got)
-	}
-	if got := p.DisplayName(); got != "Claude" {
-		t.Errorf("DisplayName=%q want Claude", got)
-	}
-	caps := p.Capabilities()
-	if !caps.Resume || !caps.ModelPicker || !caps.EffortPicker ||
-		!caps.AskUserQuestionMCP || !caps.PermissionPromptMCP {
-		t.Errorf("Capabilities missing expected flags: %+v", caps)
-	}
-	mp := p.ModelPicker()
-	if mp.Prompt == "" {
-		t.Error("ModelPicker prompt is empty")
-	}
-	if !mp.AllowCustom {
-		t.Error("ModelPicker AllowCustom should be true")
-	}
-	if v, ok := mp.SubConfig[ollamaModelOption]; !ok || v != "ollama" {
-		t.Errorf("ModelPicker SubConfig[ollama] = %q, want \"ollama\"", v)
-	}
-	var sawOllama bool
-	for _, opt := range mp.Options {
-		if opt == ollamaModelOption {
-			sawOllama = true
-		}
-	}
-	if !sawOllama {
-		t.Errorf("ModelPicker options missing ollama entry: %v", mp.Options)
-	}
-
-	efforts := p.EffortOptions()
-	wantEffort := map[string]bool{
-		"default": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true,
-	}
-	if len(efforts) != len(wantEffort) {
-		t.Errorf("EffortOptions len=%d want %d (%v)", len(efforts), len(wantEffort), efforts)
-	}
-	for _, e := range efforts {
-		if !wantEffort[e] {
-			t.Errorf("unexpected effort option %q", e)
-		}
-	}
-
-	slashes := p.BaseSlashCommands()
-	names := map[string]bool{}
-	for _, s := range slashes {
-		names[s.name] = true
-	}
-	for _, want := range []string{"/resume", "/new", "/clear", "/model", "/effort"} {
-		if !names[want] {
-			t.Errorf("BaseSlashCommands missing %q", want)
-		}
-	}
-}
-
 func TestProviderProc_KillSafeOnNil(t *testing.T) {
 	var p *providerProc
 	p.kill() // must not panic
@@ -253,60 +197,6 @@ func (t *trackCloser) Close() error {
 	return nil
 }
 
-func TestUserContent_StringWhenNoAttachments(t *testing.T) {
-	got := userContent("hello", nil)
-	if s, ok := got.(string); !ok || s != "hello" {
-		t.Fatalf("userContent empty atts: got %T(%v), want string \"hello\"", got, got)
-	}
-}
-
-func TestUserContent_BlocksWithAttachments(t *testing.T) {
-	raw := []byte{0xDE, 0xAD, 0xBE, 0xEF}
-	got := userContent("look", []pendingAttachment{{data: raw, mime: "image/png"}})
-	blocks, ok := got.([]map[string]any)
-	if !ok {
-		t.Fatalf("want []map[string]any, got %T", got)
-	}
-	if len(blocks) != 2 {
-		t.Fatalf("want 2 blocks (text+image), got %d", len(blocks))
-	}
-	if blocks[0]["type"] != "text" || blocks[0]["text"] != "look" {
-		t.Errorf("block[0] unexpected: %v", blocks[0])
-	}
-	if blocks[1]["type"] != "image" {
-		t.Errorf("block[1] type=%v want image", blocks[1]["type"])
-	}
-	src, _ := blocks[1]["source"].(map[string]any)
-	if src == nil {
-		t.Fatal("block[1].source missing")
-	}
-	if src["type"] != "base64" || src["media_type"] != "image/png" {
-		t.Errorf("source fields wrong: %v", src)
-	}
-	if src["data"] != base64.StdEncoding.EncodeToString(raw) {
-		t.Errorf("source data not base64 of raw bytes")
-	}
-}
-
-func TestUserContent_OmitsEmptyTextBlock(t *testing.T) {
-	got := userContent("", []pendingAttachment{{mime: "image/png"}})
-	blocks, _ := got.([]map[string]any)
-	if len(blocks) != 1 {
-		t.Fatalf("empty text + 1 image: want 1 block, got %d: %v", len(blocks), blocks)
-	}
-	if blocks[0]["type"] != "image" {
-		t.Errorf("only block should be image, got %v", blocks[0]["type"])
-	}
-}
-
-func TestUserContent_JSONSerialisable(t *testing.T) {
-	raw := []byte("bytes")
-	got := userContent("x", []pendingAttachment{{data: raw, mime: "image/jpeg"}})
-	if _, err := json.Marshal(got); err != nil {
-		t.Fatalf("userContent should be JSON serialisable: %v", err)
-	}
-}
-
 func TestUserBarText(t *testing.T) {
 	cases := []struct {
 		line string
@@ -323,52 +213,5 @@ func TestUserBarText(t *testing.T) {
 		if got := userBarText(c.line, c.n); got != c.want {
 			t.Errorf("userBarText(%q, %d)=%q want %q", c.line, c.n, got, c.want)
 		}
-	}
-}
-
-func TestClaudeSend_WritesStreamJSON(t *testing.T) {
-	buf := &bufferCloser{Buffer: &bytes.Buffer{}}
-	p := &providerProc{stdin: buf}
-	var cp claudeProvider
-	if err := cp.Send(p, "hello world", nil); err != nil {
-		t.Fatalf("Send err: %v", err)
-	}
-	line := bytes.TrimRight(buf.Bytes(), "\n")
-	if !bytes.HasSuffix(buf.Bytes(), []byte("\n")) {
-		t.Errorf("Send output missing trailing newline")
-	}
-	var env map[string]any
-	if err := json.Unmarshal(line, &env); err != nil {
-		t.Fatalf("invalid JSON %q: %v", buf.String(), err)
-	}
-	if env["type"] != "user" {
-		t.Errorf("type=%v want user", env["type"])
-	}
-	msg, _ := env["message"].(map[string]any)
-	if msg == nil {
-		t.Fatalf("message field missing: %v", env)
-	}
-	if msg["role"] != "user" {
-		t.Errorf("role=%v want user", msg["role"])
-	}
-	if msg["content"] != "hello world" {
-		t.Errorf("content=%v want hello world", msg["content"])
-	}
-}
-
-func TestClaudeSend_AttachmentsProduceBlocks(t *testing.T) {
-	buf := &bufferCloser{Buffer: &bytes.Buffer{}}
-	p := &providerProc{stdin: buf}
-	var cp claudeProvider
-	err := cp.Send(p, "look", []pendingAttachment{{data: []byte("png"), mime: "image/png"}})
-	if err != nil {
-		t.Fatalf("Send err: %v", err)
-	}
-	var env map[string]any
-	_ = json.Unmarshal(buf.Bytes(), &env)
-	msg := env["message"].(map[string]any)
-	content, ok := msg["content"].([]any)
-	if !ok || len(content) != 2 {
-		t.Fatalf("content should be 2-element block list, got %T %v", msg["content"], msg["content"])
 	}
 }

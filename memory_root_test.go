@@ -137,21 +137,17 @@ func TestMemoryProjectRoot_JJWorkspaceResolvesToRoot(t *testing.T) {
 	}
 }
 
-func TestBridgeSetCwd_AppliesProjectRootResolution(t *testing.T) {
-	// End-to-end: feeding bridge.setCwd a subdir of a git repo must
-	// land the toplevel in bridge.getCwd. This is the integration
-	// point that turns m.cwd → memmy tenant.
+func TestMemoryProjectRoot_AppliesFromSubdir(t *testing.T) {
+	// Feeding memoryProjectRoot a subdir of a git repo must land the
+	// toplevel — the resolution that turns a cwd into a memmy tenant.
 	main := initGitRepo(t)
 	sub := filepath.Join(main, "internal", "x")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatalf("mkdir sub: %v", err)
 	}
 	want := resolveTempDir(t, main)
-
-	b := newTestBridge(1, "")
-	b.setCwd(sub)
-	if got := b.getCwd(); got != want {
-		t.Errorf("bridge.getCwd: got %q want %q", got, want)
+	if got := memoryProjectRoot(sub); got != want {
+		t.Errorf("memoryProjectRoot: got %q want %q", got, want)
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	lipgloss "charm.land/lipgloss/v2"
 )
 
-
 const (
 	approvalBoxWidth      = 90
 	approvalChoiceDeny    = 0

@@ -233,11 +233,6 @@ func TestSwitcher_ApplySwapsProviderWithoutSavingDefault(t *testing.T) {
 		t.Fatalf("tabs=%d after openTab, want 2", len(a2.tabs))
 	}
 	nt := a2.tabs[1]
-	t.Cleanup(func() {
-		if nt.mcpBridge != nil {
-			nt.mcpBridge.stop()
-		}
-	})
 	if nt.provider == nil || nt.provider.ID() != "claude" {
 		got := "<nil>"
 		if nt.provider != nil {
@@ -286,11 +281,6 @@ func TestSwitcher_SameProviderModelDoesNotAffectNewTabs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newTab first: %v", err)
 	}
-	t.Cleanup(func() {
-		if first.mcpBridge != nil {
-			first.mcpBridge.stop()
-		}
-	})
 
 	m := *first
 	m = stepKey(t, m, pressKey('b', tea.ModCtrl))
@@ -312,11 +302,6 @@ func TestSwitcher_SameProviderModelDoesNotAffectNewTabs(t *testing.T) {
 		t.Fatalf("tabs=%d after openTab, want 2", len(a2.tabs))
 	}
 	nt := a2.tabs[1]
-	t.Cleanup(func() {
-		if nt.mcpBridge != nil {
-			nt.mcpBridge.stop()
-		}
-	})
 	if nt.providerModel != "sonnet" {
 		t.Errorf("new tab providerModel=%q want sonnet; Ctrl+B must stay in-memory", nt.providerModel)
 	}
@@ -376,14 +361,6 @@ func TestSeedModelPickerSelectionFallsBackToCustomRow(t *testing.T) {
 	got, custom := seedModelPickerSelection("gpt-5", opts)
 	if got != 1 || custom != "gpt-5" {
 		t.Errorf("seedModelPickerSelection(custom)=(%d,%q) want (1,\"gpt-5\")", got, custom)
-	}
-}
-
-func TestSeedModelPickerSelectionMatchesOllama(t *testing.T) {
-	opts := []string{"default", ollamaModelOption, switcherCustomRowLabel}
-	got, custom := seedModelPickerSelection("ollama", opts)
-	if got != 1 || custom != "" {
-		t.Errorf("seedModelPickerSelection(ollama)=(%d,%q) want (1,\"\")", got, custom)
 	}
 }
 

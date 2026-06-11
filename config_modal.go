@@ -75,7 +75,7 @@ func (m model) globalConfigItems() []configItem {
 	} else if memoryConfigEnabled(cfg) {
 		mem = "off (open failed)"
 	}
-	return []configItem{
+	items := []configItem{
 		{"Quiet Mode", quiet, "quiet"},
 		{"Cursor Blink", blink, "cursorBlink"},
 		{"Render Diffs", diffs, "renderDiffs"},
@@ -85,9 +85,13 @@ func (m model) globalConfigItems() []configItem {
 		{"Theme", m.themeName, "theme"},
 		{"Default Provider", provName, "provider"},
 		{"Memory...", mem, "memory"},
-		{"DeepSeek...", deepseekKeySummary(cfg.DeepSeek), "deepseek"},
-		{"Keybindings...", "", "keybindings"},
 	}
+	for _, spec := range apiProviderPickerSpecs {
+		pc := *spec.config(&cfg)
+		items = append(items, configItem{spec.title + "...", apiProviderKeySummary(pc, spec.envKey), spec.id})
+	}
+	items = append(items, configItem{"Keybindings...", "", "keybindings"})
+	return items
 }
 
 func (m model) refreshHistoryCmd() tea.Cmd {
@@ -145,8 +149,8 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.configMemoryPickerActive {
 		return m.updateConfigMemoryPicker(msg)
 	}
-	if m.configDeepSeekPickerActive {
-		return m.updateConfigDeepSeekPicker(msg)
+	if m.configAPIProviderPicker != "" {
+		return m.updateConfigAPIProviderPicker(msg)
 	}
 	if m.configKeybindingsPickerActive {
 		return m.updateConfigKeybindingsPicker(msg)
@@ -364,11 +368,12 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 	case "memory":
 		m = m.openConfigMemoryPicker()
 		return m, nil
-	case "deepseek":
-		m = m.openConfigDeepSeekPicker()
-		return m, nil
 	case "keybindings":
 		m = m.openConfigKeybindingsPicker()
+		return m, nil
+	}
+	if _, ok := apiProviderPickerSpecByID(itemID); ok {
+		m = m.openConfigAPIProviderPicker(itemID)
 		return m, nil
 	}
 	return m, nil

@@ -11,14 +11,14 @@ import (
 func swapDeepseekLM(t *testing.T, lm fantasy.LanguageModel) {
 	t.Helper()
 	prev := deepseekLanguageModel
-	deepseekLanguageModel = func(deepseekConfig, string) (fantasy.LanguageModel, error) {
+	deepseekLanguageModel = func(apiProviderConfig, string) (fantasy.LanguageModel, error) {
 		return lm, nil
 	}
 	t.Cleanup(func() { deepseekLanguageModel = prev })
 }
 
 func TestDeepseekProvider_Metadata(t *testing.T) {
-	var p deepseekProvider
+	p := deepseekAgentProvider()
 	if p.ID() != "deepseek" || p.DisplayName() != "DeepSeek" {
 		t.Errorf("identity wrong: %q %q", p.ID(), p.DisplayName())
 	}
@@ -52,7 +52,7 @@ func TestDeepseekProvider_Metadata(t *testing.T) {
 
 func TestDeepseekProvider_SettingsRoundTrip(t *testing.T) {
 	isolateHome(t)
-	var p deepseekProvider
+	p := deepseekAgentProvider()
 	if s := p.LoadSettings(); s.Model != "" || s.Effort != "" {
 		t.Errorf("fresh settings must be zero: %+v", s)
 	}
@@ -100,7 +100,7 @@ func TestDeepseekProviderOptions(t *testing.T) {
 func TestDeepseekProvider_NoAPIKeyFailsFast(t *testing.T) {
 	isolateHome(t)
 	t.Setenv(deepseekEnvAPIKey, "")
-	var p deepseekProvider
+	p := deepseekAgentProvider()
 	_, _, err := p.StartSession(ProviderSessionArgs{Cwd: t.TempDir(), NewSessionID: "s1"})
 	if err == nil {
 		t.Fatal("StartSession without a key must fail")
@@ -118,7 +118,7 @@ func TestDeepseekProvider_SessionLifecycle(t *testing.T) {
 	}}
 	swapDeepseekLM(t, lm)
 
-	var p deepseekProvider
+	p := deepseekAgentProvider()
 	cwd := t.TempDir()
 	args := ProviderSessionArgs{Cwd: cwd, TabID: 4, NewSessionID: "ses-lifecycle", SkipAllPermissions: true}
 	proc, ch, err := p.StartSession(args)
@@ -223,7 +223,7 @@ func TestDeepseekProvider_SessionLifecycle(t *testing.T) {
 func TestDeepseekProvider_ResumeUnknownSessionErrors(t *testing.T) {
 	isolateHome(t)
 	swapDeepseekLM(t, &fakeLM{})
-	var p deepseekProvider
+	p := deepseekAgentProvider()
 	if _, _, err := p.StartSession(ProviderSessionArgs{Cwd: t.TempDir(), SessionID: "missing"}); err == nil {
 		t.Fatal("resuming an unknown session must fail")
 	}
@@ -231,7 +231,7 @@ func TestDeepseekProvider_ResumeUnknownSessionErrors(t *testing.T) {
 
 func TestDeepseekProvider_MaterializeRoundTrip(t *testing.T) {
 	isolateHome(t)
-	var p deepseekProvider
+	p := deepseekAgentProvider()
 	workspace := t.TempDir()
 	id, cwd, err := p.Materialize(workspace, []NeutralTurn{
 		{Role: "user", Text: "ported question"},

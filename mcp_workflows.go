@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -136,17 +135,6 @@ type workflowRunOutput struct {
 	Workflow   string `json:"workflow" jsonschema:"workflow name that was dispatched"`
 	SessionKey string `json:"session_key" jsonschema:"unique key for this run; consumed by the workflow tracker"`
 	StartedAt  string `json:"started_at" jsonschema:"RFC3339 timestamp marking dispatch"`
-}
-
-type endTurnInput struct {
-	Summary  string `json:"summary" jsonschema:"required: 1-3 sentence summary of what you did this step (and what remains), recorded as this step's line in the workflow log"`
-	Decision string `json:"decision,omitempty" jsonschema:"loop control, required only on the final step of a loop iteration: 'continue' to run another iteration or 'break' to end the loop; omit when not the final step of a loop"`
-}
-
-type endTurnOutput struct {
-	Registered bool   `json:"registered" jsonschema:"true when the summary was recorded against the active workflow step"`
-	Decision   string `json:"decision,omitempty" jsonschema:"the loop decision that was registered, echoed back (empty when none)"`
-	Note       string `json:"note" jsonschema:"human-readable status"`
 }
 
 // endTurnReply is the model's answer to an endTurnSignalMsg. registered
@@ -463,24 +451,22 @@ func workflowByNameForCwd(cwd, name string) (workflowDef, bool, error) {
 	return workflowDef{}, false, nil
 }
 
-// requireCwd returns the bridge's tenant cwd, or an error result when
-// it's empty. Empty cwd means the bridge wasn't fully wired (test
-// without setCwd, startup race) and any project lookup would fall
-// through to the global config — refuse explicitly so a misconfigured
-// bridge can't bleed into another project's data.
-func (b *mcpBridge) requireCwd() (string, *mcp.CallToolResult) {
-	cwd := b.getCwd()
+// requireWorkflowCwd returns an error result when the tenant cwd is
+// empty. Empty cwd means the caller wasn't fully wired (test without
+// setCwd, startup race) and any project lookup would fall through to
+// the global config — refuse explicitly so a misconfigured caller
+// can't bleed into another project's data.
+func requireWorkflowCwd(cwd string) *mcp.CallToolResult {
 	if cwd == "" {
-		return "", errResult("workflow tools require a project cwd; the ask tab does not have one configured")
+		return errResult("workflow tools require a project cwd; the ask tab does not have one configured")
 	}
-	return cwd, nil
+	return nil
 }
 
 // ----- Handlers -----
 
-func (b *mcpBridge) workflowListTool(_ context.Context, _ *mcp.CallToolRequest, _ workflowListInput) (*mcp.CallToolResult, workflowListOutput, error) {
-	cwd, errRes := b.requireCwd()
-	if errRes != nil {
+func workflowListCore(cwd string, _ workflowListInput) (*mcp.CallToolResult, workflowListOutput, error) {
+	if errRes := requireWorkflowCwd(cwd); errRes != nil {
 		return errRes, workflowListOutput{}, nil
 	}
 	items, err := workflowItemsForCwd(cwd)
@@ -497,9 +483,8 @@ func (b *mcpBridge) workflowListTool(_ context.Context, _ *mcp.CallToolRequest, 
 	return okResult(fmt.Sprintf("%d workflow(s) defined", len(out.Workflows))), out, nil
 }
 
-func (b *mcpBridge) workflowGetTool(_ context.Context, _ *mcp.CallToolRequest, in workflowGetInput) (*mcp.CallToolResult, workflowGetOutput, error) {
-	cwd, errRes := b.requireCwd()
-	if errRes != nil {
+func workflowGetCore(cwd string, in workflowGetInput) (*mcp.CallToolResult, workflowGetOutput, error) {
+	if errRes := requireWorkflowCwd(cwd); errRes != nil {
 		return errRes, workflowGetOutput{}, nil
 	}
 	name := strings.TrimSpace(in.Name)
@@ -517,9 +502,8 @@ func (b *mcpBridge) workflowGetTool(_ context.Context, _ *mcp.CallToolRequest, i
 	return okResult(fmt.Sprintf("workflow %q has %d step(s)", w.Name, len(w.Steps))), out, nil
 }
 
-func (b *mcpBridge) workflowCreateTool(_ context.Context, _ *mcp.CallToolRequest, in workflowCreateInput) (*mcp.CallToolResult, workflowCreateOutput, error) {
-	cwd, errRes := b.requireCwd()
-	if errRes != nil {
+func workflowCreateCore(cwd string, in workflowCreateInput) (*mcp.CallToolResult, workflowCreateOutput, error) {
+	if errRes := requireWorkflowCwd(cwd); errRes != nil {
 		return errRes, workflowCreateOutput{}, nil
 	}
 	name := strings.TrimSpace(in.Name)
@@ -557,9 +541,8 @@ func (b *mcpBridge) workflowCreateTool(_ context.Context, _ *mcp.CallToolRequest
 		workflowCreateOutput{Workflow: workflowDefToView(def)}, nil
 }
 
-func (b *mcpBridge) workflowEditTool(_ context.Context, _ *mcp.CallToolRequest, in workflowEditInput) (*mcp.CallToolResult, workflowEditOutput, error) {
-	cwd, errRes := b.requireCwd()
-	if errRes != nil {
+func workflowEditCore(cwd string, in workflowEditInput) (*mcp.CallToolResult, workflowEditOutput, error) {
+	if errRes := requireWorkflowCwd(cwd); errRes != nil {
 		return errRes, workflowEditOutput{}, nil
 	}
 	name := strings.TrimSpace(in.Name)
@@ -656,9 +639,8 @@ func (b *mcpBridge) workflowEditTool(_ context.Context, _ *mcp.CallToolRequest, 
 		workflowEditOutput{Workflow: workflowDefToView(updated)}, nil
 }
 
-func (b *mcpBridge) workflowDeleteTool(_ context.Context, _ *mcp.CallToolRequest, in workflowDeleteInput) (*mcp.CallToolResult, workflowDeleteOutput, error) {
-	cwd, errRes := b.requireCwd()
-	if errRes != nil {
+func workflowDeleteCore(cwd string, in workflowDeleteInput) (*mcp.CallToolResult, workflowDeleteOutput, error) {
+	if errRes := requireWorkflowCwd(cwd); errRes != nil {
 		return errRes, workflowDeleteOutput{}, nil
 	}
 	name := strings.TrimSpace(in.Name)
@@ -704,9 +686,8 @@ func (b *mcpBridge) workflowDeleteTool(_ context.Context, _ *mcp.CallToolRequest
 		workflowDeleteOutput{Deleted: true}, nil
 }
 
-func (b *mcpBridge) workflowRunTool(_ context.Context, _ *mcp.CallToolRequest, in workflowRunInput) (*mcp.CallToolResult, workflowRunOutput, error) {
-	cwd, errRes := b.requireCwd()
-	if errRes != nil {
+func workflowRunCore(cwd string, tabID int, in workflowRunInput) (*mcp.CallToolResult, workflowRunOutput, error) {
+	if errRes := requireWorkflowCwd(cwd); errRes != nil {
 		return errRes, workflowRunOutput{}, nil
 	}
 	name := strings.TrimSpace(in.Name)
@@ -733,10 +714,10 @@ func (b *mcpBridge) workflowRunTool(_ context.Context, _ *mcp.CallToolRequest, i
 		return errResult(fmt.Sprintf("workflow %q is invalid: %v", name, err)), workflowRunOutput{}, nil
 	}
 
-	source := textWorkflowSource(b.tabID, in.Append)
+	source := textWorkflowSource(tabID, in.Append)
 	startedAt := time.Now().UTC()
 	if err := mcpSpawnWorkflowTab(spawnWorkflowTabMsg{
-		OriginTabID: b.tabID,
+		OriginTabID: tabID,
 		Cwd:         cwd,
 		Workflow:    w,
 		Source:      source,
@@ -749,79 +730,4 @@ func (b *mcpBridge) workflowRunTool(_ context.Context, _ *mcp.CallToolRequest, i
 			SessionKey: source.Key(),
 			StartedAt:  startedAt.Format(time.RFC3339Nano),
 		}, nil
-}
-
-// endTurnTool records the current workflow step's end-of-turn report:
-// the required summary plus, in a loop, the optional break/continue
-// decision. It does not tenant on cwd (this is about the live run on
-// this tab, not project data); instead it routes an endTurnSignalMsg to
-// the owning tab and blocks on the reply so the report is recorded
-// before the agent's turn ends. The runner consumes it at turnComplete
-// — see advanceWorkflowStep.
-func (b *mcpBridge) endTurnTool(ctx context.Context, _ *mcp.CallToolRequest, in endTurnInput) (*mcp.CallToolResult, endTurnOutput, error) {
-	summary := strings.TrimSpace(in.Summary)
-	if summary == "" {
-		return errResult("summary is required: describe in 1-3 sentences what you did this step"),
-			endTurnOutput{}, nil
-	}
-	decision := strings.TrimSpace(in.Decision)
-	if decision != "" && decision != workflowLoopBreak && decision != workflowLoopContinue {
-		return errResult(fmt.Sprintf("decision, when provided, must be %q or %q", workflowLoopContinue, workflowLoopBreak)),
-			endTurnOutput{}, nil
-	}
-	p := teaProgramPtr.Load()
-	if p == nil {
-		return errResult("ask UI not ready"), endTurnOutput{}, nil
-	}
-	reply := make(chan endTurnReply, 1)
-	p.Send(endTurnSignalMsg{
-		tabID:    b.tabID,
-		summary:  summary,
-		decision: decision,
-		reply:    reply,
-	})
-	select {
-	case resp := <-reply:
-		return okResult(resp.note), endTurnOutput{
-			Registered: resp.registered,
-			Decision:   decision,
-			Note:       resp.note,
-		}, nil
-	case <-ctx.Done():
-		return nil, endTurnOutput{}, ctx.Err()
-	}
-}
-
-// registerWorkflowTools wires the workflow CRUD/run/loop tools onto
-// b.server. Called once per bridge from newMCPBridge so every chat
-// tab carries its own typed handlers tenanted on its own cwd.
-func (b *mcpBridge) registerWorkflowTools() {
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "workflow_list",
-		Description: workflowListToolDescription,
-	}, b.workflowListTool)
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "workflow_get",
-		Description: workflowGetToolDescription,
-	}, b.workflowGetTool)
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "workflow_create",
-		Description: workflowCreateToolDescription,
-	}, b.workflowCreateTool)
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "workflow_edit",
-		Description: workflowEditToolDescription,
-	}, b.workflowEditTool)
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "workflow_delete",
-		Description: workflowDeleteToolDescription,
-	}, b.workflowDeleteTool)
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "workflow_run",
-		Description: workflowRunToolDescription,
-	}, b.workflowRunTool)
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "end_turn",
-		Description: endTurnToolDescription,
-	}, b.endTurnTool)
 }

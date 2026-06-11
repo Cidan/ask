@@ -30,7 +30,8 @@ const (
 
 // agentTurn is one queued user submission.
 type agentTurn struct {
-	text string
+	text  string
+	files []fantasy.FilePart
 }
 
 // agentSession is the in-process replacement for a provider
@@ -39,10 +40,18 @@ type agentTurn struct {
 // cmd=nil — kill() closes stdin, which tears the session down.
 type agentSession struct {
 	args   ProviderSessionArgs
+	spec   *agentProviderSpec
 	model  fantasy.LanguageModel
 	env    *agentToolEnv
-	tools  []fantasy.AgentTool
 	system string
+
+	// coreTools are the harness natives; the live tool set (core +
+	// MCP, decorated per spec) is rebuilt by refreshToolset whenever a
+	// server's tool list changes and read per turn via currentTools.
+	coreTools []fantasy.AgentTool
+	mcp       *mcpManager
+	toolsMu   sync.Mutex
+	tools     []fantasy.AgentTool
 
 	providerOpts  fantasy.ProviderOptions
 	temperature   *float64
@@ -59,10 +68,32 @@ type agentSession struct {
 	turnMu     sync.Mutex
 	turnCancel context.CancelFunc
 
-	sessionID  string
-	store      *agentSessionStore
-	messages   []fantasy.Message
-	mcpClosers []func()
+	sessionID string
+	store     *agentSessionStore
+	messages  []fantasy.Message
+}
+
+// refreshToolset rebuilds the live tool set (core + MCP) and re-runs
+// the spec's decoration (anthropic's strip-then-mark cache breakpoint)
+// so a tool-list change never leaves stale markers behind. Safe from
+// SDK goroutines; the next turn picks the new set up.
+func (s *agentSession) refreshToolset() {
+	tools := append([]fantasy.AgentTool(nil), s.coreTools...)
+	if s.mcp != nil {
+		tools = append(tools, s.mcp.tools()...)
+	}
+	if s.spec != nil && s.spec.decorateTools != nil {
+		s.spec.decorateTools(tools)
+	}
+	s.toolsMu.Lock()
+	s.tools = tools
+	s.toolsMu.Unlock()
+}
+
+func (s *agentSession) currentTools() []fantasy.AgentTool {
+	s.toolsMu.Lock()
+	defer s.toolsMu.Unlock()
+	return append([]fantasy.AgentTool(nil), s.tools...)
 }
 
 // agentStdin adapts the session's shutdown to the providerProc stdin
@@ -166,14 +197,18 @@ func (s *agentSession) emit(msg tea.Msg) {
 
 // queueTurn enqueues a user turn for the run loop. Errors when the
 // session is shut down.
-func (s *agentSession) queueTurn(text string) error {
+func (s *agentSession) queueTurn(text string, files ...[]fantasy.FilePart) error {
+	turn := agentTurn{text: text}
+	for _, f := range files {
+		turn.files = append(turn.files, f...)
+	}
 	select {
 	case <-s.closed:
 		return errors.New("agent session is closed")
 	default:
 	}
 	select {
-	case s.sendCh <- agentTurn{text: text}:
+	case s.sendCh <- turn:
 		return nil
 	case <-s.closed:
 		return errors.New("agent session is closed")
@@ -196,8 +231,8 @@ func (s *agentSession) run() {
 			s.runTurn(turn)
 		case <-s.closed:
 			s.env.jobs.killAll()
-			for _, closeMCP := range s.mcpClosers {
-				closeMCP()
+			if s.mcp != nil {
+				s.mcp.close()
 			}
 			s.emit(providerExitedMsg{})
 			return
@@ -225,19 +260,38 @@ func (s *agentSession) runTurn(turn agentTurn) {
 
 	agent := fantasy.NewAgent(s.model,
 		fantasy.WithSystemPrompt(s.system),
-		fantasy.WithTools(s.tools...),
+		fantasy.WithTools(s.currentTools()...),
 		fantasy.WithStopConditions(
 			agentLoopDetectionCondition(),
 			s.contextPressureCondition(&shouldCompact),
 		),
 	)
 
+	var prepareStep fantasy.PrepareStepFunction
+	if s.spec != nil {
+		prepareStep = s.spec.prepareStep
+	}
+
+	// A /skill-name line expands into the full skill invocation before
+	// anything else sees the prompt.
+	if expanded, ok := expandSkillInvocation(s.args.Cwd, turn.text); ok {
+		turn.text = expanded
+	}
+
+	// Per-prompt memory recall (the UserPromptSubmit hook twin) rides
+	// the wire prompt and persists with it — wire-true transcripts.
+	if mem := agentMemoryPromptContext(s.args.Cwd, turn.text); mem != "" {
+		turn.text = turn.text + "\n\n" + mem
+	}
+
 	history := append([]fantasy.Message(nil), s.messages...)
 	result, err := agent.Stream(ctx, fantasy.AgentStreamCall{
 		Prompt:          turn.text,
+		Files:           turn.files,
 		Messages:        history,
 		Temperature:     s.temperature,
 		ProviderOptions: s.providerOpts,
+		PrepareStep:     prepareStep,
 		OnReasoningStart: func(string, fantasy.ReasoningContent) error {
 			s.emit(streamStatusMsg{status: "thinking…"})
 			return nil
@@ -308,7 +362,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	// persisted transcript always satisfies DeepSeek's strict
 	// call/result pairing (a loop-detection or compaction stop can land
 	// mid-tool-use).
-	newMessages := []fantasy.Message{fantasy.NewUserMessage(turn.text)}
+	newMessages := []fantasy.Message{fantasy.NewUserMessage(turn.text, turn.files...)}
 	for _, step := range result.Steps {
 		newMessages = append(newMessages, step.Messages...)
 	}

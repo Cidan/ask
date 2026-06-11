@@ -155,10 +155,8 @@ func (m model) applyProviderSwitch(model string) (tea.Model, tea.Cmd) {
 	// swaps clear — a /model change for the same provider still drops
 	// session context, and the new session's first stream events will
 	// re-populate as needed.
-	m.usageCache = nil
 	m.lastUsageTokens = 0
 	m.modelForContext = ""
-	m.codexUsage = codexUsage{}
 	var historyCmd tea.Cmd
 	if !sameProvider {
 		// Cross-provider swap: if the tab is inside a virtual session,

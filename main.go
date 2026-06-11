@@ -17,13 +17,6 @@ import (
 
 const cursorBlinkSpeed = 650 * time.Millisecond
 
-// usagePluginDir is the --plugin-dir value we pass to every claude
-// subprocess, set once at startup by main() after extracting the
-// embedded ask-usage plugin. Empty when extraction failed, in which
-// case claudeCLIArgs omits --plugin-dir entirely and the chip just
-// goes without 5h/wk segments.
-var usagePluginDir string
-
 func applyCursorBlink(ta *textarea.Model, enabled bool) {
 	s := ta.Styles()
 	s.Cursor.Blink = enabled
@@ -84,21 +77,9 @@ func newTab(id int, cfg askConfig) (*model, error) {
 	}
 	settings := provider.LoadSettings()
 
-	// MCP bridge is started unconditionally so hot-swapping the
-	// provider in-tab (Ctrl+B) doesn't have to spin up a new listener.
-	// Providers that don't consume the bridge (codex) just ignore
-	// mcpPort; the cost is a single idle loopback goroutine.
-	bridge, err := newMCPBridge(id)
-	if err != nil {
-		return nil, err
-	}
-	mcpPort := bridge.port
-
 	m := &model{
 		id:                 id,
 		cwd:                cwd,
-		mcpBridge:          bridge,
-		mcpPort:            mcpPort,
 		provider:           provider,
 		mode:               modeInput,
 		input:              ta,
@@ -110,8 +91,6 @@ func newTab(id int, cfg askConfig) (*model, error) {
 		providerSlashCmds:  settings.SlashCommands,
 		providerModel:      settings.Model,
 		providerEffort:     settings.Effort,
-		ollamaHost:         cfg.Claude.Ollama.Host,
-		ollamaModel:        cfg.Claude.Ollama.Model,
 		themeName:          themeName,
 		quietMode:          cfg.UI.QuietMode == nil || *cfg.UI.QuietMode,
 		cursorBlink:        cursorBlink,
@@ -131,14 +110,6 @@ func newTab(id int, cfg askConfig) (*model, error) {
 	// runaway message can't take over the chat viewport.
 	m.toast = NewToastModel(80, 3*time.Second)
 	m.toast.applyTheme(activeTheme)
-	if uc, err := readUsageCache(); err == nil {
-		m.usageCache = uc
-	}
-	// Hook handlers tenant memmy ops on the per-tab cwd. Push the
-	// initial cwd into the bridge here so SessionStart fires (which
-	// happen before any user input could trigger another sync) get
-	// the right project tuple.
-	m.mcpBridge.setCwd(m.cwd)
 	m.refreshPrompt()
 	return m, nil
 }
@@ -266,12 +237,6 @@ func resolveStartupProvider(resumeProviderID, savedDefault string, warn io.Write
 }
 
 func main() {
-	if len(os.Args) >= 2 && os.Args[1] == "_hook" {
-		if err := runHookSubcommand(os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, "ask _hook:", err)
-		}
-		return
-	}
 	cmd, err := parseCLICommand(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ask:", err)
@@ -331,11 +296,6 @@ func main() {
 			}
 			debugLog("memory open at startup: %v", err)
 		}
-	}
-	if dir, err := extractUsagePlugin(); err != nil {
-		debugLog("usage plugin extract: %v", err)
-	} else {
-		usagePluginDir = dir
 	}
 	first, err := newTab(1, cfg)
 	if err != nil {

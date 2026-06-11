@@ -21,28 +21,28 @@ git to /tmp:
 
 as it is the cannonical interface in terms of implementation/bubbletea use, though it does not use Claude in the way we do.
 
-when researching the claude code protocol, ALWAYS look at the python reference which you MUST clone to /tmp:
+when working on the agent runtime, ALWAYS read the fantasy source, which you must checkout to /tmp:
 
-* https://github.com/anthropics/claude-agent-sdk-python
+* https://github.com/charmbracelet/fantasy
 
-and the documentation here:
+when working on MCP (client transports, OAuth, elicitation), ALWAYS read the official Go SDK source at the pinned version:
 
-* https://code.claude.com/docs/en/agent-sdk/overview
+* https://github.com/modelcontextprotocol/go-sdk
 
-and when looking at the codex protocol, you must always run the following in a temp dir:
+and for skills/subagent file formats, the Agent Skills standard:
 
-* codex app-server generate-json-schema --out .
-
-to generate the app server protocol used communicate with codex; use this to understand how to work with codex
+* https://agentskills.io
 
 ALL OF THE ABOVE IS NOT OPTIONAL. YOU MUST ALWAYS USE THE ABOVE REFERENCES.
 
 ## General info
 
-`ask` is a Bubble Tea v2 TUI that wraps the `claude` CLI. It spawns
-claude in `-p --input-format stream-json --output-format stream-json`
-mode, streams JSON events back, and renders markdown, images, and a
-custom question modal driven by an embedded MCP server.
+`ask` is a Bubble Tea v2 TUI coding agent. The agent loop runs
+in-process on `charm.land/fantasy` against provider APIs (anthropic,
+openai, deepseek) — there are NO CLI subprocesses and NO loopback MCP
+server; every tool (coding core, linear/workflow bridge twins,
+question modal, external MCP clients) is native Go. ask renders
+markdown, images, and a custom question modal.
 
 ## Layout
 
@@ -50,13 +50,16 @@ One `package main`, one file per concern.
 
 | File                   | Purpose                                                                 |
 |------------------------|-------------------------------------------------------------------------|
-| `main.go`              | Entry point. Starts MCP bridge, builds `initialModel`, runs `tea.Program`. |
+| `main.go`              | Entry point. Builds `initialModel`, runs `tea.Program`, owns CLI arg parsing (`ask resume <vid>`). |
 | `types.go`             | All type defs, model struct, style vars, slash command registry.        |
 | `update.go`            | `Init`, `Update` dispatcher, input and session-picker key handlers.     |
 | `view.go`              | `View`, layout math, viewport rendering, markdown cache, scrollbar, modal overlay. |
-| `claude.go`            | Subprocess mgmt, stream-json reader, send/queue user messages, `--mcp-config`/`--settings` args. |
-| `deepseek.go`          | In-process API provider (no CLI subprocess): registry entry, model/effort pickers, config + `$DEEPSEEK_API_KEY` resolution, `StartSession` → `agentSession` goroutine. See "DeepSeek provider" below. |
-| `agent_run.go`         | The in-process agent runtime: session goroutine, fantasy agent loop ↔ provider-protocol msgs, interrupt, loop detection, auto-compaction, dangling-tool-call repair. |
+| `agent_provider.go`    | `agentProviderSpec` + the generic `agentAPIProvider` — ONE Provider implementation shared by every in-process API provider (deepseek/anthropic/openai): StartSession → `agentSession`, capability-gated image attachments, shared tool assembly (`agentSessionTools`), per-spec settings accessors. See "In-process API providers" below. |
+| `deepseek.go`          | DeepSeek spec: model/effort options, `$DEEPSEEK_API_KEY` resolution, effort→wire mapping (thinking off / reasoning_effort), images rejected. |
+| `anthropic.go`         | Anthropic spec: catwalk model list, effort→`output_config.effort` with catalog clamping, manual prompt-cache breakpoints (`anthropicPrepareStep`: system + last 2 messages; `anthropicDecorateTools`: last tool) — without these the API bills uncached every turn. |
+| `openai.go`            | OpenAI spec: Responses API (prefix predicate `openaiUseResponsesAPI` so new gpt-5.x/codex ids never fall back to chat completions), reasoning summaries + encrypted reasoning content (stateless resume), effort clamping. |
+| `catalog.go`           | catwalk embedded-catalog lookups: model ids (default first), context windows, image capability, effort-level clamping. No network — the snapshot ships with the module. |
+| `agent_run.go`         | The in-process agent runtime: session goroutine, fantasy agent loop ↔ provider-protocol msgs, per-spec PrepareStep, image file parts, interrupt, loop detection, auto-compaction, dangling-tool-call repair. |
 | `agent_prompt.go`      | Coder system prompt assembly: static head, env snapshot, CLAUDE.md/AGENTS.md inclusion, `askSteeringPrompt` tail. Byte-stable per session for DeepSeek's prefix cache. |
 | `agent_session.go`     | `agentSessionStore` — fantasy-message transcripts under `~/.config/ask/agent-sessions/<provider>/`, backing /resume, LoadHistory replay, and Materialize. |
 | `agent_diff.go`        | Pure-Go Myers unified diff (`unifiedDiff`) whose output round-trips `parseUnifiedDiff` so agent edits render through the existing diff pipeline. |
@@ -66,11 +69,16 @@ One `package main`, one file per concern.
 | `agent_tools_bash.go`  | bash (+`run_in_background`), job manager, job_output / job_kill, safe read-only command list. Exec layer behind `agentRunShell` for tests. |
 | `agent_tools_web.go`   | fetch — HTTP GET with 100KB cap, HTML→text extraction via x/net/html. |
 | `agent_tools_todos.go` | todos tool — full-list replace emitting `todoUpdatedMsg` into the existing todo surface. |
-| `agent_tools_task.go`  | Read-only research sub-agent (read/glob/grep/ls child loop on the same model). |
+| `agent_tools_task.go`  | task tool v2: default read-only researcher on the parent model, OR a named subagent definition (`agent:` param) with its own instructions/tools/model — including a DIFFERENT in-process provider (cross-provider delegation). `run_in_background` rides the bash job manager (job_output/job_kill + bgTask UI signals). |
+| `agent_subagents.go`   | Named subagent defs: `.claude/agents/*.md` + `~/.config/ask/agents` (frontmatter name/description/tools/model + ask's `provider` extension; body = system prompt), `<available_agents>` prompt block, tool grant sets (default read-only, `*` = coding core, never task/modal tools), claude model-alias mapping, cross-provider model resolution via `agentSpecByID`. |
+| `skills.go`            | Agent Skills standard (agentskills.io): SKILL.md discovery (~/.config/ask/skills, ~/.agents/skills, ~/.claude/skills + project .agents/.claude/.ask skills dirs at cwd AND git root, project wins), name/description validation, `<available_skills>` trigger block (progressive disclosure — body loads via the read tool), `/skill-name` slash expansion (`expandSkillInvocation` in runTurn), user-invocable skills surfaced through `ProbeInit`. Generic `parseMarkdownFrontmatter` shared with subagent defs. |
 | `agent_tools_ask.go`   | In-process twins of the bridge's `ask_user_question` / `end_turn` — same modal/workflow machinery, no HTTP loopback. |
-| `agent_tools_mcp.go`   | MCP client layer: attaches ask's loopback bridge (linear/workflow tools) + project MCP servers as `mcp__<server>__<tool>` fantasy tools. |
-| `config_deepseek.go`   | `/config → DeepSeek...` sub-picker — masked API key + base URL rows, memory-picker state machine. |
-| `session.go`           | Session path helpers, history/session loading from `~/.claude/projects/`. |
+| `agent_tools_bridge.go`| Native twins of every other bridge tool (12 `linear_*`, 6 `workflow_*`): a generic `nativeBridgeTool` adapter generates fantasy schemas via the same jsonschema machinery the MCP SDK uses (field docs survive verbatim) and wraps the shared cwd-parameterized cores in mcp_linear.go/mcp_workflows.go. In-process sessions never attach the loopback bridge. |
+| `agent_memory.go`      | In-process twins of hook_memory.go's claude hooks: session-start recall appended to the system prompt (once, byte-stable), per-prompt recall appended to the wire prompt, and `memoryAwareTool` wrapping read/edit/write with a per-file recall footer. All no-op when the memory service is closed. |
+| `agent_tools_mcp.go`   | MCP client v2 (`mcpManager`/`mcpServerConn`): per-session manager over stdio/http/sse transports (official go-sdk v1.6.1), lazy ping-and-rebuild before every call + one renew-and-retry, `tools/list_changed` → live toolset refresh, MCP elicitation → ask's question modal (form mode: enum/boolean/free-form, typed answers; URL mode + headless decline), image tool-results as real media when the model has vision. Tools are `mcp__<server>__<tool>`. |
+| `mcp_servers.go`       | User-facing MCP server config: `mcpServers` maps (user-global + per-project) merged over project-root `.mcp.json` (claude-code convention), `${VAR}`/`${VAR:-default}` expansion, per-server type inference, timeout, enabled/disabled tool filters, Disabled tombstones. |
+| `mcp_oauth.go`         | OAuth for remote MCP servers (`oauth: true`): SDK authorization-code + PKCE + dynamic client registration, browser launch via swappable `mcpOAuthOpenBrowser`, one-shot loopback callback listener, tokens persisted 0600 under `~/.config/ask/mcp-oauth/` (valid stored tokens skip the browser; expiry re-runs the flow). |
+| `config_api_provider.go`| `/config → DeepSeek.../Anthropic.../OpenAI...` sub-pickers — ONE shared state machine (`apiProviderPickerSpecs`) for masked API key + base URL rows per in-process provider. |
 | `commands.go`          | `cd` / `ls` handlers and `ls` formatting.                               |
 | `paths.go`             | Path picker state, tilde expansion, completion.                         |
 | `shell.go`             | Shell-mode execution: `$SHELL -c` fork, stdout/stderr pipe streaming, 100-line cap, cwd capture via `pwd > tmpfile`, pgroup SIGKILL on cancel. |
@@ -79,7 +87,6 @@ One `package main`, one file per concern.
 | `kitty.go`             | Kitty graphics protocol: detection, transmit over `/dev/tty`, Unicode placeholder rows. |
 | `kitty_diacritics.go`  | The canonical 297-entry Kitty row/column diacritic table.               |
 | `ask_question.go`      | Question modal state, rendering, navigation, submit/cancel flow.        |
-| `mcp.go`               | MCP server bridge (Streamable HTTP), `ask_user_question` tool schema + handler. |
 | `workflows.go`         | Workflow runtime tracker singleton + persistence helpers + status broadcast. |
 | `workflows_screen.go`  | Workflows builder screen — list/steps/step editor levels with multi-line prompt textarea. |
 | `workflows_picker.go`  | Small centred modal popped on `f` (issues) / `Ctrl+F` (chat) to pick which workflow to run. |
@@ -112,12 +119,8 @@ exercised by the user; code alone won't catch layout regressions.
 |----------------------------|-------------------------------------------------------------------|
 | `testhelpers_test.go`      | `fakeProvider`, `initGitRepo`, `isolateHome`, `newTestModel`, etc. |
 | `provider_test.go`         | Provider registry + claudeProvider metadata + Send protocol.     |
-| `claude_cli_test.go`       | `claudeCLIArgs` / `claudeEnv` flag construction.                 |
-| `claude_stream_test.go`    | `readClaudeStream` stream-json → `tea.Msg` translation.          |
-| `mcp_test.go`              | MCP bridge conversion + permission/approval wire shapes.         |
 | `worktree_test.go`         | `.claude/worktrees/` lifecycle against tmp git repos.            |
 | `cwd_guard_test.go`        | `validateAskCwd` / `validateExecutorCwd` plus the entry-path gates (sendToProvider, /resume, Ctrl+B, Init). |
-| `session_test.go`          | `~/.claude/projects/` parsing + history loading.                 |
 | `config_test.go`           | `loadConfig` / `saveConfig` / ollama validation.                 |
 | `update_test.go`           | `model.Update` dispatcher behavior via `fakeProvider`.           |
 | `workflows_test.go`        | Workflow tracker (markWorking/markFinal/lookup/clear), schema round-trip (incl. loop steps), prompt assembly, glyph table, `effectiveMaxIterations`. |
@@ -131,11 +134,20 @@ exercised by the user; code alone won't catch layout regressions.
 | `deepseek_test.go`         | Provider metadata/registry/workflow validation, effort→wire mapping, no-key fail-fast, full session lifecycle against `fakeLM` (send, system prompt on wire, kill/exited, resume replays transcript), Materialize, `modelContextLimit`. |
 | `agent_run_test.go`        | `fakeLM` (scripted `StreamPart`s) + runtime scenarios: text turn protocol order (done before complete), tool round-trip incl. wire history threading, interrupt = clean end, error turn, shutdown, loop-detection trip, compaction (summary head + auto-continuation), dangling-call repair, task sub-agent tool. |
 | `agent_tools_test.go`      | Tool behaviors on `t.TempDir()`: read windows/caps/rejections, write/edit guards (read-before-mutate, stale mtime, uniqueness, replace_all, CRLF), glob/grep/ls, bash via swapped `agentRunShell` (output, exit codes, cancel-kills-pgroup, background jobs), approval denials (`StopTurn`), fetch via httptest, todos validation. |
-| `agent_tools_ask_test.go`  | Native ask_user_question/end_turn — message shapes via swapped `agentSendToProgram`, cancelled/headless replies; MCP client wrapper against an in-process `mcp.Server` (schema extraction, skip filter, IsError propagation). |
+| `agent_tools_ask_test.go`  | Native ask_user_question/end_turn — message shapes via swapped `agentSendToProgram`, cancelled/headless replies. |
+| `agent_tools_mcp_test.go`  | MCP manager against in-process `mcp.Server`s over httptest — attach/skip/schema/IsError, image results (placeholder vs media by vision), unreachable-server skip, `tools/list_changed` live refresh, dead-server graceful error, elicitation schema mapping + accept/cancel/headless/url flows. |
+| `mcp_servers_test.go`      | Server-config resolution — effectiveType inference, `${VAR}`/`${VAR:-default}` expansion (copy semantics), 3-layer merge (.mcp.json ← global ← project) incl. Disabled tombstones + junk drops + stable order, tool allow/deny filters. |
+| `mcp_oauth_test.go`        | OAuth plumbing — token path/0600 round-trip, persisting token source saves on change, callback listener captures code/state via swapped browser opener, stored-valid-token served without a flow, fresh handler yields nil source (transport 401s into Authorize). |
+| `agent_tools_bridge_test.go`| Native bridge twins — full 18-tool coverage check, jsonschema field-doc fidelity, linear gate error, malformed input, workflow CRUD round-trip against project config, workflow_run dispatch via swapped `mcpSpawnWorkflowTab`, loopback never in `agentSessionMCPServers`. |
+| `skills_test.go`           | Skills — discovery validation (bad name / dir mismatch / no description skipped) + project-over-global precedence, trigger block (progressive disclosure, hidden skills), `/name args` expansion incl. user-invocable gating, frontmatter parser, ProbeInit → slash entries. |
+| `agent_subagents_test.go`  | Subagents — def discovery/precedence/field parsing, tool grant sets, spec registry, claude model aliases, cross-provider model resolution (swapped LM var), task tool: named agent runs on the pinned provider w/ def prompt + report tail, background job lifecycle (bgTask signals, job_output), default researcher unchanged, `/skill` expansion reaches the wire. |
 | `agent_session_test.go`    | Store round-trip (typed parts survive), CreatedAt preservation, list ordering, LoadHistory tool-output modes, Materialize. |
 | `agent_prompt_test.go`     | Prompt assembly: env block, context-file discovery/dedupe/cap, determinism, steering tail, worktree clause. |
 | `agent_diff_test.go`       | `unifiedDiff` — hunk headers/merging/context caps, no-EOF-newline markers, budget fallback, apply-the-patch property check via `parseUnifiedDiff`. |
-| `config_deepseek_test.go`  | `/config → DeepSeek` picker — field commit persists, URL validation keeps editor open, Esc discards, paste appends, key summary never echoes the key. |
+| `config_api_provider_test.go` | `/config → <API provider>` pickers (parameterized over all specs) — field commit persists, URL validation keeps editor open, Esc discards, paste appends, key summary never echoes the key, global-config rows present. |
+| `anthropic_test.go`        | Anthropic spec — metadata/registry, effort→wire incl. clamping, cache-breakpoint placement (`anthropicPrepareStep` marks system + last 2, strips stale, never mutates caller; `anthropicDecorateTools` marks last tool), no-key fail-fast, lifecycle w/ image attachment → wire FilePart, persisted transcript free of cache markers, context windows. |
+| `openai_test.go`           | OpenAI spec — metadata/registry, Responses-API prefix predicate, encrypted-reasoning + summary options, effort mapping, no-key fail-fast, lifecycle (images accepted), context windows. |
+| `catalog_test.go`          | catwalk lookups — model hit/miss, default-first id list, window/image fallbacks, effort clamping (down to nearest, up from below-range). |
 | `util_test.go` / `paths_test.go` | Pure helpers, path completion, frontmatter parsing.       |
 
 ### Testing conventions
@@ -145,7 +157,7 @@ exercised by the user; code alone won't catch layout regressions.
 - **No subprocess spawning** except `git` in `worktree_test.go`. Everything else uses the `fakeProvider` from `testhelpers_test.go` or direct function calls. The agent harness keeps this rule via seams: `agentRunShell` (bash exec), `agentGitStatus` (prompt env), `deepseekLanguageModel` (the API client), and `agentSendToProgram` (modal routing) are all swappable vars; `fakeLM` in `agent_run_test.go` scripts whole fantasy streams with zero network.
 - Worktree / git tests use `t.TempDir()` + `t.Chdir(...)` so they self-isolate and survive parallel runs.
 - HOME-sensitive tests (`session`, `config`, `paths`) call `isolateHome(t)` to pin `$HOME` at a tmp dir so the user's real state is never touched.
-- Prefer a few larger scenarios over dozens of trivial one-liners, but do cover each branch of complex functions (see `claudeCLIArgs` and `readClaudeStream` tests for the pattern).
+- Prefer a few larger scenarios over dozens of trivial one-liners, but do cover each branch of complex functions (see the `agent_run_test.go` scenarios for the pattern).
 - Keep the full suite under ~1 second — if you add something slow, figure out how to fake it.
 
 ## Bubble Tea wiring
@@ -263,9 +275,8 @@ Two entry paths spawn a workflow run:
 Either path opens the same picker (`workflows_picker.go`) and
 spawns a workflow tab. Pipelines are per-project and built
 through a dedicated screen (`Ctrl+W` or `/workflows`); each step
-pins its own provider (`claude` / `codex` / …) + model + prompt,
-so a single workflow can chain `claude → codex → claude` if the
-user wants. There's no default — an empty workflow list is a
+pins its own provider (`anthropic` / `openai` / `deepseek`) + model +
+prompt, so a single workflow can chain providers if the user wants. There's no default — an empty workflow list is a
 toast at trigger time pointing the user at the builder.
 
 ### Workflow source abstraction
@@ -293,7 +304,7 @@ the same builder / runner.
 |------|---------|
 | `workflowsConfig{Items, Sessions}` | Per-project block. |
 | `workflowDef{Name, Steps}` | One named pipeline. |
-| `workflowStep{Name, Kind, …}` | Tagged union. `Kind==""` is an agent step (`Provider`/`Model`/`Prompt`, a fresh subprocess at run time). `Kind=="loop"` is a loop container (`Steps` inner agent steps, `MaxIterations`, `ExitCondition`). Empty `Kind` keeps pre-loop workflows byte-identical on disk. |
+| `workflowStep{Name, Kind, …}` | Tagged union. `Kind==""` is an agent step (`Provider`/`Model`/`Prompt`, a fresh one-shot session at run time). `Kind=="loop"` is a loop container (`Steps` inner agent steps, `MaxIterations`, `ExitCondition`). Empty `Kind` keeps pre-loop workflows byte-identical on disk. |
 | `workflowSession{Workflow, StepIndex, Status, StartedAt, UpdatedAt}` | Disk-persisted run record — terminal statuses only. |
 
 Loops are exactly one layer deep — a loop's inner `Steps` must all be agent steps. The on-disk `workflowStep` is recursive, but the MCP wire views use a distinct non-recursive `workflowInnerStepView` for inner steps (the SDK's JSON-schema generator rejects self-referential types, and the separate type makes a nested loop structurally inexpressible). Enforced by `validateSteps` and by the builder never offering "+ New loop" inside a loop.
@@ -332,7 +343,7 @@ field. View consequences:
 
 - `viewAskBody` swaps `m.input.View()` for `renderWorkflowBanner()`
   — a 3-line bordered status box showing the current step
-  (`▸ workflow "<name>" · step 2/3: review (codex/gpt-5)`),
+  (`▸ workflow "<name>" · step 2/3: review (openai/gpt-5.5)`),
   completion (`✓ workflow complete`), or failure (`✗ workflow
   failed`).
 - The raw chat transcript is **suppressed** on a workflow tab: the
@@ -366,7 +377,7 @@ field. View consequences:
 ### Step runner
 
 `workflows_run.go` is the chain driver. Each step is a fresh
-subprocess (one-shot — the chain doesn't share a provider session
+session (one-shot — the chain doesn't share a provider session
 across steps; that's why workflow tabs don't pin a virtualSessionID
 and why `providerDoneMsg.SessionID` is suppressed on workflow
 tabs). The runner consumes the existing `sendToProvider` machinery
@@ -452,9 +463,8 @@ The runtime (`workflows_run.go`):
   "you MUST also pass a decision"; non-tail: "omit decision unless
   breaking early").
 
-The `end_turn` MCP tool lives on every bridge (`mcp_workflows.go`) so
-both claude (`--mcp-config`) and codex (`-c mcp_servers.ask.url`) step
-agents can call it. Live loop progress (start / iteration / break /
+The `end_turn` tool is a native fantasy tool on every session
+(agent_tools_ask.go), so step agents on any provider can call it. Live loop progress (start / iteration / break /
 limit) is logged to the tab history via `loopNoteLine`, and the
 banner's running line shows `⟳ <loop> · iter N/max · <inner>`.
 
@@ -522,41 +532,32 @@ rename / delete / step edits — the builder shows a dim
 "blocked: workflow is running" toast in the help row. Once the
 run finalises (or the tab closes), the lock releases.
 
-## Claude subprocess
 
-- Always `-p --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions`.
-- Pass `--resume <id>` only when `m.sessionID != ""`.
-- Always pass `--mcp-config` (HTTP URL to our bridge) and `--settings` (the `AskUserQuestion` redirect hook) when `m.mcpPort > 0`.
-- `readClaudeStream` scans stdout and emits `streamStatusMsg`, `claudeDoneMsg`, and a final `claudeExitedMsg`. Stderr is captured into a ring buffer and surfaced on exit error.
+## In-process API providers (fantasy agents)
 
-### User message shape
-
-Plain text → `content: string`. With attachments → `content: []block` using the Anthropic Messages API shape:
-
-```jsonc
-{"type": "text", "text": "…"}
-{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "…"}}
-```
-
-`userContent` in `claude.go` builds this.
-
-## DeepSeek provider (in-process API agent)
-
-`deepseek` is the first provider with **no CLI subprocess**: the agent
-loop runs inside ask, built on `charm.land/fantasy` (Apache-2.0, the
-agent runtime crush uses; v0.30+ repairs malformed tool-call JSON by
-default — important for DeepSeek — so don't pass a custom
-`WithRepairToolCall` that would shadow it). Crush itself is
+`deepseek`, `anthropic`, and `openai` run with **no CLI subprocess**:
+the agent loop runs inside ask, built on `charm.land/fantasy`
+(Apache-2.0, the agent runtime crush uses; v0.30+ repairs malformed
+tool-call JSON by default — important for DeepSeek — so don't pass a
+custom `WithRepairToolCall` that would shadow it). Crush itself is
 FSL-licensed: design reference only, never copy its code.
 
 ### Provider seam
 
-`deepseekProvider` (deepseek.go) satisfies the same `Provider`
-interface as claude/codex with `providerProc.cmd == nil`: StartSession
-spawns a goroutine (`agentSession.run`), `stdin` is an adapter whose
-`Close()` tears the session down (that's what `killProc` calls), and
-`Interrupt` cancels the in-flight turn's context cooperatively
-(handled=true, codex-style — the session emits its own turn end).
+ONE generic implementation (`agentAPIProvider`, agent_provider.go)
+satisfies the `Provider` interface for every spec, with
+`providerProc.cmd == nil`: StartSession spawns a goroutine
+(`agentSession.run`), `stdin` is an adapter whose `Close()` tears the
+session down (that's what `killProc` calls), and `Interrupt` cancels
+the in-flight turn's context cooperatively (handled=true, codex-style —
+the session emits its own turn end). A provider is an
+`agentProviderSpec` value (deepseek.go / anthropic.go / openai.go):
+identity, model/effort options, `buildModel` (via a swappable
+package-level var for tests), `callOptions` (effort→wire),
+`prepareStep`/`decorateTools` hooks, image capability, context window,
+and config-block accessors. Registration order is explicit in
+provider.go's single `init()` — claude first (the default for an empty
+config) until the CLI providers are removed.
 Everything else (tabs, workflows, banner, cancellation, /provider)
 works because the session emits the exact claude message protocol:
 `streamStatusMsg`, `assistantTextMsg` (one per completed text block,
@@ -564,46 +565,62 @@ emitted at `OnTextEnd`), `toolCallMsg`/`toolResultMsg`, `toolDiffMsg`
 (via `unifiedDiff` + `parseUnifiedDiff` after edit/write),
 `todoUpdatedMsg`, `usageMsg` (input + cache tokens, codex-style
 context footprint), then **`providerDoneMsg` before `turnCompleteMsg`**
-(same order as readClaudeStream — the workflow runner depends on it),
+(the workflow runner depends on that order),
 and `providerExitedMsg` + channel close on shutdown.
 
 ### Wire mechanics
 
-The fantasy `openaicompat` provider handles DeepSeek's quirks: the
-`reasoning_content` echo-back rule during tool loops (the API 400s
-without it), index-keyed tool-call delta merging, retry-after-aware
-backoff. Provider options are keyed by **provider name** ("deepseek",
-set via `openaicompat.WithName`) — `deepseekProviderOptions` maps ask's
-effort picker onto the wire: `off` → `extra_body: {thinking:
-{type: disabled}}` + temperature 0.0 (DeepSeek's coding rec; thinking
-mode takes no sampling params), `high` → `reasoning_effort: high`,
-`max` → `xhigh` (DeepSeek's wire name for max). Models:
-`deepseek-v4-pro` (default) / `deepseek-v4-flash`, 1M context — the
-deprecated `deepseek-chat`/`deepseek-reasoner` aliases retire
-2026-07-24 and are deliberately absent. Image attachments are rejected
-in `Send` (V4 has no image input). The system prompt is built once per
-session and reused verbatim so DeepSeek's automatic prefix cache hits;
+**DeepSeek** rides fantasy's `openaicompat` (reasoning_content
+echo-back, index-keyed tool-call delta merge, retry-after backoff).
+Options keyed by provider name ("deepseek" via `openaicompat.WithName`):
+`off` → `extra_body: {thinking: {type: disabled}}` + temperature 0.0,
+`high` → `reasoning_effort: high`, `max` → `xhigh`. Models
+`deepseek-v4-pro` (default) / `deepseek-v4-flash`, 1M context; the
+deprecated `deepseek-chat`/`deepseek-reasoner` aliases (retire
+2026-07-24) are deliberately absent. Images rejected.
+
+**Anthropic** rides fantasy's `anthropic` provider. Effort maps to
+`output_config.effort` (adaptive thinking on current models), clamped
+to the model's published levels via catwalk. **Prompt caching is
+manual on the raw API**: `anthropicPrepareStep` clones the step
+messages, strips stale markers, and marks the system message + last
+two messages; `anthropicDecorateTools` marks the last tool definition.
+That's ≤4 ephemeral breakpoints (the API max). Never set sampling
+params — thinking-enabled requests reject them.
+
+**OpenAI** rides fantasy's `openai` provider with
+`WithUseResponsesAPI()` + a prefix predicate (`openaiUseResponsesAPI`)
+so gpt-5.x/codex/o-series ids always take the Responses API even when
+fantasy's exact-id list lags. Reasoning summaries on; encrypted
+reasoning content always requested (Store defaults false → stateless
+replay needs the blobs round-tripped in persisted messages).
+
+Model metadata (context windows, image capability, reasoning levels)
+comes from `charm.land/catwalk`'s embedded catalog (catalog.go) with
+conservative 200k fallbacks for unknown ids. The system prompt is
+built once per session and reused verbatim so prefix caching
+(automatic on DeepSeek, explicit breakpoints on Anthropic) hits;
 volatile env (git status) is a labeled session-start snapshot.
 
 ### Tools
 
 Coding core (read/write/edit/glob/grep/ls/bash+jobs/fetch/todos/task)
-plus in-process twins of `ask_user_question` and `end_turn` — they
-build the same `askToolRequestMsg`/`endTurnSignalMsg` the MCP bridge
-sends, so the question modal, headless workflow notices, and the
-workflow `end_turn` contract behave identically on deepseek steps.
-The loopback MCP bridge (linear_*, workflow_*) and the project GitHub
-MCP attach through a real MCP client (`agent_tools_mcp.go`) as
-`mcp__<server>__<tool>` tools, with the native twins filtered out.
-Permissions: when `SkipAllPermissions` is off, mutating tools (bash
-beyond the safe read-only list, edit/write, fetch) block on the
-existing approval modal; denial returns an error result with
+plus native twins of EVERY bridge tool: `ask_user_question`/`end_turn`
+(agent_tools_ask.go) and the full `linear_*`/`workflow_*` set
+(agent_tools_bridge.go, same cores as the bridge handlers). The
+loopback bridge is never attached in-process — only the project
+GitHub MCP and user-configured servers (mcp_servers.go) ride the MCP
+client as `mcp__<server>__<tool>` tools. Memory recall is injected
+natively (agent_memory.go) at the same three points claude gets it
+via hooks. Permissions: when `SkipAllPermissions` is off, mutating
+tools (bash beyond the safe read-only list, edit/write, fetch) block
+on the existing approval modal; denial returns an error result with
 `StopTurn` so the model ends its turn instead of retrying.
 
 ### Sessions & turn hygiene
 
 Transcripts persist as fantasy message arrays (typed parts survive
-JSON round-trip) under `~/.config/ask/agent-sessions/deepseek/`,
+JSON round-trip) under `~/.config/ask/agent-sessions/<provider>/`,
 keyed by the same cwd encoding claude's project dirs use. Resume
 replays the stored messages into the next wire call; Materialize
 seeds a fresh transcript from NeutralTurns for cross-provider
@@ -612,7 +629,7 @@ synthesizes error results for any unanswered tool call so a resumed
 transcript never violates the strict call/result pairing. Loop
 detection (identical tool-step signatures, >5 repeats in a 10-step
 window) stops runaway turns; context pressure (≤20K headroom of the
-1M window) stops the turn, summarizes the transcript into a new
+model's window) stops the turn, summarizes the transcript into a new
 user-role head message, and auto-queues a continuation turn when the
 model was mid-tool-loop. A cancelled turn is not persisted — like a
 killed claude proc, resume lands at the last completed turn.
@@ -635,12 +652,17 @@ killed claude proc, resume lands at the last completed turn.
 - **Popups**: `View()`'s popup gate is `m.mode == modeInput && !m.busy && !m.shellMode`, so the path picker (from `cd `/`ls ` prefix) and slash popover both stay hidden in shell mode even though the input text might still prefix-match.
 - **Curses apps are not supported** — output flows through pipes, so altscreen sequences from vim/htop/less render as raw text in history. Rollback artifact: there was a PTY-based path; removed because `Setpgid + Setsid` collision made non-curses commands fail with EPERM.
 
-## MCP server
+## MCP (client only)
 
-- `newMCPBridge()` binds `127.0.0.1:0`, stores the port, builds the `mcp.Server`, registers `ask_user_question`, then returns.
-- `start(p *tea.Program)` is called after the program is constructed so the handler can call `p.Send(...)`. Uses `atomic.Pointer[tea.Program]` so the goroutine can read it safely.
-- Tool handler packs input questions into the internal `question` type, `p.Send`s an `askToolRequestMsg` with a reply channel, then blocks on the channel.
-- `submitAsk` / the Esc cancel path write to `m.askReply` if present; the `/qq` mock path (reply == nil) prints a summary to history instead.
+ask is an MCP CLIENT, never a server. `agent_tools_mcp.go` owns the
+per-session manager (stdio/http/sse transports, official go-sdk
+v1.6.1, lazy ping-and-rebuild, tools/list_changed refresh, elicitation
+→ question modal, OAuth via mcp_oauth.go). Servers come from
+`mcpServers` maps (user-global + per-project) merged over the
+project-root `.mcp.json` (mcp_servers.go). The old loopback bridge is
+gone — its tools are native fantasy tools (agent_tools_ask.go,
+agent_tools_bridge.go) and the question modal is driven by
+`askToolRequestMsg` (ask_wire.go) directly.
 
 ## Conventions
 

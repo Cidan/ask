@@ -7,12 +7,11 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// askSteeringPrompt is layered onto every agent session as a
-// system/developer-role addendum so the assistant keeps acting at
-// machine pace instead of deferring work as if it were a human.
-// Claude receives it via --append-system-prompt; codex via
-// developerInstructions on thread/start and thread/resume. Same text
-// on both keeps tone consistent when /provider swaps mid-tab.
+// askSteeringPrompt is layered onto every agent session as the system
+// prompt's tail (buildAgentSystemPrompt) so the assistant keeps acting
+// at machine pace instead of deferring work as if it were a human.
+// Same text on every provider keeps tone consistent when /provider
+// swaps mid-tab.
 const askSteeringPrompt = `You are an AI LLM and can work at super human speeds. Do not think of execution, especially with code and process that can and will be executed by yourself, in human terms and human timelines. Favor offering and doing things yourself instead of telling the user what to run, though still ask the user before you do take action if it makes sense. Remember that you can, and will, execute all tasks much faster than any human ever could, so do not put off work for "a later commit" or "a later version" because you believe the work to be too much.
 
 You must value correct and complete implementations instead of conservative "thin" wrappers or "v1" shapes. Never, ever think in terms of "first version" or "for now" or "we can expand on this later" as these are human constructs that are not correct for you and your way of working.
@@ -40,17 +39,17 @@ func steeringPromptFor(args ProviderSessionArgs) string {
 		"Read-only references to other locations (for example, /tmp clones of upstream repos for documentation) are fine, but never modify anything outside this directory."
 }
 
-// Provider is an agent-CLI backend (claude, codex, gemini, …). Each
-// implementation owns its own subprocess lifecycle, wire-protocol
-// translation into tea.Msgs, the commands it supports, and where/how
-// prior sessions are persisted. The UI is provider-agnostic; model code
+// Provider is an agent backend ("anthropic", "openai", "deepseek").
+// Each implementation owns its session lifecycle, message translation
+// into tea.Msgs, the commands it supports, and where/how prior
+// sessions are persisted. The UI is provider-agnostic; model code
 // dispatches to whichever provider was selected at startup.
 //
 // Adding a new provider means implementing this interface and calling
 // registerProvider from an init() — no changes to update/view/ask code.
 type Provider interface {
-	// ID is the short stable identifier stored in config ("claude",
-	// "codex", …).
+	// ID is the short stable identifier stored in config
+	// ("anthropic", "openai", "deepseek").
 	ID() string
 
 	// DisplayName is the human-readable name used in UI copy and errors.
@@ -209,17 +208,11 @@ type ProviderSessionArgs struct {
 	TabID              int
 	Model              string
 	Effort             string
-	OllamaHost         string
-	OllamaModel        string
 	SkipAllPermissions bool
 	Worktree           bool
 	SessionID          string
 	NewSessionID       string
 	ResumeCwd          string
-	// PluginDir is passed to claude as --plugin-dir so the embedded
-	// ask-usage plugin's SessionStart hook fires. Empty when the plugin
-	// failed to extract at startup.
-	PluginDir string
 	// AddedDirs are absolute paths the user has registered with /add-dir.
 	// Providers translate these into their native equivalents (claude:
 	// --add-dir; codex: sandbox_workspace_write.writable_roots). The
@@ -349,10 +342,18 @@ type providerStartDoneMsg struct {
 
 var providerRegistry []Provider
 
-// registerProvider is called from each provider's init() so the app can
-// list them at startup. First registered wins when config points at an
-// unknown ID.
+// registerProvider appends to the registry. First registered wins when
+// config points at an unknown ID.
 func registerProvider(p Provider) { providerRegistry = append(providerRegistry, p) }
+
+// Providers register here, in one place, so the registry order (and
+// with it the default provider for an empty config) is explicit
+// instead of an accident of file-name init() ordering.
+func init() {
+	registerProvider(anthropicAgentProvider())
+	registerProvider(openaiAgentProvider())
+	registerProvider(deepseekAgentProvider())
+}
 
 // providerByID returns the provider with the given ID, or the first
 // registered provider when nothing matches (including the empty id).

@@ -119,29 +119,6 @@ func TestSessionArgs_CarriesAddedDirs(t *testing.T) {
 	}
 }
 
-// TestClaudeProvider_BaseSlashCommandsContainsAddDir guards the slash
-// menu registration so /add-dir keeps showing up in the popover next
-// to /resume, /new, etc.
-func TestClaudeProvider_BaseSlashCommandsContainsAddDir(t *testing.T) {
-	for _, c := range (claudeProvider{}).BaseSlashCommands() {
-		if c.name == "/add-dir" {
-			return
-		}
-	}
-	t.Errorf("/add-dir missing from claudeProvider.BaseSlashCommands()")
-}
-
-// TestCodexProvider_BaseSlashCommandsContainsAddDir mirrors the claude
-// guard so codex's slash menu always advertises /add-dir too.
-func TestCodexProvider_BaseSlashCommandsContainsAddDir(t *testing.T) {
-	for _, c := range (codexProvider{}).BaseSlashCommands() {
-		if c.name == "/add-dir" {
-			return
-		}
-	}
-	t.Errorf("/add-dir missing from codexProvider.BaseSlashCommands()")
-}
-
 // TestDoAddDir_PersistsToVirtualSession ensures /add-dir writes the
 // new path to ~/.config/ask/sessions.json so /resume rehydrates it
 // even after ask is quit before the next user turn lands.
@@ -273,4 +250,3 @@ func TestNewClearResetsAddedDirs(t *testing.T) {
 		})
 	}
 }
-

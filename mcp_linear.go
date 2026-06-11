@@ -375,70 +375,10 @@ Returns each cycle's number, name, and start/end timestamps. Cycle numbers are a
 Errors when Linear is not configured for the current project.`
 )
 
-// registerLinearTools wires the four Linear MCP tools onto b.server.
-// Called once per bridge from newMCPBridge so every chat tab can
-// reach Linear when the underlying project has it configured.
-// Registration is unconditional; gating happens at call time so a
-// tab whose cwd lands on a Linear-configured project after bridge
-// creation still sees the tools light up without a re-handshake.
-func (b *mcpBridge) registerLinearTools() {
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "linear_list_issues",
-		Description: linearListToolDescription,
-	}, b.linearListTool)
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "linear_get_issue",
-		Description: linearGetToolDescription,
-	}, b.linearGetTool)
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "linear_update_issue",
-		Description: linearUpdateToolDescription,
-	}, b.linearUpdateTool)
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "linear_create_comment",
-		Description: linearCreateCommentToolDescription,
-	}, b.linearCreateCommentTool)
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "linear_create_issue",
-		Description: linearCreateIssueToolDescription,
-	}, b.linearCreateIssueTool)
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "linear_delete_issue",
-		Description: linearDeleteIssueToolDescription,
-	}, b.linearDeleteIssueTool)
-
-	// Discovery tools — used by the agent to resolve human-friendly
-	// names into the inputs the create / update tools accept.
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "linear_list_teams",
-		Description: linearListTeamsToolDescription,
-	}, b.linearListTeamsTool)
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "linear_list_users",
-		Description: linearListUsersToolDescription,
-	}, b.linearListUsersTool)
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "linear_list_labels",
-		Description: linearListLabelsToolDescription,
-	}, b.linearListLabelsTool)
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "linear_list_states",
-		Description: linearListStatesToolDescription,
-	}, b.linearListStatesTool)
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "linear_list_projects",
-		Description: linearListProjectsToolDescription,
-	}, b.linearListProjectsTool)
-	mcp.AddTool(b.server, &mcp.Tool{
-		Name:        "linear_list_cycles",
-		Description: linearListCyclesToolDescription,
-	}, b.linearListCyclesTool)
-}
-
 // ----- Handlers -----
 
-func (b *mcpBridge) linearListTool(ctx context.Context, req *mcp.CallToolRequest, in linearListInput) (*mcp.CallToolResult, linearListOutput, error) {
-	pc, ok := b.linearProjectConfig()
+func linearListCore(ctx context.Context, cwd string, in linearListInput) (*mcp.CallToolResult, linearListOutput, error) {
+	pc, ok := linearProjectConfigFor(cwd)
 	if !ok {
 		return errResult(linearNotActiveMsg), linearListOutput{}, nil
 	}
@@ -451,7 +391,7 @@ func (b *mcpBridge) linearListTool(ctx context.Context, req *mcp.CallToolRequest
 		}
 		query = q
 	}
-	page, err := p.ListIssues(ctx, pc, b.getCwd(), query, IssuePagination{
+	page, err := p.ListIssues(ctx, pc, cwd, query, IssuePagination{
 		Cursor:  in.Cursor,
 		PerPage: in.PerPage,
 	})
@@ -471,8 +411,8 @@ func (b *mcpBridge) linearListTool(ctx context.Context, req *mcp.CallToolRequest
 	return okResult(string(body)), out, nil
 }
 
-func (b *mcpBridge) linearGetTool(ctx context.Context, req *mcp.CallToolRequest, in linearGetInput) (*mcp.CallToolResult, linearGetOutput, error) {
-	pc, ok := b.linearProjectConfig()
+func linearGetCore(ctx context.Context, cwd string, in linearGetInput) (*mcp.CallToolResult, linearGetOutput, error) {
+	pc, ok := linearProjectConfigFor(cwd)
 	if !ok {
 		return errResult(linearNotActiveMsg), linearGetOutput{}, nil
 	}
@@ -480,7 +420,7 @@ func (b *mcpBridge) linearGetTool(ctx context.Context, req *mcp.CallToolRequest,
 		return errResult("linear: number must be positive"), linearGetOutput{}, nil
 	}
 	p := mcpLinearProvider()
-	it, err := p.GetIssue(ctx, pc, b.getCwd(), in.Number)
+	it, err := p.GetIssue(ctx, pc, cwd, in.Number)
 	if err != nil {
 		return errResult("linear: " + err.Error()), linearGetOutput{}, nil
 	}
@@ -491,8 +431,8 @@ func (b *mcpBridge) linearGetTool(ctx context.Context, req *mcp.CallToolRequest,
 	return res, out, nil
 }
 
-func (b *mcpBridge) linearUpdateTool(ctx context.Context, req *mcp.CallToolRequest, in linearUpdateInput) (*mcp.CallToolResult, linearUpdateOutput, error) {
-	pc, ok := b.linearProjectConfig()
+func linearUpdateCore(ctx context.Context, cwd string, in linearUpdateInput) (*mcp.CallToolResult, linearUpdateOutput, error) {
+	pc, ok := linearProjectConfigFor(cwd)
 	if !ok {
 		return errResult(linearNotActiveMsg), linearUpdateOutput{}, nil
 	}
@@ -504,7 +444,7 @@ func (b *mcpBridge) linearUpdateTool(ctx context.Context, req *mcp.CallToolReque
 		return errResult("linear: at least one editable field must be supplied"), linearUpdateOutput{}, nil
 	}
 	p := mcpLinearProvider()
-	it, err := p.UpdateIssue(ctx, pc, b.getCwd(), in.Number, opts)
+	it, err := p.UpdateIssue(ctx, pc, cwd, in.Number, opts)
 	if err != nil {
 		return errResult("linear: " + err.Error()), linearUpdateOutput{}, nil
 	}
@@ -571,8 +511,8 @@ func linearUpdateOptionsEmpty(o linearUpdateIssueOptions) bool {
 	return true
 }
 
-func (b *mcpBridge) linearCreateCommentTool(ctx context.Context, req *mcp.CallToolRequest, in linearCommentInput) (*mcp.CallToolResult, linearCommentOutput, error) {
-	pc, ok := b.linearProjectConfig()
+func linearCreateCommentCore(ctx context.Context, cwd string, in linearCommentInput) (*mcp.CallToolResult, linearCommentOutput, error) {
+	pc, ok := linearProjectConfigFor(cwd)
 	if !ok {
 		return errResult(linearNotActiveMsg), linearCommentOutput{}, nil
 	}
@@ -583,7 +523,7 @@ func (b *mcpBridge) linearCreateCommentTool(ctx context.Context, req *mcp.CallTo
 		return errResult("linear: body is required"), linearCommentOutput{}, nil
 	}
 	p := mcpLinearProvider()
-	c, err := p.CreateComment(ctx, pc, b.getCwd(), in.Number, in.Body)
+	c, err := p.CreateComment(ctx, pc, cwd, in.Number, in.Body)
 	if err != nil {
 		return errResult("linear: " + err.Error()), linearCommentOutput{}, nil
 	}
@@ -596,8 +536,8 @@ func (b *mcpBridge) linearCreateCommentTool(ctx context.Context, req *mcp.CallTo
 	return okResult(string(body)), out, nil
 }
 
-func (b *mcpBridge) linearCreateIssueTool(ctx context.Context, req *mcp.CallToolRequest, in linearCreateInput) (*mcp.CallToolResult, linearCreateOutput, error) {
-	pc, ok := b.linearProjectConfig()
+func linearCreateIssueCore(ctx context.Context, cwd string, in linearCreateInput) (*mcp.CallToolResult, linearCreateOutput, error) {
+	pc, ok := linearProjectConfigFor(cwd)
 	if !ok {
 		return errResult(linearNotActiveMsg), linearCreateOutput{}, nil
 	}
@@ -619,7 +559,7 @@ func (b *mcpBridge) linearCreateIssueTool(ctx context.Context, req *mcp.CallTool
 		Estimate:    in.Estimate,
 	}
 	p := mcpLinearProvider()
-	it, err := p.CreateIssueWithOptions(ctx, pc, b.getCwd(), opts)
+	it, err := p.CreateIssueWithOptions(ctx, pc, cwd, opts)
 	if err != nil {
 		return errResult("linear: " + err.Error()), linearCreateOutput{}, nil
 	}
@@ -632,8 +572,8 @@ func (b *mcpBridge) linearCreateIssueTool(ctx context.Context, req *mcp.CallTool
 	return okResult(string(body)), out, nil
 }
 
-func (b *mcpBridge) linearDeleteIssueTool(ctx context.Context, req *mcp.CallToolRequest, in linearDeleteInput) (*mcp.CallToolResult, linearDeleteOutput, error) {
-	pc, ok := b.linearProjectConfig()
+func linearDeleteIssueCore(ctx context.Context, cwd string, in linearDeleteInput) (*mcp.CallToolResult, linearDeleteOutput, error) {
+	pc, ok := linearProjectConfigFor(cwd)
 	if !ok {
 		return errResult(linearNotActiveMsg), linearDeleteOutput{}, nil
 	}
@@ -641,7 +581,7 @@ func (b *mcpBridge) linearDeleteIssueTool(ctx context.Context, req *mcp.CallTool
 		return errResult("linear: number must be positive"), linearDeleteOutput{}, nil
 	}
 	p := mcpLinearProvider()
-	if err := p.DeleteIssue(ctx, pc, b.getCwd(), in.Number); err != nil {
+	if err := p.DeleteIssue(ctx, pc, cwd, in.Number); err != nil {
 		return errResult("linear: " + err.Error()), linearDeleteOutput{}, nil
 	}
 	out := linearDeleteOutput{
@@ -676,8 +616,7 @@ func (b *mcpBridge) linearDeleteIssueTool(ctx context.Context, req *mcp.CallTool
 // config-change hook would have to be wired through every model
 // path that touches Issues.Provider. A clear error at call time
 // is the simpler, more robust signal.
-func (b *mcpBridge) linearProjectConfig() (projectConfig, bool) {
-	cwd := b.getCwd()
+func linearProjectConfigFor(cwd string) (projectConfig, bool) {
 	if cwd == "" {
 		return projectConfig{}, false
 	}
@@ -751,8 +690,8 @@ func linearIssueDetailViewOf(it issue, teamKey string) linearIssueDetailView {
 
 // ----- Discovery handlers -----
 
-func (b *mcpBridge) linearListTeamsTool(ctx context.Context, req *mcp.CallToolRequest, in linearListTeamsInput) (*mcp.CallToolResult, linearListTeamsOutput, error) {
-	pc, ok := b.linearProjectConfig()
+func linearListTeamsCore(ctx context.Context, cwd string, in linearListTeamsInput) (*mcp.CallToolResult, linearListTeamsOutput, error) {
+	pc, ok := linearProjectConfigFor(cwd)
 	if !ok {
 		return errResult(linearNotActiveMsg), linearListTeamsOutput{}, nil
 	}
@@ -773,8 +712,8 @@ func (b *mcpBridge) linearListTeamsTool(ctx context.Context, req *mcp.CallToolRe
 	return okResult(string(body)), out, nil
 }
 
-func (b *mcpBridge) linearListUsersTool(ctx context.Context, req *mcp.CallToolRequest, in linearListUsersInput) (*mcp.CallToolResult, linearListUsersOutput, error) {
-	pc, ok := b.linearProjectConfig()
+func linearListUsersCore(ctx context.Context, cwd string, in linearListUsersInput) (*mcp.CallToolResult, linearListUsersOutput, error) {
+	pc, ok := linearProjectConfigFor(cwd)
 	if !ok {
 		return errResult(linearNotActiveMsg), linearListUsersOutput{}, nil
 	}
@@ -795,8 +734,8 @@ func (b *mcpBridge) linearListUsersTool(ctx context.Context, req *mcp.CallToolRe
 	return okResult(string(body)), out, nil
 }
 
-func (b *mcpBridge) linearListLabelsTool(ctx context.Context, req *mcp.CallToolRequest, in linearListLabelsInput) (*mcp.CallToolResult, linearListLabelsOutput, error) {
-	pc, ok := b.linearProjectConfig()
+func linearListLabelsCore(ctx context.Context, cwd string, in linearListLabelsInput) (*mcp.CallToolResult, linearListLabelsOutput, error) {
+	pc, ok := linearProjectConfigFor(cwd)
 	if !ok {
 		return errResult(linearNotActiveMsg), linearListLabelsOutput{}, nil
 	}
@@ -821,8 +760,8 @@ func (b *mcpBridge) linearListLabelsTool(ctx context.Context, req *mcp.CallToolR
 	return okResult(string(body)), out, nil
 }
 
-func (b *mcpBridge) linearListStatesTool(ctx context.Context, req *mcp.CallToolRequest, in linearListStatesInput) (*mcp.CallToolResult, linearListStatesOutput, error) {
-	pc, ok := b.linearProjectConfig()
+func linearListStatesCore(ctx context.Context, cwd string, in linearListStatesInput) (*mcp.CallToolResult, linearListStatesOutput, error) {
+	pc, ok := linearProjectConfigFor(cwd)
 	if !ok {
 		return errResult(linearNotActiveMsg), linearListStatesOutput{}, nil
 	}
@@ -842,8 +781,8 @@ func (b *mcpBridge) linearListStatesTool(ctx context.Context, req *mcp.CallToolR
 	return okResult(string(body)), out, nil
 }
 
-func (b *mcpBridge) linearListProjectsTool(ctx context.Context, req *mcp.CallToolRequest, in linearListProjectsInput) (*mcp.CallToolResult, linearListProjectsOutput, error) {
-	pc, ok := b.linearProjectConfig()
+func linearListProjectsCore(ctx context.Context, cwd string, in linearListProjectsInput) (*mcp.CallToolResult, linearListProjectsOutput, error) {
+	pc, ok := linearProjectConfigFor(cwd)
 	if !ok {
 		return errResult(linearNotActiveMsg), linearListProjectsOutput{}, nil
 	}
@@ -867,8 +806,8 @@ func (b *mcpBridge) linearListProjectsTool(ctx context.Context, req *mcp.CallToo
 	return okResult(string(body)), out, nil
 }
 
-func (b *mcpBridge) linearListCyclesTool(ctx context.Context, req *mcp.CallToolRequest, in linearListCyclesInput) (*mcp.CallToolResult, linearListCyclesOutput, error) {
-	pc, ok := b.linearProjectConfig()
+func linearListCyclesCore(ctx context.Context, cwd string, in linearListCyclesInput) (*mcp.CallToolResult, linearListCyclesOutput, error) {
+	pc, ok := linearProjectConfigFor(cwd)
 	if !ok {
 		return errResult(linearNotActiveMsg), linearListCyclesOutput{}, nil
 	}

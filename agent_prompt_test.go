@@ -15,6 +15,7 @@ func stubGitStatus(t *testing.T, out string) {
 }
 
 func TestBuildAgentSystemPrompt(t *testing.T) {
+	isolateHome(t)
 	stubGitStatus(t, "## main\n M foo.go")
 	cwd := t.TempDir()
 	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
@@ -54,6 +55,7 @@ func TestBuildAgentSystemPrompt(t *testing.T) {
 }
 
 func TestBuildAgentSystemPrompt_WorktreePinsClause(t *testing.T) {
+	isolateHome(t)
 	stubGitStatus(t, "")
 	root := t.TempDir()
 	wt := filepath.Join(root, ".claude", "worktrees", "test-tree")
@@ -67,6 +69,7 @@ func TestBuildAgentSystemPrompt_WorktreePinsClause(t *testing.T) {
 }
 
 func TestBuildAgentSystemPrompt_NonRepoOmitsGit(t *testing.T) {
+	isolateHome(t)
 	stubGitStatus(t, "should not appear")
 	cwd := t.TempDir()
 	prompt := buildAgentSystemPrompt(ProviderSessionArgs{Cwd: cwd})

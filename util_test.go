@@ -130,7 +130,7 @@ func TestBareCommand(t *testing.T) {
 	}{
 		{"cd", "cd"},
 		{"ls", "ls"},
-		{"ls ", ""},  // trailing space: not bare
+		{"ls ", ""},    // trailing space: not bare
 		{"cd foo", ""}, // has target: not bare
 		{"", ""},
 		{"pwd", ""},
@@ -163,8 +163,8 @@ func TestHasGlob(t *testing.T) {
 func TestExpandTilde(t *testing.T) {
 	t.Setenv("HOME", "/h")
 	tests := []struct {
-		in      string
-		want    string
+		in       string
+		want     string
 		stripped bool
 	}{
 		{"~", "/h", true},

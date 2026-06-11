@@ -222,11 +222,6 @@ func TestOpenTab_LoadsCfgFromDisk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newTab first: %v", err)
 	}
-	t.Cleanup(func() {
-		if first.mcpBridge != nil {
-			first.mcpBridge.stop()
-		}
-	})
 	if first.provider == nil || first.provider.ID() != "claude" {
 		t.Fatalf("first tab provider did not default to claude: %+v", first.provider)
 	}
@@ -246,11 +241,6 @@ func TestOpenTab_LoadsCfgFromDisk(t *testing.T) {
 		t.Fatalf("tabs=%d after openTab, want 2", len(a2.tabs))
 	}
 	nt := a2.tabs[1]
-	t.Cleanup(func() {
-		if nt.mcpBridge != nil {
-			nt.mcpBridge.stop()
-		}
-	})
 	if nt.provider == nil || nt.provider.ID() != "codex" {
 		id := "<nil>"
 		if nt.provider != nil {

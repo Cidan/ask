@@ -1118,11 +1118,11 @@ func TestIsLinearUUID(t *testing.T) {
 		{"00000000-0000-0000-0000-000000000000", true},
 		{"", false},
 		{"abc", false},
-		{"abc12345-1234-4567-8901-abcdef12345", false}, // 35
+		{"abc12345-1234-4567-8901-abcdef12345", false},   // 35
 		{"abc12345-1234-4567-8901-abcdef123456X", false}, // 37
-		{"abc12345-12345-456-8901-abcdef123456", false}, // misplaced hyphens
-		{"abc12345_1234_4567_8901_abcdef123456", false}, // underscores not hyphens
-		{"abcg2345-1234-4567-8901-abcdef123456", false}, // non-hex 'g'
+		{"abc12345-12345-456-8901-abcdef123456", false},  // misplaced hyphens
+		{"abc12345_1234_4567_8901_abcdef123456", false},  // underscores not hyphens
+		{"abcg2345-1234-4567-8901-abcdef123456", false},  // non-hex 'g'
 	}
 	for _, c := range cases {
 		if got := isLinearUUID(c.in); got != c.want {

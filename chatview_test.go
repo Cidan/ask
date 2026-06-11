@@ -179,7 +179,7 @@ func TestChatView_WidthChangeIsLazy(t *testing.T) {
 // wrap counts win; raw newline counts are the fallback for unvisited entries.
 func TestChatView_TotalLineCountUsesCacheThenFallback(t *testing.T) {
 	m := newChatViewTestModel(t, 80, 10)
-	m.appendHistory("hello\nworld")        // 2 lines raw
+	m.appendHistory("hello\nworld")          // 2 lines raw
 	m.appendHistory("one\ntwo\nthree\nfour") // 4 lines raw
 	(&m).layout()
 

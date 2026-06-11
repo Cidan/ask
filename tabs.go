@@ -349,7 +349,6 @@ func (a app) openWorkflowTab(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
 		Source:   req.Source,
 		StepIdx:  0,
 	}
-	t.mcpBridge.setCwd(t.cwd)
 	a.nextID++
 	a.tabs = append(a.tabs, t)
 	a.active = len(a.tabs) - 1
@@ -433,9 +432,6 @@ func (a app) closeTab(tabID int) (tea.Model, tea.Cmd) {
 	t.drainPendingReplies()
 	t.killProc()
 	t.killShellProc()
-	if t.mcpBridge != nil {
-		t.mcpBridge.stop()
-	}
 	if len(a.tabs) == 1 {
 		// Capture the active tab's vsID so the next View can print
 		// "last session: …" inline before tea.Quit tears the altscreen
@@ -470,25 +466,15 @@ func (a app) closeTab(tabID int) (tea.Model, tea.Cmd) {
 	return a.broadcastResize()
 }
 
-// shutdown is called from main() once the tea.Program has stopped running.
-//
-// Order matters here: every per-tab mcpBridge must be fully stopped
-// (which now drains in-flight HTTP handlers via http.Server.Shutdown)
-// BEFORE closeMemoryService runs. Otherwise a still-executing memory
-// hook handler can race the neo4j driver being nilled out from under
-// it, which is the panic at neo4j/db.go:135 we previously hit on
-// Ctrl+C with an in-flight SessionStart hook. closeMemoryService also
-// holds the memory write lock until it returns, so even if a bridge
-// drain were to time out, an in-flight memoryRecall/Write would still
-// finish before the close completes — defense in depth.
+// shutdown is called from main() once the tea.Program has stopped
+// running. Sessions (and their MCP managers + background jobs) are
+// torn down before closeMemoryService so an in-flight native memory
+// recall never races the neo4j driver being nilled out.
 func (a app) shutdown() {
 	for _, t := range a.tabs {
 		t.drainPendingReplies()
 		t.killProc()
 		t.killShellProc()
-		if t.mcpBridge != nil {
-			t.mcpBridge.stop()
-		}
 	}
 	// closeMemoryService is idempotent and safe to call when memory was
 	// never enabled this run, so we don't gate it on cfg.Memory.Enabled.

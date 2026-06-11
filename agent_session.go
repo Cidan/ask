@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -300,4 +302,36 @@ func (st *agentSessionStore) materialize(workspace string, turns []NeutralTurn) 
 		return "", "", err
 	}
 	return id, workspace, nil
+}
+
+// encodeClaudeProjectDir mirrors the claude CLI's project-dir encoding
+// (non-alphanumerics to dashes, hashed-suffix truncation past 200
+// chars). Kept after the CLI providers were removed because the agent
+// session store keys its per-cwd directories with the same scheme, so
+// pre-existing agent sessions stay resumable.
+var claudeProjectDirNonAlnum = regexp.MustCompile(`[^a-zA-Z0-9]`)
+
+const claudeProjectDirMaxLen = 200
+
+func encodeClaudeProjectDir(path string) string {
+	enc := claudeProjectDirNonAlnum.ReplaceAllString(path, "-")
+	if len(enc) <= claudeProjectDirMaxLen {
+		return enc
+	}
+	return enc[:claudeProjectDirMaxLen] + "-" + claudeProjectDirHash(path)
+}
+
+// claudeProjectDirHash mirrors claude's hashed-suffix fallback: a
+// 32-bit Java-style string hash (`h = h*31 + c`, wrapping at int32)
+// rendered as its absolute value in base 36.
+func claudeProjectDirHash(path string) string {
+	var h int32
+	for _, r := range path {
+		h = h*31 + r
+	}
+	n := int64(h)
+	if n < 0 {
+		n = -n
+	}
+	return strconv.FormatInt(n, 36)
 }

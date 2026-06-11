@@ -16,8 +16,7 @@ func TestLoadConfig_MissingReturnsZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if cfg.Provider != "" || cfg.Claude.Model != "" || cfg.Claude.Effort != "" ||
-		len(cfg.Claude.SlashCommands) != 0 || cfg.Claude.Ollama.Host != "" ||
+	if cfg.Provider != "" || cfg.DeepSeek.Model != "" || cfg.Anthropic.Model != "" ||
 		cfg.UI.Theme != "" || cfg.UI.QuietMode != nil ||
 		cfg.Memory.Enabled != nil {
 		t.Errorf("missing file should yield zero askConfig, got %+v", cfg)
@@ -31,14 +30,13 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	worktreeTrue := true
 	memOn := true
 	want := askConfig{
-		Provider: "claude",
-		Claude: claudeConfig{
-			Model:  "opus",
+		Provider: "anthropic",
+		Anthropic: apiProviderConfig{
+			Model:  "claude-fable-5",
 			Effort: "high",
 			SlashCommands: []providerSlashEntry{
 				{Name: "extra", Description: "demo"},
 			},
-			Ollama: ollamaConfig{Host: "localhost:11434", Model: "llama3"},
 		},
 		UI: uiConfig{
 			QuietMode:   &qmTrue,
@@ -48,7 +46,7 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 			Theme:       "catppuccin-mocha",
 		},
 		Memory: memoryConfig{Enabled: &memOn},
-		DeepSeek: deepseekConfig{
+		DeepSeek: apiProviderConfig{
 			Model:   "deepseek-v4-flash",
 			Effort:  "max",
 			APIKey:  "sk-test-123",
@@ -65,14 +63,11 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	if got.Provider != want.Provider {
 		t.Errorf("Provider=%q want %q", got.Provider, want.Provider)
 	}
-	if got.Claude.Model != want.Claude.Model || got.Claude.Effort != want.Claude.Effort {
-		t.Errorf("claude model/effort lost in roundtrip: %+v", got.Claude)
+	if got.Anthropic.Model != want.Anthropic.Model || got.Anthropic.Effort != want.Anthropic.Effort {
+		t.Errorf("anthropic model/effort lost in roundtrip: %+v", got.Anthropic)
 	}
-	if len(got.Claude.SlashCommands) != 1 || got.Claude.SlashCommands[0].Name != "extra" {
-		t.Errorf("slash commands: %+v", got.Claude.SlashCommands)
-	}
-	if got.Claude.Ollama != want.Claude.Ollama {
-		t.Errorf("ollama lost: %+v", got.Claude.Ollama)
+	if len(got.Anthropic.SlashCommands) != 1 || got.Anthropic.SlashCommands[0].Name != "extra" {
+		t.Errorf("slash commands: %+v", got.Anthropic.SlashCommands)
 	}
 	if got.UI.QuietMode == nil || *got.UI.QuietMode != true {
 		t.Errorf("quietMode lost: %+v", got.UI.QuietMode)
@@ -215,34 +210,9 @@ func largeWorkflowFixture(seed int) []workflowDef {
 	return items
 }
 
-func TestValidateOllamaHost(t *testing.T) {
-	cases := []struct {
-		name    string
-		in      string
-		wantErr bool
-	}{
-		{"empty", "", true},
-		{"missing port", "localhost", true},
-		{"host:port", "localhost:11434", false},
-		{"bad port alpha", "localhost:abc", true},
-		{"out of range", "localhost:99999", true},
-		{"http scheme", "http://localhost:11434", false},
-		{"https scheme", "https://example.com", false},
-		{"https with port", "https://example.com:443", false},
-		{"broken url", "http://", true},
-	}
-	for _, c := range cases {
-		err := validateOllamaHost(c.in)
-		if (err != nil) != c.wantErr {
-			t.Errorf("%s: validateOllamaHost(%q) err=%v wantErr=%v",
-				c.name, c.in, err, c.wantErr)
-		}
-	}
-}
-
-func TestClaudeProviderSettings_RoundTrip(t *testing.T) {
+func TestAnthropicProviderSettings_RoundTrip(t *testing.T) {
 	isolateHome(t)
-	var p claudeProvider
+	p := anthropicAgentProvider()
 	initial := p.LoadSettings()
 	if initial.Model != "" || initial.Effort != "" || len(initial.SlashCommands) != 0 {
 		t.Errorf("fresh settings not zero-valued: %+v", initial)
@@ -503,20 +473,20 @@ func TestConfigPath_UnderHome(t *testing.T) {
 	}
 }
 
-func TestClaudeProviderSettings_PreservesOtherFields(t *testing.T) {
+func TestAnthropicProviderSettings_PreservesOtherFields(t *testing.T) {
 	isolateHome(t)
 	// Seed unrelated fields in the on-disk config; SaveSettings must not nuke them.
 	boolT := true
 	cfg := askConfig{
-		Provider: "claude",
+		Provider: "anthropic",
 		UI:       uiConfig{QuietMode: &boolT, Theme: "keep-me"},
 	}
 	if err := saveConfig(cfg); err != nil {
 		t.Fatalf("seed saveConfig: %v", err)
 	}
 
-	var p claudeProvider
-	if err := p.SaveSettings(ProviderSettings{Model: "opus"}); err != nil {
+	p := anthropicAgentProvider()
+	if err := p.SaveSettings(ProviderSettings{Model: "claude-opus-4-8"}); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
 	}
 	got, _ := loadConfig()
@@ -526,29 +496,68 @@ func TestClaudeProviderSettings_PreservesOtherFields(t *testing.T) {
 	if got.UI.QuietMode == nil || *got.UI.QuietMode != true {
 		t.Errorf("quietMode pointer lost: %+v", got.UI.QuietMode)
 	}
-	if got.Claude.Model != "opus" {
-		t.Errorf("model not persisted: %+v", got.Claude)
+	if got.Anthropic.Model != "claude-opus-4-8" {
+		t.Errorf("model not persisted: %+v", got.Anthropic)
 	}
 }
 
 func TestResolveDeepSeek_ConfigWinsEnvFallsBack(t *testing.T) {
 	t.Setenv(deepseekEnvAPIKey, "sk-from-env")
 
-	if got := resolveDeepSeekAPIKey(deepseekConfig{APIKey: "sk-from-config"}); got != "sk-from-config" {
+	if got := resolveDeepSeekAPIKey(apiProviderConfig{APIKey: "sk-from-config"}); got != "sk-from-config" {
 		t.Errorf("config key should win over env, got %q", got)
 	}
-	if got := resolveDeepSeekAPIKey(deepseekConfig{}); got != "sk-from-env" {
+	if got := resolveDeepSeekAPIKey(apiProviderConfig{}); got != "sk-from-env" {
 		t.Errorf("empty config should fall back to env, got %q", got)
 	}
 	t.Setenv(deepseekEnvAPIKey, "")
-	if got := resolveDeepSeekAPIKey(deepseekConfig{}); got != "" {
+	if got := resolveDeepSeekAPIKey(apiProviderConfig{}); got != "" {
 		t.Errorf("no config + no env should be empty, got %q", got)
 	}
 
-	if got := resolveDeepSeekBaseURL(deepseekConfig{}); got != deepseekDefaultBaseURL {
+	if got := resolveDeepSeekBaseURL(apiProviderConfig{}); got != deepseekDefaultBaseURL {
 		t.Errorf("empty base URL should default, got %q", got)
 	}
-	if got := resolveDeepSeekBaseURL(deepseekConfig{BaseURL: "http://localhost:9999/v1"}); got != "http://localhost:9999/v1" {
+	if got := resolveDeepSeekBaseURL(apiProviderConfig{BaseURL: "http://localhost:9999/v1"}); got != "http://localhost:9999/v1" {
 		t.Errorf("explicit base URL lost, got %q", got)
+	}
+}
+
+func TestResolveAnthropicOpenAIKeys(t *testing.T) {
+	t.Setenv(anthropicEnvAPIKey, "sk-ant-env")
+	t.Setenv(openaiEnvAPIKey, "sk-oai-env")
+	if got := resolveAnthropicAPIKey(apiProviderConfig{APIKey: "sk-ant-cfg"}); got != "sk-ant-cfg" {
+		t.Errorf("anthropic config key should win, got %q", got)
+	}
+	if got := resolveAnthropicAPIKey(apiProviderConfig{}); got != "sk-ant-env" {
+		t.Errorf("anthropic env fallback lost, got %q", got)
+	}
+	if got := resolveOpenAIAPIKey(apiProviderConfig{}); got != "sk-oai-env" {
+		t.Errorf("openai env fallback lost, got %q", got)
+	}
+	t.Setenv(anthropicEnvAPIKey, "")
+	if got := resolveAnthropicAPIKey(apiProviderConfig{}); got != "" {
+		t.Errorf("no config + no env should be empty, got %q", got)
+	}
+}
+
+func TestAnthropicOpenAIConfigRoundTrip(t *testing.T) {
+	isolateHome(t)
+	want := askConfig{
+		Anthropic: apiProviderConfig{Model: "claude-fable-5", Effort: "xhigh", APIKey: "sk-a"},
+		OpenAI:    apiProviderConfig{Model: "gpt-5.5", Effort: "high", BaseURL: "https://proxy.test/v1"},
+	}
+	if err := saveConfig(want); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	got, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if got.Anthropic.Model != "claude-fable-5" || got.Anthropic.Effort != "xhigh" || got.Anthropic.APIKey != "sk-a" {
+		t.Errorf("anthropic block lost: %+v", got.Anthropic)
+	}
+	if got.OpenAI.Model != "gpt-5.5" || got.OpenAI.Effort != "high" || got.OpenAI.BaseURL != "https://proxy.test/v1" {
+		t.Errorf("openai block lost: %+v", got.OpenAI)
 	}
 }

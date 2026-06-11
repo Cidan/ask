@@ -322,9 +322,8 @@ type startupResumeMsg struct {
 }
 
 type model struct {
-	id        int
-	cwd       string
-	mcpBridge *mcpBridge
+	id  int
+	cwd string
 
 	provider Provider
 
@@ -445,12 +444,6 @@ type model struct {
 	askConfirmingCancel bool
 	askCancelChoice     int
 
-	askOllamaActive bool
-	askOllamaField  int
-	askOllamaHost   string
-	askOllamaModel  string
-	askOllamaErr    string
-
 	approvalTool   string
 	approvalInput  map[string]any
 	approvalReply  chan approvalReply
@@ -502,13 +495,15 @@ type model struct {
 	configMemoryFieldEditing string
 	configMemoryFieldDraft   string
 
-	// /config → DeepSeek sub-picker: API key + base URL for the
-	// in-process deepseek provider. Same state machine as the Memory
-	// picker (row cursor, inline field editor with draft).
-	configDeepSeekPickerActive bool
-	configDeepSeekCursor       int
-	configDeepSeekFieldEditing string
-	configDeepSeekFieldDraft   string
+	// /config → <API provider> sub-picker: API key + base URL for the
+	// in-process providers (deepseek, anthropic, openai). One shared
+	// state machine keyed by provider id — same shape as the Memory
+	// picker (row cursor, inline field editor with draft). Empty
+	// configAPIProviderPicker means closed.
+	configAPIProviderPicker       string
+	configAPIProviderCursor       int
+	configAPIProviderFieldEditing string
+	configAPIProviderFieldDraft   string
 
 	// /config now layers into Global Options (existing knobs) vs
 	// Project Options (per-cwd issue provider). configGlobalPicker-
@@ -575,11 +570,8 @@ type model struct {
 	// the actual visible columns).
 	rendererWidth int
 
-	mcpPort           int
 	providerModel     string
 	providerEffort    string
-	ollamaHost        string
-	ollamaModel       string
 	providerSlashCmds []providerSlashEntry
 
 	inputHistory []string
@@ -598,12 +590,6 @@ type model struct {
 	// reports agent_id as the tool_use_id rather than the task_id.
 	bgTasks map[string]string
 
-	// usageCache is the parsed ~/.claude/.usage-cache.json snapshot.
-	// Refreshed at startup and after every providerDoneMsg. Nil means
-	// the file is absent or unreadable — the chip omits the 5h/wk
-	// segments in that case.
-	usageCache *usageCache
-
 	// lastUsageTokens is the running context size reported by the
 	// most recent assistant event's message.usage block. Divided by
 	// modelContextLimit(modelForContext) for the ctx chip segment.
@@ -614,13 +600,6 @@ type model struct {
 	// because claude resolves aliases ("opus[1m]") to fully-qualified
 	// ids. Falls back to providerModel before the init event lands.
 	modelForContext string
-
-	// codexUsage holds the latest rate-limit snapshot codex streamed
-	// on this session (from account/rateLimits/updated) plus the
-	// current thread-level token count (from thread/tokenUsage/updated).
-	// hasRateLimits gates the pr/sc chip segments; context fields gate
-	// the ctx segment. Cleared on every provider switch.
-	codexUsage codexUsage
 
 	// currentTurn accumulates the per-turn signal (prompt, tools,
 	// files, response text) that flushMemoryTurn writes to memmy on

@@ -25,16 +25,12 @@ const cancelFallbackTimeout = 10 * time.Second
 func (m model) sessionArgs() ProviderSessionArgs {
 	args := ProviderSessionArgs{
 		Cwd:                m.cwd,
-		MCPPort:            m.mcpPort,
 		TabID:              m.id,
 		Model:              m.providerModel,
 		Effort:             m.providerEffort,
-		OllamaHost:         m.ollamaHost,
-		OllamaModel:        m.ollamaModel,
 		SkipAllPermissions: m.skipAllPermissions,
 		Worktree:           m.worktree,
 		ResumeCwd:          m.resumeCwd,
-		PluginDir:          usagePluginDir,
 		AddedDirs:          append([]string(nil), m.addedDirs...),
 		ProjectMCP:         projectGitHubMCP(m.cwd),
 	}

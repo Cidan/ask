@@ -12,7 +12,7 @@ import (
 )
 
 func (m model) Init() tea.Cmd {
-	debugLog("Init provider=%s mcpPort=%d", m.provider.ID(), m.mcpPort)
+	debugLog("Init provider=%s", m.provider.ID())
 	// Skip ProbeInit when ask's cwd isn't a valid project root: it
 	// would fork claude/codex inside a subdir or worktree to discover
 	// slash commands. Startup itself stays silent — the user only
@@ -362,29 +362,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		return m, nil
 
-	case codexUsageMsg:
-		if msg.proc != m.proc {
-			return m, nil
-		}
-		m.codexUsage.primary = msg.primary
-		m.codexUsage.secondary = msg.secondary
-		m.codexUsage.hasRateLimits = true
-		if m.streamCh != nil {
-			return m, nextStreamCmd(m.streamCh)
-		}
-		return m, nil
-
-	case codexContextMsg:
-		if msg.proc != m.proc {
-			return m, nil
-		}
-		m.codexUsage.contextTokens = msg.tokens
-		m.codexUsage.modelContextWindow = msg.window
-		if m.streamCh != nil {
-			return m, nextStreamCmd(m.streamCh)
-		}
-		return m, nil
-
 	case bgTaskStartedMsg:
 		if msg.proc != m.proc {
 			return m, nil
@@ -579,13 +556,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if msg.res.SessionID != "" && m.workflowRun == nil {
 			m.sessionID = msg.res.SessionID
 			m.recordVirtualSession(msg.res.SessionID)
-		}
-		// Claude just finished a turn, which means it hit the API and
-		// wrote a fresh .usage-cache.json. Re-read so the 5h/wk chip
-		// segments reflect the latest utilization. Errors are silent:
-		// the previous snapshot (or nil) stays in place.
-		if uc, err := readUsageCache(); err == nil {
-			m.usageCache = uc
 		}
 		var workflowErr error
 		switch {
@@ -988,8 +958,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.mode == modeConfig && m.configMemoryPickerActive && m.configMemoryFieldEditing != "" {
 			return m.applyConfigMemoryPaste(msg.Content)
 		}
-		if m.mode == modeConfig && m.configDeepSeekPickerActive && m.configDeepSeekFieldEditing != "" {
-			return m.applyConfigDeepSeekPaste(msg.Content)
+		if m.mode == modeConfig && m.configAPIProviderPicker != "" && m.configAPIProviderFieldEditing != "" {
+			return m.applyConfigAPIProviderPaste(msg.Content)
 		}
 		if m.mode == modeConfig && m.configProjectPickerActive && m.configProjectFieldEditing != "" {
 			return m.applyConfigProjectPaste(msg.Content)
@@ -1053,11 +1023,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			if d.newCwd != "" && d.newCwd != m.cwd {
 				if err := os.Chdir(d.newCwd); err == nil {
 					m.cwd = d.newCwd
-					// Sync the memory-hook tenant tuple to the new
-					// project. shell-mode cd is the second of two
-					// places ask cwd can move (the other is /cd in
-					// commands.go); both must update the bridge.
-					m.mcpBridge.setCwd(d.newCwd)
 					m.refreshPrompt()
 					m.pending = nil
 					m.refreshPathMatches()
@@ -1956,8 +1921,6 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 	case "/effort":
 		m = m.startEffortPicker()
 		return m, nil
-	case "/compact":
-		return m.handleCodexCompact()
 	case "/config":
 		m = m.startConfigModal()
 		return m, nil

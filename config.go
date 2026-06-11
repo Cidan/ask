@@ -44,14 +44,21 @@ const (
 )
 
 type askConfig struct {
-	// Provider is the agent CLI backend ID ("claude", "codex", …). Empty
-	// means "use the first registered provider" — currently Claude.
-	Provider string         `json:"provider,omitempty"`
-	Claude   claudeConfig   `json:"claude"`
-	Codex    codexConfig    `json:"codex,omitempty"`
-	DeepSeek deepseekConfig `json:"deepseek,omitempty"`
-	UI       uiConfig       `json:"ui,omitempty"`
-	Memory   memoryConfig   `json:"memory,omitempty"`
+	// Provider is the agent backend ID ("anthropic", "openai",
+	// "deepseek"). Empty means "use the first registered provider" —
+	// currently anthropic.
+	Provider  string            `json:"provider,omitempty"`
+	DeepSeek  apiProviderConfig `json:"deepseek,omitempty"`
+	Anthropic apiProviderConfig `json:"anthropic,omitempty"`
+	OpenAI    apiProviderConfig `json:"openai,omitempty"`
+	UI        uiConfig          `json:"ui,omitempty"`
+	Memory    memoryConfig      `json:"memory,omitempty"`
+
+	// MCPServers are user-global MCP servers attached to every
+	// in-process agent session. Per-project entries (projectConfig)
+	// override on name clash; `.mcp.json` at the project root sits
+	// below both. See mcp_servers.go.
+	MCPServers map[string]mcpServerConfig `json:"mcpServers,omitempty"`
 
 	// Keybindings overrides the built-in global shortcuts (Ctrl+W
 	// workflows, Ctrl+I issues, …). Stored as action → "ctrl+w" so
@@ -83,6 +90,11 @@ type projectConfig struct {
 	Issues    issuesConfig     `json:"issues,omitempty"`
 	MCP       projectMCPConfig `json:"mcp,omitempty"`
 	Workflows workflowsConfig  `json:"workflows,omitempty"`
+
+	// MCPServers are per-project MCP servers for the in-process agent
+	// sessions; they win over the user-global map and `.mcp.json` on
+	// name clash. See mcp_servers.go.
+	MCPServers map[string]mcpServerConfig `json:"mcpServers,omitempty"`
 }
 
 // projectMCPConfig holds the per-project remote-backend credentials.
@@ -402,6 +414,9 @@ func isProjectConfigEmpty(pc projectConfig) bool {
 	if len(pc.Workflows.Items) > 0 || len(pc.Workflows.Sessions) > 0 {
 		return false
 	}
+	if len(pc.MCPServers) > 0 {
+		return false
+	}
 	return true
 }
 
@@ -513,25 +528,14 @@ func validateNeo4jPort(s string) error {
 	return nil
 }
 
-type claudeConfig struct {
-	SlashCommands []providerSlashEntry `json:"slashCommands,omitempty"`
-	Model         string               `json:"model,omitempty"`
-	Effort        string               `json:"effort,omitempty"`
-	Ollama        ollamaConfig         `json:"ollama,omitempty"`
-}
-
-type codexConfig struct {
-	SlashCommands []providerSlashEntry `json:"slashCommands,omitempty"`
-	Model         string               `json:"model,omitempty"`
-	Effort        string               `json:"effort,omitempty"`
-}
-
-// deepseekConfig holds the DeepSeek API provider's settings. Unlike
-// claude/codex there is no CLI holding credentials for us, so the API
-// key lives here (0600 config, same trust level as the GitHub PAT and
-// Linear key). An empty APIKey falls back to $DEEPSEEK_API_KEY at
-// session start; an empty BaseURL means deepseekDefaultBaseURL.
-type deepseekConfig struct {
+// apiProviderConfig holds one in-process API provider's settings
+// (deepseek, anthropic, openai). Unlike claude/codex there is no CLI
+// holding credentials for us, so the API key lives here (0600 config,
+// same trust level as the GitHub PAT and Linear key). An empty APIKey
+// falls back to the provider's conventional environment variable at
+// session start; an empty BaseURL means the provider's default
+// endpoint.
+type apiProviderConfig struct {
 	SlashCommands []providerSlashEntry `json:"slashCommands,omitempty"`
 	Model         string               `json:"model,omitempty"`
 	Effort        string               `json:"effort,omitempty"`
@@ -544,32 +548,44 @@ type deepseekConfig struct {
 // is what the OpenAI-style SDK expects to prefix /chat/completions.
 const deepseekDefaultBaseURL = "https://api.deepseek.com/v1"
 
-// deepseekEnvAPIKey is the conventional environment fallback consulted
-// when the config field is empty.
-const deepseekEnvAPIKey = "DEEPSEEK_API_KEY"
+// Conventional environment fallbacks consulted when the config field
+// is empty.
+const (
+	deepseekEnvAPIKey  = "DEEPSEEK_API_KEY"
+	anthropicEnvAPIKey = "ANTHROPIC_API_KEY"
+	openaiEnvAPIKey    = "OPENAI_API_KEY"
+)
 
-// resolveDeepSeekAPIKey returns the API key to use: an explicit config
-// value wins, otherwise $DEEPSEEK_API_KEY. Empty means unconfigured —
-// session start surfaces a pointed error instead of a cryptic 401.
-func resolveDeepSeekAPIKey(c deepseekConfig) string {
+// resolveAPIProviderKey returns the API key to use: an explicit config
+// value wins, otherwise the provider's environment variable. Empty
+// means unconfigured — session start surfaces a pointed error instead
+// of a cryptic 401.
+func resolveAPIProviderKey(c apiProviderConfig, envKey string) string {
 	if c.APIKey != "" {
 		return c.APIKey
 	}
-	return os.Getenv(deepseekEnvAPIKey)
+	return os.Getenv(envKey)
+}
+
+func resolveDeepSeekAPIKey(c apiProviderConfig) string {
+	return resolveAPIProviderKey(c, deepseekEnvAPIKey)
+}
+
+func resolveAnthropicAPIKey(c apiProviderConfig) string {
+	return resolveAPIProviderKey(c, anthropicEnvAPIKey)
+}
+
+func resolveOpenAIAPIKey(c apiProviderConfig) string {
+	return resolveAPIProviderKey(c, openaiEnvAPIKey)
 }
 
 // resolveDeepSeekBaseURL returns the configured base URL or the
 // default endpoint when unset.
-func resolveDeepSeekBaseURL(c deepseekConfig) string {
+func resolveDeepSeekBaseURL(c apiProviderConfig) string {
 	if c.BaseURL != "" {
 		return c.BaseURL
 	}
 	return deepseekDefaultBaseURL
-}
-
-type ollamaConfig struct {
-	Host  string `json:"host,omitempty"`
-	Model string `json:"model,omitempty"`
 }
 
 type uiConfig struct {

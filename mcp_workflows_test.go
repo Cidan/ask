@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,20 +10,52 @@ import (
 	"sync"
 	"testing"
 
+	"charm.land/fantasy"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// newWorkflowMCPTestBridge stages a fresh bridge bound to a tmp HOME
-// + a project cwd inside it, with the fake provider registered so
+// workflowTestTenant is the post-bridge stand-in: a cwd + tabID with
+// thin delegators onto the shared cores, so the suite below exercises
+// exactly what the native workflow tools run.
+type workflowTestTenant struct {
+	cwd   string
+	tabID int
+}
+
+func (b workflowTestTenant) workflowListTool(_ context.Context, _ *mcp.CallToolRequest, in workflowListInput) (*mcp.CallToolResult, workflowListOutput, error) {
+	return workflowListCore(b.cwd, in)
+}
+
+func (b workflowTestTenant) workflowGetTool(_ context.Context, _ *mcp.CallToolRequest, in workflowGetInput) (*mcp.CallToolResult, workflowGetOutput, error) {
+	return workflowGetCore(b.cwd, in)
+}
+
+func (b workflowTestTenant) workflowCreateTool(_ context.Context, _ *mcp.CallToolRequest, in workflowCreateInput) (*mcp.CallToolResult, workflowCreateOutput, error) {
+	return workflowCreateCore(b.cwd, in)
+}
+
+func (b workflowTestTenant) workflowEditTool(_ context.Context, _ *mcp.CallToolRequest, in workflowEditInput) (*mcp.CallToolResult, workflowEditOutput, error) {
+	return workflowEditCore(b.cwd, in)
+}
+
+func (b workflowTestTenant) workflowDeleteTool(_ context.Context, _ *mcp.CallToolRequest, in workflowDeleteInput) (*mcp.CallToolResult, workflowDeleteOutput, error) {
+	return workflowDeleteCore(b.cwd, in)
+}
+
+func (b workflowTestTenant) workflowRunTool(_ context.Context, _ *mcp.CallToolRequest, in workflowRunInput) (*mcp.CallToolResult, workflowRunOutput, error) {
+	return workflowRunCore(b.cwd, b.tabID, in)
+}
+
+// newWorkflowMCPTestBridge stages a tenant bound to a tmp HOME + a
+// project cwd inside it, with the fake provider registered so
 // `validateProviderID` accepts the "fake" id. Restores the provider
 // registry on test cleanup.
-func newWorkflowMCPTestBridge(t *testing.T, tabID int) (*mcpBridge, string) {
+func newWorkflowMCPTestBridge(t *testing.T, tabID int) (workflowTestTenant, string) {
 	t.Helper()
 	cwd := isolateHome(t)
 	withRegisteredProviders(t, newFakeProvider())
-	b := &mcpBridge{tabID: tabID}
-	b.setCwd(cwd)
-	return b, cwd
+	return workflowTestTenant{cwd: cwd, tabID: tabID}, cwd
 }
 
 // installSpawnCaptor swaps mcpSpawnWorkflowTab for a captor that
@@ -62,21 +94,6 @@ func installFailingSpawn(t *testing.T, message string) {
 // CallToolRequest is fine.
 func newCallToolReq() *mcp.CallToolRequest {
 	return &mcp.CallToolRequest{}
-}
-
-func connectWorkflowMCPClient(t *testing.T, server *mcp.Server) *mcp.ClientSession {
-	t.Helper()
-	serverTransport, clientTransport := mcp.NewInMemoryTransports()
-	if _, err := server.Connect(context.Background(), serverTransport, nil); err != nil {
-		t.Fatalf("server connect: %v", err)
-	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "workflow-test-client", Version: "0.1"}, nil)
-	session, err := client.Connect(context.Background(), clientTransport, nil)
-	if err != nil {
-		t.Fatalf("client connect: %v", err)
-	}
-	t.Cleanup(func() { _ = session.Close() })
-	return session
 }
 
 // seedWorkflows writes a fresh project-config workflows list to disk
@@ -146,7 +163,7 @@ func TestWorkflowList_TrimsPromptFromSteps(t *testing.T) {
 }
 
 func TestWorkflowList_RequiresCwd(t *testing.T) {
-	b := &mcpBridge{tabID: 1}
+	b := workflowTestTenant{tabID: 1}
 	res, _, err := b.workflowListTool(context.Background(), newCallToolReq(), workflowListInput{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -162,8 +179,7 @@ func TestWorkflowList_PropagatesConfigReadError(t *testing.T) {
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatalf("mkdir config-as-dir: %v", err)
 	}
-	b := &mcpBridge{tabID: 1}
-	b.setCwd(home)
+	b := workflowTestTenant{cwd: home, tabID: 1}
 	_, _, err := b.workflowListTool(context.Background(), newCallToolReq(), workflowListInput{})
 	if err == nil {
 		t.Fatal("workflow_list should return a tool error when config cannot be read")
@@ -947,77 +963,37 @@ func TestWorkflowSourceText_KeyIsUniquePerCall(t *testing.T) {
 	}
 }
 
-// TestWorkflowMCP_RegisterDoesNotPanic guards the wiring path: every
-// bridge built via newMCPBridge must be able to register the workflow
-// tools without a panic (e.g. from duplicate tool names colliding
-// with ask_user_question / approval_prompt).
-func TestWorkflowMCP_RegisterDoesNotPanic(t *testing.T) {
-	b, err := newMCPBridge(99)
-	if err != nil {
-		t.Fatalf("newMCPBridge: %v", err)
-	}
-	defer b.stop()
-	// Smoke test the bridge accepts a workflow_list call (no real
-	// network traffic — just calls the handler directly through the
-	// bridge struct).
-	cwd := isolateHome(t)
-	b.setCwd(cwd)
-	_, _, err = b.workflowListTool(context.Background(), newCallToolReq(), workflowListInput{})
-	if err != nil {
-		t.Errorf("workflowListTool after newMCPBridge: %v", err)
-	}
-}
-
-func TestWorkflowMCP_CallToolWireDecodesEditSteps(t *testing.T) {
+func TestWorkflowNative_EditDecodesStepsJSON(t *testing.T) {
 	cwd := isolateHome(t)
 	withRegisteredProviders(t, newFakeProvider())
-	b, err := newMCPBridge(100)
-	if err != nil {
-		t.Fatalf("newMCPBridge: %v", err)
-	}
-	defer b.stop()
-	b.setCwd(cwd)
 	seedWorkflows(t, cwd, []workflowDef{{
 		Name:  "alpha",
 		Steps: []workflowStep{{Name: "old", Provider: "fake"}},
 	}})
-	session := connectWorkflowMCPClient(t, b.server)
-
-	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
-		Name: "workflow_edit",
-		Arguments: map[string]any{
-			"name":     "alpha",
-			"new_name": "beta",
-			"steps": []map[string]any{{
-				"name":     "review",
-				"provider": "fake",
-				"model":    "m1",
-				"prompt":   "check it",
-			}},
-		},
+	env := newAgentToolEnv(cwd, 1, true, nil)
+	var tool fantasy.AgentTool
+	for _, bt := range agentBridgeTools(env) {
+		if bt.Info().Name == "workflow_edit" {
+			tool = bt
+		}
+	}
+	if tool == nil {
+		t.Fatal("workflow_edit native tool missing")
+	}
+	resp, err := tool.Run(context.Background(), fantasy.ToolCall{
+		ID: "1", Name: "workflow_edit",
+		Input: `{"name":"alpha","new_name":"beta","steps":[{"name":"review","provider":"fake","model":"m1","prompt":"check it"}]}`,
 	})
 	if err != nil {
-		t.Fatalf("CallTool workflow_edit: %v", err)
+		t.Fatalf("workflow_edit: %v", err)
 	}
-	if res.IsError {
-		t.Fatalf("workflow_edit returned IsError: %+v", res.Content)
-	}
-	var out workflowEditOutput
-	data, err := json.Marshal(res.StructuredContent)
-	if err != nil {
-		t.Fatalf("marshal structured output: %v", err)
-	}
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatalf("unmarshal structured output: %v; data=%s", err, data)
-	}
-	if out.Workflow.Name != "beta" || len(out.Workflow.Steps) != 1 ||
-		out.Workflow.Steps[0].Prompt != "check it" {
-		t.Fatalf("unexpected structured output: %+v", out.Workflow)
+	if resp.IsError {
+		t.Fatalf("workflow_edit errored: %s", resp.Content)
 	}
 	saved := readWorkflows(t, cwd)
 	if len(saved) != 1 || saved[0].Name != "beta" ||
 		len(saved[0].Steps) != 1 || saved[0].Steps[0].Prompt != "check it" {
-		t.Fatalf("wire call did not persist edit: %+v", saved)
+		t.Fatalf("native edit did not persist: %+v", saved)
 	}
 }
 
@@ -1031,10 +1007,8 @@ func TestWorkflowMCP_TenantsByCwd(t *testing.T) {
 
 	cwdA := t.TempDir()
 	cwdB := t.TempDir()
-	bA := &mcpBridge{tabID: 1}
-	bA.setCwd(cwdA)
-	bB := &mcpBridge{tabID: 2}
-	bB.setCwd(cwdB)
+	bA := workflowTestTenant{cwd: cwdA, tabID: 1}
+	bB := workflowTestTenant{cwd: cwdB, tabID: 2}
 
 	if _, _, err := bA.workflowCreateTool(context.Background(), newCallToolReq(),
 		workflowCreateInput{Name: "in-a"}); err != nil {
@@ -1148,27 +1122,5 @@ func TestValidateSteps_LoopRules(t *testing.T) {
 	}
 	if err := validateSteps([]workflowStepView{{Name: "x", Kind: "bogus"}}); err == nil {
 		t.Error("an unknown step kind should be rejected")
-	}
-}
-
-// TestEndTurnTool_Validates: the end_turn tool rejects an empty summary
-// and a decision that isn't break/continue, before touching the program.
-func TestEndTurnTool_Validates(t *testing.T) {
-	b, _ := newWorkflowMCPTestBridge(t, 1)
-
-	res, _, err := b.endTurnTool(context.Background(), newCallToolReq(), endTurnInput{Summary: "", Decision: ""})
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if !res.IsError {
-		t.Error("an empty summary should produce an IsError result")
-	}
-
-	res, _, err = b.endTurnTool(context.Background(), newCallToolReq(), endTurnInput{Summary: "did x", Decision: "banana"})
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if !res.IsError {
-		t.Error("an invalid decision should produce an IsError result")
 	}
 }
