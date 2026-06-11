@@ -139,14 +139,20 @@ func TestClaudeProvider_Metadata(t *testing.T) {
 	if v, ok := mp.SubConfig[ollamaModelOption]; !ok || v != "ollama" {
 		t.Errorf("ModelPicker SubConfig[ollama] = %q, want \"ollama\"", v)
 	}
-	var sawOllama bool
+	var sawOllama, sawFable bool
 	for _, opt := range mp.Options {
-		if opt == ollamaModelOption {
+		switch opt {
+		case ollamaModelOption:
 			sawOllama = true
+		case "fable":
+			sawFable = true
 		}
 	}
 	if !sawOllama {
 		t.Errorf("ModelPicker options missing ollama entry: %v", mp.Options)
+	}
+	if !sawFable {
+		t.Errorf("ModelPicker options missing fable entry: %v", mp.Options)
 	}
 
 	efforts := p.EffortOptions()

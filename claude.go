@@ -39,7 +39,7 @@ func (claudeProvider) Capabilities() ProviderCapabilities {
 func (claudeProvider) ModelPicker() ProviderPicker {
 	return ProviderPicker{
 		Prompt:      "Select Claude model",
-		Options:     []string{"default", "haiku", "sonnet", "sonnet[1m]", "opus", "opus[1m]", ollamaModelOption},
+		Options:     []string{"default", "haiku", "sonnet", "sonnet[1m]", "opus", "opus[1m]", "fable", ollamaModelOption},
 		AllowCustom: true,
 		SubConfig:   map[string]string{ollamaModelOption: "ollama"},
 	}
