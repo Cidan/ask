@@ -135,13 +135,18 @@ func formatTTL(expires, now time.Time) string {
 	}
 }
 
-// modelContextLimit maps a claude model name to its context window size.
-// Any name containing "1m" (case-insensitive) gets the 1M tier; anything
-// else defaults to 200k. Matches the model aliases registered in
+// modelContextLimit maps a model name to its context window size.
+// DeepSeek's V4 line is a flat 1M window; for claude names, anything
+// containing "1m" (case-insensitive) gets the 1M tier and the rest
+// default to 200k. Matches the model aliases registered in
 // claudeProvider.ModelPicker() ("opus[1m]", "sonnet[1m]") as well as the
 // fully-qualified names claude returns in its system/init event.
 func modelContextLimit(model string) int {
-	if strings.Contains(strings.ToLower(model), "1m") {
+	lower := strings.ToLower(model)
+	if strings.HasPrefix(lower, "deepseek") {
+		return deepseekContextWindow
+	}
+	if strings.Contains(lower, "1m") {
 		return 1_000_000
 	}
 	return 200_000

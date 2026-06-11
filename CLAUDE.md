@@ -55,6 +55,21 @@ One `package main`, one file per concern.
 | `update.go`            | `Init`, `Update` dispatcher, input and session-picker key handlers.     |
 | `view.go`              | `View`, layout math, viewport rendering, markdown cache, scrollbar, modal overlay. |
 | `claude.go`            | Subprocess mgmt, stream-json reader, send/queue user messages, `--mcp-config`/`--settings` args. |
+| `deepseek.go`          | In-process API provider (no CLI subprocess): registry entry, model/effort pickers, config + `$DEEPSEEK_API_KEY` resolution, `StartSession` → `agentSession` goroutine. See "DeepSeek provider" below. |
+| `agent_run.go`         | The in-process agent runtime: session goroutine, fantasy agent loop ↔ provider-protocol msgs, interrupt, loop detection, auto-compaction, dangling-tool-call repair. |
+| `agent_prompt.go`      | Coder system prompt assembly: static head, env snapshot, CLAUDE.md/AGENTS.md inclusion, `askSteeringPrompt` tail. Byte-stable per session for DeepSeek's prefix cache. |
+| `agent_session.go`     | `agentSessionStore` — fantasy-message transcripts under `~/.config/ask/agent-sessions/<provider>/`, backing /resume, LoadHistory replay, and Materialize. |
+| `agent_diff.go`        | Pure-Go Myers unified diff (`unifiedDiff`) whose output round-trips `parseUnifiedDiff` so agent edits render through the existing diff pipeline. |
+| `agent_tools.go`       | Shared tool infra: `agentToolEnv` (cwd, emit, approval gate), read-tracker, output caps/truncation. |
+| `agent_tools_file.go`  | read / write / edit tools (exact-match edits, read-before-mutate + stale-mtime guards, CRLF preserve, diff emission). |
+| `agent_tools_search.go`| glob (doublestar + `{a,b}`), grep (rg with pure-Go fallback), ls (capped tree). |
+| `agent_tools_bash.go`  | bash (+`run_in_background`), job manager, job_output / job_kill, safe read-only command list. Exec layer behind `agentRunShell` for tests. |
+| `agent_tools_web.go`   | fetch — HTTP GET with 100KB cap, HTML→text extraction via x/net/html. |
+| `agent_tools_todos.go` | todos tool — full-list replace emitting `todoUpdatedMsg` into the existing todo surface. |
+| `agent_tools_task.go`  | Read-only research sub-agent (read/glob/grep/ls child loop on the same model). |
+| `agent_tools_ask.go`   | In-process twins of the bridge's `ask_user_question` / `end_turn` — same modal/workflow machinery, no HTTP loopback. |
+| `agent_tools_mcp.go`   | MCP client layer: attaches ask's loopback bridge (linear/workflow tools) + project MCP servers as `mcp__<server>__<tool>` fantasy tools. |
+| `config_deepseek.go`   | `/config → DeepSeek...` sub-picker — masked API key + base URL rows, memory-picker state machine. |
 | `session.go`           | Session path helpers, history/session loading from `~/.claude/projects/`. |
 | `commands.go`          | `cd` / `ls` handlers and `ls` formatting.                               |
 | `paths.go`             | Path picker state, tilde expansion, completion.                         |
@@ -113,13 +128,21 @@ exercised by the user; code alone won't catch layout regressions.
 | `chat_workflow_test.go`    | `Ctrl+F` chat-source flow — transcript filter, key uniqueness, prompt assembly, dispatcher gates (busy/empty/no-workflows/workflow-tab), end-to-end picker → spawn. |
 | `keymap_test.go`           | `ParseKeyBinding` / `KeyBinding.String` round-trip, default keymap coverage, load-from-config (unknown/malformed entries skipped, empty-string unbinds), `currentKeyMap` invalidation. |
 | `keymap_dispatch_test.go`  | End-to-end: overridden keymap rewires `tabs.go` tab navigation; `/config → Keybindings` capture persists to disk and re-binding to default deletes the entry. |
+| `deepseek_test.go`         | Provider metadata/registry/workflow validation, effort→wire mapping, no-key fail-fast, full session lifecycle against `fakeLM` (send, system prompt on wire, kill/exited, resume replays transcript), Materialize, `modelContextLimit`. |
+| `agent_run_test.go`        | `fakeLM` (scripted `StreamPart`s) + runtime scenarios: text turn protocol order (done before complete), tool round-trip incl. wire history threading, interrupt = clean end, error turn, shutdown, loop-detection trip, compaction (summary head + auto-continuation), dangling-call repair, task sub-agent tool. |
+| `agent_tools_test.go`      | Tool behaviors on `t.TempDir()`: read windows/caps/rejections, write/edit guards (read-before-mutate, stale mtime, uniqueness, replace_all, CRLF), glob/grep/ls, bash via swapped `agentRunShell` (output, exit codes, cancel-kills-pgroup, background jobs), approval denials (`StopTurn`), fetch via httptest, todos validation. |
+| `agent_tools_ask_test.go`  | Native ask_user_question/end_turn — message shapes via swapped `agentSendToProgram`, cancelled/headless replies; MCP client wrapper against an in-process `mcp.Server` (schema extraction, skip filter, IsError propagation). |
+| `agent_session_test.go`    | Store round-trip (typed parts survive), CreatedAt preservation, list ordering, LoadHistory tool-output modes, Materialize. |
+| `agent_prompt_test.go`     | Prompt assembly: env block, context-file discovery/dedupe/cap, determinism, steering tail, worktree clause. |
+| `agent_diff_test.go`       | `unifiedDiff` — hunk headers/merging/context caps, no-EOF-newline markers, budget fallback, apply-the-patch property check via `parseUnifiedDiff`. |
+| `config_deepseek_test.go`  | `/config → DeepSeek` picker — field commit persists, URL validation keeps editor open, Esc discards, paste appends, key summary never echoes the key. |
 | `util_test.go` / `paths_test.go` | Pure helpers, path completion, frontmatter parsing.       |
 
 ### Testing conventions
 
 - **Every new piece of functionality ships with tests.** This is non-negotiable: when adding a feature, fixing a bug, or refactoring anything in the file table above, add or extend tests in the matching `_test.go` file. A PR that grows the codebase without growing the tests is incomplete.
 - Tests must be **behavioral**, not rendering-based. Assert on `model` state, emitted `tea.Msg` values, serialized JSON bytes, file-system state, exec argv — never on styled output strings or view snapshots.
-- **No subprocess spawning** except `git` in `worktree_test.go`. Everything else uses the `fakeProvider` from `testhelpers_test.go` or direct function calls.
+- **No subprocess spawning** except `git` in `worktree_test.go`. Everything else uses the `fakeProvider` from `testhelpers_test.go` or direct function calls. The agent harness keeps this rule via seams: `agentRunShell` (bash exec), `agentGitStatus` (prompt env), `deepseekLanguageModel` (the API client), and `agentSendToProgram` (modal routing) are all swappable vars; `fakeLM` in `agent_run_test.go` scripts whole fantasy streams with zero network.
 - Worktree / git tests use `t.TempDir()` + `t.Chdir(...)` so they self-isolate and survive parallel runs.
 - HOME-sensitive tests (`session`, `config`, `paths`) call `isolateHome(t)` to pin `$HOME` at a tmp dir so the user's real state is never touched.
 - Prefer a few larger scenarios over dozens of trivial one-liners, but do cover each branch of complex functions (see `claudeCLIArgs` and `readClaudeStream` tests for the pattern).
@@ -517,6 +540,83 @@ Plain text → `content: string`. With attachments → `content: []block` using 
 
 `userContent` in `claude.go` builds this.
 
+## DeepSeek provider (in-process API agent)
+
+`deepseek` is the first provider with **no CLI subprocess**: the agent
+loop runs inside ask, built on `charm.land/fantasy` (Apache-2.0, the
+agent runtime crush uses; v0.30+ repairs malformed tool-call JSON by
+default — important for DeepSeek — so don't pass a custom
+`WithRepairToolCall` that would shadow it). Crush itself is
+FSL-licensed: design reference only, never copy its code.
+
+### Provider seam
+
+`deepseekProvider` (deepseek.go) satisfies the same `Provider`
+interface as claude/codex with `providerProc.cmd == nil`: StartSession
+spawns a goroutine (`agentSession.run`), `stdin` is an adapter whose
+`Close()` tears the session down (that's what `killProc` calls), and
+`Interrupt` cancels the in-flight turn's context cooperatively
+(handled=true, codex-style — the session emits its own turn end).
+Everything else (tabs, workflows, banner, cancellation, /provider)
+works because the session emits the exact claude message protocol:
+`streamStatusMsg`, `assistantTextMsg` (one per completed text block,
+emitted at `OnTextEnd`), `toolCallMsg`/`toolResultMsg`, `toolDiffMsg`
+(via `unifiedDiff` + `parseUnifiedDiff` after edit/write),
+`todoUpdatedMsg`, `usageMsg` (input + cache tokens, codex-style
+context footprint), then **`providerDoneMsg` before `turnCompleteMsg`**
+(same order as readClaudeStream — the workflow runner depends on it),
+and `providerExitedMsg` + channel close on shutdown.
+
+### Wire mechanics
+
+The fantasy `openaicompat` provider handles DeepSeek's quirks: the
+`reasoning_content` echo-back rule during tool loops (the API 400s
+without it), index-keyed tool-call delta merging, retry-after-aware
+backoff. Provider options are keyed by **provider name** ("deepseek",
+set via `openaicompat.WithName`) — `deepseekProviderOptions` maps ask's
+effort picker onto the wire: `off` → `extra_body: {thinking:
+{type: disabled}}` + temperature 0.0 (DeepSeek's coding rec; thinking
+mode takes no sampling params), `high` → `reasoning_effort: high`,
+`max` → `xhigh` (DeepSeek's wire name for max). Models:
+`deepseek-v4-pro` (default) / `deepseek-v4-flash`, 1M context — the
+deprecated `deepseek-chat`/`deepseek-reasoner` aliases retire
+2026-07-24 and are deliberately absent. Image attachments are rejected
+in `Send` (V4 has no image input). The system prompt is built once per
+session and reused verbatim so DeepSeek's automatic prefix cache hits;
+volatile env (git status) is a labeled session-start snapshot.
+
+### Tools
+
+Coding core (read/write/edit/glob/grep/ls/bash+jobs/fetch/todos/task)
+plus in-process twins of `ask_user_question` and `end_turn` — they
+build the same `askToolRequestMsg`/`endTurnSignalMsg` the MCP bridge
+sends, so the question modal, headless workflow notices, and the
+workflow `end_turn` contract behave identically on deepseek steps.
+The loopback MCP bridge (linear_*, workflow_*) and the project GitHub
+MCP attach through a real MCP client (`agent_tools_mcp.go`) as
+`mcp__<server>__<tool>` tools, with the native twins filtered out.
+Permissions: when `SkipAllPermissions` is off, mutating tools (bash
+beyond the safe read-only list, edit/write, fetch) block on the
+existing approval modal; denial returns an error result with
+`StopTurn` so the model ends its turn instead of retrying.
+
+### Sessions & turn hygiene
+
+Transcripts persist as fantasy message arrays (typed parts survive
+JSON round-trip) under `~/.config/ask/agent-sessions/deepseek/`,
+keyed by the same cwd encoding claude's project dirs use. Resume
+replays the stored messages into the next wire call; Materialize
+seeds a fresh transcript from NeutralTurns for cross-provider
+/provider swaps. Before persisting, `repairDanglingToolCalls`
+synthesizes error results for any unanswered tool call so a resumed
+transcript never violates the strict call/result pairing. Loop
+detection (identical tool-step signatures, >5 repeats in a 10-step
+window) stops runaway turns; context pressure (≤20K headroom of the
+1M window) stops the turn, summarizes the transcript into a new
+user-role head message, and auto-queues a continuation turn when the
+model was mid-tool-loop. A cancelled turn is not persisted — like a
+killed claude proc, resume lands at the last completed turn.
+
 ## Clipboard and thumbnails
 
 - Only Wayland is supported. Don't add X11 / macOS fallbacks without asking.
@@ -544,7 +644,7 @@ Plain text → `content: string`. With attachments → `content: []block` using 
 
 ## Conventions
 
-- No new runtime dependencies without asking. We already carry Charm (bubbletea/bubbles/lipgloss/glamour/ultraviolet), the official MCP SDK, and stdlib.
+- No new runtime dependencies without asking. We already carry Charm (bubbletea/bubbles/lipgloss/glamour/ultraviolet), `charm.land/fantasy` (the agent runtime behind the deepseek provider — user-approved), the official MCP SDK, golang.org/x/net (fetch tool's HTML→text), and stdlib.
 - Only emojis that already exist in the codebase (`✓`, `✗`, `▸`, `›`, `▏`) — nothing new unless the user asks.
 - Comments: default to none. Only add one when a reader cannot derive the reason from the code.
 - Debug logging uses `debugLog(format, args...)` and is a no-op unless `ASK_DEBUG=1`. Add one when crossing an async boundary (paste command, MCP handler, claude stream, tool dispatch).

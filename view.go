@@ -794,6 +794,23 @@ func (m model) View() tea.View {
 					Max: image.Pt(pX+pW, pY+pH),
 				})
 			}
+			if m.configDeepSeekPickerActive {
+				picker := m.viewConfigDeepSeekPicker()
+				pW := lipgloss.Width(picker)
+				pH := lipgloss.Height(picker)
+				pX := (m.width - pW) / 2
+				pY := (m.height - pH) / 2
+				if pX < 0 {
+					pX = 0
+				}
+				if pY < 0 {
+					pY = 0
+				}
+				uv.NewStyledString(picker).Draw(canvas, image.Rectangle{
+					Min: image.Pt(pX, pY),
+					Max: image.Pt(pX+pW, pY+pH),
+				})
+			}
 			if m.configKeybindingsPickerActive {
 				picker := m.viewConfigKeybindingsPicker()
 				pW := lipgloss.Width(picker)
@@ -1495,7 +1512,10 @@ func (m model) providerChipSegments(now time.Time) []string {
 			contextPercent(m.codexUsage.contextTokens, limit)))
 		return segs
 	}
-	if m.usageCache != nil {
+	// 5h/wk windows come from claude's usage cache — only meaningful
+	// on claude tabs. An API provider (deepseek) has no quota windows,
+	// so its chip carries just the ctx segment.
+	if m.usageCache != nil && m.provider != nil && m.provider.ID() == "claude" {
 		fh := m.usageCache.FiveHour
 		segs = append(segs, fmt.Sprintf("5h:%d%%(%s)",
 			int(fh.Utilization+0.5), formatTTL(fh.ResetsAt, now)))

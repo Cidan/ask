@@ -85,6 +85,7 @@ func (m model) globalConfigItems() []configItem {
 		{"Theme", m.themeName, "theme"},
 		{"Default Provider", provName, "provider"},
 		{"Memory...", mem, "memory"},
+		{"DeepSeek...", deepseekKeySummary(cfg.DeepSeek), "deepseek"},
 		{"Keybindings...", "", "keybindings"},
 	}
 }
@@ -143,6 +144,9 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.configMemoryPickerActive {
 		return m.updateConfigMemoryPicker(msg)
+	}
+	if m.configDeepSeekPickerActive {
+		return m.updateConfigDeepSeekPicker(msg)
 	}
 	if m.configKeybindingsPickerActive {
 		return m.updateConfigKeybindingsPicker(msg)
@@ -359,6 +363,9 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "memory":
 		m = m.openConfigMemoryPicker()
+		return m, nil
+	case "deepseek":
+		m = m.openConfigDeepSeekPicker()
 		return m, nil
 	case "keybindings":
 		m = m.openConfigKeybindingsPicker()

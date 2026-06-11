@@ -988,6 +988,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.mode == modeConfig && m.configMemoryPickerActive && m.configMemoryFieldEditing != "" {
 			return m.applyConfigMemoryPaste(msg.Content)
 		}
+		if m.mode == modeConfig && m.configDeepSeekPickerActive && m.configDeepSeekFieldEditing != "" {
+			return m.applyConfigDeepSeekPaste(msg.Content)
+		}
 		if m.mode == modeConfig && m.configProjectPickerActive && m.configProjectFieldEditing != "" {
 			return m.applyConfigProjectPaste(msg.Content)
 		}

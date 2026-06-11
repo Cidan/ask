@@ -48,6 +48,12 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 			Theme:       "catppuccin-mocha",
 		},
 		Memory: memoryConfig{Enabled: &memOn},
+		DeepSeek: deepseekConfig{
+			Model:   "deepseek-v4-flash",
+			Effort:  "max",
+			APIKey:  "sk-test-123",
+			BaseURL: "https://example.test/v1",
+		},
 	}
 	if err := saveConfig(want); err != nil {
 		t.Fatalf("saveConfig: %v", err)
@@ -79,6 +85,10 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	}
 	if got.Memory.Enabled == nil || *got.Memory.Enabled != true {
 		t.Errorf("memory.enabled lost in roundtrip: %+v", got.Memory.Enabled)
+	}
+	if got.DeepSeek.Model != want.DeepSeek.Model || got.DeepSeek.Effort != want.DeepSeek.Effort ||
+		got.DeepSeek.APIKey != want.DeepSeek.APIKey || got.DeepSeek.BaseURL != want.DeepSeek.BaseURL {
+		t.Errorf("deepseek lost in roundtrip: %+v", got.DeepSeek)
 	}
 
 	// Permissions 0600 per saveConfig contract.
@@ -518,5 +528,27 @@ func TestClaudeProviderSettings_PreservesOtherFields(t *testing.T) {
 	}
 	if got.Claude.Model != "opus" {
 		t.Errorf("model not persisted: %+v", got.Claude)
+	}
+}
+
+func TestResolveDeepSeek_ConfigWinsEnvFallsBack(t *testing.T) {
+	t.Setenv(deepseekEnvAPIKey, "sk-from-env")
+
+	if got := resolveDeepSeekAPIKey(deepseekConfig{APIKey: "sk-from-config"}); got != "sk-from-config" {
+		t.Errorf("config key should win over env, got %q", got)
+	}
+	if got := resolveDeepSeekAPIKey(deepseekConfig{}); got != "sk-from-env" {
+		t.Errorf("empty config should fall back to env, got %q", got)
+	}
+	t.Setenv(deepseekEnvAPIKey, "")
+	if got := resolveDeepSeekAPIKey(deepseekConfig{}); got != "" {
+		t.Errorf("no config + no env should be empty, got %q", got)
+	}
+
+	if got := resolveDeepSeekBaseURL(deepseekConfig{}); got != deepseekDefaultBaseURL {
+		t.Errorf("empty base URL should default, got %q", got)
+	}
+	if got := resolveDeepSeekBaseURL(deepseekConfig{BaseURL: "http://localhost:9999/v1"}); got != "http://localhost:9999/v1" {
+		t.Errorf("explicit base URL lost, got %q", got)
 	}
 }

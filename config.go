@@ -46,11 +46,12 @@ const (
 type askConfig struct {
 	// Provider is the agent CLI backend ID ("claude", "codex", …). Empty
 	// means "use the first registered provider" — currently Claude.
-	Provider string       `json:"provider,omitempty"`
-	Claude   claudeConfig `json:"claude"`
-	Codex    codexConfig  `json:"codex,omitempty"`
-	UI       uiConfig     `json:"ui,omitempty"`
-	Memory   memoryConfig `json:"memory,omitempty"`
+	Provider string         `json:"provider,omitempty"`
+	Claude   claudeConfig   `json:"claude"`
+	Codex    codexConfig    `json:"codex,omitempty"`
+	DeepSeek deepseekConfig `json:"deepseek,omitempty"`
+	UI       uiConfig       `json:"ui,omitempty"`
+	Memory   memoryConfig   `json:"memory,omitempty"`
 
 	// Keybindings overrides the built-in global shortcuts (Ctrl+W
 	// workflows, Ctrl+I issues, …). Stored as action → "ctrl+w" so
@@ -523,6 +524,47 @@ type codexConfig struct {
 	SlashCommands []providerSlashEntry `json:"slashCommands,omitempty"`
 	Model         string               `json:"model,omitempty"`
 	Effort        string               `json:"effort,omitempty"`
+}
+
+// deepseekConfig holds the DeepSeek API provider's settings. Unlike
+// claude/codex there is no CLI holding credentials for us, so the API
+// key lives here (0600 config, same trust level as the GitHub PAT and
+// Linear key). An empty APIKey falls back to $DEEPSEEK_API_KEY at
+// session start; an empty BaseURL means deepseekDefaultBaseURL.
+type deepseekConfig struct {
+	SlashCommands []providerSlashEntry `json:"slashCommands,omitempty"`
+	Model         string               `json:"model,omitempty"`
+	Effort        string               `json:"effort,omitempty"`
+	APIKey        string               `json:"apiKey,omitempty"`
+	BaseURL       string               `json:"baseURL,omitempty"`
+}
+
+// deepseekDefaultBaseURL is the OpenAI-compatible endpoint. The /v1
+// suffix is path-compatibility only (unrelated to model versions) and
+// is what the OpenAI-style SDK expects to prefix /chat/completions.
+const deepseekDefaultBaseURL = "https://api.deepseek.com/v1"
+
+// deepseekEnvAPIKey is the conventional environment fallback consulted
+// when the config field is empty.
+const deepseekEnvAPIKey = "DEEPSEEK_API_KEY"
+
+// resolveDeepSeekAPIKey returns the API key to use: an explicit config
+// value wins, otherwise $DEEPSEEK_API_KEY. Empty means unconfigured —
+// session start surfaces a pointed error instead of a cryptic 401.
+func resolveDeepSeekAPIKey(c deepseekConfig) string {
+	if c.APIKey != "" {
+		return c.APIKey
+	}
+	return os.Getenv(deepseekEnvAPIKey)
+}
+
+// resolveDeepSeekBaseURL returns the configured base URL or the
+// default endpoint when unset.
+func resolveDeepSeekBaseURL(c deepseekConfig) string {
+	if c.BaseURL != "" {
+		return c.BaseURL
+	}
+	return deepseekDefaultBaseURL
 }
 
 type ollamaConfig struct {
