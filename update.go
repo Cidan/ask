@@ -511,6 +511,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		debugLog("providerExitedMsg err=%v stderrLen=%d", msg.err, len(stderrTail))
 		m.flushTurnBuffer()
 		m.busy = false
+		m.pendingWorkflow = nil
 		m.status = ""
 		m.todos = nil
 		m.bgTasks = nil
@@ -582,12 +583,14 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			m.appendHistory(outputStyle.Render(out))
 			m.busy = false
 			m.status = ""
+			m.pendingWorkflow = nil
 			m.todos = nil
 			workflowErr = msg.err
 		case msg.res.IsError:
 			m.appendHistory(outputStyle.Render(errStyle.Render("error: " + msg.res.Result)))
 			m.busy = false
 			m.status = ""
+			m.pendingWorkflow = nil
 			m.todos = nil
 			workflowErr = errStepError(msg.res.Result)
 		}
@@ -667,19 +670,38 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.workflowRun != nil && !m.workflowRun.done && !m.workflowRun.failed {
 			workflowCmd = workflowAdvanceCmd(m.id, nil)
 		}
+		// Deferred workflow launch: the agent called workflow_run
+		// mid-turn; fire it now that the turn is complete and the
+		// tab is no longer busy. Emit the stored spawnWorkflowTabMsg
+		// so the app handler processes it as if it arrived fresh.
+		var pendingWFCmd tea.Cmd
+		if m.pendingWorkflow != nil {
+			pw := *m.pendingWorkflow
+			m.pendingWorkflow = nil
+			pendingWFCmd = func() tea.Msg { return pw }
+		}
 		var streamCmd tea.Cmd
 		if m.streamCh != nil {
 			streamCmd = nextStreamCmd(m.streamCh)
 		}
-		switch {
-		case streamCmd != nil && workflowCmd != nil:
-			return m, tea.Batch(streamCmd, workflowCmd)
-		case streamCmd != nil:
-			return m, streamCmd
-		case workflowCmd != nil:
-			return m, workflowCmd
+		var cmds []tea.Cmd
+		if streamCmd != nil {
+			cmds = append(cmds, streamCmd)
 		}
-		return m, nil
+		if workflowCmd != nil {
+			cmds = append(cmds, workflowCmd)
+		}
+		if pendingWFCmd != nil {
+			cmds = append(cmds, pendingWFCmd)
+		}
+		switch len(cmds) {
+		case 0:
+			return m, nil
+		case 1:
+			return m, cmds[0]
+		default:
+			return m, tea.Batch(cmds...)
+		}
 
 	case historyLoadedMsg:
 		if msg.tabID != m.id {
@@ -1951,6 +1973,7 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		m.virtualSessionID = ""
 		m.history = nil
 		m.addedDirs = nil
+		m.pendingWorkflow = nil
 		m.tabTitle = ""
 		m.sessionCostUSD = 0
 		m.sessionCostKnown = false

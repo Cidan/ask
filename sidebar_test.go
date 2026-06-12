@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -543,23 +544,114 @@ func TestWorkflowSupplantsTabInSidebarMode(t *testing.T) {
 	}
 }
 
-func TestWorkflowSupplantRefusesBusyTab(t *testing.T) {
+func TestWorkflowSupplantDefersWhenBusy(t *testing.T) {
 	isolateHome(t)
 	resetWorkflowTrackerForTest()
 	a := newSidebarTestApp(t, 1)
 	a.tabs[0].toast = NewToastModel(80, 0)
 	a.tabs[0].busy = true
 
-	m1, cmd := a.Update(supplantTestMsg(a))
+	msg := supplantTestMsg(a)
+	m1, cmd := a.Update(msg)
 	a = asApp(t, m1)
 	if len(a.tabs) != 1 {
-		t.Fatalf("refusal opened a tab: %d tabs", len(a.tabs))
+		t.Fatalf("deferred launch opened a tab: %d tabs", len(a.tabs))
 	}
 	if a.tabs[0].workflowRun != nil {
 		t.Fatal("busy tab was supplanted")
 	}
+	if a.tabs[0].pendingWorkflow == nil {
+		t.Fatal("pendingWorkflow not stored on busy tab")
+	}
+	if a.tabs[0].pendingWorkflow.Workflow.Name != msg.Workflow.Name {
+		t.Fatalf("pending workflow name = %q, want %q",
+			a.tabs[0].pendingWorkflow.Workflow.Name, msg.Workflow.Name)
+	}
+	if cmd != nil {
+		t.Fatal("no cmd expected on defer — workflow launches on turn complete")
+	}
+}
+
+func TestWorkflowOpenTabDefersWhenBusy(t *testing.T) {
+	isolateHome(t)
+	resetWorkflowTrackerForTest()
+	withRegisteredProviders(t, newFakeProvider())
+	a := newSidebarTestApp(t, 1)
+	a.tabMode = tabModeBar
+	a.tabs[0].busy = true
+
+	msg := supplantTestMsg(a)
+	m1, cmd := a.Update(msg)
+	a = asApp(t, m1)
+	if len(a.tabs) != 1 {
+		t.Fatalf("deferred launch opened a tab: %d tabs", len(a.tabs))
+	}
+	if a.tabs[0].pendingWorkflow == nil {
+		t.Fatal("pendingWorkflow not stored on busy originating tab in bar mode")
+	}
+	if cmd != nil {
+		t.Fatal("no cmd expected on defer")
+	}
+}
+
+func TestPendingWorkflowFiresOnTurnComplete(t *testing.T) {
+	isolateHome(t)
+	resetWorkflowTrackerForTest()
+	a := newSidebarTestApp(t, 1)
+	a.tabMode = tabModeSidebar
+
+	// Prime the tab with a pending workflow.
+	wf := workflowDef{Name: "pipe", Steps: []workflowStep{{Name: "s1", Provider: "fake"}}}
+	src := chatWorkflowSource(a.tabs[0].id, nil)
+	a.tabs[0].pendingWorkflow = &spawnWorkflowTabMsg{
+		OriginTabID: a.tabs[0].id,
+		Cwd:         a.tabs[0].cwd,
+		Workflow:    wf,
+		Source:      src,
+	}
+	// TurnCompleteMsg fires the pending workflow.
+	// We need a fake proc so the tab gate passes.
+	prov := newFakeProvider()
+	a.tabs[0].provider = prov
+	proc := &providerProc{}
+	a.tabs[0].proc = proc
+	a.tabs[0].busy = true
+
+	m1, cmd := a.tabs[0].Update(turnCompleteMsg{proc: proc})
+	got := m1.(model)
+	if got.pendingWorkflow != nil {
+		t.Fatal("pendingWorkflow should be cleared after firing")
+	}
+	// The cmd should return a spawnWorkflowTabMsg.
 	if cmd == nil {
-		t.Fatal("no toast cmd on refusal")
+		t.Fatal("no cmd fired for pending workflow")
+	}
+	msgs := drainBatch(t, cmd)
+	var found bool
+	for _, m := range msgs {
+		if spawn, ok := m.(spawnWorkflowTabMsg); ok && spawn.Workflow.Name == "pipe" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("spawnWorkflowTabMsg not dispatched")
+	}
+}
+
+func TestPendingWorkflowDiscardedOnProviderExited(t *testing.T) {
+	isolateHome(t)
+	prov := newFakeProvider()
+	m := newTestModel(t, prov)
+	m.proc = &providerProc{}
+	m.busy = true
+	m.pendingWorkflow = &spawnWorkflowTabMsg{
+		OriginTabID: m.id,
+		Workflow:    workflowDef{Name: "wf"},
+	}
+	m2, _ := m.Update(providerExitedMsg{proc: m.proc, err: errors.New("killed")})
+	got := m2.(model)
+	if got.pendingWorkflow != nil {
+		t.Fatal("pendingWorkflow should be discarded on provider exit")
 	}
 }
 

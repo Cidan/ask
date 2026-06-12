@@ -424,9 +424,16 @@ func (a app) supplantWorkflow(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
 		idx = a.active
 	}
 	t := a.tabs[idx]
-	if t.workflowRun != nil || t.busy || t.procStarting || t.shellProc != nil {
+	if t.workflowRun != nil || t.shellProc != nil {
 		return a, a.activeTab().toast.show(
 			"workflow not started: tab is busy — let the current work finish first")
+	}
+	// Mid-turn (busy or procStarting): register the intent so the
+	// workflow launches when this turn completes, rather than failing
+	// with a toast the agent can't act on.
+	if t.busy || t.procStarting {
+		t.pendingWorkflow = &req
+		return a, nil
 	}
 	// An idle provider session may still be live; the steps must not
 	// Send into it (each step is a fresh one-shot). The snapshot keeps
@@ -488,6 +495,16 @@ func (a app) supplantWorkflow(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
 // originating tab is left as-is so the user can swap back via the
 // tab bar to see the kanban while the agent runs in the background.
 func (a app) openWorkflowTab(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
+	// When the originating tab is mid-turn, defer the launch — the
+	// agent called workflow_run while working, so fire it when the
+	// turn completes instead of spawning a new tab mid-stream.
+	if idx := a.indexOfTab(req.OriginTabID); idx >= 0 {
+		ot := a.tabs[idx]
+		if ot.busy || ot.procStarting {
+			ot.pendingWorkflow = &req
+			return a, nil
+		}
+	}
 	cfg, _ := loadConfig()
 	t, err := newTab(a.nextID, cfg)
 	if err != nil {

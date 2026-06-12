@@ -650,6 +650,13 @@ type model struct {
 	// streams in.
 	workflowRun *workflowRunState
 
+	// pendingWorkflow, when non-nil, stores a workflow launch request
+	// that arrived mid-turn (the agent called workflow_run while the
+	// tab was busy). The turnCompleteMsg handler fires it after the
+	// turn finishes; error paths discard it. Nil when the turn is idle
+	// or no deferred launch is waiting.
+	pendingWorkflow *spawnWorkflowTabMsg
+
 	// workflowsBuilder, when non-nil, holds the per-tab state of the
 	// workflows builder screen (levels, cursors, in-flight name and
 	// prompt drafts). Lazily allocated on screen entry; cleared on
