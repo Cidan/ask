@@ -363,51 +363,115 @@ func (b *workflowsBuilderState) focusStepRow(topIdx, innerIdx int) {
 
 // commitItems writes b.items back to disk and re-hydrates so any
 // normalisation the persistence layer applies is reflected locally.
-// Wrapped in withConfigLock so a concurrent workflow tracker disk
-// upsert (terminal-status persistence from a finishing workflow) or
-// MCP workflow_edit call can't race the load → mutate → save cycle
-// and lose either side's update.
+// b.items is the merged two-scope list; saveAllWorkflows routes each
+// def by its Scope tag (user → ask.json, repo → .ask/workflows/) and
+// serialises under the config lock so a concurrent workflow tracker
+// disk upsert or MCP workflow_edit call can't race the load → mutate
+// → save cycle and lose either side's update.
 func (b *workflowsBuilderState) commitItems() error {
-	if err := withConfigLock(func() error {
-		cfg, err := loadConfig()
-		if err != nil {
-			return err
-		}
-		pc := loadProjectConfig(cfg, b.cwd)
-		if len(b.items) == 0 {
-			pc.Workflows.Items = nil
-		} else {
-			pc.Workflows.Items = append([]workflowDef(nil), b.items...)
-		}
-		cfg = upsertProjectConfig(cfg, b.cwd, pc)
-		return saveConfig(cfg)
-	}); err != nil {
+	if err := saveAllWorkflows(b.cwd, b.items); err != nil {
 		return err
 	}
 	b.refreshItems()
 	return nil
 }
 
-// uniqueWorkflowName returns a name not used by any workflow in
-// b.items. Used by "+ New workflow" so the list never has two rows
-// that collide on Name (the runtime / picker key on Name).
-func (b *workflowsBuilderState) uniqueWorkflowName(seed string) string {
+// otherWorkflowScope is the copy/move target for a def: the scope it
+// is NOT currently in.
+func otherWorkflowScope(scope string) string {
+	if workflowScopeTag(scope) == workflowScopeRepo {
+		return workflowScopeUser
+	}
+	return workflowScopeRepo
+}
+
+// uniqueNameInScope returns seed if no workflow in `scope` uses it,
+// else seed-2, seed-3, …. Per-scope (not global) because the store
+// only enforces uniqueness within a scope — the same name in both
+// scopes is legal (and what a cross-scope copy naturally produces).
+func (b *workflowsBuilderState) uniqueNameInScope(seed, scope string) string {
 	if seed == "" {
 		seed = "untitled"
 	}
-	taken := make(map[string]struct{}, len(b.items))
+	taken := make(map[string]struct{})
 	for _, w := range b.items {
-		taken[w.Name] = struct{}{}
-	}
-	if _, clash := taken[seed]; !clash {
-		return seed
-	}
-	for i := 2; ; i++ {
-		candidate := fmt.Sprintf("%s-%d", seed, i)
-		if _, clash := taken[candidate]; !clash {
-			return candidate
+		if workflowScopeTag(w.Scope) == workflowScopeTag(scope) {
+			taken[w.Name] = struct{}{}
 		}
 	}
+	return uniqueNameFrom(taken, seed)
+}
+
+// focusWorkflow points the left cursor at the (name, scope) row.
+// Used after copy/move — refreshItems re-sorts the merged list so an
+// index captured before the commit is stale.
+func (b *workflowsBuilderState) focusWorkflow(name, scope string) {
+	for i, w := range b.items {
+		if w.Name == name && workflowScopeTag(w.Scope) == workflowScopeTag(scope) {
+			b.listCursor = i + 1
+			b.syncRightFromLeft()
+			return
+		}
+	}
+}
+
+// copySelectedToOtherScope duplicates the workflow under the cursor
+// into the opposite scope. The copy keeps its name when the target
+// scope is free, else gets a -2/-3… suffix (the naming-conflict
+// rule). The source is untouched, so no running guard applies.
+func (b *workflowsBuilderState) copySelectedToOtherScope() {
+	wIdx, ok := b.selectedWorkflowIdx()
+	if !ok {
+		return
+	}
+	src := b.items[wIdx]
+	target := otherWorkflowScope(src.Scope)
+	dup := src
+	dup.Scope = target
+	dup.Name = b.uniqueNameInScope(src.Name, target)
+	dup.Steps = cloneWorkflowSteps(src.Steps)
+	b.items = append(b.items, dup)
+	if err := b.commitItems(); err != nil {
+		b.toast = "save failed: " + err.Error()
+		return
+	}
+	b.focusWorkflow(dup.Name, target)
+	b.toast = fmt.Sprintf("copied to %s scope as %q", target, dup.Name)
+}
+
+// moveSelectedToOtherScope relocates the workflow under the cursor to
+// the opposite scope (user ⇄ repo), renaming with a suffix when the
+// target scope already holds the name. Guarded against running
+// workflows like rename/delete — the tracker keys on name and a
+// mid-run identity change could strand it.
+func (b *workflowsBuilderState) moveSelectedToOtherScope() {
+	wIdx, ok := b.selectedWorkflowIdx()
+	if !ok {
+		return
+	}
+	src := b.items[wIdx]
+	target := otherWorkflowScope(src.Scope)
+	name := b.uniqueNameInScope(src.Name, target)
+	b.items[wIdx].Scope = target
+	b.items[wIdx].Name = name
+	if err := b.commitItems(); err != nil {
+		b.toast = "save failed: " + err.Error()
+		return
+	}
+	b.focusWorkflow(name, target)
+	if name != src.Name {
+		b.toast = fmt.Sprintf("moved to %s scope as %q (name was taken)", target, name)
+	} else {
+		b.toast = fmt.Sprintf("moved to %s scope", target)
+	}
+}
+
+// uniqueWorkflowName returns a name not used by any user-scope
+// workflow in b.items. Used by "+ New workflow" (which always
+// creates in user scope) so the list never has two same-scope rows
+// that collide on Name.
+func (b *workflowsBuilderState) uniqueWorkflowName(seed string) string {
+	return b.uniqueNameInScope(seed, workflowScopeUser)
 }
 
 // uniqueStepName returns a step name not used inside the selected
@@ -503,7 +567,7 @@ func (m model) workflowsBuilderUpdateLeft(msg tea.KeyPressMsg) (model, tea.Cmd, 
 	case msg.Code == tea.KeyEnter:
 		if b.listCursor == 0 {
 			// "+ New workflow" → create + drill into the new entry.
-			b.items = append(b.items, workflowDef{Name: b.uniqueWorkflowName("untitled")})
+			b.items = append(b.items, workflowDef{Name: b.uniqueWorkflowName("untitled"), Scope: workflowScopeUser})
 			if err := b.commitItems(); err != nil {
 				b.toast = "save failed: " + err.Error()
 				return m, nil, true
@@ -543,6 +607,22 @@ func (m model) workflowsBuilderUpdateLeft(msg tea.KeyPressMsg) (model, tea.Cmd, 
 		}
 		b.confirming = "delete-workflow"
 		b.confirmCursor = 0
+		return m, nil, true
+	case msg.Mod == 0 && msg.Code == 'c':
+		if _, ok := b.selectedWorkflowIdx(); !ok {
+			return m, nil, true
+		}
+		b.copySelectedToOtherScope()
+		return m, nil, true
+	case msg.Mod == 0 && msg.Code == 's':
+		if _, ok := b.selectedWorkflowIdx(); !ok {
+			return m, nil, true
+		}
+		if guard := b.runningGuard(); guard != "" {
+			b.toast = guard
+			return m, nil, true
+		}
+		b.moveSelectedToOtherScope()
 		return m, nil, true
 	}
 	return m, nil, true
@@ -960,9 +1040,10 @@ func (m model) workflowsBuilderUpdateRename(msg tea.KeyPressMsg) (model, tea.Cmd
 				b.renaming = ""
 				return m, nil, true
 			}
+			scope := workflowScopeTag(b.items[wIdx].Scope)
 			for i, w := range b.items {
-				if i != wIdx && w.Name == draft {
-					b.toast = "another workflow already uses that name"
+				if i != wIdx && w.Name == draft && workflowScopeTag(w.Scope) == scope {
+					b.toast = "another " + scope + "-scope workflow already uses that name"
 					return m, nil, true
 				}
 			}
@@ -1252,7 +1333,7 @@ func (b *workflowsBuilderState) renderBase(width, height int) string {
 // narrow pane.
 func (b *workflowsBuilderState) activeHint() string {
 	if b.focus == workflowsBuilderFocusLeft {
-		return "↑/↓ navigate · enter open · r rename · d delete · esc back"
+		return "↑/↓ navigate · enter open · r rename · c copy to other scope · s move scope · d delete · esc back"
 	}
 	switch b.rightMode {
 	case workflowsBuilderRightSteps:
@@ -1264,17 +1345,17 @@ func (b *workflowsBuilderState) activeHint() string {
 }
 
 // renderLeftPane draws the workflow list. "+ New workflow" is row 0
-// so the create affordance is always discoverable at the top. Rows
-// carry only the workflow name — step counts moved to the right
-// pane's subtitle so the left pane stays narrow without wrapping
-// names against trailing metadata.
+// so the create affordance is always discoverable at the top. Each
+// workflow row carries a right-aligned scope tag (repo/user) so the
+// user always sees where a workflow is saved; step counts moved to
+// the right pane's subtitle so the left pane stays narrow.
 func (b *workflowsBuilderState) renderLeftPane(width, height int) string {
 	innerW := workflowsPaneInnerWidth(width)
 	rows := []string{
 		renderWorkflowsListRow("+ New workflow", innerW, b.listCursor == 0, b.focus == workflowsBuilderFocusLeft),
 	}
 	for _, w := range b.items {
-		rows = append(rows, renderWorkflowsListRow(w.Name, innerW, len(rows) == b.listCursor, b.focus == workflowsBuilderFocusLeft))
+		rows = append(rows, renderWorkflowsListRowTagged(w.Name, workflowScopeTag(w.Scope), innerW, len(rows) == b.listCursor, b.focus == workflowsBuilderFocusLeft))
 	}
 	return renderWorkflowsPane(workflowsPaneArgs{
 		width:    width,
@@ -1332,7 +1413,7 @@ func (b *workflowsBuilderState) renderRightSteps(width, height int) string {
 		width:    width,
 		height:   height,
 		title:    "Workflow · " + wf.Name,
-		subtitle: fmt.Sprintf("%s — runs top to bottom", stepsCount(len(wf.Steps))),
+		subtitle: fmt.Sprintf("%s scope · %s — runs top to bottom", workflowScopeTag(wf.Scope), stepsCount(len(wf.Steps))),
 		header:   renderWorkflowStepHeader(cols, innerW),
 		rows:     rows,
 		cursor:   b.stepsCursor,
@@ -1405,7 +1486,7 @@ func (b *workflowsBuilderState) renderRightStep(width, height int) string {
 		width:    width,
 		height:   height,
 		title:    title,
-		subtitle: b.items[t.wIdx].Name,
+		subtitle: b.items[t.wIdx].Name + " · " + workflowScopeTag(b.items[t.wIdx].Scope),
 		rows:     rows,
 		cursor:   cursor,
 		active:   active,
@@ -1620,6 +1701,27 @@ func renderWorkflowsListRow(label string, width int, selected, activePane bool) 
 		return configSelectedRowStyle.Render(line)
 	}
 	return dimStyle.Render(line)
+}
+
+// renderWorkflowsListRowTagged renders a workflow row with a
+// right-aligned scope tag (repo/user). Selected rows style the whole
+// line so the tag stays legible inside the selection background;
+// unselected rows dim the tag to keep the name as the focal point.
+func renderWorkflowsListRowTagged(name, tag string, width int, selected, activePane bool) string {
+	tagW := lipgloss.Width(tag)
+	nameW := width - tagW - 1
+	if nameW < 1 {
+		return renderWorkflowsListRow(name, width, selected, activePane)
+	}
+	namePart := padRight(truncateForRow(name, nameW), nameW)
+	if selected {
+		line := namePart + " " + tag
+		if activePane {
+			return configSelectedRowStyle.Render(line)
+		}
+		return dimStyle.Render(line)
+	}
+	return namePart + " " + dimStyle.Render(tag)
 }
 
 func computeWorkflowStepColumns(width int) workflowStepColumns {

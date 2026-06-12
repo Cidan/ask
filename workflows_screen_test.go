@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -669,4 +671,150 @@ func TestWorkflowsBuilder_DeleteLoop(t *testing.T) {
 		t.Fatalf("expected only agent step 'a' to remain after deleting the loop; got %+v", got[0].Steps)
 	}
 	_ = m3
+}
+
+// ----- scope copy / move -----
+
+// TestWorkflowsBuilder_CopyToRepoScope presses `c` on a user-scope
+// workflow and asserts a repo-scope copy lands on disk (the committed
+// .ask/workflows file) while the source survives, with the cursor
+// following the new copy.
+func TestWorkflowsBuilder_CopyToRepoScope(t *testing.T) {
+	m, cwd := seedWorkflowsBuilder(t, []workflowDef{{
+		Name:  "review",
+		Steps: []workflowStep{{Name: "s", Provider: "fake", Prompt: "go"}},
+	}})
+	m.workflowsBuilder.focus = workflowsBuilderFocusLeft
+	m1, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: 'c'})
+	b := m1.workflowsBuilder
+
+	if len(b.items) != 2 {
+		t.Fatalf("expected 2 items after copy; got %+v", b.items)
+	}
+	repoCopy, ok := findWorkflow(cwd, "review", workflowScopeRepo)
+	if !ok || repoCopy.Steps[0].Prompt != "go" {
+		t.Fatalf("repo copy missing or wrong: %+v ok=%v", repoCopy, ok)
+	}
+	if _, ok := findWorkflow(cwd, "review", workflowScopeUser); !ok {
+		t.Error("source must survive a copy")
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".ask", "workflows", "review.json")); err != nil {
+		t.Errorf("repo file missing: %v", err)
+	}
+	// Cursor follows the copy; toast names the destination.
+	if wIdx, ok := b.selectedWorkflowIdx(); !ok || workflowScopeTag(b.items[wIdx].Scope) != workflowScopeRepo {
+		t.Errorf("cursor should land on the repo copy")
+	}
+	if !strings.Contains(b.toast, "repo") {
+		t.Errorf("toast should name the destination scope; got %q", b.toast)
+	}
+}
+
+// TestWorkflowsBuilder_MoveScopeRoundTrip presses `s` twice: user →
+// repo (ask.json entry gone, file present) then repo → user (file
+// gone, ask.json entry back).
+func TestWorkflowsBuilder_MoveScopeRoundTrip(t *testing.T) {
+	m, cwd := seedWorkflowsBuilder(t, []workflowDef{{
+		Name:  "wf",
+		Steps: []workflowStep{{Name: "s", Provider: "fake"}},
+	}})
+	m.workflowsBuilder.focus = workflowsBuilderFocusLeft
+
+	m1, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: 's'})
+	if _, ok := findWorkflow(cwd, "wf", workflowScopeRepo); !ok {
+		t.Fatal("workflow should be repo-scope after move")
+	}
+	if _, ok := findWorkflow(cwd, "wf", workflowScopeUser); ok {
+		t.Fatal("user copy must not survive a move")
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".ask", "workflows", "wf.json")); err != nil {
+		t.Fatalf("repo file missing after move: %v", err)
+	}
+
+	// Cursor followed the moved item; move it back.
+	m2, _, _ := workflowsScreen{}.updateKey(m1, tea.KeyPressMsg{Code: 's'})
+	if _, ok := findWorkflow(cwd, "wf", workflowScopeUser); !ok {
+		t.Fatal("workflow should be user-scope after moving back")
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".ask", "workflows", "wf.json")); !os.IsNotExist(err) {
+		t.Error("repo file must be gone after moving back")
+	}
+	_ = m2
+}
+
+// TestWorkflowsBuilder_MoveScopeConflictRenames seeds the same name in
+// both scopes; moving the user copy into repo must auto-suffix instead
+// of clobbering the teammate's file.
+func TestWorkflowsBuilder_MoveScopeConflictRenames(t *testing.T) {
+	m, cwd := seedWorkflowsBuilder(t, []workflowDef{{Name: "review"}})
+	if err := saveAllWorkflows(cwd, append(projectWorkflows(cwd),
+		workflowDef{Name: "review", Scope: workflowScopeRepo, Steps: []workflowStep{{Name: "r", Provider: "fake"}}},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	m.workflowsBuilder.refreshItems()
+	m.workflowsBuilder.focus = workflowsBuilderFocusLeft
+	// Merged list: repo "review" first, user "review" second.
+	m.workflowsBuilder.listCursor = 2
+	m1, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: 's'})
+	b := m1.workflowsBuilder
+
+	moved, ok := findWorkflow(cwd, "review-2", workflowScopeRepo)
+	if !ok {
+		t.Fatalf("moved workflow should be auto-suffixed; items: %+v", projectWorkflows(cwd))
+	}
+	if moved.Steps != nil {
+		t.Errorf("auto-suffixed move should carry the user def (no steps); got %+v", moved.Steps)
+	}
+	original, ok := findWorkflow(cwd, "review", workflowScopeRepo)
+	if !ok || len(original.Steps) != 1 {
+		t.Errorf("pre-existing repo workflow must be untouched: %+v", original)
+	}
+	if !strings.Contains(b.toast, "review-2") {
+		t.Errorf("toast should mention the new name; got %q", b.toast)
+	}
+}
+
+// TestWorkflowsBuilder_MoveScopeBlockedWhileRunning pins the running
+// guard on `s` — a mid-run identity change could strand the tracker.
+func TestWorkflowsBuilder_MoveScopeBlockedWhileRunning(t *testing.T) {
+	m, cwd := seedWorkflowsBuilder(t, []workflowDef{{Name: "busy"}})
+	workflowTracker().markWorking(cwd, "k", "busy", 1)
+	t.Cleanup(resetWorkflowTrackerForTest)
+	m.workflowsBuilder.focus = workflowsBuilderFocusLeft
+	m1, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: 's'})
+	b := m1.workflowsBuilder
+	if !strings.Contains(b.toast, "running") {
+		t.Errorf("move on a running workflow should toast the guard; got %q", b.toast)
+	}
+	if _, ok := findWorkflow(cwd, "busy", workflowScopeUser); !ok {
+		t.Error("guarded move must not relocate the workflow")
+	}
+}
+
+// TestWorkflowsBuilder_RenamePerScope pins that rename collisions are
+// per-scope: renaming a user workflow onto a repo-held name is legal.
+func TestWorkflowsBuilder_RenamePerScope(t *testing.T) {
+	m, cwd := seedWorkflowsBuilder(t, []workflowDef{{Name: "mine"}})
+	if err := saveAllWorkflows(cwd, append(projectWorkflows(cwd),
+		workflowDef{Name: "shared", Scope: workflowScopeRepo},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	m.workflowsBuilder.refreshItems()
+	m.workflowsBuilder.focus = workflowsBuilderFocusLeft
+	m.workflowsBuilder.listCursor = 2 // user "mine" (repo "shared" is row 1)
+	m1, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: 'r'})
+	b := m1.workflowsBuilder
+	if b.renaming != "workflow" {
+		t.Fatalf("expected rename mode; got %q", b.renaming)
+	}
+	b.renameDraft = "shared" // collides cross-scope only
+	m2, _, _ := workflowsScreen{}.updateKey(m1, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if got := m2.workflowsBuilder.toast; strings.Contains(got, "already uses") {
+		t.Fatalf("cross-scope rename should be allowed; toast %q", got)
+	}
+	if _, ok := findWorkflow(cwd, "shared", workflowScopeUser); !ok {
+		t.Error("rename should have landed in user scope")
+	}
 }

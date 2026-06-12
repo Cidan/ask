@@ -293,21 +293,12 @@ func broadcastWorkflowStatus(key, status string) {
 	go p.Send(msg)
 }
 
-// workflowDefByName looks up the named workflow under cwd's project
-// entry. Returns false when no match. Shared between the picker and
-// the runtime so the two can't drift on naming rules.
+// workflowDefByName looks up the named workflow under cwd's project,
+// searching repo scope first, then user (project-wins resolution).
+// Returns false when no match. Shared between the picker and the
+// runtime so the two can't drift on naming rules.
 func workflowDefByName(cwd, name string) (workflowDef, bool) {
-	cfg, err := loadConfig()
-	if err != nil {
-		return workflowDef{}, false
-	}
-	pc := loadProjectConfig(cfg, cwd)
-	for _, w := range pc.Workflows.Items {
-		if w.Name == name {
-			return w, true
-		}
-	}
-	return workflowDef{}, false
+	return findWorkflow(cwd, name, "")
 }
 
 // workflowKeyPrefix returns ("<provider>:<owner/repo>#", true) when
@@ -384,15 +375,11 @@ func workflowStatusGlyph(status string) string {
 	return ""
 }
 
-// projectWorkflows returns the list of workflows defined under cwd's
-// project entry, in the order they appear on disk. The picker / `f`
-// dispatcher consume this; an empty slice means the user has no
-// pipelines configured.
+// projectWorkflows returns every workflow visible under cwd — repo
+// scope (committed .ask/workflows files) first, then user scope (the
+// ask.json list, in disk order). The picker / `f` dispatcher / builder
+// consume this; an empty slice means no pipelines are configured in
+// either scope.
 func projectWorkflows(cwd string) []workflowDef {
-	cfg, err := loadConfig()
-	if err != nil {
-		return nil
-	}
-	pc := loadProjectConfig(cfg, cwd)
-	return pc.Workflows.Items
+	return listAllWorkflows(cwd)
 }

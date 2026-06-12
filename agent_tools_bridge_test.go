@@ -27,7 +27,7 @@ func TestAgentBridgeTools_CoversEveryBridgeTool(t *testing.T) {
 		"linear_list_teams", "linear_list_users", "linear_list_labels",
 		"linear_list_states", "linear_list_projects", "linear_list_cycles",
 		"workflow_list", "workflow_get", "workflow_create",
-		"workflow_edit", "workflow_delete", "workflow_run",
+		"workflow_edit", "workflow_delete", "workflow_copy", "workflow_run",
 	}
 	got := map[string]bool{}
 	for _, tool := range agentBridgeTools(env) {

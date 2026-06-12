@@ -73,7 +73,7 @@ One `package main`, one file per concern.
 | `agent_subagents.go`   | Named subagent defs: `.claude/agents/*.md` + `~/.config/ask/agents` (frontmatter name/description/tools/model + ask's `provider` extension; body = system prompt), `<available_agents>` prompt block, tool grant sets (default read-only, `*` = coding core, never task/modal tools), claude model-alias mapping, cross-provider model resolution via `agentSpecByID`. |
 | `skills.go`            | Agent Skills standard (agentskills.io): SKILL.md discovery (~/.config/ask/skills, ~/.agents/skills, ~/.claude/skills + project .agents/.claude/.ask skills dirs at cwd AND git root, project wins), name/description validation, `<available_skills>` trigger block (progressive disclosure — body loads via the read tool), `/skill-name` slash expansion (`expandSkillInvocation` in runTurn), user-invocable skills surfaced through `ProbeInit`. Generic `parseMarkdownFrontmatter` shared with subagent defs. |
 | `agent_tools_ask.go`   | In-process twins of the bridge's `ask_user_question` / `end_turn` — same modal/workflow machinery, no HTTP loopback. |
-| `agent_tools_bridge.go`| Native twins of every other bridge tool (12 `linear_*`, 6 `workflow_*`): a generic `nativeBridgeTool` adapter generates fantasy schemas via the same jsonschema machinery the MCP SDK uses (field docs survive verbatim) and wraps the shared cwd-parameterized cores in mcp_linear.go/mcp_workflows.go. In-process sessions never attach the loopback bridge. |
+| `agent_tools_bridge.go`| Native twins of every other bridge tool (12 `linear_*`, 7 `workflow_*` incl. `workflow_copy`): a generic `nativeBridgeTool` adapter generates fantasy schemas via the same jsonschema machinery the MCP SDK uses (field docs survive verbatim) and wraps the shared cwd-parameterized cores in mcp_linear.go/mcp_workflows.go. In-process sessions never attach the loopback bridge. |
 | `agent_memory.go`      | Memory recall injection: session-start recall appended to the system prompt (once, byte-stable), per-prompt recall appended to the wire prompt, and `memoryAwareTool` wrapping read/edit/write with a per-file recall footer. All no-op when the memory service is closed. |
 | `agent_tools_mcp.go`   | MCP client v2 (`mcpManager`/`mcpServerConn`): per-session manager over stdio/http/sse transports (official go-sdk v1.6.1), lazy ping-and-rebuild before every call + one renew-and-retry, `tools/list_changed` → live toolset refresh, MCP elicitation → ask's question modal (form mode: enum/boolean/free-form, typed answers; URL mode + headless decline), image tool-results as real media when the model has vision. Tools are `mcp__<server>__<tool>`. |
 | `mcp_servers.go`       | User-facing MCP server config: `mcpServers` maps (user-global + per-project) merged over project-root `.mcp.json` (claude-code convention), `${VAR}`/`${VAR:-default}` expansion, per-server type inference, timeout, enabled/disabled tool filters, Disabled tombstones. |
@@ -88,6 +88,7 @@ One `package main`, one file per concern.
 | `kitty_diacritics.go`  | The canonical 297-entry Kitty row/column diacritic table.               |
 | `ask_question.go`      | Question modal state, rendering, navigation, submit/cancel flow.        |
 | `workflows.go`         | Workflow runtime tracker singleton + persistence helpers + status broadcast. |
+| `workflow_store.go`    | Two-scope workflow persistence: user (ask.json) + repo (`<root>/.ask/workflows/*.json`, committed), merged repo-first listing, ambiguity-strict name resolution, dir sync on save, cross-scope copy. |
 | `workflows_screen.go`  | Workflows builder screen — list/steps/step editor levels with multi-line prompt textarea. |
 | `workflows_picker.go`  | Small centred modal popped on `f` (issues) / `Ctrl+F` (chat) to pick which workflow to run. |
 | `workflows_run.go`     | Step runner: prompt assembly, advance-on-turn-complete, finalise on done/failed. |
@@ -125,7 +126,8 @@ exercised by the user; code alone won't catch layout regressions.
 | `update_test.go`           | `model.Update` dispatcher behavior via `fakeProvider`.           |
 | `tool_output_test.go`      | Tool-call rendering — phrase headline (short mode = phrase only, full = phrase + param rows, no duplicate description row), payload-description rejection heuristics (`toolCallPhrase`), `shortToolFields` native-lowercase-name coverage, tri-state cycling, result clamping. |
 | `workflows_test.go`        | Workflow tracker (markWorking/markFinal/lookup/clear), schema round-trip (incl. loop steps), prompt assembly, glyph table, `effectiveMaxIterations`. |
-| `workflows_screen_test.go` | Workflows builder state machine — add/rename/delete persistence + edit-while-running guard + loop tree (`stepRows`, add loop/inner, edit max-iters, delete loop/child). |
+| `workflows_screen_test.go` | Workflows builder state machine — add/rename/delete persistence + edit-while-running guard + loop tree (`stepRows`, add loop/inner, edit max-iters, delete loop/child) + scope copy/move (`c`/`s`, conflict auto-suffix, running guard, per-scope rename). |
+| `workflow_store_test.go`   | Two-scope store — filename sanitization, user/repo round-trip (Scope never persisted), dir sync rename/delete, junk-file skip, repo-first resolution + ambiguity errors, cross-scope copy (conflict → new_name, deep clone), projectRoot anchoring. |
 | `workflows_picker_test.go` | Picker open/navigate/Enter dispatches `spawnWorkflowTabMsg`. |
 | `workflows_run_test.go`    | Step runner — advance (incl. linear no-`end_turn` re-prompt), finalise, fail, idempotent finalise, unknown-provider rejection; loop decision table (iterate / tail break / non-tail break / non-tail proceed / non-tail + tail no-`end_turn` re-prompt / tail no-decision re-prompt / max-iter soft-exit), enter-loop, bounded context, `stepSummaryLine`, `end_turn` signal handling. |
 | `issues_workflow_test.go`  | `f` keybind dispatch on the issues screen — toast / picker / focus-existing-tab. |
@@ -139,7 +141,7 @@ exercised by the user; code alone won't catch layout regressions.
 | `agent_tools_mcp_test.go`  | MCP manager against in-process `mcp.Server`s over httptest — attach/skip/schema/IsError, image results (placeholder vs media by vision), unreachable-server skip, `tools/list_changed` live refresh, dead-server graceful error, elicitation schema mapping + accept/cancel/headless/url flows. |
 | `mcp_servers_test.go`      | Server-config resolution — effectiveType inference, `${VAR}`/`${VAR:-default}` expansion (copy semantics), 3-layer merge (.mcp.json ← global ← project) incl. Disabled tombstones + junk drops + stable order, tool allow/deny filters. |
 | `mcp_oauth_test.go`        | OAuth plumbing — token path/0600 round-trip, persisting token source saves on change, callback listener captures code/state via swapped browser opener, stored-valid-token served without a flow, fresh handler yields nil source (transport 401s into Authorize). |
-| `agent_tools_bridge_test.go`| Native bridge twins — full 18-tool coverage check, jsonschema field-doc fidelity, description-phrase injection (+ payload-description non-clobber), linear gate error, malformed input, workflow CRUD round-trip against project config, workflow_run dispatch via swapped `mcpSpawnWorkflowTab`, loopback never in `agentSessionMCPServers`. |
+| `agent_tools_bridge_test.go`| Native bridge twins — full 19-tool coverage check, jsonschema field-doc fidelity, description-phrase injection (+ payload-description non-clobber), linear gate error, malformed input, workflow CRUD round-trip against project config, workflow_run dispatch via swapped `mcpSpawnWorkflowTab`, loopback never in `agentSessionMCPServers`. |
 | `skills_test.go`           | Skills — discovery validation (bad name / dir mismatch / no description skipped) + project-over-global precedence, trigger block (progressive disclosure, hidden skills), `/name args` expansion incl. user-invocable gating, frontmatter parser, ProbeInit → slash entries. |
 | `agent_subagents_test.go`  | Subagents — def discovery/precedence/field parsing, tool grant sets, spec registry, claude model aliases, cross-provider model resolution (swapped LM var), task tool: named agent runs on the pinned provider w/ def prompt + report tail, background job lifecycle (bgTask signals, job_output), default researcher unchanged, `/skill` expansion reaches the wire. |
 | `agent_session_test.go`    | Store round-trip (typed parts survive), CreatedAt preservation, list ordering, LoadHistory tool-output modes, Materialize. |
@@ -293,21 +295,45 @@ needs without branching on the kind. Adding a third entry path
 (PR review against a draft? scheduled run against a saved query?)
 is one new constant + a switch arm per accessor.
 
-### Schema
+### Schema & scopes
 
-`projectConfig.Workflows` lives alongside `projectConfig.Issues` in
-`~/.config/ask/ask.json`. The shape is intentionally generic — the
-runtime takes a `workflowSource` for the prompt reference (issue or
-chat snapshot), but nothing about the broader pipeline machinery is
-bound to issues. Future surfaces (PRs, scheduled tasks, …) plug into
-the same builder / runner.
+A workflow lives in one of two scopes (`workflow_store.go`):
+
+- **user** — `projectConfig.Workflows` alongside `projectConfig.Issues`
+  in `~/.config/ask/ask.json` (machine-local, the pre-scope default).
+- **repo** — one JSON file per workflow under
+  `<projectRoot>/.ask/workflows/` (committed, shared with the team).
+  `projectRoot` walks to the main checkout, so every worktree/subdir
+  sees the same files — consistent with projectConfig tenancy.
+
+`workflowDef.Scope` is runtime-only (`json:"-"`) — the storage
+location IS the scope, so both on-disk shapes are byte-identical to
+pre-scope workflows. Every read merges repo-first (`listAllWorkflows`;
+name-only lookup prefers repo, the same project-wins convention as
+skills/subagents). Names are unique *within* a scope; the same name in
+both scopes is legal — UI surfaces show a scope tag, and the mutating
+tools refuse to guess (`resolveWorkflowByName` errors on ambiguity
+without an explicit scope). All mutations funnel through
+`mutateWorkflows`/`saveAllWorkflows`, which split the merged list by
+scope and sync the repo dir (write changed files, remove stale ones —
+rename = delete+add, VCS-friendly) under the config lock.
+`copyWorkflowDef` copies across scopes (or duplicates within one);
+target-name conflicts error and demand a `new_name` (the builder
+auto-suffixes `-2`, `-3`… instead). Malformed/duplicate committed
+files are skipped with a debugLog, never fatal.
+
+The shape is intentionally generic — the runtime takes a
+`workflowSource` for the prompt reference (issue or chat snapshot),
+but nothing about the broader pipeline machinery is bound to issues.
+Future surfaces (PRs, scheduled tasks, …) plug into the same builder
+/ runner.
 
 | Type | Purpose |
 |------|---------|
-| `workflowsConfig{Items, Sessions}` | Per-project block. |
-| `workflowDef{Name, Steps}` | One named pipeline. |
+| `workflowsConfig{Items, Sessions}` | Per-project block (user scope + run records). |
+| `workflowDef{Name, Steps, Scope}` | One named pipeline; Scope is runtime-only. |
 | `workflowStep{Name, Kind, …}` | Tagged union. `Kind==""` is an agent step (`Provider`/`Model`/`Prompt`, a fresh one-shot session at run time). `Kind=="loop"` is a loop container (`Steps` inner agent steps, `MaxIterations`, `ExitCondition`). Empty `Kind` keeps pre-loop workflows byte-identical on disk. |
-| `workflowSession{Workflow, StepIndex, Status, StartedAt, UpdatedAt}` | Disk-persisted run record — terminal statuses only. |
+| `workflowSession{Workflow, StepIndex, Status, StartedAt, UpdatedAt}` | Disk-persisted run record — terminal statuses only, always user-side (machine-local). |
 
 Loops are exactly one layer deep — a loop's inner `Steps` must all be agent steps. The on-disk `workflowStep` is recursive, but the MCP wire views use a distinct non-recursive `workflowInnerStepView` for inner steps (the SDK's JSON-schema generator rejects self-referential types, and the separate type makes a nested loop structurally inexpressible). Enforced by `validateSteps` and by the builder never offering "+ New loop" inside a loop.
 
@@ -510,7 +536,7 @@ with `/config`. Three navigation levels:
 
 | Level | Cursor over | Keys |
 |-------|------------|------|
-| List (left pane) | workflows + "+ New" | enter open / r rename / d delete / esc back to ask |
+| List (left pane) | workflows (with repo/user scope tags) + "+ New" | enter open / r rename / c copy to other scope / s move scope / d delete / esc back to ask |
 | Steps (right pane) | the step tree + affordances | enter edit/create / d delete / tab focus left / esc list |
 | Step (right pane) | agent: Name/Provider/Model/Prompt · loop: Name/Max iters/Exit | enter edits the field / esc back to steps |
 

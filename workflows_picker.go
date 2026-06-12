@@ -112,6 +112,7 @@ func (m model) renderWorkflowPicker() string {
 			default:
 				meta = lipgloss.NewStyle().Render(stepsCount(len(w.Steps)))
 			}
+			meta += " · " + workflowScopeTag(w.Scope)
 			line := label + "    " + dimStyle.Render(meta)
 			if i == pkr.Cursor {
 				line = "▸ " + label + "    " + dimStyle.Render(meta)

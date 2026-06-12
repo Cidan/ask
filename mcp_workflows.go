@@ -53,15 +53,17 @@ type workflowListStepView struct {
 
 type workflowListItem struct {
 	Name  string                 `json:"name" jsonschema:"workflow name"`
+	Scope string                 `json:"scope" jsonschema:"where the workflow is stored: 'user' (~/.config/ask/ask.json, machine-local) or 'repo' (<root>/.ask/workflows/, committed and shared)"`
 	Steps []workflowListStepView `json:"steps" jsonschema:"steps in execution order; prompts omitted to keep the listing small"`
 }
 
 type workflowListOutput struct {
-	Workflows []workflowListItem `json:"workflows" jsonschema:"all workflows defined for the current project"`
+	Workflows []workflowListItem `json:"workflows" jsonschema:"all workflows visible to the current project, repo scope first"`
 }
 
 type workflowGetInput struct {
-	Name string `json:"name" jsonschema:"workflow name"`
+	Name  string `json:"name" jsonschema:"workflow name"`
+	Scope string `json:"scope,omitempty" jsonschema:"optional scope to read from ('user' or 'repo'); empty resolves repo first, then user"`
 }
 
 // workflowInnerStepView is an agent step inside a loop, in the full
@@ -92,6 +94,7 @@ type workflowStepView struct {
 
 type workflowDefView struct {
 	Name  string             `json:"name"`
+	Scope string             `json:"scope" jsonschema:"where the workflow is stored: 'user' or 'repo'"`
 	Steps []workflowStepView `json:"steps"`
 }
 
@@ -100,7 +103,8 @@ type workflowGetOutput struct {
 }
 
 type workflowCreateInput struct {
-	Name  string             `json:"name" jsonschema:"new workflow name; must be unique within this project"`
+	Name  string             `json:"name" jsonschema:"new workflow name; must be unique within the chosen scope"`
+	Scope string             `json:"scope,omitempty" jsonschema:"where to store the workflow: 'user' (default; machine-local ask.json) or 'repo' (<root>/.ask/workflows/, committed and shared with the team)"`
 	Steps []workflowStepView `json:"steps,omitempty" jsonschema:"steps to create the workflow with; may be empty"`
 }
 
@@ -110,7 +114,8 @@ type workflowCreateOutput struct {
 
 type workflowEditInput struct {
 	Name    string              `json:"name" jsonschema:"existing workflow name to edit"`
-	NewName string              `json:"new_name,omitempty" jsonschema:"optional new name; must be unique within this project"`
+	Scope   string              `json:"scope,omitempty" jsonschema:"scope holding the workflow ('user' or 'repo'); required when the name exists in both scopes"`
+	NewName string              `json:"new_name,omitempty" jsonschema:"optional new name; must be unique within the workflow's scope"`
 	Steps   *[]workflowStepView `json:"steps,omitempty" jsonschema:"if provided, replaces the entire steps array (full-replace semantics); omit to leave steps unchanged"`
 }
 
@@ -119,15 +124,28 @@ type workflowEditOutput struct {
 }
 
 type workflowDeleteInput struct {
-	Name string `json:"name" jsonschema:"workflow name to delete"`
+	Name  string `json:"name" jsonschema:"workflow name to delete"`
+	Scope string `json:"scope,omitempty" jsonschema:"scope holding the workflow ('user' or 'repo'); required when the name exists in both scopes"`
 }
 
 type workflowDeleteOutput struct {
 	Deleted bool `json:"deleted" jsonschema:"true on success"`
 }
 
+type workflowCopyInput struct {
+	Name    string `json:"name" jsonschema:"workflow name to copy"`
+	Scope   string `json:"scope,omitempty" jsonschema:"scope holding the source ('user' or 'repo'); required when the name exists in both scopes"`
+	To      string `json:"to" jsonschema:"destination scope: 'user' (machine-local) or 'repo' (committed under <root>/.ask/workflows/)"`
+	NewName string `json:"new_name,omitempty" jsonschema:"optional name for the copy; required when the destination scope already has a workflow named after the source"`
+}
+
+type workflowCopyOutput struct {
+	Workflow workflowDefView `json:"workflow" jsonschema:"the new copy, in its destination scope"`
+}
+
 type workflowRunInput struct {
 	Name   string `json:"name" jsonschema:"workflow name to run"`
+	Scope  string `json:"scope,omitempty" jsonschema:"scope holding the workflow ('user' or 'repo'); required when the name exists in both scopes"`
 	Append string `json:"append,omitempty" jsonschema:"text appended after step 1's prompt as a Reference block; empty omits the block"`
 }
 
@@ -160,17 +178,19 @@ type endTurnSignalMsg struct {
 // ----- Tool descriptions -----
 
 const (
-	workflowListToolDescription = `List all workflows defined for the current project.
+	workflowListToolDescription = `List all workflows visible to the current project, from both scopes.
 
-Returns each workflow's name and its steps' (name, provider, model). Step prompts are omitted to keep the listing payload small — call workflow_get to see the full prompt for a specific workflow.`
+A workflow lives in one of two scopes: 'user' (machine-local, stored in ~/.config/ask/ask.json) or 'repo' (stored as one JSON file per workflow under <project root>/.ask/workflows/ — committed to the repo and shared with the team). Repo-scope workflows list first. The same name may exist in both scopes; each item's 'scope' field disambiguates.
+
+Returns each workflow's name, scope, and its steps' (name, provider, model). Step prompts are omitted to keep the listing payload small — call workflow_get to see the full prompt for a specific workflow.`
 
 	workflowGetToolDescription = `Get the full definition of a workflow including each step's prompt.
 
-Returns the workflow with all steps in execution order. Errors when the named workflow does not exist in the current project.`
+Pass scope ('user' or 'repo') to read a specific copy; with no scope the repo copy wins when the name exists in both. Errors when the named workflow does not exist.`
 
-	workflowCreateToolDescription = `Create a new workflow in the current project.
+	workflowCreateToolDescription = `Create a new workflow.
 
-The name must be non-empty and not collide with any existing workflow.
+The name must be non-empty and not collide with any existing workflow in the chosen scope. scope picks where it is stored: 'user' (default — machine-local ask.json) or 'repo' (one JSON file under <project root>/.ask/workflows/, committed and shared with the team).
 
 Each step is one of two kinds:
   - Agent step (kind omitted or ""): name required; provider must be a registered agent CLI (claude, codex, ...); model optional (empty = provider default); prompt may be empty.
@@ -178,23 +198,31 @@ Each step is one of two kinds:
 
 A loop repeats its inner steps until an inner agent ends a turn with the end_turn tool's decision="break" (or maxIterations is reached). Every step must call end_turn with a summary; the final inner step of each iteration must additionally register a decision (continue/break). The exitCondition text is injected into the inner prompts to guide that call.
 
-Errors on duplicate name, empty step name, unknown provider, a nested loop, or a loop with no inner steps.`
+Errors on duplicate name within the scope, empty step name, unknown provider, a nested loop, or a loop with no inner steps.`
 
-	workflowEditToolDescription = `Edit an existing workflow.
+	workflowEditToolDescription = `Edit an existing workflow in place (it stays in its scope).
 
-Pass new_name to rename. Pass steps to replace the entire steps array (full-replace semantics — no per-step CRUD). Omit a field to leave it unchanged. Steps follow the same agent/loop shape documented on workflow_create.
+Pass new_name to rename. Pass steps to replace the entire steps array (full-replace semantics — no per-step CRUD). Omit a field to leave it unchanged. Steps follow the same agent/loop shape documented on workflow_create. When the name exists in both scopes you must pass scope to pick which copy to edit; use workflow_copy to move a workflow between scopes.
 
-Errors when the workflow doesn't exist, when new_name collides with another workflow, when a step is malformed (empty name, unknown provider, nested loop, empty loop), or when the workflow is currently running anywhere in this process.`
+Errors when the workflow doesn't exist, when the name is ambiguous across scopes and no scope was given, when new_name collides within the scope, when a step is malformed (empty name, unknown provider, nested loop, empty loop), or when the workflow is currently running anywhere in this process.`
 
-	workflowDeleteToolDescription = `Delete a workflow from the current project.
+	workflowDeleteToolDescription = `Delete a workflow.
 
-Errors when the workflow doesn't exist or is currently running.`
+When the name exists in both scopes you must pass scope to pick which copy to delete. Errors when the workflow doesn't exist, the name is ambiguous, or the workflow is currently running.`
+
+	workflowCopyToolDescription = `Copy a workflow between scopes (or duplicate it within one).
+
+'to' is the destination scope: 'repo' makes a workflow repo-local (a committed JSON file under <project root>/.ask/workflows/ that the whole team can use), 'user' copies it into the machine-local ask.json. The source is untouched — to move, copy then workflow_delete the original.
+
+Naming conflicts: when the destination scope already has a workflow by that name, the call errors and you must pass new_name. new_name is also how you duplicate within the same scope.
+
+Errors when the source doesn't exist, the source name is ambiguous across scopes and no scope was given, or the destination name is taken.`
 
 	workflowRunToolDescription = `Dispatch a workflow run in the background.
 
-Fire-and-forget: returns immediately with the session key. The workflow runs in a fresh tab; the user can switch to it with the tab bar to watch progress. Pass append to thread an arbitrary text blob into step 1's user prompt under a "Reference:" header; omit it to run the workflow with no extra context.
+Fire-and-forget: returns immediately with the session key. The workflow runs in a fresh tab; the user can switch to it with the tab bar to watch progress. Pass append to thread an arbitrary text blob into step 1's user prompt under a "Reference:" header; omit it to run the workflow with no extra context. When the name exists in both scopes pass scope to pick which copy runs.
 
-Errors when the workflow doesn't exist, when it has no steps, or when the UI isn't ready to spawn a tab.`
+Errors when the workflow doesn't exist, the name is ambiguous across scopes, when it has no steps, or when the UI isn't ready to spawn a tab.`
 
 	endTurnToolDescription = `Report the end of your turn for the current workflow step. REQUIRED on every step.
 
@@ -425,30 +453,32 @@ func innerStepsDefToListView(in []workflowStep) []workflowInnerListStepView {
 func workflowDefToView(w workflowDef) workflowDefView {
 	return workflowDefView{
 		Name:  w.Name,
+		Scope: workflowScopeTag(w.Scope),
 		Steps: stepsDefToView(w.Steps),
 	}
 }
 
+// workflowItemsForCwd returns the merged repo+user workflow list,
+// propagating an unreadable ask.json as an error (the tool layer
+// reports it; pure-UI paths use listAllWorkflows and degrade
+// silently instead).
 func workflowItemsForCwd(cwd string) ([]workflowDef, error) {
-	cfg, err := loadConfig()
+	user, err := loadUserWorkflows(cwd)
 	if err != nil {
 		return nil, err
 	}
-	pc := loadProjectConfig(cfg, cwd)
-	return pc.Workflows.Items, nil
+	return append(loadRepoWorkflows(cwd), user...), nil
 }
 
-func workflowByNameForCwd(cwd, name string) (workflowDef, bool, error) {
-	items, err := workflowItemsForCwd(cwd)
+// resolveWorkflowResult adapts resolveWorkflowByName's error shapes
+// to tool results: lookup/ambiguity/scope errors become IsError
+// results the LLM can react to.
+func resolveWorkflowResult(cwd, name, scope string) (workflowDef, *mcp.CallToolResult) {
+	w, err := resolveWorkflowByName(cwd, name, scope)
 	if err != nil {
-		return workflowDef{}, false, err
+		return workflowDef{}, errResult(err.Error())
 	}
-	for _, w := range items {
-		if w.Name == name {
-			return w, true, nil
-		}
-	}
-	return workflowDef{}, false, nil
+	return w, nil
 }
 
 // requireWorkflowCwd returns an error result when the tenant cwd is
@@ -477,6 +507,7 @@ func workflowListCore(cwd string, _ workflowListInput) (*mcp.CallToolResult, wor
 	for _, w := range items {
 		out.Workflows = append(out.Workflows, workflowListItem{
 			Name:  w.Name,
+			Scope: workflowScopeTag(w.Scope),
 			Steps: stepsDefToListView(w.Steps),
 		})
 	}
@@ -491,15 +522,21 @@ func workflowGetCore(cwd string, in workflowGetInput) (*mcp.CallToolResult, work
 	if name == "" {
 		return errResult("name is required"), workflowGetOutput{}, nil
 	}
-	w, ok, err := workflowByNameForCwd(cwd, name)
-	if err != nil {
-		return nil, workflowGetOutput{}, fmt.Errorf("load workflows: %w", err)
+	// Reads are forgiving on ambiguity: with no explicit scope the
+	// repo copy wins (project-wins, same as the picker / runner).
+	scope := in.Scope
+	if scope != "" {
+		if _, err := normalizeWorkflowScope(scope); err != nil {
+			return errResult(err.Error()), workflowGetOutput{}, nil
+		}
+		scope, _ = normalizeWorkflowScope(scope)
 	}
+	w, ok := findWorkflow(cwd, name, scope)
 	if !ok {
 		return errResult(fmt.Sprintf("workflow %q not found", name)), workflowGetOutput{}, nil
 	}
 	out := workflowGetOutput{Workflow: workflowDefToView(w)}
-	return okResult(fmt.Sprintf("workflow %q has %d step(s)", w.Name, len(w.Steps))), out, nil
+	return okResult(fmt.Sprintf("workflow %q (%s scope) has %d step(s)", w.Name, workflowScopeTag(w.Scope), len(w.Steps))), out, nil
 }
 
 func workflowCreateCore(cwd string, in workflowCreateInput) (*mcp.CallToolResult, workflowCreateOutput, error) {
@@ -510,34 +547,31 @@ func workflowCreateCore(cwd string, in workflowCreateInput) (*mcp.CallToolResult
 	if name == "" {
 		return errResult("name is required"), workflowCreateOutput{}, nil
 	}
+	scope, err := normalizeWorkflowScope(in.Scope)
+	if err != nil {
+		return errResult(err.Error()), workflowCreateOutput{}, nil
+	}
 	if err := validateSteps(in.Steps); err != nil {
 		return errResult(err.Error()), workflowCreateOutput{}, nil
 	}
-	def := workflowDef{Name: name, Steps: stepsViewToDef(in.Steps)}
+	def := workflowDef{Name: name, Scope: scope, Steps: stepsViewToDef(in.Steps)}
 
 	var collision bool
-	if err := withConfigLock(func() error {
-		cfg, err := loadConfig()
-		if err != nil {
-			return err
-		}
-		pc := loadProjectConfig(cfg, cwd)
-		for _, w := range pc.Workflows.Items {
-			if w.Name == name {
+	if err := mutateWorkflows(cwd, func(items []workflowDef) ([]workflowDef, error) {
+		for _, w := range items {
+			if w.Name == name && workflowScopeTag(w.Scope) == scope {
 				collision = true
-				return nil
+				return items, nil
 			}
 		}
-		pc.Workflows.Items = append(pc.Workflows.Items, def)
-		cfg = upsertProjectConfig(cfg, cwd, pc)
-		return saveConfig(cfg)
+		return append(items, def), nil
 	}); err != nil {
 		return nil, workflowCreateOutput{}, fmt.Errorf("save: %w", err)
 	}
 	if collision {
-		return errResult(fmt.Sprintf("workflow %q already exists", name)), workflowCreateOutput{}, nil
+		return errResult(fmt.Sprintf("workflow %q already exists in %s scope", name, scope)), workflowCreateOutput{}, nil
 	}
-	return okResult(fmt.Sprintf("workflow %q created with %d step(s)", def.Name, len(def.Steps))),
+	return okResult(fmt.Sprintf("workflow %q created in %s scope with %d step(s)", def.Name, scope, len(def.Steps))),
 		workflowCreateOutput{Workflow: workflowDefToView(def)}, nil
 }
 
@@ -562,6 +596,14 @@ func workflowEditCore(cwd string, in workflowEditInput) (*mcp.CallToolResult, wo
 		}
 	}
 
+	// Resolve the target up front: explicit scope wins, ambiguous
+	// names without one are an error (mutations never guess).
+	target, errRes := resolveWorkflowResult(cwd, name, in.Scope)
+	if errRes != nil {
+		return errRes, workflowEditOutput{}, nil
+	}
+	scope := workflowScopeTag(target.Scope)
+
 	// Editing a workflow that's running anywhere in the process is
 	// blocked — same gate the builder UI uses. Without this, an MCP
 	// edit landing mid-run would mutate the workflowDef in place
@@ -585,37 +627,32 @@ func workflowEditCore(cwd string, in workflowEditInput) (*mcp.CallToolResult, wo
 		collide  bool
 		updated  workflowDef
 	)
-	if err := withConfigLock(func() error {
-		cfg, err := loadConfig()
-		if err != nil {
-			return err
-		}
-		pc := loadProjectConfig(cfg, cwd)
+	if err := mutateWorkflows(cwd, func(items []workflowDef) ([]workflowDef, error) {
 		idx := -1
-		for i, w := range pc.Workflows.Items {
-			if w.Name == name {
+		for i, w := range items {
+			if w.Name == name && workflowScopeTag(w.Scope) == scope {
 				idx = i
 				break
 			}
 		}
 		if idx < 0 {
 			notFound = true
-			return nil
+			return items, nil
 		}
 		if newName != name {
-			for i, w := range pc.Workflows.Items {
-				if i != idx && w.Name == newName {
+			for i, w := range items {
+				if i != idx && w.Name == newName && workflowScopeTag(w.Scope) == scope {
 					collide = true
-					return nil
+					return items, nil
 				}
 			}
 		}
-		w := pc.Workflows.Items[idx]
+		w := items[idx]
 		w.Name = newName
 		if in.Steps != nil {
 			w.Steps = stepsViewToDef(*in.Steps)
 		}
-		pc.Workflows.Items[idx] = w
+		items[idx] = w
 		updated = w
 		// Renamed workflows leave any disk session record under the
 		// OLD name. The session key for issue-sourced workflows is
@@ -624,18 +661,17 @@ func workflowEditCore(cwd string, in workflowEditInput) (*mcp.CallToolResult, wo
 		// `Workflow` field on the disk session would still mention
 		// the old name. That's acceptable for v1; the next terminal
 		// status write will overwrite with the new name.
-		cfg = upsertProjectConfig(cfg, cwd, pc)
-		return saveConfig(cfg)
+		return items, nil
 	}); err != nil {
 		return nil, workflowEditOutput{}, fmt.Errorf("save: %w", err)
 	}
 	if notFound {
-		return errResult(fmt.Sprintf("workflow %q not found", name)), workflowEditOutput{}, nil
+		return errResult(fmt.Sprintf("workflow %q not found in %s scope", name, scope)), workflowEditOutput{}, nil
 	}
 	if collide {
-		return errResult(fmt.Sprintf("another workflow already uses the name %q", newName)), workflowEditOutput{}, nil
+		return errResult(fmt.Sprintf("another workflow in %s scope already uses the name %q", scope, newName)), workflowEditOutput{}, nil
 	}
-	return okResult(fmt.Sprintf("workflow %q updated", updated.Name)),
+	return okResult(fmt.Sprintf("workflow %q updated (%s scope)", updated.Name, scope)),
 		workflowEditOutput{Workflow: workflowDefToView(updated)}, nil
 }
 
@@ -651,39 +687,53 @@ func workflowDeleteCore(cwd string, in workflowDeleteInput) (*mcp.CallToolResult
 	if _, running := active[name]; running {
 		return errResult(fmt.Sprintf("workflow %q is currently running and cannot be deleted", name)), workflowDeleteOutput{}, nil
 	}
+	target, errRes := resolveWorkflowResult(cwd, name, in.Scope)
+	if errRes != nil {
+		return errRes, workflowDeleteOutput{}, nil
+	}
+	scope := workflowScopeTag(target.Scope)
 
 	var notFound bool
-	if err := withConfigLock(func() error {
-		cfg, err := loadConfig()
-		if err != nil {
-			return err
-		}
-		pc := loadProjectConfig(cfg, cwd)
+	if err := mutateWorkflows(cwd, func(items []workflowDef) ([]workflowDef, error) {
 		idx := -1
-		for i, w := range pc.Workflows.Items {
-			if w.Name == name {
+		for i, w := range items {
+			if w.Name == name && workflowScopeTag(w.Scope) == scope {
 				idx = i
 				break
 			}
 		}
 		if idx < 0 {
 			notFound = true
-			return nil
+			return items, nil
 		}
-		pc.Workflows.Items = append(pc.Workflows.Items[:idx], pc.Workflows.Items[idx+1:]...)
-		if len(pc.Workflows.Items) == 0 {
-			pc.Workflows.Items = nil
-		}
-		cfg = upsertProjectConfig(cfg, cwd, pc)
-		return saveConfig(cfg)
+		return append(items[:idx], items[idx+1:]...), nil
 	}); err != nil {
 		return nil, workflowDeleteOutput{}, fmt.Errorf("save: %w", err)
 	}
 	if notFound {
-		return errResult(fmt.Sprintf("workflow %q not found", name)), workflowDeleteOutput{}, nil
+		return errResult(fmt.Sprintf("workflow %q not found in %s scope", name, scope)), workflowDeleteOutput{}, nil
 	}
-	return okResult(fmt.Sprintf("workflow %q deleted", name)),
+	return okResult(fmt.Sprintf("workflow %q deleted from %s scope", name, scope)),
 		workflowDeleteOutput{Deleted: true}, nil
+}
+
+func workflowCopyCore(cwd string, in workflowCopyInput) (*mcp.CallToolResult, workflowCopyOutput, error) {
+	if errRes := requireWorkflowCwd(cwd); errRes != nil {
+		return errRes, workflowCopyOutput{}, nil
+	}
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		return errResult("name is required"), workflowCopyOutput{}, nil
+	}
+	if strings.TrimSpace(in.To) == "" {
+		return errResult("to is required: pass 'user' or 'repo'"), workflowCopyOutput{}, nil
+	}
+	dup, err := copyWorkflowDef(cwd, name, in.Scope, in.To, in.NewName)
+	if err != nil {
+		return errResult(err.Error()), workflowCopyOutput{}, nil
+	}
+	return okResult(fmt.Sprintf("workflow %q copied to %s scope as %q", name, workflowScopeTag(dup.Scope), dup.Name)),
+		workflowCopyOutput{Workflow: workflowDefToView(dup)}, nil
 }
 
 func workflowRunCore(cwd string, tabID int, in workflowRunInput) (*mcp.CallToolResult, workflowRunOutput, error) {
@@ -694,12 +744,9 @@ func workflowRunCore(cwd string, tabID int, in workflowRunInput) (*mcp.CallToolR
 	if name == "" {
 		return errResult("name is required"), workflowRunOutput{}, nil
 	}
-	w, ok, err := workflowByNameForCwd(cwd, name)
-	if err != nil {
-		return nil, workflowRunOutput{}, fmt.Errorf("load workflows: %w", err)
-	}
-	if !ok {
-		return errResult(fmt.Sprintf("workflow %q not found", name)), workflowRunOutput{}, nil
+	w, errRes := resolveWorkflowResult(cwd, name, in.Scope)
+	if errRes != nil {
+		return errRes, workflowRunOutput{}, nil
 	}
 	if len(w.Steps) == 0 {
 		return errResult(fmt.Sprintf("workflow %q has no steps", name)), workflowRunOutput{}, nil

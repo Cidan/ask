@@ -47,6 +47,10 @@ func (b workflowTestTenant) workflowRunTool(_ context.Context, _ *mcp.CallToolRe
 	return workflowRunCore(b.cwd, b.tabID, in)
 }
 
+func (b workflowTestTenant) workflowCopyTool(_ context.Context, _ *mcp.CallToolRequest, in workflowCopyInput) (*mcp.CallToolResult, workflowCopyOutput, error) {
+	return workflowCopyCore(b.cwd, in)
+}
+
 // newWorkflowMCPTestBridge stages a tenant bound to a tmp HOME + a
 // project cwd inside it, with the fake provider registered so
 // `validateProviderID` accepts the "fake" id. Restores the provider
@@ -1122,5 +1126,151 @@ func TestValidateSteps_LoopRules(t *testing.T) {
 	}
 	if err := validateSteps([]workflowStepView{{Name: "x", Kind: "bogus"}}); err == nil {
 		t.Error("an unknown step kind should be rejected")
+	}
+}
+
+// ----- scopes -----
+
+// TestWorkflowTools_ScopedLifecycle runs the full two-scope story
+// through the tool cores: create in repo scope, cross-scope duplicate
+// names, ambiguity errors on mutation, scoped edit/delete, copy with
+// conflict handling, and scope tags in list/get output.
+func TestWorkflowTools_ScopedLifecycle(t *testing.T) {
+	b, cwd := newWorkflowMCPTestBridge(t, 1)
+	resetWorkflowTrackerForTest()
+	ctx := context.Background()
+
+	// Create one per scope under the same name.
+	res, _, err := b.workflowCreateTool(ctx, newCallToolReq(), workflowCreateInput{
+		Name: "review", Scope: "repo",
+		Steps: []workflowStepView{{Name: "r-step", Provider: "fake"}},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("repo create: err=%v res=%+v", err, res)
+	}
+	if _, statErr := os.Stat(filepath.Join(cwd, ".ask", "workflows", "review.json")); statErr != nil {
+		t.Fatalf("repo create must write the file: %v", statErr)
+	}
+	res, _, err = b.workflowCreateTool(ctx, newCallToolReq(), workflowCreateInput{
+		Name:  "review", // no scope → user; cross-scope duplicate is legal
+		Steps: []workflowStepView{{Name: "u-step", Provider: "fake"}},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("user create with cross-scope duplicate name: err=%v res=%+v", err, res)
+	}
+	// Same-scope duplicate is not.
+	res, _, _ = b.workflowCreateTool(ctx, newCallToolReq(), workflowCreateInput{Name: "review", Scope: "repo"})
+	if res == nil || !res.IsError {
+		t.Error("same-scope duplicate create must error")
+	}
+	// Unknown scope rejected.
+	res, _, _ = b.workflowCreateTool(ctx, newCallToolReq(), workflowCreateInput{Name: "x", Scope: "global"})
+	if res == nil || !res.IsError {
+		t.Error("unknown scope must error")
+	}
+
+	// List shows both with scope tags, repo first.
+	_, listOut, err := b.workflowListTool(ctx, newCallToolReq(), workflowListInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listOut.Workflows) != 2 || listOut.Workflows[0].Scope != "repo" || listOut.Workflows[1].Scope != "user" {
+		t.Fatalf("list scopes wrong: %+v", listOut.Workflows)
+	}
+
+	// Get without scope prefers the repo copy; explicit scope picks.
+	_, getOut, _ := b.workflowGetTool(ctx, newCallToolReq(), workflowGetInput{Name: "review"})
+	if getOut.Workflow.Scope != "repo" || getOut.Workflow.Steps[0].Name != "r-step" {
+		t.Errorf("get should prefer repo; got %+v", getOut.Workflow)
+	}
+	_, getOut, _ = b.workflowGetTool(ctx, newCallToolReq(), workflowGetInput{Name: "review", Scope: "user"})
+	if getOut.Workflow.Scope != "user" || getOut.Workflow.Steps[0].Name != "u-step" {
+		t.Errorf("scoped get wrong: %+v", getOut.Workflow)
+	}
+
+	// Mutations on an ambiguous name demand a scope.
+	res, _, _ = b.workflowEditTool(ctx, newCallToolReq(), workflowEditInput{Name: "review", NewName: "review2"})
+	if res == nil || !res.IsError || !strings.Contains(mcpResultText(res), "scope") {
+		t.Errorf("ambiguous edit must demand scope; got %+v", res)
+	}
+	res, _, _ = b.workflowDeleteTool(ctx, newCallToolReq(), workflowDeleteInput{Name: "review"})
+	if res == nil || !res.IsError {
+		t.Error("ambiguous delete must demand scope")
+	}
+	res, _, _ = b.workflowRunTool(ctx, newCallToolReq(), workflowRunInput{Name: "review"})
+	if res == nil || !res.IsError {
+		t.Error("ambiguous run must demand scope")
+	}
+
+	// Scoped edit touches only its copy.
+	res, editOut, err := b.workflowEditTool(ctx, newCallToolReq(), workflowEditInput{
+		Name: "review", Scope: "user", NewName: "review-local",
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("scoped edit: err=%v res=%+v", err, res)
+	}
+	if editOut.Workflow.Scope != "user" || editOut.Workflow.Name != "review-local" {
+		t.Errorf("scoped edit output wrong: %+v", editOut.Workflow)
+	}
+	if _, ok := findWorkflow(cwd, "review", workflowScopeRepo); !ok {
+		t.Error("repo copy must survive a user-scope rename")
+	}
+
+	// Copy repo → user (no conflict now), then conflict + new_name.
+	res, copyOut, err := b.workflowCopyTool(ctx, newCallToolReq(), workflowCopyInput{Name: "review", To: "user"})
+	if err != nil || res.IsError {
+		t.Fatalf("copy: err=%v res=%v", err, mcpResultText(res))
+	}
+	if copyOut.Workflow.Scope != "user" || copyOut.Workflow.Name != "review" {
+		t.Errorf("copy output wrong: %+v", copyOut.Workflow)
+	}
+	res, _, _ = b.workflowCopyTool(ctx, newCallToolReq(), workflowCopyInput{Name: "review", Scope: "repo", To: "user"})
+	if res == nil || !res.IsError || !strings.Contains(mcpResultText(res), "new_name") {
+		t.Errorf("conflicting copy must demand new_name; got %v", mcpResultText(res))
+	}
+	res, copyOut, _ = b.workflowCopyTool(ctx, newCallToolReq(), workflowCopyInput{
+		Name: "review", Scope: "repo", To: "user", NewName: "review-fork",
+	})
+	if res.IsError || copyOut.Workflow.Name != "review-fork" {
+		t.Errorf("new_name copy failed: %v %+v", mcpResultText(res), copyOut.Workflow)
+	}
+	// Missing `to` is rejected.
+	res, _, _ = b.workflowCopyTool(ctx, newCallToolReq(), workflowCopyInput{Name: "review"})
+	if res == nil || !res.IsError {
+		t.Error("copy without `to` must error")
+	}
+
+	// Scoped delete removes the file and leaves the user copy.
+	res, delOut, err := b.workflowDeleteTool(ctx, newCallToolReq(), workflowDeleteInput{Name: "review", Scope: "repo"})
+	if err != nil || res.IsError || !delOut.Deleted {
+		t.Fatalf("scoped delete: err=%v res=%+v", err, res)
+	}
+	if _, statErr := os.Stat(filepath.Join(cwd, ".ask", "workflows", "review.json")); !os.IsNotExist(statErr) {
+		t.Error("repo file must be gone after scoped delete")
+	}
+	if _, ok := findWorkflow(cwd, "review", workflowScopeUser); !ok {
+		t.Error("user copy must survive a repo-scope delete")
+	}
+}
+
+// TestWorkflowRun_RepoScopedWorkflowDispatches pins that a workflow
+// living only in repo scope (a committed file, no ask.json entry) is
+// runnable end to end through workflow_run.
+func TestWorkflowRun_RepoScopedWorkflowDispatches(t *testing.T) {
+	b, cwd := newWorkflowMCPTestBridge(t, 7)
+	resetWorkflowTrackerForTest()
+	captured := installSpawnCaptor(t)
+	if err := saveAllWorkflows(cwd, []workflowDef{{
+		Name: "shared", Scope: workflowScopeRepo,
+		Steps: []workflowStep{{Name: "s", Provider: "fake"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	res, out, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "shared"})
+	if err != nil || res.IsError {
+		t.Fatalf("run: err=%v res=%v", err, mcpResultText(res))
+	}
+	if out.Workflow != "shared" || len(*captured) != 1 || (*captured)[0].Workflow.Name != "shared" {
+		t.Errorf("dispatch wrong: out=%+v captured=%+v", out, *captured)
 	}
 }
