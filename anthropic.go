@@ -17,6 +17,11 @@ const (
 	// for model ids the catalog doesn't know. Undershooting only makes
 	// compaction fire early; overshooting would blow past the API limit.
 	anthropicFallbackContextWindow = 200_000
+	// anthropicFallbackMaxOutputTokens is the per-turn output budget for
+	// model ids the catalog doesn't know. Every current Claude model
+	// accepts ≥64K; an id that caps lower fails with a visible 400
+	// instead of fantasy's silent 4096 truncation.
+	anthropicFallbackMaxOutputTokens = 32_000
 )
 
 // anthropicEffortOptions mirror the Messages API output_config.effort
@@ -134,6 +139,9 @@ var anthropicSpec = agentProviderSpec{
 	},
 	contextWindow: func(modelID string) int64 {
 		return catalogContextWindow(catwalk.InferenceProviderAnthropic, modelID, anthropicFallbackContextWindow)
+	},
+	maxOutputTokens: func(modelID string) int64 {
+		return catalogDefaultMaxTokens(catwalk.InferenceProviderAnthropic, modelID, anthropicFallbackMaxOutputTokens)
 	},
 	loadSettings: func(cfg askConfig) ProviderSettings {
 		return ProviderSettings{

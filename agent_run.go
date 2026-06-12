@@ -53,10 +53,11 @@ type agentSession struct {
 	toolsMu   sync.Mutex
 	tools     []fantasy.AgentTool
 
-	providerOpts  fantasy.ProviderOptions
-	temperature   *float64
-	contextWindow int64
-	modelID       string
+	providerOpts    fantasy.ProviderOptions
+	temperature     *float64
+	contextWindow   int64
+	maxOutputTokens int64
+	modelID         string
 
 	proc   *providerProc
 	ch     chan tea.Msg
@@ -290,6 +291,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		Files:           turn.files,
 		Messages:        history,
 		Temperature:     s.temperature,
+		MaxOutputTokens: maxOutputTokensPtr(s.maxOutputTokens),
 		ProviderOptions: s.providerOpts,
 		PrepareStep:     prepareStep,
 		OnReasoningStart: func(string, fantasy.ReasoningContent) error {
@@ -372,6 +374,21 @@ func (s *agentSession) runTurn(turn agentTurn) {
 
 	resultText := strings.TrimSpace(result.Response.Content.Text())
 
+	// A finish reason the model did not choose (max_tokens truncation,
+	// content filter, an unmapped stop like anthropic's refusal) ends
+	// the loop with no tool calls and no error — without surfacing it
+	// the turn is indistinguishable from a completed one and the
+	// session looks bricked.
+	if notice := agentAbnormalFinishNotice(result.Response.FinishReason); notice != "" {
+		s.emit(providerDoneMsg{res: providerResult{
+			SessionID: s.sessionID,
+			IsError:   true,
+			Result:    notice,
+		}})
+		s.emit(turnCompleteMsg{})
+		return
+	}
+
 	if shouldCompact {
 		s.compact(ctx, turn, result)
 	}
@@ -381,6 +398,31 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		Result:    resultText,
 	}})
 	s.emit(turnCompleteMsg{})
+}
+
+// maxOutputTokensPtr converts a session's output budget to the wire
+// field, nil when unset so providers keep their own defaults (some
+// OpenAI-compatible servers reject an explicit 0 — crush's guard).
+func maxOutputTokensPtr(budget int64) *int64 {
+	if budget > 0 {
+		return &budget
+	}
+	return nil
+}
+
+// agentAbnormalFinishNotice maps turn-ending finish reasons the model
+// did not choose onto a user-visible error line. Stop and ToolCalls
+// (incl. loop-detection / compaction stops and StopTurn) are normal.
+func agentAbnormalFinishNotice(reason fantasy.FinishReason) string {
+	switch reason {
+	case fantasy.FinishReasonLength:
+		return "turn stopped at the max_tokens output limit — the last response may be truncated"
+	case fantasy.FinishReasonContentFilter:
+		return "turn stopped by the provider's content filter"
+	case fantasy.FinishReasonError, fantasy.FinishReasonOther, fantasy.FinishReasonUnknown:
+		return "turn stopped early (provider finish reason: " + string(reason) + ")"
+	}
+	return ""
 }
 
 // persist writes the current message history through the session
@@ -404,15 +446,27 @@ Required sections:
 
 Write it as a briefing to your successor. Do not omit failing tests, open errors, or unverified assumptions.`
 
+// agentSummaryMaxOutputTokens bounds the compaction summarizer's
+// output. The summarizer is the one non-streaming wire call, and the
+// anthropic SDK refuses non-streaming requests whose max_tokens imply
+// >10 minutes (~21K tokens) — 16K stays under that ceiling with ample
+// room for the summary plus always-on thinking.
+const agentSummaryMaxOutputTokens int64 = 16_384
+
 // compact replaces the conversation history with a summary head
 // message. When the stopped turn was still mid-tool-loop, a
 // continuation turn is queued so the work resumes automatically.
 func (s *agentSession) compact(ctx context.Context, turn agentTurn, result *fantasy.AgentResult) {
 	s.emit(streamStatusMsg{status: "compacting context…"})
+	summaryBudget := agentSummaryMaxOutputTokens
+	if s.maxOutputTokens > 0 && s.maxOutputTokens < summaryBudget {
+		summaryBudget = s.maxOutputTokens
+	}
 	summarizer := fantasy.NewAgent(s.model, fantasy.WithSystemPrompt(agentSummaryPrompt))
 	sum, err := summarizer.Generate(ctx, fantasy.AgentCall{
-		Messages: s.messages,
-		Prompt:   "Produce the continuation summary now.",
+		Messages:        s.messages,
+		Prompt:          "Produce the continuation summary now.",
+		MaxOutputTokens: &summaryBudget,
 	})
 	if err != nil {
 		debugLog("agent compact failed: %v", err)

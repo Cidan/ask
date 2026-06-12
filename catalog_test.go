@@ -52,6 +52,18 @@ func TestCatalogContextWindowFallback(t *testing.T) {
 	}
 }
 
+func TestCatalogDefaultMaxTokensFallback(t *testing.T) {
+	if got := catalogDefaultMaxTokens(catwalk.InferenceProviderAnthropic, "claude-fable-5", 1); got != 128_000 {
+		t.Errorf("claude-fable-5 = %d", got)
+	}
+	if got := catalogDefaultMaxTokens(catwalk.InferenceProviderDeepSeek, "deepseek-v4-pro", 1); got != 384_000 {
+		t.Errorf("deepseek-v4-pro = %d", got)
+	}
+	if got := catalogDefaultMaxTokens(catwalk.InferenceProviderOpenAI, "unknown", 123); got != 123 {
+		t.Errorf("fallback = %d", got)
+	}
+}
+
 func TestCatalogSupportsImagesFallback(t *testing.T) {
 	if !catalogSupportsImages(catwalk.InferenceProviderAnthropic, "claude-fable-5", false) {
 		t.Error("claude-fable-5 supports images")

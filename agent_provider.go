@@ -47,6 +47,12 @@ type agentProviderSpec struct {
 
 	contextWindow func(modelID string) int64
 
+	// maxOutputTokens is the per-turn output budget sent as max_tokens.
+	// Without it fantasy's anthropic provider defaults to 4096 — with
+	// always-on thinking the model burns that mid-reasoning and the
+	// turn ends silently with a lone empty thinking block.
+	maxOutputTokens func(modelID string) int64
+
 	loadSettings func(askConfig) ProviderSettings
 	saveSettings func(*askConfig, ProviderSettings)
 }
@@ -144,6 +150,9 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 		closed:        make(chan struct{}),
 		store:         store,
 	}
+	if p.spec.maxOutputTokens != nil {
+		session.maxOutputTokens = p.spec.maxOutputTokens(modelID)
+	}
 
 	switch {
 	case args.SessionID != "":
@@ -192,7 +201,9 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		agentJobKillTool(env),
 		agentFetchTool(env),
 		agentTodosTool(env),
-		agentTaskTool(env, func() fantasy.LanguageModel { return s.model }),
+		agentTaskTool(env,
+			func() fantasy.LanguageModel { return s.model },
+			func() int64 { return s.maxOutputTokens }),
 		agentAskUserQuestionTool(env),
 		agentEndTurnTool(env),
 	}

@@ -103,22 +103,26 @@ func TestResolveSubagentModel(t *testing.T) {
 	isolateHome(t)
 	parent := &fakeLM{}
 
-	// Nothing pinned → inherit the parent.
-	lm, err := resolveSubagentModel(subagentDef{Name: "x"}, "deepseek", parent)
-	if err != nil || lm != fantasy.LanguageModel(parent) {
-		t.Errorf("inherit failed: %v %v", lm, err)
+	// Nothing pinned → inherit the parent (budget 0 = inherit too).
+	lm, budget, err := resolveSubagentModel(subagentDef{Name: "x"}, "deepseek", parent)
+	if err != nil || lm != fantasy.LanguageModel(parent) || budget != 0 {
+		t.Errorf("inherit failed: %v budget=%d %v", lm, budget, err)
 	}
 
-	// Cross-provider pin builds through the target spec.
+	// Cross-provider pin builds through the target spec and carries the
+	// pinned model's output budget.
 	child := &fakeLM{}
 	swapDeepseekLM(t, child)
-	lm, err = resolveSubagentModel(subagentDef{Name: "x", Provider: "deepseek", Model: "deepseek-v4-flash"}, "anthropic", parent)
+	lm, budget, err = resolveSubagentModel(subagentDef{Name: "x", Provider: "deepseek", Model: "deepseek-v4-flash"}, "anthropic", parent)
 	if err != nil || lm != fantasy.LanguageModel(child) {
 		t.Errorf("cross-provider resolve failed: %v %v", lm, err)
 	}
+	if want := deepseekSpec.maxOutputTokens("deepseek-v4-flash"); budget != want {
+		t.Errorf("pinned budget = %d want %d", budget, want)
+	}
 
 	// Unknown provider errors clearly.
-	if _, err := resolveSubagentModel(subagentDef{Name: "x", Provider: "codex"}, "deepseek", parent); err == nil ||
+	if _, _, err := resolveSubagentModel(subagentDef{Name: "x", Provider: "codex"}, "deepseek", parent); err == nil ||
 		!strings.Contains(err.Error(), "not an in-process provider") {
 		t.Errorf("subprocess provider must be rejected: %v", err)
 	}
@@ -130,17 +134,17 @@ func TestAgentTaskTool_NamedAgentCrossProvider(t *testing.T) {
 	writeSubagent(t, filepath.Join(home, ".claude", "agents"), "researcher",
 		"provider: deepseek\ntools: read, ls\n", "You are the researcher.")
 
-	child := &fakeLM{genFn: func(call fantasy.Call) (*fantasy.Response, error) {
-		return &fantasy.Response{
-			Content: fantasy.ResponseContent{fantasy.TextContent{Text: "research report"}},
-		}, nil
+	child := &fakeLM{turns: [][]fantasy.StreamPart{
+		textTurn("research report", fantasy.Usage{}),
 	}}
 	swapDeepseekLM(t, child)
 
 	env, _ := newTestToolEnv(t)
 	env.cwd = cwd
 	parent := &fakeLM{}
-	tool := agentTaskTool(env, func() fantasy.LanguageModel { return parent })
+	tool := agentTaskTool(env,
+		func() fantasy.LanguageModel { return parent },
+		func() int64 { return 111 })
 
 	resp := runTool(t, tool, agentTaskParams{Prompt: "find the thing", Agent: "researcher"})
 	if resp.IsError || resp.Content != "research report" {
@@ -156,6 +160,11 @@ func TestAgentTaskTool_NamedAgentCrossProvider(t *testing.T) {
 		!strings.Contains(sys, "final message is returned verbatim") {
 		t.Errorf("def prompt + report tail must form the child system prompt: %q", sys)
 	}
+	// The pinned provider's budget overrides the parent's.
+	if want := deepseekSpec.maxOutputTokens(deepseekDefaultModel); calls[0].MaxOutputTokens == nil ||
+		*calls[0].MaxOutputTokens != want {
+		t.Errorf("pinned sub-agent budget = %v want %d", calls[0].MaxOutputTokens, want)
+	}
 	if len(parent.streamCalls()) != 0 {
 		t.Error("parent model must not be called for a pinned subagent")
 	}
@@ -169,12 +178,12 @@ func TestAgentTaskTool_NamedAgentCrossProvider(t *testing.T) {
 func TestAgentTaskTool_Background(t *testing.T) {
 	isolateHome(t)
 	env, msgs := newTestToolEnv(t)
-	lm := &fakeLM{genFn: func(call fantasy.Call) (*fantasy.Response, error) {
-		return &fantasy.Response{
-			Content: fantasy.ResponseContent{fantasy.TextContent{Text: "bg report"}},
-		}, nil
+	lm := &fakeLM{turns: [][]fantasy.StreamPart{
+		textTurn("bg report", fantasy.Usage{}),
 	}}
-	tool := agentTaskTool(env, func() fantasy.LanguageModel { return lm })
+	tool := agentTaskTool(env,
+		func() fantasy.LanguageModel { return lm },
+		func() int64 { return 0 })
 
 	resp := runTool(t, tool, agentTaskParams{Prompt: "investigate", RunInBackground: true})
 	if resp.IsError || !strings.Contains(resp.Content, "job-") {
@@ -218,12 +227,12 @@ func TestAgentTaskTool_Background(t *testing.T) {
 func TestAgentTaskTool_DefaultResearcherUnchanged(t *testing.T) {
 	isolateHome(t)
 	env, _ := newTestToolEnv(t)
-	lm := &fakeLM{genFn: func(call fantasy.Call) (*fantasy.Response, error) {
-		return &fantasy.Response{
-			Content: fantasy.ResponseContent{fantasy.TextContent{Text: "the answer"}},
-		}, nil
+	lm := &fakeLM{turns: [][]fantasy.StreamPart{
+		textTurn("the answer", fantasy.Usage{}),
 	}}
-	tool := agentTaskTool(env, func() fantasy.LanguageModel { return lm })
+	tool := agentTaskTool(env,
+		func() fantasy.LanguageModel { return lm },
+		func() int64 { return 222 })
 	resp := runTool(t, tool, agentTaskParams{Prompt: "what is where"})
 	if resp.IsError || resp.Content != "the answer" {
 		t.Fatalf("default task run: %+v", resp)
@@ -231,6 +240,10 @@ func TestAgentTaskTool_DefaultResearcherUnchanged(t *testing.T) {
 	sys := messageText(lm.streamCalls()[0].Prompt[0])
 	if !strings.Contains(sys, "read-only research sub-agent") {
 		t.Errorf("default system prompt must be the researcher: %q", sys)
+	}
+	// The default researcher inherits the parent session's budget.
+	if got := lm.streamCalls()[0].MaxOutputTokens; got == nil || *got != 222 {
+		t.Errorf("inherited sub-agent budget = %v want 222", got)
 	}
 	if resp = runTool(t, tool, agentTaskParams{}); !resp.IsError {
 		t.Error("empty prompt must error")

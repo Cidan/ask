@@ -16,6 +16,9 @@ const (
 	// openaiFallbackContextWindow is the conservative window assumed
 	// for model ids the catalog doesn't know.
 	openaiFallbackContextWindow = 200_000
+	// openaiFallbackMaxOutputTokens is the per-turn output budget for
+	// model ids the catalog doesn't know.
+	openaiFallbackMaxOutputTokens = 32_000
 )
 
 // openaiEffortOptions mirror the Responses API reasoning_effort
@@ -93,6 +96,9 @@ var openaiSpec = agentProviderSpec{
 	},
 	contextWindow: func(modelID string) int64 {
 		return catalogContextWindow(catwalk.InferenceProviderOpenAI, modelID, openaiFallbackContextWindow)
+	},
+	maxOutputTokens: func(modelID string) int64 {
+		return catalogDefaultMaxTokens(catwalk.InferenceProviderOpenAI, modelID, openaiFallbackMaxOutputTokens)
 	},
 	loadSettings: func(cfg askConfig) ProviderSettings {
 		return ProviderSettings{

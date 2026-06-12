@@ -334,6 +334,86 @@ func TestAgentSession_ShutdownEmitsExited(t *testing.T) {
 	}
 }
 
+func TestAgentSession_MaxOutputTokensOnWire(t *testing.T) {
+	lm := &fakeLM{turns: [][]fantasy.StreamPart{textTurn("ok", fantasy.Usage{})}}
+	s := newTestAgentSession(t, lm, nil)
+	s.maxOutputTokens = 128_000
+	if err := s.queueTurn("hi"); err != nil {
+		t.Fatal(err)
+	}
+	readSessionMsgs(t, s.ch, isTurnComplete)
+	call := lm.streamCalls()[0]
+	if call.MaxOutputTokens == nil || *call.MaxOutputTokens != 128_000 {
+		t.Errorf("MaxOutputTokens on the wire = %v want 128000", call.MaxOutputTokens)
+	}
+
+	// No budget → field omitted so providers keep their own defaults.
+	lm2 := &fakeLM{turns: [][]fantasy.StreamPart{textTurn("ok", fantasy.Usage{})}}
+	s2 := newTestAgentSession(t, lm2, nil)
+	if err := s2.queueTurn("hi"); err != nil {
+		t.Fatal(err)
+	}
+	readSessionMsgs(t, s2.ch, isTurnComplete)
+	if got := lm2.streamCalls()[0].MaxOutputTokens; got != nil {
+		t.Errorf("zero budget must omit MaxOutputTokens, got %v", got)
+	}
+}
+
+func TestAgentSession_TruncatedTurnSurfacesError(t *testing.T) {
+	// A max_tokens cut ends the stream with FinishReasonLength and no
+	// tool calls — the original silent-death bug. The turn must end
+	// with a visible error, not look like a completed response.
+	lm := &fakeLM{turns: [][]fantasy.StreamPart{{
+		{Type: fantasy.StreamPartTypeTextStart, ID: "t1"},
+		{Type: fantasy.StreamPartTypeTextDelta, ID: "t1", Delta: "let me just"},
+		{Type: fantasy.StreamPartTypeTextEnd, ID: "t1"},
+		{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonLength},
+	}}}
+	s := newTestAgentSession(t, lm, nil)
+	if err := s.queueTurn("do the thing"); err != nil {
+		t.Fatal(err)
+	}
+	msgs := readSessionMsgs(t, s.ch, isTurnComplete)
+
+	var done providerDoneMsg
+	doneIdx, completeIdx := -1, -1
+	for i, m := range msgs {
+		switch v := m.(type) {
+		case providerDoneMsg:
+			done = v
+			doneIdx = i
+		case turnCompleteMsg:
+			completeIdx = i
+		}
+	}
+	if !done.res.IsError || !strings.Contains(done.res.Result, "max_tokens") {
+		t.Errorf("truncated turn must surface an error: %+v", done)
+	}
+	if doneIdx == -1 || completeIdx == -1 || doneIdx > completeIdx {
+		t.Errorf("done must precede turnComplete: done=%d complete=%d", doneIdx, completeIdx)
+	}
+	// The partial turn is still persisted — resume must not lose it.
+	if len(s.messages) != 2 {
+		t.Errorf("truncated turn must fold into history, got %d messages", len(s.messages))
+	}
+}
+
+func TestAgentAbnormalFinishNotice(t *testing.T) {
+	for _, normal := range []fantasy.FinishReason{fantasy.FinishReasonStop, fantasy.FinishReasonToolCalls} {
+		if got := agentAbnormalFinishNotice(normal); got != "" {
+			t.Errorf("%s must be silent, got %q", normal, got)
+		}
+	}
+	for _, abnormal := range []fantasy.FinishReason{
+		fantasy.FinishReasonLength, fantasy.FinishReasonContentFilter,
+		fantasy.FinishReasonError, fantasy.FinishReasonOther, fantasy.FinishReasonUnknown,
+	} {
+		if got := agentAbnormalFinishNotice(abnormal); got == "" {
+			t.Errorf("%s must produce a notice", abnormal)
+		}
+	}
+}
+
 func TestAgentLoopDetection_StopsRepeatedCalls(t *testing.T) {
 	identical := toolCallTurn("c", "ping", `{"v":"same"}`, fantasy.Usage{InputTokens: 10})
 	turns := make([][]fantasy.StreamPart, 0, 12)
@@ -361,6 +441,11 @@ func TestAgentSession_CompactionFlow(t *testing.T) {
 			textTurn("resumed and finished", fantasy.Usage{InputTokens: 200}),
 		},
 		genFn: func(call fantasy.Call) (*fantasy.Response, error) {
+			// The summarizer is the one non-streaming call; its budget is
+			// capped so the anthropic SDK accepts it without streaming.
+			if call.MaxOutputTokens == nil || *call.MaxOutputTokens != agentSummaryMaxOutputTokens {
+				t.Errorf("summarizer budget = %v want %d", call.MaxOutputTokens, agentSummaryMaxOutputTokens)
+			}
 			return &fantasy.Response{
 				Content: fantasy.ResponseContent{fantasy.TextContent{Text: "SUMMARY OF WORK"}},
 			}, nil
@@ -439,28 +524,31 @@ func TestContextTokensFromUsage(t *testing.T) {
 
 func TestAgentTaskTool(t *testing.T) {
 	env, _ := newTestToolEnv(t)
-	lm := &fakeLM{genFn: func(call fantasy.Call) (*fantasy.Response, error) {
-		// The sub-agent must run with its own system prompt, not the
-		// coder prompt.
-		if len(call.Prompt) == 0 || call.Prompt[0].Role != fantasy.MessageRoleSystem ||
-			!strings.Contains(messageText(call.Prompt[0]), "read-only research sub-agent") {
-			t.Errorf("sub-agent system prompt wrong: %+v", call.Prompt)
-		}
-		return &fantasy.Response{
-			Content:      fantasy.ResponseContent{fantasy.TextContent{Text: "report: found it at foo.go:12"}},
-			FinishReason: fantasy.FinishReasonStop,
-		}, nil
+	lm := &fakeLM{turns: [][]fantasy.StreamPart{
+		textTurn("report: found it at foo.go:12", fantasy.Usage{}),
 	}}
-	tool := agentTaskTool(env, func() fantasy.LanguageModel { return lm })
+	tool := agentTaskTool(env,
+		func() fantasy.LanguageModel { return lm },
+		func() int64 { return 333 })
 
 	resp := runTool(t, tool, agentTaskParams{Prompt: "find the parser"})
 	if resp.IsError || resp.Content != "report: found it at foo.go:12" {
 		t.Errorf("task tool result: %+v", resp)
 	}
+	// The sub-agent must run with its own system prompt, not the coder
+	// prompt, and carry the parent's output budget on the wire.
+	call := lm.streamCalls()[0]
+	if len(call.Prompt) == 0 || call.Prompt[0].Role != fantasy.MessageRoleSystem ||
+		!strings.Contains(messageText(call.Prompt[0]), "read-only research sub-agent") {
+		t.Errorf("sub-agent system prompt wrong: %+v", call.Prompt)
+	}
+	if call.MaxOutputTokens == nil || *call.MaxOutputTokens != 333 {
+		t.Errorf("sub-agent MaxOutputTokens = %v want 333", call.MaxOutputTokens)
+	}
 	if resp := runTool(t, tool, agentTaskParams{Prompt: "  "}); !resp.IsError {
 		t.Error("empty prompt must error")
 	}
-	nilTool := agentTaskTool(env, func() fantasy.LanguageModel { return nil })
+	nilTool := agentTaskTool(env, func() fantasy.LanguageModel { return nil }, func() int64 { return 0 })
 	if resp := runTool(t, nilTool, agentTaskParams{Prompt: "x"}); !resp.IsError {
 		t.Error("nil model must error")
 	}

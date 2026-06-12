@@ -270,6 +270,17 @@ func TestAnthropicContextWindow(t *testing.T) {
 	}
 }
 
+func TestAnthropicMaxOutputTokens(t *testing.T) {
+	// Without an explicit budget fantasy sends max_tokens: 4096 — on
+	// always-thinking models the turn dies mid-reasoning, silently.
+	if got := anthropicSpec.maxOutputTokens("claude-fable-5"); got != 128_000 {
+		t.Errorf("claude-fable-5 budget = %d want 128k", got)
+	}
+	if got := anthropicSpec.maxOutputTokens("some-custom-model"); got != anthropicFallbackMaxOutputTokens {
+		t.Errorf("unknown model must use the fallback budget: %d", got)
+	}
+}
+
 func TestAnthropicSupportsImages(t *testing.T) {
 	if !anthropicSpec.supportsImages("claude-fable-5") {
 		t.Error("claude-fable-5 must accept images")

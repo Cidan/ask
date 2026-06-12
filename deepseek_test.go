@@ -161,6 +161,11 @@ func TestDeepseekProvider_SessionLifecycle(t *testing.T) {
 		!strings.Contains(sys, "super human speeds") {
 		t.Error("system prompt must include coder rules and ask steering")
 	}
+	// StartSession resolves the model's output budget onto the wire.
+	if want := deepseekSpec.maxOutputTokens(deepseekDefaultModel); calls[0].MaxOutputTokens == nil ||
+		*calls[0].MaxOutputTokens != want {
+		t.Errorf("wire MaxOutputTokens = %v want %d", calls[0].MaxOutputTokens, want)
+	}
 
 	// Idle interrupt reports unhandled → killProc fallback path.
 	if handled, _ := p.Interrupt(proc); handled {
@@ -260,6 +265,15 @@ func TestDeepseekStoreUsesHome(t *testing.T) {
 	}
 	if !strings.HasPrefix(root, home) {
 		t.Errorf("store root %q must live under isolated home %q", root, home)
+	}
+}
+
+func TestDeepseekMaxOutputTokens(t *testing.T) {
+	if got := deepseekSpec.maxOutputTokens("deepseek-v4-pro"); got != 384_000 {
+		t.Errorf("deepseek-v4-pro budget = %d want 384k", got)
+	}
+	if got := deepseekSpec.maxOutputTokens("custom-model"); got != deepseekFallbackMaxOutputTokens {
+		t.Errorf("unknown model must use the fallback budget: %d", got)
 	}
 }
 

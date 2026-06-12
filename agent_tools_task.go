@@ -41,7 +41,7 @@ type agentTaskParams struct {
 // (cross-provider delegation). Background runs ride the existing job
 // manager, so job_output/job_kill and the bgTask UI signals work
 // unchanged.
-func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel) fantasy.AgentTool {
+func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel, maxTokens func() int64) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		"task",
 		agentTaskToolDescription,
@@ -59,6 +59,10 @@ func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel) fantas
 				agentLsTool(env),
 			}
 			lm := model()
+			var budget int64
+			if maxTokens != nil {
+				budget = maxTokens()
+			}
 			parentProviderID := ""
 			if lm != nil {
 				parentProviderID = lm.Provider()
@@ -76,11 +80,14 @@ func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel) fantas
 				if def == nil {
 					return fantasy.NewTextErrorResponse("unknown agent " + name + " — see <available_agents> for what is defined"), nil
 				}
-				resolved, err := resolveSubagentModel(*def, parentProviderID, lm)
+				resolved, pinnedBudget, err := resolveSubagentModel(*def, parentProviderID, lm)
 				if err != nil {
 					return fantasy.NewTextErrorResponse(err.Error()), nil
 				}
 				lm = resolved
+				if pinnedBudget > 0 {
+					budget = pinnedBudget
+				}
 				if def.Prompt != "" {
 					system = def.Prompt + agentSubagentPromptTail
 				}
@@ -99,7 +106,13 @@ func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel) fantas
 						fantasy.StepCountIs(agentTaskMaxSteps),
 					),
 				)
-				result, err := sub.Generate(runCtx, fantasy.AgentCall{Prompt: prompt})
+				// Stream, not Generate: sub-agent turns can run long and
+				// the anthropic SDK refuses non-streaming requests whose
+				// max_tokens budget implies more than ~10 minutes.
+				result, err := sub.Stream(runCtx, fantasy.AgentStreamCall{
+					Prompt:          prompt,
+					MaxOutputTokens: maxOutputTokensPtr(budget),
+				})
 				if err != nil {
 					return "", err
 				}

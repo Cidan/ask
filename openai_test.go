@@ -161,3 +161,12 @@ func TestOpenAIContextWindow(t *testing.T) {
 		t.Errorf("unknown model must use the conservative fallback: %d", got)
 	}
 }
+
+func TestOpenAIMaxOutputTokens(t *testing.T) {
+	if got := openaiSpec.maxOutputTokens("gpt-5.5"); got != 128_000 {
+		t.Errorf("gpt-5.5 budget = %d want 128k", got)
+	}
+	if got := openaiSpec.maxOutputTokens("custom-model"); got != openaiFallbackMaxOutputTokens {
+		t.Errorf("unknown model must use the fallback budget: %d", got)
+	}
+}

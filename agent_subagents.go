@@ -164,18 +164,20 @@ func anthropicModelAlias(model string) string {
 
 // resolveSubagentModel builds the child LanguageModel for a def:
 // inherit the parent's model when nothing is pinned, otherwise build
-// from the pinned provider spec (cross-provider delegation).
-func resolveSubagentModel(def subagentDef, parentProviderID string, parent fantasy.LanguageModel) (fantasy.LanguageModel, error) {
+// from the pinned provider spec (cross-provider delegation). The
+// returned budget is the pinned model's max-output-tokens; 0 means
+// inherit the parent's budget.
+func resolveSubagentModel(def subagentDef, parentProviderID string, parent fantasy.LanguageModel) (fantasy.LanguageModel, int64, error) {
 	providerID := def.Provider
 	if providerID == "" && def.Model == "" {
-		return parent, nil
+		return parent, 0, nil
 	}
 	if providerID == "" {
 		providerID = parentProviderID
 	}
 	spec, ok := agentSpecByID(providerID)
 	if !ok {
-		return nil, fmt.Errorf("subagent %s: provider %q is not an in-process provider", def.Name, providerID)
+		return nil, 0, fmt.Errorf("subagent %s: provider %q is not an in-process provider", def.Name, providerID)
 	}
 	model := def.Model
 	if model == "" {
@@ -185,7 +187,15 @@ func resolveSubagentModel(def subagentDef, parentProviderID string, parent fanta
 		model = anthropicModelAlias(model)
 	}
 	cfg, _ := loadConfig()
-	return spec.buildModel(cfg, model)
+	lm, err := spec.buildModel(cfg, model)
+	if err != nil {
+		return nil, 0, err
+	}
+	var budget int64
+	if spec.maxOutputTokens != nil {
+		budget = spec.maxOutputTokens(model)
+	}
+	return lm, budget, nil
 }
 
 // subagentTools maps a def's allowlist onto the core tools. The

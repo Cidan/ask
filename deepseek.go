@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
@@ -13,6 +14,11 @@ const (
 	deepseekProviderID    = "deepseek"
 	deepseekDefaultModel  = "deepseek-v4-pro"
 	deepseekContextWindow = 1_000_000
+	// deepseekFallbackMaxOutputTokens is the per-turn output budget for
+	// model ids the catalog doesn't know. Without an explicit budget the
+	// API's own default caps a turn low enough to truncate long
+	// reasoning mid-thought.
+	deepseekFallbackMaxOutputTokens = 32_000
 )
 
 // deepseekModelOptions are the API model ids as of the V4 line. The
@@ -82,6 +88,9 @@ var deepseekSpec = agentProviderSpec{
 	// The V4 models do not accept image input.
 	supportsImages: func(string) bool { return false },
 	contextWindow:  func(string) int64 { return deepseekContextWindow },
+	maxOutputTokens: func(modelID string) int64 {
+		return catalogDefaultMaxTokens(catwalk.InferenceProviderDeepSeek, modelID, deepseekFallbackMaxOutputTokens)
+	},
 	loadSettings: func(cfg askConfig) ProviderSettings {
 		return ProviderSettings{
 			Model:         cfg.DeepSeek.Model,

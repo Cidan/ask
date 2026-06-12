@@ -63,6 +63,16 @@ func catalogContextWindow(provider catwalk.InferenceProvider, modelID string, fa
 	return fallback
 }
 
+// catalogDefaultMaxTokens returns the model's published default
+// max-output-tokens budget, or fallback when the catalog doesn't know
+// the model (custom ids).
+func catalogDefaultMaxTokens(provider catwalk.InferenceProvider, modelID string, fallback int64) int64 {
+	if m, ok := catalogModel(provider, modelID); ok && m.DefaultMaxTokens > 0 {
+		return m.DefaultMaxTokens
+	}
+	return fallback
+}
+
 // catalogSupportsImages reports image-attachment capability, defaulting
 // to fallback for models the catalog doesn't know.
 func catalogSupportsImages(provider catwalk.InferenceProvider, modelID string, fallback bool) bool {
