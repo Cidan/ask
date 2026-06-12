@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
@@ -37,7 +36,7 @@ var deepseekEffortOptions = []string{"off", "high", "max"}
 var deepseekLanguageModel = func(cfg apiProviderConfig, modelID string) (fantasy.LanguageModel, error) {
 	key := resolveDeepSeekAPIKey(cfg)
 	if key == "" {
-		return nil, errors.New("no API key configured — set one in /config → DeepSeek..., or export " + deepseekEnvAPIKey)
+		return nil, missingAPIKeyError(deepseekEnvAPIKey)
 	}
 	provider, err := openaicompat.New(
 		openaicompat.WithName(deepseekProviderID),

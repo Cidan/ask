@@ -621,15 +621,18 @@ func TestHandleCommand_UnknownCommandAppendsError(t *testing.T) {
 	}
 }
 
-func TestHandleCommand_Model(t *testing.T) {
+// /model was folded into the unified Ctrl+M picker; the slash command
+// is gone and must fall through to "unknown command" (it is not a
+// provider slash command either).
+func TestHandleCommand_ModelRemoved(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m2, _ := m.handleCommand("/model")
 	mm := m2.(model)
-	if mm.mode != modeAskQuestion {
-		t.Errorf("/model should enter askQuestion mode; got %v", mm.mode)
+	if mm.mode != modeInput {
+		t.Errorf("/model should no longer open a picker; mode=%v", mm.mode)
 	}
-	if mm.askMode != askForModel {
-		t.Errorf("/model should set askMode to askForModel, got %v", mm.askMode)
+	if len(mm.history) == 0 || !strings.Contains(mm.history[len(mm.history)-1].text, "unknown command") {
+		t.Errorf("/model should report unknown command; history=%+v", mm.history)
 	}
 }
 
@@ -1187,52 +1190,17 @@ func TestHandleCommand_ConfigEntersConfigMode(t *testing.T) {
 	}
 }
 
-func TestHandleCommand_ProviderEntersSwitcher(t *testing.T) {
+// /provider was folded into the unified Ctrl+M picker; the slash
+// command is gone and must fall through to "unknown command".
+func TestHandleCommand_ProviderRemoved(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m2, _ := m.handleCommand("/provider")
 	mm := m2.(model)
-	if mm.mode != modeProviderSwitch {
-		t.Errorf("/provider mode=%v want modeProviderSwitch", mm.mode)
+	if mm.mode != modeInput {
+		t.Errorf("/provider should no longer open a picker; mode=%v", mm.mode)
 	}
-}
-
-// Mid-turn /provider must no-op for the same reason Ctrl+B does:
-// the stream reader is bound to the current proc and the session id
-// is about to be wiped, so swapping providers would orphan both.
-func TestHandleCommand_ProviderRefusesWhileBusy(t *testing.T) {
-	m := newTestModel(t, newFakeProvider())
-	m.busy = true
-	historyLen := len(m.history)
-	m2, _ := m.handleCommand("/provider")
-	mm := m2.(model)
-	if mm.mode == modeProviderSwitch {
-		t.Errorf("/provider should refuse while busy; entered modeProviderSwitch")
-	}
-	if len(mm.history) != historyLen {
-		t.Errorf("/provider while busy should not append history; len=%d want %d",
-			len(mm.history), historyLen)
-	}
-}
-
-// /provider from a cwd that fails the LLM-startup gate (e.g. inside
-// an ask-managed worktree) must report the same error path the
-// chat-send and Ctrl+B paths use, not silently open the switcher
-// (which would then crash on ProbeInit's first fork).
-func TestHandleCommand_ProviderRefusesFromInvalidCwd(t *testing.T) {
-	dir := t.TempDir()
-	worktreeDir := filepath.Join(dir, ".claude", "worktrees", "alpha")
-	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
-		t.Fatalf("mkdir worktree: %v", err)
-	}
-	m := newTestModel(t, newFakeProvider())
-	m.cwd = worktreeDir
-	m2, _ := m.handleCommand("/provider")
-	mm := m2.(model)
-	if mm.mode == modeProviderSwitch {
-		t.Errorf("/provider should refuse from worktree cwd; entered modeProviderSwitch")
-	}
-	if len(mm.history) == 0 {
-		t.Errorf("/provider should append an error from invalid cwd; history empty")
+	if len(mm.history) == 0 || !strings.Contains(mm.history[len(mm.history)-1].text, "unknown command") {
+		t.Errorf("/provider should report unknown command; history=%+v", mm.history)
 	}
 }
 
@@ -1544,7 +1512,7 @@ func TestUpdate_PasteMsgInNonInputModesIsAbsorbed(t *testing.T) {
 		{"sessionPicker", modeSessionPicker},
 		{"askQuestion", modeAskQuestion},
 		{"approval", modeApproval},
-		{"providerSwitch", modeProviderSwitch},
+		{"modelPicker", modeModelPicker},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

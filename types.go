@@ -38,7 +38,7 @@ const (
 	modeAskQuestion
 	modeApproval
 	modeConfig
-	modeProviderSwitch
+	modeModelPicker
 )
 
 type streamStatusMsg struct {
@@ -377,7 +377,7 @@ type model struct {
 	// githubPRProvider, draws against m.prs in the screen handler,
 	// and gates the `m` merge keybind on the IssueMerger capability
 	// interface. Splitting the state field means flipping between
-	// Ctrl+I and Ctrl+P preserves each screen's filter / cursor /
+	// Ctrl+I and Ctrl+R preserves each screen's filter / cursor /
 	// page cache independently.
 	prs *issuesState
 
@@ -495,16 +495,6 @@ type model struct {
 	configMemoryFieldEditing string
 	configMemoryFieldDraft   string
 
-	// /config → <API provider> sub-picker: API key + base URL for the
-	// in-process providers (deepseek, anthropic, openai). One shared
-	// state machine keyed by provider id — same shape as the Memory
-	// picker (row cursor, inline field editor with draft). Empty
-	// configAPIProviderPicker means closed.
-	configAPIProviderPicker       string
-	configAPIProviderCursor       int
-	configAPIProviderFieldEditing string
-	configAPIProviderFieldDraft   string
-
 	// /config now layers into Global Options (existing knobs) vs
 	// Project Options (per-cwd issue provider). configGlobalPicker-
 	// Active is the gate for the Global submenu — it carries the
@@ -530,14 +520,11 @@ type model struct {
 	configKeybindingsCapturing    bool
 	configKeybindingsError        string
 
-	// Ctrl+B starts at the provider list (Level 0). Picking a provider
-	// with model options advances to Level 1, which reuses the shared
-	// ask/model modal rather than a separate switcher-specific editor.
-	// Esc from that modal pops back to the provider list; applying a
-	// choice switches the current tab only and leaves persisted defaults
-	// alone.
-	providerSwitchLevel   int
-	providerSwitchProvIdx int
+	// modelPicker is the Ctrl+M unified provider/model picker state
+	// (model_picker.go). Non-nil while modeModelPicker is up; applying
+	// a pick switches the current tab only and leaves persisted
+	// defaults alone.
+	modelPicker *modelPickerState
 
 	themeName string
 
@@ -761,8 +748,6 @@ type askMode int
 
 const (
 	askForMCP askMode = iota
-	askForModel
-	askForProviderSwitchModel
 	askForEffort
 )
 

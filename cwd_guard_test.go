@@ -329,7 +329,7 @@ func TestHandleCommand_NewClearStillWorkInWorktree(t *testing.T) {
 	}
 }
 
-func TestCtrlB_RefusedInWorktree(t *testing.T) {
+func TestCtrlM_RefusedInWorktree(t *testing.T) {
 	dir := initGitRepo(t)
 	t.Chdir(dir)
 	wtPath, _, err := createWorktreeAtName(dir, "merry-floating-loon")
@@ -342,16 +342,16 @@ func TestCtrlB_RefusedInWorktree(t *testing.T) {
 	m := newTestModel(t, p)
 	m.cwd = wtPath
 
-	mm, _ := m.updateInput(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
+	mm, _ := m.updateInput(tea.KeyPressMsg{Code: 'm', Mod: tea.ModCtrl})
 	got := mm.(model)
-	if got.mode == modeProviderSwitch {
-		t.Error("Ctrl+B should not enter modeProviderSwitch when cwd is a worktree")
+	if got.mode == modeModelPicker {
+		t.Error("Ctrl+M should not enter modeModelPicker when cwd is a worktree")
 	}
 	if len(got.history) == 0 {
-		t.Fatal("Ctrl+B in invalid cwd should append refusal to history")
+		t.Fatal("Ctrl+M in invalid cwd should append refusal to history")
 	}
 	if !strings.Contains(got.history[len(got.history)-1].text, "merry-floating-loon") {
-		t.Errorf("Ctrl+B refusal should name the worktree, got %q",
+		t.Errorf("Ctrl+M refusal should name the worktree, got %q",
 			got.history[len(got.history)-1].text)
 	}
 }

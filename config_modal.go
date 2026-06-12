@@ -85,12 +85,8 @@ func (m model) globalConfigItems() []configItem {
 		{"Theme", m.themeName, "theme"},
 		{"Default Provider", provName, "provider"},
 		{"Memory...", mem, "memory"},
+		{"Keybindings...", "", "keybindings"},
 	}
-	for _, spec := range apiProviderPickerSpecs {
-		pc := *spec.config(&cfg)
-		items = append(items, configItem{spec.title + "...", apiProviderKeySummary(pc, spec.envKey), spec.id})
-	}
-	items = append(items, configItem{"Keybindings...", "", "keybindings"})
 	return items
 }
 
@@ -148,9 +144,6 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.configMemoryPickerActive {
 		return m.updateConfigMemoryPicker(msg)
-	}
-	if m.configAPIProviderPicker != "" {
-		return m.updateConfigAPIProviderPicker(msg)
 	}
 	if m.configKeybindingsPickerActive {
 		return m.updateConfigKeybindingsPicker(msg)
@@ -372,10 +365,6 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 		m = m.openConfigKeybindingsPicker()
 		return m, nil
 	}
-	if _, ok := apiProviderPickerSpecByID(itemID); ok {
-		m = m.openConfigAPIProviderPicker(itemID)
-		return m, nil
-	}
 	return m, nil
 }
 
@@ -399,7 +388,9 @@ func (m model) filteredGlobalConfigItems() []configItem {
 }
 
 func (m model) viewConfigModal() string {
-	boxW := 72
+	// Wide-and-flat house style: prefer a landscape rectangle over a
+	// tower (84×18 nominal, shrinking with the terminal).
+	boxW := 84
 	if boxW > m.width-4 {
 		boxW = m.width - 4
 	}
@@ -411,12 +402,12 @@ func (m model) viewConfigModal() string {
 		innerW = 40
 	}
 
-	boxH := 22
+	boxH := 18
 	if boxH > m.height-4 {
 		boxH = m.height - 4
 	}
-	if boxH < 14 {
-		boxH = 14
+	if boxH < 12 {
+		boxH = 12
 	}
 
 	title := configTitleStyle.Render("Config")
@@ -527,7 +518,9 @@ func filterPromptLine(value, placeholder string) string {
 // viewConfigGlobalPicker; Global, Project, and the field editors
 // all go through this single path now.
 func renderLayeredConfigBox(a layeredConfigBoxArgs) string {
-	boxW := 72
+	// Same wide-and-flat geometry as viewConfigModal so every layer
+	// of the /config stack shares one silhouette.
+	boxW := 84
 	if boxW > a.width-4 {
 		boxW = a.width - 4
 	}
@@ -538,12 +531,12 @@ func renderLayeredConfigBox(a layeredConfigBoxArgs) string {
 	if innerW < 40 {
 		innerW = 40
 	}
-	boxH := 22
+	boxH := 18
 	if boxH > a.height-4 {
 		boxH = a.height - 4
 	}
-	if boxH < 14 {
-		boxH = 14
+	if boxH < 12 {
+		boxH = 12
 	}
 
 	title := configTitleStyle.Render(a.title)
@@ -683,8 +676,8 @@ func (m model) viewThemePicker() string {
 		}
 	}
 	innerW += 4
-	if innerW < 24 {
-		innerW = 24
+	if innerW < 40 {
+		innerW = 40
 	}
 
 	title := themePickerTitleStyle.Render("Theme")
@@ -723,9 +716,10 @@ func (m model) viewThemePicker() string {
 }
 
 // openConfigProviderPicker starts the /config → Default Provider
-// sub-picker. Unlike the quick Ctrl+B switcher, this one only writes
-// cfg.Provider — it doesn't touch the current tab. Existing tabs keep
-// their provider; the next tab (Ctrl+T) inherits the new default.
+// sub-picker. Unlike the quick Ctrl+M model picker, this one only
+// writes cfg.Provider — it doesn't touch the current tab. Existing
+// tabs keep their provider; the next tab (Ctrl+T) inherits the new
+// default.
 func (m model) openConfigProviderPicker() model {
 	m.configProviderPickerActive = true
 	// Seed the cursor from the on-disk default, not the current tab's
@@ -799,8 +793,8 @@ func (m model) viewConfigProviderPicker() string {
 		}
 	}
 	innerW += 4
-	if innerW < 24 {
-		innerW = 24
+	if innerW < 40 {
+		innerW = 40
 	}
 	title := themePickerTitleStyle.Render("Default Provider")
 	opts := make([]string, 0, len(providerRegistry))
@@ -811,6 +805,32 @@ func (m model) viewConfigProviderPicker() string {
 	help := themePickerHelpStyle.Render("enter save · esc cancel")
 	body := strings.Join([]string{title, "", strings.Join(rows, "\n"), "", help}, "\n")
 	return themePickerBoxStyle.Render(body)
+}
+
+func renderSwitcherRows(opts []string, cursor, width int) []string {
+	rows := make([]string, 0, len(opts))
+	for i, o := range opts {
+		line := "  " + o
+		if i == cursor {
+			line = "▸ " + o
+			pad := width - lipgloss.Width(line)
+			if pad < 0 {
+				pad = 0
+			}
+			line += strings.Repeat(" ", pad)
+			line = themePickerRowStyle.Render(line)
+		} else {
+			pad := width - lipgloss.Width(line)
+			if pad > 0 {
+				line += strings.Repeat(" ", pad)
+			}
+		}
+		rows = append(rows, line)
+	}
+	if len(rows) == 0 {
+		rows = append(rows, themePickerRowStyle.Render("  (no options)"))
+	}
+	return rows
 }
 
 func renderConfigRow(it configItem, width int, selected bool) string {

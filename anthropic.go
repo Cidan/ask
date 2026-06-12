@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"slices"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -34,7 +33,7 @@ var anthropicEffortOptions = []string{"low", "medium", "high", "xhigh", "max"}
 var anthropicLanguageModel = func(cfg apiProviderConfig, modelID string) (fantasy.LanguageModel, error) {
 	key := resolveAnthropicAPIKey(cfg)
 	if key == "" {
-		return nil, errors.New("no API key configured — set one in /config → Anthropic..., or export " + anthropicEnvAPIKey)
+		return nil, missingAPIKeyError(anthropicEnvAPIKey)
 	}
 	opts := []anthropic.Option{anthropic.WithAPIKey(key)}
 	if cfg.BaseURL != "" {

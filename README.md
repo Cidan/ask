@@ -28,13 +28,13 @@ into `$SHELL`, and sixteen themes re-paint the whole UI live.
 - **Chat with Claude Code** via streaming JSON input/output
 - **[Tabs](#tabs)** — `Ctrl+T` opens a new tab with its own claude subprocess, shell, MCP bridge, history, session, and cwd; `Ctrl+←` / `Ctrl+→` cycle between tabs; a byobu-style strip at the bottom shows each tab's shortened cwd (prefixed with `▸` when that tab is busy); closing the last tab quits
 - **Resume sessions** — `/resume` opens a picker of prior conversations in the current directory
-- **Pick the Claude model** — `/model` opens a picker (default / haiku / sonnet / opus / custom) and persists the choice
+- **Pick the provider + model** — `Ctrl+M` opens a crush-style picker: search box on top, "Recently used" first, then every provider's models with human-friendly names; `↑`/`↓` choose, `Enter` selects. Picking a model whose provider has no API key prompts for one inline and saves it to the config
 - **Configurable UI** — `/config` toggles quiet mode, cursor blink, inline diff rendering, and skip-all-permissions; persisted to `~/.config/ask/ask.json`
 - **Themes** — pick a palette from `/config` → Theme (16 flavors: `default`, `dracula`, `nord`, `gruvbox`, `tokyo night`, the four Catppuccin variants `latte`/`frappé`/`macchiato`/`mocha` plus the green-leaning Mocha sibling `matcha`, `rose pine`, `fighter` (Monokai Pro), `love` (crush), `hacker` (Matrix), `amber` (CRT), `ayu` (Ayu Mirage)). Backgrounds, foregrounds, borders, and glamour markdown/syntax highlighting all follow the active theme.
 - **Inline markdown rendering** with [glamour](https://github.com/charmbracelet/glamour), cached per history entry so typing stays responsive in long chats
 - **Live turn status** — spinner line surfaces the tool Claude is running (`Read: file.go`, `Bash: <description>`, `Grep: <pattern>`, `Task: <subagent>`, …)
 - **Live todo panel** — `TodoWrite` entries render inline as a bordered box with ☐ / ▸ / ✓ markers while the turn is active
-- **Issues screen** — `Ctrl+I` opens a kanban view of the project's issue tracker (GitHub today; the provider interface is open). Per-column queries fetch in parallel with cursor-based pagination, `↑`/`↓` move within a column, `←`/`→`/`Tab` cycle columns, `Enter` opens the markdown detail view, `/` opens an inline filter, `Ctrl+R` reloads. **Carry-and-drop status changes**: `Space` picks up the focused card (warn-color highlight, pinned to the top of whichever column you focus), `←`/`→`/`Tab` carry it across columns, `Space` drops to commit (optimistic local move + provider call; rollback + toast on failure), `Esc` cancels. Same-column drops are no-ops; opening `/`, `Ctrl+R`, or `Ctrl+O` silently cancels an in-flight carry. Cards (and the detail view) carry a per-issue status icon (`▸` running, `✓` done, `✗` failed) reflecting the most recent workflow run for that issue.
+- **Issues screen** — `Ctrl+I` opens a kanban view of the project's issue tracker (GitHub today; the provider interface is open). Per-column queries fetch in parallel with cursor-based pagination, `↑`/`↓` move within a column, `←`/`→`/`Tab` cycle columns, `Enter` opens the markdown detail view, `/` opens an inline filter, and a reload key can be bound in `/config` → Keybindings (unbound by default — `Ctrl+R` opens the PRs screen). **Carry-and-drop status changes**: `Space` picks up the focused card (warn-color highlight, pinned to the top of whichever column you focus), `←`/`→`/`Tab` carry it across columns, `Space` drops to commit (optimistic local move + provider call; rollback + toast on failure), `Esc` cancels. Same-column drops are no-ops; opening `/`, reloading, or `Ctrl+O` silently cancels an in-flight carry. Cards (and the detail view) carry a per-issue status icon (`▸` running, `✓` done, `✗` failed) reflecting the most recent workflow run for that issue.
 - **Workflow pipelines** — `f` on a focused issue picks a per-project pipeline and runs it in a fresh tab. Each pipeline is a chain of one-shot agent calls; every step pins its own provider (`claude` / `codex` / …) + model + prompt, so a single workflow can chain `claude → codex → claude` if you want. Steps run sequentially in the same cwd, and the previous step's assistant output is forwarded to the next as a `Previous step output:` block. The workflow tab is read-only — no input box, just a banner showing the current step (`▸ workflow "fix" · step 2/3: review (codex/gpt-5)`); `Ctrl+C` cancels the chain and `Ctrl+D` closes the tab. The kanban repaints in real time as each step runs. `Ctrl+F` on a chat tab pops the same picker against the current chat instead of an issue — the spawned workflow gets the user/assistant turns appended verbatim under a `Reference (chat transcript):` block (tool calls, shell output, and other system entries are filtered out). Build pipelines via `Ctrl+W` (or `/workflows`, or `/config` → Project Options → Workflows…); the dedicated screen offers per-project add/rename/reorder/delete with a multi-line in-app prompt editor. Edits on a workflow that's currently running are blocked with a toast until the run finishes.
 - **Inline diffs** — `Edit` / `Write` / `NotebookEdit` structured patches render as colored unified diffs in history (toggle with `/config`)
 - **Input history** — `↑` / `↓` at the first line of the input walks prior sent messages
@@ -144,7 +144,7 @@ responses re-theme too.
 
 Typing `/` at the prompt opens a popover with every slash command ask
 knows about. Five are built into the TUI itself — `/resume`, `/new`,
-`/clear`, `/model`, `/config` — and the rest are discovered from
+`/clear`, `/effort`, `/config` — and the rest are discovered from
 claude's init event the first time the subprocess starts and cached
 into `~/.config/ask/ask.json` so the popover has completions from the
 first keystroke on the next launch.
@@ -160,7 +160,7 @@ colliding.
 
 Continue typing to filter both sets together — `/r` narrows to
 `/resume` alongside any claude-side `/release-notes`, `/review`,
-`/security-review`, etc., while `/mod` jumps to `/model`. `↑` / `↓`
+`/security-review`, etc., while `/eff` jumps to `/effort`. `↑` / `↓`
 walk the filtered list and `Tab` auto-completes the highlighted entry
 into the input.
 
@@ -201,8 +201,14 @@ ask
 |--------------------|-----------------------------------------------------------------------|
 | `/resume`          | Pick a prior session in this directory                                |
 | `/new` / `/clear`  | Discard history and start a fresh session                             |
-| `/model`           | Choose the Claude model (default / haiku / sonnet / opus / custom)    |
+| `/effort`          | Choose the provider's reasoning effort                                |
 | `/config`          | Open the `ask` config modal (see [Config](#config))                   |
+
+Provider and model switching live on `Ctrl+M` (no slash command): a
+searchable picker with a "Recently used" section followed by every
+provider's models under per-provider headings. Picking a model whose
+provider has no API key configured prompts for the key inline and
+saves it to `~/.config/ask/ask.json` before applying the switch.
 
 Claude's own slash commands (the ones surfaced by `claude` at init) are
 merged into the popover alongside these. Typing `/` filters both lists.
@@ -291,6 +297,9 @@ render as raw text in history. Drop to a separate shell for those.
 | `Ctrl+C` (twice, idle) | Close the current tab. First press shows a `Press ctrl+c again to exit` hint; a second `Ctrl+C` closes the tab (or quits if it was the last). Any other key disarms the hint. |
 | `Ctrl+D`               | Close the current tab immediately; quits if it's the last one |
 | `Ctrl+T`               | Open a new tab (inherits the active tab's cwd)     |
+| `Ctrl+M`               | Open the provider/model picker (search, recently used, per-provider sections) |
+| `Ctrl+I`               | Open the issues screen (kanban)                    |
+| `Ctrl+R`               | Open the PRs screen (kanban)                       |
 | `Ctrl+←` / `Ctrl+→`    | Cycle to the previous / next tab (wraps)           |
 | `PgUp` / `PgDn`        | Scroll the viewport half a page                    |
 | Mouse wheel            | Scroll the viewport                                |
@@ -333,8 +342,10 @@ closes the modal.
 
 Other fields the config file stores automatically:
 
-- `claude.model` — last `/model` pick; passed as `--model` to the claude subprocess on the next spawn.
-- `claude.slashCommands` — cache of slash commands reported by `claude`'s init event, so the popover has completions before the first real call.
+- `<provider>.model` — last `Ctrl+M` pick for that provider, used as its default model on the next session.
+- `<provider>.apiKey` — saved when the `Ctrl+M` picker prompts for a missing key (the provider's environment variable also works).
+- `recentModels` — the `Ctrl+M` picker's "Recently used" list (newest first, capped at 5).
+- `<provider>.slashCommands` — cache of discovered slash commands, so the popover has completions before the first real call.
 
 The file is created on first launch and rewritten whenever a value
 changes; hand-editing it while `ask` is closed is fine.

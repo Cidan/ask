@@ -447,7 +447,8 @@ func TestCarry_HintReflectsCarryState(t *testing.T) {
 	}
 }
 
-func TestCarry_CtrlRReloadCancelsCarryFirst(t *testing.T) {
+func TestCarry_ReloadKeyCancelsCarryFirst(t *testing.T) {
+	reload := bindReloadForTest(t)
 	f := newCarryFixture(t)
 	f.view.selColIdx, f.view.selRowIdx = 0, 0
 	f.view.pickupCarry(f.state)
@@ -459,13 +460,12 @@ func TestCarry_CtrlRReloadCancelsCarryFirst(t *testing.T) {
 	f.state.tabID = 7
 	m.toast = NewToastModel(40, time.Second)
 
-	ctrlR := tea.KeyPressMsg(tea.Key{Code: 'r', Mod: tea.ModCtrl})
-	_, _, handled := issuesScreen{}.updateKey(m, ctrlR)
+	_, _, handled := issuesScreen{}.updateKey(m, reload)
 	if !handled {
-		t.Fatalf("Ctrl+R on kanban should be handled")
+		t.Fatalf("reload key on kanban should be handled")
 	}
 	if f.view.carry.active {
-		t.Errorf("Ctrl+R must cancel carry before reload")
+		t.Errorf("reload must cancel carry before refetching")
 	}
 }
 

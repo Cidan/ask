@@ -68,6 +68,11 @@ type askConfig struct {
 	// persisted; an empty/missing map means "all defaults."
 	Keybindings map[string]string `json:"keybindings,omitempty"`
 
+	// RecentModels is the most-recently-used list surfaced at the top
+	// of the Ctrl+M model picker (newest first, capped at
+	// maxRecentModels). Every successful pick push-fronts here.
+	RecentModels []recentModelRef `json:"recentModels,omitempty"`
+
 	// Projects holds per-project settings keyed by the canonical
 	// absolute path of the project root. Issue-tracking is the first
 	// per-project surface; future per-project knobs (custom slash
@@ -586,6 +591,40 @@ func resolveDeepSeekBaseURL(c apiProviderConfig) string {
 		return c.BaseURL
 	}
 	return deepseekDefaultBaseURL
+}
+
+// recentModelRef is one Ctrl+M picker "Recently used" entry.
+type recentModelRef struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// maxRecentModels caps the picker's "Recently used" section.
+const maxRecentModels = 5
+
+// recordRecentModel push-fronts a pick onto cfg.RecentModels,
+// deduping and capping. No-op on blank ids; save errors are logged,
+// never surfaced — losing a recents entry must not break a model
+// switch.
+func recordRecentModel(providerID, modelID string) {
+	if providerID == "" || modelID == "" {
+		return
+	}
+	if err := withConfigLock(func() error {
+		cfg, _ := loadConfig()
+		ref := recentModelRef{Provider: providerID, Model: modelID}
+		out := make([]recentModelRef, 0, maxRecentModels)
+		out = append(out, ref)
+		for _, r := range cfg.RecentModels {
+			if r != ref && len(out) < maxRecentModels {
+				out = append(out, r)
+			}
+		}
+		cfg.RecentModels = out
+		return saveConfig(cfg)
+	}); err != nil {
+		debugLog("recordRecentModel %s/%s: %v", providerID, modelID, err)
+	}
 }
 
 type uiConfig struct {

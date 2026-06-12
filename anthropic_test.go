@@ -168,7 +168,7 @@ func TestAnthropicProvider_NoAPIKeyFailsFast(t *testing.T) {
 	if err == nil {
 		t.Fatal("StartSession without a key must fail")
 	}
-	if !strings.Contains(err.Error(), "/config") || !strings.Contains(err.Error(), anthropicEnvAPIKey) {
+	if !strings.Contains(err.Error(), "model picker") || !strings.Contains(err.Error(), anthropicEnvAPIKey) {
 		t.Errorf("error must point at both config and env: %v", err)
 	}
 }

@@ -46,7 +46,7 @@ func TestScreens_CtrlIBlockedWhenUnconfigured(t *testing.T) {
 	}
 }
 
-func TestScreens_CtrlPBlockedWhenUnconfigured(t *testing.T) {
+func TestScreens_CtrlRBlockedWhenUnconfigured(t *testing.T) {
 	prev := githubPRScreenProvider
 	prov := newFakeIssueProvider()
 	prov.configured = false
@@ -55,16 +55,16 @@ func TestScreens_CtrlPBlockedWhenUnconfigured(t *testing.T) {
 
 	m := newTestModel(t, newFakeProvider())
 	m.toast = NewToastModel(40, time.Second)
-	m2, cmd := runUpdate(t, m, ctrlKey('p'))
+	m2, cmd := runUpdate(t, m, ctrlKey('r'))
 	if m2.screen != screenAsk {
-		t.Errorf("Ctrl+P unconfigured should leave us on ask, got %v", m2.screen)
+		t.Errorf("Ctrl+R unconfigured should leave us on ask, got %v", m2.screen)
 	}
 	if cmd == nil {
-		t.Errorf("Ctrl+P unconfigured should produce a toast command")
+		t.Errorf("Ctrl+R unconfigured should produce a toast command")
 	}
 }
 
-func TestScreens_CtrlPConfiguredEntersPRScreen(t *testing.T) {
+func TestScreens_CtrlRConfiguredEntersPRScreen(t *testing.T) {
 	prev := githubPRScreenProvider
 	prov := newFakeIssueProvider()
 	prov.configured = true
@@ -74,18 +74,18 @@ func TestScreens_CtrlPConfiguredEntersPRScreen(t *testing.T) {
 
 	m := newTestModel(t, newFakeProvider())
 	m.toast = NewToastModel(40, time.Second)
-	m2, cmd := runUpdate(t, m, ctrlKey('p'))
+	m2, cmd := runUpdate(t, m, ctrlKey('r'))
 	if m2.screen != screenPRs {
-		t.Fatalf("Ctrl+P should switch to PR screen, got %v", m2.screen)
+		t.Fatalf("Ctrl+R should switch to PR screen, got %v", m2.screen)
 	}
 	if m2.prs == nil {
-		t.Fatalf("Ctrl+P should seed PR state")
+		t.Fatalf("Ctrl+R should seed PR state")
 	}
 	if m2.prs.provider != prov {
 		t.Fatalf("PR state provider mismatch: got %T want fake provider", m2.prs.provider)
 	}
 	if cmd == nil {
-		t.Fatalf("Ctrl+P should dispatch initial screen work")
+		t.Fatalf("Ctrl+R should dispatch initial screen work")
 	}
 }
 
@@ -107,7 +107,7 @@ func TestScreens_BlockedWhileModalOpen(t *testing.T) {
 		{"ask question", func(m *model) { m.mode = modeAskQuestion }},
 		{"approval", func(m *model) { m.mode = modeApproval }},
 		{"config", func(m *model) { m.mode = modeConfig }},
-		{"provider switch", func(m *model) { m.mode = modeProviderSwitch }},
+		{"model picker", func(m *model) { m.mode = modeModelPicker }},
 		{"cancel-turn confirm", func(m *model) { m.cancelTurnConfirming = true }},
 		{"close-tab confirm", func(m *model) { m.closeTabConfirming = true }},
 		{"merge-pr confirm", func(m *model) { m.mergePRConfirming = true }},

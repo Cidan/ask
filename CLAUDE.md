@@ -78,11 +78,11 @@ One `package main`, one file per concern.
 | `agent_tools_mcp.go`   | MCP client v2 (`mcpManager`/`mcpServerConn`): per-session manager over stdio/http/sse transports (official go-sdk v1.6.1), lazy ping-and-rebuild before every call + one renew-and-retry, `tools/list_changed` → live toolset refresh, MCP elicitation → ask's question modal (form mode: enum/boolean/free-form, typed answers; URL mode + headless decline), image tool-results as real media when the model has vision. Tools are `mcp__<server>__<tool>`. |
 | `mcp_servers.go`       | User-facing MCP server config: `mcpServers` maps (user-global + per-project) merged over project-root `.mcp.json` (claude-code convention), `${VAR}`/`${VAR:-default}` expansion, per-server type inference, timeout, enabled/disabled tool filters, Disabled tombstones. |
 | `mcp_oauth.go`         | OAuth for remote MCP servers (`oauth: true`): SDK authorization-code + PKCE + dynamic client registration, browser launch via swappable `mcpOAuthOpenBrowser`, one-shot loopback callback listener, tokens persisted 0600 under `~/.config/ask/mcp-oauth/` (valid stored tokens skip the browser; expiry re-runs the flow). |
-| `config_api_provider.go`| `/config → DeepSeek.../Anthropic.../OpenAI...` sub-pickers — ONE shared state machine (`apiProviderPickerSpecs`) for masked API key + base URL rows per in-process provider. |
+| `model_picker.go`      | Ctrl+M unified model picker (crush-style): search input, “Recently used” group first (`cfg.RecentModels`, capped push-front), then one section per provider with human-friendly catwalk names; ↑/↓ skip headers, Enter applies the pick to the current tab and persists it as the provider default model (`applyProviderModelSwitch` + `applyVSProviderSwap`; cfg.Provider untouched). Picking a model whose provider has no key drops into an inline API-key prompt (`providerKeySpecs`) that saves to ask.json and proceeds; per-provider “Enter your own…” rows cover custom ids. Replaced the old Ctrl+B switcher AND the `/config` per-provider key sub-pickers AND the `/model` and `/provider` slash commands. |
 | `commands.go`          | `cd` / `ls` handlers and `ls` formatting.                               |
 | `paths.go`             | Path picker state, tilde expansion, completion.                         |
 | `shell.go`             | Shell-mode execution: `$SHELL -c` fork, stdout/stderr pipe streaming, 100-line cap, cwd capture via `pwd > tmpfile`, pgroup SIGKILL on cancel. |
-| `worktree.go`          | `inGitCheckout()` (cwd contains `.git`) and `ensureWorktreeGitignore()`. When worktree is enabled, the latter appends `.claude/worktrees/` to `./.gitignore` unless an existing rule already covers it. Both no-op outside a cwd-level git checkout — we do not walk upward. Called at startup when worktree is on in config, on the `/config` → Worktree toggle going true, and guarding the `--worktree` flag in `ensureProc`. Also exports `validateAskCwd(cwd)` — refuses to start an LLM session when ask is inside `.claude/worktrees/<name>` (with a `/resume` hint naming `<name>`) or in any subdirectory of a git/jj checkout. Plain checkout roots and non-checkout dirs pass. The chat-facing gate fires from `sendToProvider`, `handleCommand` slash dispatch, Ctrl+B, and silently from `Init`. `validateExecutorCwd(args, root)` is the executor-level defense in `prepareProviderSessionAt`: when worktree mode is on at a real checkout, `args.Cwd` must point inside `.claude/worktrees/`. |
+| `worktree.go`          | `inGitCheckout()` (cwd contains `.git`) and `ensureWorktreeGitignore()`. When worktree is enabled, the latter appends `.claude/worktrees/` to `./.gitignore` unless an existing rule already covers it. Both no-op outside a cwd-level git checkout — we do not walk upward. Called at startup when worktree is on in config, on the `/config` → Worktree toggle going true, and guarding the `--worktree` flag in `ensureProc`. Also exports `validateAskCwd(cwd)` — refuses to start an LLM session when ask is inside `.claude/worktrees/<name>` (with a `/resume` hint naming `<name>`) or in any subdirectory of a git/jj checkout. Plain checkout roots and non-checkout dirs pass. The chat-facing gate fires from `sendToProvider`, `handleCommand` slash dispatch, Ctrl+M, and silently from `Init`. `validateExecutorCwd(args, root)` is the executor-level defense in `prepareProviderSessionAt`: when worktree mode is on at a real checkout, `args.Cwd` must point inside `.claude/worktrees/`. |
 | `clipboard.go`         | `wl-paste` integration, returns raw bytes + re-encoded PNG.             |
 | `kitty.go`             | Kitty graphics protocol: detection, transmit over `/dev/tty`, Unicode placeholder rows. |
 | `kitty_diacritics.go`  | The canonical 297-entry Kitty row/column diacritic table.               |
@@ -120,7 +120,7 @@ exercised by the user; code alone won't catch layout regressions.
 | `testhelpers_test.go`      | `fakeProvider`, `initGitRepo`, `isolateHome`, `newTestModel`, etc. |
 | `provider_test.go`         | Provider registry + claudeProvider metadata + Send protocol.     |
 | `worktree_test.go`         | `.claude/worktrees/` lifecycle against tmp git repos.            |
-| `cwd_guard_test.go`        | `validateAskCwd` / `validateExecutorCwd` plus the entry-path gates (sendToProvider, /resume, Ctrl+B, Init). |
+| `cwd_guard_test.go`        | `validateAskCwd` / `validateExecutorCwd` plus the entry-path gates (sendToProvider, /resume, Ctrl+M, Init). |
 | `config_test.go`           | `loadConfig` / `saveConfig` / ollama validation.                 |
 | `update_test.go`           | `model.Update` dispatcher behavior via `fakeProvider`.           |
 | `workflows_test.go`        | Workflow tracker (markWorking/markFinal/lookup/clear), schema round-trip (incl. loop steps), prompt assembly, glyph table, `effectiveMaxIterations`. |
@@ -144,7 +144,7 @@ exercised by the user; code alone won't catch layout regressions.
 | `agent_session_test.go`    | Store round-trip (typed parts survive), CreatedAt preservation, list ordering, LoadHistory tool-output modes, Materialize. |
 | `agent_prompt_test.go`     | Prompt assembly: env block, context-file discovery/dedupe/cap, determinism, steering tail, worktree clause. |
 | `agent_diff_test.go`       | `unifiedDiff` — hunk headers/merging/context caps, no-EOF-newline markers, budget fallback, apply-the-patch property check via `parseUnifiedDiff`. |
-| `config_api_provider_test.go` | `/config → <API provider>` pickers (parameterized over all specs) — field commit persists, URL validation keeps editor open, Esc discards, paste appends, key summary never echoes the key, global-config rows present. |
+| `model_picker_test.go`     | Ctrl+M picker — open/seed (incl. busy gate), header-skipping nav + wrap, fuzzy filter (provider name + friendly name + id), apply semantics (cross-provider clears session, same-provider keeps, no SaveSettings, tab-local), recents (record/cap/dedupe/resurface incl. synthesized custom ids), API-key gate (prompt/save/esc/env-or-config skip), custom-id editor, paste routing, friendly-name + fuzzy helpers, `missingAPIKeyError`. |
 | `anthropic_test.go`        | Anthropic spec — metadata/registry, effort→wire incl. clamping, cache-breakpoint placement (`anthropicPrepareStep` marks system + last 2, strips stale, never mutates caller; `anthropicDecorateTools` marks last tool), no-key fail-fast, lifecycle w/ image attachment → wire FilePart, persisted transcript free of cache markers, context windows. |
 | `openai_test.go`           | OpenAI spec — metadata/registry, Responses-API prefix predicate, encrypted-reasoning + summary options, effort mapping, no-key fail-fast, lifecycle (images accepted), context windows. |
 | `catalog_test.go`          | catwalk lookups — model hit/miss, default-first id list, window/image fallbacks, effort clamping (down to nearest, up from below-range). |
@@ -165,6 +165,7 @@ exercised by the user; code alone won't catch layout regressions.
 - `Update` is a **value receiver** (`func (m model) Update(...) (tea.Model, tea.Cmd)`). Helpers that need to mutate (`layout`, `appendUser`, `killProc`, etc.) are pointer receivers — Go takes `&m` implicitly on the local copy and the returned `m` propagates back to the runtime.
 - `View()` composes everything into one string. When an overlay is needed (slash popover, path picker, modal, scrollbar), we draw onto a `uv.ScreenBuffer` and return its rendered content; otherwise we return the plain body.
 - The modal is drawn **on top** of the normal body so the user sees the history underneath — do not early-return a modal-only view.
+- **Popups are wide-and-flat.** Design popups prefer a landscape rectangle over a tower: generous width (config modals 84×18, model picker 60–84 wide with a 12-row list cap, keybindings ≥56, workflow picker 72), tight visible-row counts, scroll windows instead of growing taller. New modals should follow this silhouette; `TestModelPicker_ViewIsWiderThanTall` pins the property for the picker.
 
 ### Stick-to-bottom rule
 
@@ -558,7 +559,7 @@ package-level var for tests), `callOptions` (effort→wire),
 and config-block accessors. Registration order is explicit in
 provider.go's single `init()` — claude first (the default for an empty
 config) until the CLI providers are removed.
-Everything else (tabs, workflows, banner, cancellation, /provider)
+Everything else (tabs, workflows, banner, cancellation, the Ctrl+M picker)
 works because the session emits the exact claude message protocol:
 `streamStatusMsg`, `assistantTextMsg` (one per completed text block,
 emitted at `OnTextEnd`), `toolCallMsg`/`toolResultMsg`, `toolDiffMsg`
@@ -624,7 +625,7 @@ JSON round-trip) under `~/.config/ask/agent-sessions/<provider>/`,
 keyed by the same cwd encoding claude's project dirs use. Resume
 replays the stored messages into the next wire call; Materialize
 seeds a fresh transcript from NeutralTurns for cross-provider
-/provider swaps. Before persisting, `repairDanglingToolCalls`
+Ctrl+M provider swaps. Before persisting, `repairDanglingToolCalls`
 synthesizes error results for any unanswered tool call so a resumed
 transcript never violates the strict call/result pairing. Loop
 detection (identical tool-step signatures, >5 repeats in a 10-step

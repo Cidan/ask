@@ -958,8 +958,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.mode == modeConfig && m.configMemoryPickerActive && m.configMemoryFieldEditing != "" {
 			return m.applyConfigMemoryPaste(msg.Content)
 		}
-		if m.mode == modeConfig && m.configAPIProviderPicker != "" && m.configAPIProviderFieldEditing != "" {
-			return m.applyConfigAPIProviderPaste(msg.Content)
+		if m.mode == modeModelPicker {
+			return m.applyModelPickerPaste(msg.Content)
 		}
 		if m.mode == modeConfig && m.configProjectPickerActive && m.configProjectFieldEditing != "" {
 			return m.applyConfigProjectPaste(msg.Content)
@@ -1058,8 +1058,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m.updateApproval(msg)
 		case modeConfig:
 			return m.updateConfigModal(msg)
-		case modeProviderSwitch:
-			return m.updateProviderSwitch(msg)
+		case modeModelPicker:
+			return m.updateModelPicker(msg)
 		}
 		// Workflow tabs are read-only: the input area is replaced
 		// with a status banner and the user has no way to type a
@@ -1075,7 +1075,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.mergePRConfirming {
 			return m.updateMergePRConfirm(msg)
 		}
-		// Screen-switching keys (Ctrl+I → issues, Ctrl+P → PRs,
+		// Screen-switching keys (Ctrl+I → issues, Ctrl+R → PRs,
 		// Ctrl+O → ask) are
 		// global within a tab but blocked while a modal/confirm overlay
 		// is up. They must run before the active screen's updateKey so a
@@ -1091,8 +1091,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		// the detail view returned by Enter), which keeps Ctrl+I from
 		// surprising a user mid-read.
 		km := currentKeyMap()
-		// Ctrl+P is both ActionScreenPRs and popup list navigation; a
-		// visible popover gets first claim on list-navigation keys.
+		// Ctrl+P / Ctrl+N are popup list-navigation keys; a visible
+		// popover gets first claim on them even when a user rebinds a
+		// screen-switch action onto one of them.
 		deferToPopover := (listNavPrev(msg) || listNavNext(msg)) && m.popoverOpen()
 		if km.Matches(ActionScreenIssues, msg) && !m.modalOpen() && !deferToPopover {
 			if m.screen == screenIssues {
@@ -1238,15 +1239,14 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// be wiped.
 			return m, nil
 		}
-		// Provider switch ends up calling ProbeInit on the new
-		// provider, which forks claude/codex to discover slash
-		// commands. Refuse the same way as a regular send when ask's
-		// cwd isn't a valid checkout root.
+		// A model pick ends up calling ProbeInit on the new provider.
+		// Refuse the same way as a regular send when ask's cwd isn't a
+		// valid checkout root.
 		if invalid := validateAskCwd(m.cwd); invalid.Msg != "" {
 			m.appendHistory(outputStyle.Render(errStyle.Render(invalid.Msg)))
 			return m, nil
 		}
-		return m.openProviderSwitch(), nil
+		return m.openModelPicker(), nil
 	}
 	if km.Matches(ActionChatWorkflow, msg) {
 		// Path-picker / slash popover are mid-edit affordances; let
@@ -1776,7 +1776,7 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 		m.sessionMinted = false
 		m.resumeCwd = ref.Cwd
 		// Realign m.worktreeName with the resumed ref's cwd so a
-		// subsequent swap-before-first-fork (Ctrl+B) doesn't translate
+		// subsequent swap-before-first-fork (Ctrl+M) doesn’t translate
 		// at the wrong cwd. Worktree refs hand over their name; project
 		// -root refs clear any stale name carried over from whatever
 		// the tab held before /resume.
@@ -1862,7 +1862,7 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 	cmd, _, _ := strings.Cut(line, " ")
 	if invalid := validateAskCwd(m.cwd); invalid.Msg != "" {
 		switch cmd {
-		case "/resume", "/new", "/clear", "/model", "/effort", "/config", "/workflows":
+		case "/resume", "/new", "/clear", "/effort", "/config", "/workflows":
 			// Pure UI commands are still safe to run when ask's cwd
 			// is invalid — they don't fork a provider. Blocking them
 			// would also strand the user without a way to fix things
@@ -1909,35 +1909,12 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		m.appendHistory(outputStyle.Render(errStyle.Render(
 			"/add-dir: missing directory argument")))
 		return m, nil
-	case "/model":
-		picker := m.provider.ModelPicker()
-		if len(picker.Options) == 0 && !picker.AllowCustom {
-			m.appendHistory(outputStyle.Render(errStyle.Render(
-				"/model: " + m.provider.DisplayName() + " has no model picker yet")))
-			return m, nil
-		}
-		m = m.startModelPicker()
-		return m, nil
 	case "/effort":
 		m = m.startEffortPicker()
 		return m, nil
 	case "/config":
 		m = m.startConfigModal()
 		return m, nil
-	case "/provider":
-		// Mirror the Ctrl+B guards — refuse mid-turn (the stream
-		// reader is tied to the current proc and the session id is
-		// about to be wiped) and refuse from a cwd that fails the
-		// LLM-startup gate (provider switch ends up calling ProbeInit
-		// which forks the new provider).
-		if m.busy {
-			return m, nil
-		}
-		if invalid := validateAskCwd(m.cwd); invalid.Msg != "" {
-			m.appendHistory(outputStyle.Render(errStyle.Render(invalid.Msg)))
-			return m, nil
-		}
-		return m.openProviderSwitch(), nil
 	case "/workflows":
 		// /workflows opens the builder. Same flow as Ctrl+W: drop
 		// any in-flight issues query so re-entry to the issues

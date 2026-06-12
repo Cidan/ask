@@ -294,8 +294,8 @@ func keybindingsPickerInnerWidth(screenWidth int, rows [][2]string) int {
 			innerW = w
 		}
 	}
-	if innerW < 36 {
-		innerW = 36
+	if innerW < 56 {
+		innerW = 56
 	}
 	if screenWidth > 0 {
 		if maxInnerW := screenWidth - themePickerBoxStyle.GetHorizontalFrameSize(); maxInnerW < innerW {

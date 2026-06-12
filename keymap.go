@@ -22,8 +22,8 @@ type Action string
 
 // Ctrl+C and modal-escape Ctrl+D are deliberately *not* on this list.
 // Ctrl+C is the universal cancel and every screen/modal needs it to
-// always work; modal-escape Ctrl+D (the /config modal, provider
-// switcher, approval, ask-question, ollama screen) stays hardcoded
+// always work; modal-escape Ctrl+D (the /config modal, model picker,
+// approval, ask-question, ollama screen) stays hardcoded
 // for the same reason — Esc already closes those, but Ctrl+D is the
 // canonical exit so its dispatcher mustn't follow a rebound key into
 // nowhere. Same for j/k/arrow navigation inside the kanban / workflow
@@ -226,17 +226,19 @@ func DefaultKeyMap() KeyMap {
 
 var defaultKeyBindings = map[Action]KeyBinding{
 	ActionScreenIssues:    {Mod: tea.ModCtrl, Code: 'i'},
-	ActionScreenPRs:       {Mod: tea.ModCtrl, Code: 'p'},
+	ActionScreenPRs:       {Mod: tea.ModCtrl, Code: 'r'},
 	ActionScreenWorkflows: {Mod: tea.ModCtrl, Code: 'w'},
 	ActionScreenAsk:       {Mod: tea.ModCtrl, Code: 'o'},
-	ActionProviderSwitch:  {Mod: tea.ModCtrl, Code: 'b'},
+	ActionProviderSwitch:  {Mod: tea.ModCtrl, Code: 'm'},
 	ActionChatWorkflow:    {Mod: tea.ModCtrl, Code: 'f'},
-	ActionReload:          {Mod: tea.ModCtrl, Code: 'r'},
-	ActionTabNew:          {Mod: tea.ModCtrl, Code: 't'},
-	ActionTabClose:        {Mod: tea.ModCtrl, Code: 'd'},
-	ActionTabPrev:         {Mod: tea.ModCtrl, Code: tea.KeyLeft},
-	ActionTabNext:         {Mod: tea.ModCtrl, Code: tea.KeyRight},
-	ActionAppSuspend:      {Mod: tea.ModCtrl, Code: 'z'},
+	// Reload ships unbound: Ctrl+R belongs to the PRs screen. Users
+	// who want a reload key bind one in /config → Keybindings.
+	ActionReload:     {},
+	ActionTabNew:     {Mod: tea.ModCtrl, Code: 't'},
+	ActionTabClose:   {Mod: tea.ModCtrl, Code: 'd'},
+	ActionTabPrev:    {Mod: tea.ModCtrl, Code: tea.KeyLeft},
+	ActionTabNext:    {Mod: tea.ModCtrl, Code: tea.KeyRight},
+	ActionAppSuspend: {Mod: tea.ModCtrl, Code: 'z'},
 }
 
 func init() {
@@ -346,7 +348,7 @@ var actionGroups = []actionMetaGroup{
 		{ActionTabNext, "Next tab"},
 	}},
 	{Heading: "Pickers & dispatch", Items: []actionMetaItem{
-		{ActionProviderSwitch, "Provider switch"},
+		{ActionProviderSwitch, "Model picker"},
 		{ActionChatWorkflow, "Run workflow on chat"},
 		{ActionReload, "Reload issues/PRs"},
 	}},

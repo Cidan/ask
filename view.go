@@ -581,7 +581,7 @@ func (m model) View() tea.View {
 	needModal := m.mode == modeAskQuestion
 	needApproval := m.mode == modeApproval
 	needConfig := m.mode == modeConfig
-	needSwitch := m.mode == modeProviderSwitch
+	needSwitch := m.mode == modeModelPicker
 	needCancelConfirm := m.cancelTurnConfirming && m.mode == modeInput
 	needCloseTabConfirm := m.closeTabConfirming && m.mode == modeInput
 	needMergeConfirm := m.mergePRConfirming && m.mode == modeInput
@@ -777,23 +777,6 @@ func (m model) View() tea.View {
 					Max: image.Pt(pX+pW, pY+pH),
 				})
 			}
-			if m.configAPIProviderPicker != "" {
-				picker := m.viewConfigAPIProviderPicker()
-				pW := lipgloss.Width(picker)
-				pH := lipgloss.Height(picker)
-				pX := (m.width - pW) / 2
-				pY := (m.height - pH) / 2
-				if pX < 0 {
-					pX = 0
-				}
-				if pY < 0 {
-					pY = 0
-				}
-				uv.NewStyledString(picker).Draw(canvas, image.Rectangle{
-					Min: image.Pt(pX, pY),
-					Max: image.Pt(pX+pW, pY+pH),
-				})
-			}
 			if m.configKeybindingsPickerActive {
 				picker := m.viewConfigKeybindingsPicker()
 				pW := lipgloss.Width(picker)
@@ -813,7 +796,7 @@ func (m model) View() tea.View {
 			}
 		}
 		if needSwitch {
-			picker := m.viewProviderSwitch()
+			picker := m.viewModelPicker()
 			pW := lipgloss.Width(picker)
 			pH := lipgloss.Height(picker)
 			pX := (m.width - pW) / 2
@@ -1439,7 +1422,7 @@ func (m model) worktreeChip() string {
 // providerChip is the right-anchored status badge: current provider ID,
 // model, and — when data is available — live plan-usage segments
 // (5h/wk/ctx). Shown even at idle so the user knows which backend
-// Ctrl+B will swap.
+// the model picker (Ctrl+M) will swap.
 func (m model) providerChip() string {
 	return m.providerChipFitting(0)
 }

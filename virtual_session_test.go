@@ -564,9 +564,8 @@ func TestApplyProviderSwitch_PreservesVirtualSessionID(t *testing.T) {
 	m.virtualSessionID = "vs-carry"
 	m.sessionID = "native-from-A"
 	m.resumeCwd = "/ws"
-	m.providerSwitchProvIdx = 1 // target is B
 
-	newM, _ := m.applyProviderSwitch("")
+	newM, _ := m.applyProviderModelSwitch(providerRegistry[1], "")
 	mm := newM.(model)
 	if mm.provider.ID() != "fakeB" {
 		t.Fatalf("swap failed: provider=%s", mm.provider.ID())
@@ -782,8 +781,7 @@ func TestApplyProviderSwitch_StaleMappingTriggersTranslate(t *testing.T) {
 		{kind: histUser, text: "user-B"},
 		{kind: histResponse, text: "assistant-B"},
 	}
-	m.providerSwitchProvIdx = 0 // target A
-	newM, cmd := m.applyProviderSwitch("")
+	newM, cmd := m.applyProviderModelSwitch(providerRegistry[0], "")
 	mm := newM.(model)
 	if mm.provider.ID() != "fakeA" {
 		t.Fatalf("expected provider fakeA, got %s", mm.provider.ID())
@@ -840,8 +838,7 @@ func TestTranslate_PassesWorktreeCwdToMaterialize(t *testing.T) {
 		{kind: histUser, text: "hi"},
 		{kind: histResponse, text: "hello"},
 	}
-	m.providerSwitchProvIdx = 1
-	newM, cmd := m.applyProviderSwitch("")
+	newM, cmd := m.applyProviderModelSwitch(providerRegistry[1], "")
 	mm := newM.(model)
 	if mm.provider.ID() != "fakeB" {
 		t.Fatalf("swap failed: %s", mm.provider.ID())
@@ -932,9 +929,8 @@ func TestApplyProviderSwitch_SkipsErroredTrailingUserTurn(t *testing.T) {
 		{kind: histUser, text: "failed prompt"},
 		{kind: histPrerendered, text: "error: usage limit reached"},
 	}
-	m.providerSwitchProvIdx = 1
 
-	newM, cmd := m.applyProviderSwitch("")
+	newM, cmd := m.applyProviderModelSwitch(providerRegistry[1], "")
 	mm := newM.(model)
 	if cmd != nil {
 		t.Fatal("switch after an unanswered error turn should not dispatch session translation")
@@ -972,7 +968,7 @@ func TestApplyProviderSwitch_SkipsErroredTrailingUserTurn(t *testing.T) {
 	}
 }
 
-// ---- US-008: Ctrl+B mid-session swap ----
+// ---- US-008: Ctrl+M mid-session swap ----
 
 func TestApplyProviderSwitch_CrossProviderWithMappingLoadsHistory(t *testing.T) {
 	isolateHome(t)
@@ -999,8 +995,7 @@ func TestApplyProviderSwitch_CrossProviderWithMappingLoadsHistory(t *testing.T) 
 	m.virtualSessionID = vsID
 	m.sessionID = "nat-A"
 	m.cwd = "/ws"
-	m.providerSwitchProvIdx = 1 // target B
-	newM, cmd := m.applyProviderSwitch("")
+	newM, cmd := m.applyProviderModelSwitch(providerRegistry[1], "")
 	mm := newM.(model)
 	if mm.provider.ID() != "fakeB" {
 		t.Fatalf("expected provider fakeB, got %s", mm.provider.ID())
@@ -1046,8 +1041,7 @@ func TestApplyProviderSwitch_CrossProviderWithoutMappingMaterializes(t *testing.
 		{kind: histUser, text: "prior user"},
 		{kind: histResponse, text: "prior assistant"},
 	}
-	m.providerSwitchProvIdx = 1
-	newM, cmd := m.applyProviderSwitch("")
+	newM, cmd := m.applyProviderModelSwitch(providerRegistry[1], "")
 	mm := newM.(model)
 	if !mm.busy {
 		t.Error("busy should be true while translation runs")
@@ -1098,8 +1092,7 @@ func TestApplyProviderSwitch_SameProviderDoesNotTouchSession(t *testing.T) {
 	m.virtualSessionID = "vs-keep"
 	m.sessionID = "keep-session"
 	m.resumeCwd = "/keep"
-	m.providerSwitchProvIdx = 0
-	newM, _ := m.applyProviderSwitch("new-model")
+	newM, _ := m.applyProviderModelSwitch(providerRegistry[0], "new-model")
 	mm := newM.(model)
 	if mm.sessionID != "keep-session" {
 		t.Errorf("same-provider swap dropped sessionID: %q", mm.sessionID)
@@ -1326,8 +1319,7 @@ func TestApplyProviderSwitch_RecoversWorktreeFromVS_OnTranslate(t *testing.T) {
 		{kind: histUser, text: "user-A"},
 		{kind: histResponse, text: "assistant-A"},
 	}
-	m.providerSwitchProvIdx = 1
-	newM, cmd := m.applyProviderSwitch("")
+	newM, cmd := m.applyProviderModelSwitch(providerRegistry[1], "")
 	mm := newM.(model)
 	if mm.provider.ID() != "fakeB" {
 		t.Fatalf("swap failed: %s", mm.provider.ID())
@@ -1385,8 +1377,7 @@ func TestApplyProviderSwitch_PrefersLiveWorktreeNameOverVS(t *testing.T) {
 		{kind: histUser, text: "u"},
 		{kind: histResponse, text: "a"},
 	}
-	m.providerSwitchProvIdx = 1
-	_, cmd := m.applyProviderSwitch("")
+	_, cmd := m.applyProviderModelSwitch(providerRegistry[1], "")
 	_ = drainBatch(t, cmd)
 	if gotCwd != "/ws/.claude/worktrees/live-name" {
 		t.Errorf("Materialize cwd=%q want /ws/.claude/worktrees/live-name (live wins over VS)", gotCwd)
@@ -1426,8 +1417,7 @@ func TestApplyProviderSwitch_StaysAtProjectRootWhenNoVSWorktree(t *testing.T) {
 		{kind: histUser, text: "u"},
 		{kind: histResponse, text: "a"},
 	}
-	m.providerSwitchProvIdx = 1
-	_, cmd := m.applyProviderSwitch("")
+	_, cmd := m.applyProviderModelSwitch(providerRegistry[1], "")
 	_ = drainBatch(t, cmd)
 	if gotCwd != "/ws" {
 		t.Errorf("Materialize cwd=%q want /ws (no VS worktree to recover)", gotCwd)
@@ -1474,8 +1464,7 @@ func TestApplyProviderSwitch_PrefersLastProviderProjectRootOverStaleWorktree(t *
 		{kind: histUser, text: "u"},
 		{kind: histResponse, text: "a"},
 	}
-	m.providerSwitchProvIdx = 2 // target fakeC
-	_, cmd := m.applyProviderSwitch("")
+	_, cmd := m.applyProviderModelSwitch(providerRegistry[2], "")
 	_ = drainBatch(t, cmd)
 	if gotCwd != "/ws" {
 		t.Errorf("Materialize cwd=%q want /ws (last provider's explicit project-root ref must win)", gotCwd)
@@ -1489,7 +1478,7 @@ func TestApplyProviderSwitch_PrefersLastProviderProjectRootOverStaleWorktree(t *
 // Cached-path swap onto a worktree-rooted ref must hand the worktree
 // name to m.worktreeName so an immediate second swap-before-fork
 // translates at the right cwd. Without this, the second swap would
-// fall back to the slow VS-recovery path on every chained Ctrl+B.
+// fall back to the slow VS-recovery path on every chained Ctrl+M swap.
 func TestApplyProviderSwitch_RealignsWorktreeNameOnCachedSwap(t *testing.T) {
 	isolateHome(t)
 	pA := newFakeProvider()
@@ -1514,8 +1503,7 @@ func TestApplyProviderSwitch_RealignsWorktreeNameOnCachedSwap(t *testing.T) {
 	m.virtualSessionID = vsID
 	m.cwd = "/ws"
 	m.worktreeName = ""
-	m.providerSwitchProvIdx = 1
-	newM, _ := m.applyProviderSwitch("")
+	newM, _ := m.applyProviderModelSwitch(providerRegistry[1], "")
 	mm := newM.(model)
 	if mm.worktreeName != "blissful-skating-swan" {
 		t.Errorf("worktreeName=%q want blissful-skating-swan (recovered from cached B ref)",
@@ -1551,8 +1539,7 @@ func TestApplyProviderSwitch_ClearsWorktreeNameOnProjectRootCachedSwap(t *testin
 	m.virtualSessionID = vsID
 	m.cwd = "/ws"
 	m.worktreeName = "stale-prior-tab-name"
-	m.providerSwitchProvIdx = 1
-	newM, _ := m.applyProviderSwitch("")
+	newM, _ := m.applyProviderModelSwitch(providerRegistry[1], "")
 	mm := newM.(model)
 	if mm.worktreeName != "" {
 		t.Errorf("worktreeName=%q must be cleared when swapping to a project-root ref",
@@ -1561,7 +1548,7 @@ func TestApplyProviderSwitch_ClearsWorktreeNameOnProjectRootCachedSwap(t *testin
 }
 
 // /resume picker landing on a worktree-rooted ref hands the worktree
-// name to m.worktreeName so a swap-before-first-turn (Ctrl+B) keeps
+// name to m.worktreeName so a swap-before-first-turn (Ctrl+M) keeps
 // the conversation in the right workspace.
 func TestResumeVirtualSession_RealignsWorktreeNameFromCachedRef(t *testing.T) {
 	isolateHome(t)

@@ -198,7 +198,11 @@ func TestPopoverOpen_WorkflowPickerOnlyOnScreensThatRenderIt(t *testing.T) {
 
 func TestKeymapDispatch_CtrlPWithHiddenSlashPopoverStillSwitchesPRs(t *testing.T) {
 	isolateHome(t)
-	invalidateKeyMapCache()
+	// PRs defaults to Ctrl+R now; rebind it onto the list-nav key
+	// Ctrl+P to exercise the hidden-popover gate this test exists for.
+	km := DefaultKeyMap()
+	km[ActionScreenPRs] = KeyBinding{Mod: tea.ModCtrl, Code: 'p'}
+	setKeyMapForTesting(km)
 	defer invalidateKeyMapCache()
 
 	prev := githubPRScreenProvider

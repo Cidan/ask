@@ -64,7 +64,7 @@ func (p *githubPRProvider) DisplayName() string { return "GitHub Pull Requests" 
 // Configured mirrors the issue provider: the same MCP token slot
 // gates both, the same `git remote get-url origin` resolves the
 // project. If either fails, the screen surfaces the standard
-// "not configured" toast at the Ctrl+P entry point.
+// "not configured" toast at the PRs screen-entry point.
 func (p *githubPRProvider) Configured(cfg projectConfig, cwd string) bool {
 	if cfg.MCP.GitHub.Token == "" {
 		return false

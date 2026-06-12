@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"strings"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -44,7 +43,7 @@ func openaiUseResponsesAPI(modelID string) bool {
 var openaiLanguageModel = func(cfg apiProviderConfig, modelID string) (fantasy.LanguageModel, error) {
 	key := resolveOpenAIAPIKey(cfg)
 	if key == "" {
-		return nil, errors.New("no API key configured — set one in /config → OpenAI..., or export " + openaiEnvAPIKey)
+		return nil, missingAPIKeyError(openaiEnvAPIKey)
 	}
 	opts := []openai.Option{
 		openai.WithAPIKey(key),

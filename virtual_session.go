@@ -232,7 +232,7 @@ func (store *virtualSessionStore) listForWorkspace(workspace string) []VirtualSe
 // populated: source path loads history from the source provider's
 // on-disk file and derives both UI entries and wire turns from it;
 // direct path feeds pre-loaded turns straight to Materialize (used
-// by Ctrl+B mid-session when m.history already has the turns).
+// by a Ctrl+M model pick mid-session when m.history already has the turns).
 type translateVSReq struct {
 	tabID           int
 	target          Provider

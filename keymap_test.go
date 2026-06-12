@@ -66,11 +66,18 @@ func TestParseKeyBinding_Errors(t *testing.T) {
 
 // Round-trip every binding in the default map through String → Parse.
 // Stringification is what we persist to JSON, so the inverse must be
-// lossless or users would lose overrides on reload.
+// lossless or users would lose overrides on reload. Unbound defaults
+// (ActionReload ships unbound) round-trip as the empty string.
 func TestKeyBinding_StringRoundTrip(t *testing.T) {
 	for action, b := range defaultKeyBindings {
 		t.Run(string(action), func(t *testing.T) {
 			s := b.String()
+			if b == (KeyBinding{}) {
+				if s != "" {
+					t.Fatalf("unbound default for %s should render empty, got %q", action, s)
+				}
+				return
+			}
 			if s == "" {
 				t.Fatalf("default binding for %s renders empty", action)
 			}
@@ -154,11 +161,14 @@ func TestDefaultKeyMap_CoversAllActions(t *testing.T) {
 	}
 }
 
-// Every default binding must produce a non-empty stringified form so
-// the config picker has something to display and MarshalConfig can
-// detect "matches default" by string equality if it ever needs to.
+// Every *bound* default binding must produce a non-empty stringified
+// form so the config picker has something to display. Unbound defaults
+// (ActionReload) legitimately stringify empty.
 func TestDefaultKeyMap_AllBindingsStringify(t *testing.T) {
 	for action, b := range defaultKeyBindings {
+		if b == (KeyBinding{}) {
+			continue
+		}
 		if b.String() == "" {
 			t.Errorf("default binding for %s has empty String() output", action)
 		}

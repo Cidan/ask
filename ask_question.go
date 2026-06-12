@@ -38,6 +38,11 @@ const (
 
 const askBoxWidth = 100
 
+// switcherCustomRowLabel is the single-source-of-truth label for the
+// "Enter your own" row in ask modals with allow_custom; stored once so
+// the renderer and the cursor-detection logic stay in sync.
+const switcherCustomRowLabel = "Enter your own"
+
 func (m model) startAsk(qs []question) model {
 	(&m).clearSelection()
 	m.mode = modeAskQuestion
@@ -74,110 +79,6 @@ func modelPickerOptions(picker ProviderPicker) []string {
 		options = append(options, switcherCustomRowLabel)
 	}
 	return options
-}
-
-func seedModelPickerSelection(selectedModel string, options []string) (int, string) {
-	if len(options) == 0 {
-		return 0, ""
-	}
-	switch {
-	case selectedModel != "":
-		for i, opt := range options {
-			if strings.EqualFold(opt, switcherCustomRowLabel) {
-				continue
-			}
-			if strings.EqualFold(opt, selectedModel) {
-				return i, ""
-			}
-		}
-		if strings.EqualFold(options[len(options)-1], switcherCustomRowLabel) {
-			return len(options) - 1, selectedModel
-		}
-	}
-	return 0, ""
-}
-
-func (m model) isModelPickerMode() bool {
-	return m.askMode == askForModel || m.askMode == askForProviderSwitchModel
-}
-
-func (m model) startModelPickerWith(prov Provider, picker ProviderPicker, selectedModel string, mode askMode) model {
-	options := modelPickerOptions(picker)
-	prompt := picker.Prompt
-	if prompt == "" {
-		prompt = "Select " + prov.DisplayName() + " model"
-	}
-	m = m.startAsk([]question{{
-		kind:     qPickOne,
-		prompt:   prompt,
-		options:  options,
-		diagrams: make([]string, len(options)),
-	}})
-	m.askMode = mode
-	selected, custom := seedModelPickerSelection(selectedModel, options)
-	if custom != "" {
-		m.askAnswers[0].custom = custom
-	}
-	m.askAnswers[0].picks[selected] = true
-	m.askCursor = selected
-	return m
-}
-
-func (m model) startModelPicker() model {
-	return m.startModelPickerWith(m.provider, m.provider.ModelPicker(), m.providerModel, askForModel)
-}
-
-func (m model) pickedModelFromAsk() string {
-	if len(m.askQuestions) > 0 && len(m.askAnswers) > 0 {
-		q := m.askQuestions[0]
-		ans := m.askAnswers[0]
-		for idx := range ans.picks {
-			if idx < 0 || idx >= len(q.options) {
-				continue
-			}
-			switch {
-			case strings.EqualFold(q.options[idx], switcherCustomRowLabel):
-				return strings.TrimSpace(ans.custom)
-			default:
-				if strings.EqualFold(q.options[idx], "default") {
-					return ""
-				}
-				return q.options[idx]
-			}
-		}
-	}
-	return ""
-}
-
-func (m model) applyModelPick() (model, tea.Cmd) {
-	picked := m.pickedModelFromAsk()
-	m = m.clearAsk()
-	if picked == m.providerModel {
-		return m, nil
-	}
-	m.killProc()
-	m.providerModel = picked
-	settings := m.provider.LoadSettings()
-	settings.Model = picked
-	if err := m.provider.SaveSettings(settings); err != nil {
-		debugLog("SaveSettings err: %v", err)
-	}
-	var msg string
-	switch picked {
-	case "":
-		msg = "✓ model cleared (using " + m.provider.DisplayName() + " default)"
-	default:
-		msg = "✓ model set to " + picked
-	}
-	m.appendHistory(outputStyle.Render(promptStyle.Render(msg)))
-	return m, nil
-}
-
-func (m model) applyProviderSwitchModelPick() (model, tea.Cmd) {
-	picked := m.pickedModelFromAsk()
-	m = m.clearAsk()
-	mi, cmd := m.applyProviderSwitch(picked)
-	return mi.(model), cmd
 }
 
 func (m model) startEffortPicker() model {
@@ -253,7 +154,7 @@ func (m model) isOnConfirmTab() bool {
 }
 
 func (m model) isSinglePicker() bool {
-	return m.isModelPickerMode() || m.askMode == askForEffort
+	return m.askMode == askForEffort
 }
 
 func (m model) updateAsk(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -266,9 +167,6 @@ func (m model) updateAsk(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
 		if m.askReply != nil {
 			m.askReply <- askReply{cancelled: true}
-		}
-		if m.askMode == askForProviderSwitchModel {
-			return m.clearAsk().closeProviderSwitch(), nil
 		}
 		return m.clearAsk(), nil
 	}
@@ -315,9 +213,6 @@ func (m model) updateAsk(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.askConfirmingCancel = true
 			m.askCancelChoice = 0
 			return m, nil
-		}
-		if m.askMode == askForProviderSwitchModel {
-			return m.cancelProviderSwitchModelPicker(), nil
 		}
 		return m.clearAsk(), nil
 
@@ -556,12 +451,6 @@ func renderCancelConfirmBox(title, sub string, choice int) string {
 }
 
 func (m model) submitAsk() (model, tea.Cmd) {
-	if m.askMode == askForModel {
-		return m.applyModelPick()
-	}
-	if m.askMode == askForProviderSwitchModel {
-		return m.applyProviderSwitchModelPick()
-	}
 	if m.askMode == askForEffort {
 		return m.applyEffortPick()
 	}

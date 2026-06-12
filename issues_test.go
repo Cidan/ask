@@ -1153,14 +1153,27 @@ func TestIssues_MouseDuringLoadingDoesNotStartSelection(t *testing.T) {
 	}
 }
 
+// bindReloadForTest installs a keymap override binding ActionReload to
+// Alt+R (the default ships unbound — Ctrl+R belongs to the PRs screen)
+// and returns the matching keypress.
+func bindReloadForTest(t *testing.T) tea.KeyPressMsg {
+	t.Helper()
+	km := DefaultKeyMap()
+	km[ActionReload] = KeyBinding{Mod: tea.ModAlt, Code: 'r'}
+	setKeyMapForTesting(km)
+	t.Cleanup(invalidateKeyMapCache)
+	return tea.KeyPressMsg{Mod: tea.ModAlt, Code: 'r'}
+}
+
 func TestCtrlR_ReloadClearsCacheAndDispatchesFreshLoad(t *testing.T) {
+	reload := bindReloadForTest(t)
 	m := enterIssuesScreen(t)
 	// Pre-state: cache has chunks under the nil query.
 	if !m.issues.hasAnyCachedPage(nil) {
 		t.Fatalf("setup: cache should already have nil-query chunks")
 	}
 	prevGen := m.issues.queryGen
-	m, cmd := runUpdate(t, m, ctrlKey('r'))
+	m, cmd := runUpdate(t, m, reload)
 	if m.issues.hasAnyCachedPage(nil) {
 		t.Errorf("Ctrl+R should clear the active query's cache")
 	}
@@ -1179,6 +1192,7 @@ func TestCtrlR_ReloadClearsCacheAndDispatchesFreshLoad(t *testing.T) {
 }
 
 func TestCtrlR_ReloadCancelsInFlight(t *testing.T) {
+	reload := bindReloadForTest(t)
 	m := enterIssuesScreen(t)
 	// Force a known cancelLoad observer.
 	called := false
@@ -1189,19 +1203,20 @@ func TestCtrlR_ReloadCancelsInFlight(t *testing.T) {
 			prev()
 		}
 	}
-	m, _ = runUpdate(t, m, ctrlKey('r'))
+	m, _ = runUpdate(t, m, reload)
 	if !called {
 		t.Errorf("Ctrl+R should cancel any in-flight load via beginLoad")
 	}
 }
 
 func TestCtrlR_ReloadFromKanbanReFiresInitialLoad(t *testing.T) {
+	reload := bindReloadForTest(t)
 	m := enterIssuesScreen(t)
 	m, _ = runUpdate(t, m, ctrlKey('i'))
 	if m.issues.view.name() != "kanban" {
 		t.Fatalf("setup: not on kanban")
 	}
-	m, cmd := runUpdate(t, m, ctrlKey('r'))
+	m, cmd := runUpdate(t, m, reload)
 	if !m.issues.loading {
 		t.Errorf("Ctrl+R on kanban should set loading=true")
 	}
@@ -1219,6 +1234,7 @@ func TestCtrlR_ReloadFromKanbanReFiresInitialLoad(t *testing.T) {
 }
 
 func TestCtrlR_FromDetailViewIsNoOp(t *testing.T) {
+	reload := bindReloadForTest(t)
 	m := enterIssuesScreen(t)
 	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.issues.view.name() != "detail" {
@@ -1226,7 +1242,7 @@ func TestCtrlR_FromDetailViewIsNoOp(t *testing.T) {
 	}
 	prevGen := m.issues.queryGen
 	cacheBefore := m.issues.hasAnyCachedPage(nil)
-	m, _ = runUpdate(t, m, ctrlKey('r'))
+	m, _ = runUpdate(t, m, reload)
 	if m.issues.queryGen != prevGen {
 		t.Errorf("Ctrl+R from detail should NOT bump queryGen; was=%d now=%d", prevGen, m.issues.queryGen)
 	}
@@ -1239,10 +1255,11 @@ func TestCtrlR_FromDetailViewIsNoOp(t *testing.T) {
 }
 
 func TestCtrlR_FromErrorModalRetriesFreshFetch(t *testing.T) {
+	reload := bindReloadForTest(t)
 	m := enterIssuesScreen(t)
 	m.issues.loadErr = fmt.Errorf("flaky network")
 	prevGen := m.issues.queryGen
-	m, cmd := runUpdate(t, m, ctrlKey('r'))
+	m, cmd := runUpdate(t, m, reload)
 	if m.issues.loadErr != nil {
 		t.Errorf("Ctrl+R from error modal should clear loadErr; got %v", m.issues.loadErr)
 	}
@@ -1258,11 +1275,12 @@ func TestCtrlR_FromErrorModalRetriesFreshFetch(t *testing.T) {
 }
 
 func TestCtrlR_WhileSearchBoxOpenIsConsumedByTextInput(t *testing.T) {
-	// Design choice (documented in update.go's Ctrl+R branch):
-	// when the search box is open, Ctrl+R is forwarded to the
-	// textinput as a normal keystroke — it does NOT trigger
+	// Design choice (documented in update.go's reload branch):
+	// when the search box is open, the reload key is forwarded to
+	// the textinput as a normal keystroke — it does NOT trigger
 	// reload. Verify by confirming the search box stays open and
 	// nothing was reloaded.
+	reload := bindReloadForTest(t)
 	m := enterIssuesScreen(t)
 	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: '/'})
 	if m.issues.search == nil {
@@ -1270,24 +1288,38 @@ func TestCtrlR_WhileSearchBoxOpenIsConsumedByTextInput(t *testing.T) {
 	}
 	prevGen := m.issues.queryGen
 	cacheBefore := m.issues.hasAnyCachedPage(nil)
-	m, _ = runUpdate(t, m, ctrlKey('r'))
+	m, _ = runUpdate(t, m, reload)
 	if m.issues.search == nil {
-		t.Errorf("search box should stay open after Ctrl+R (textinput consumes the key)")
+		t.Errorf("search box should stay open after reload key (textinput consumes it)")
 	}
 	if m.issues.queryGen != prevGen {
-		t.Errorf("Ctrl+R while search box open should NOT bump queryGen")
+		t.Errorf("reload key while search box open should NOT bump queryGen")
 	}
 	if m.issues.hasAnyCachedPage(nil) != cacheBefore {
-		t.Errorf("Ctrl+R while search box open should NOT clear cache")
+		t.Errorf("reload key while search box open should NOT clear cache")
 	}
 }
 
-func TestIssues_KanbanHintAdvertisesReload(t *testing.T) {
+func TestIssues_KanbanHintAdvertisesReloadWhenBound(t *testing.T) {
+	bindReloadForTest(t)
 	s := newIssuesState()
 	seedMockIssues(s)
 	v := newKanbanIssueView(s)
-	if !strings.Contains(stripAnsi(v.hint()), "r reload") {
-		t.Errorf("kanban hint should advertise 'r reload', got %q", stripAnsi(v.hint()))
+	if !strings.Contains(stripAnsi(v.hint()), "alt+r reload") {
+		t.Errorf("kanban hint should advertise the bound reload key, got %q", stripAnsi(v.hint()))
+	}
+}
+
+// Reload ships unbound (Ctrl+R belongs to the PRs screen), so the
+// stock hint must not show a dangling reload clause.
+func TestIssues_KanbanHintOmitsReloadWhenUnbound(t *testing.T) {
+	setKeyMapForTesting(DefaultKeyMap())
+	t.Cleanup(invalidateKeyMapCache)
+	s := newIssuesState()
+	seedMockIssues(s)
+	v := newKanbanIssueView(s)
+	if strings.Contains(stripAnsi(v.hint()), "reload") {
+		t.Errorf("kanban hint should omit reload when unbound, got %q", stripAnsi(v.hint()))
 	}
 }
 

@@ -71,7 +71,7 @@ type issueLoadingTickMsg struct {
 
 // issueLoadingTickCmd schedules the next loader animation tick.
 // Returned by every entry path that flips s.loading=true (Ctrl+I /
-// Ctrl+P screen entry, search-box submit, reloadCurrentQuery) and
+// screen-entry keybind, search-box submit, reloadCurrentQuery) and
 // re-emitted by the handler as long as loading is still true.
 func issueLoadingTickCmd(tabID int, screen screenID) tea.Cmd {
 	return tea.Tick(issueLoadingTickInterval, func(time.Time) tea.Msg {
@@ -417,7 +417,7 @@ func newIssuesState() *issuesState {
 }
 
 // newPRsState builds an empty kanban state for the PR screen. The
-// provider is installed by the Ctrl+P screen-entry path in update.go
+// provider is installed by the PRs screen-entry path in update.go
 // once the GitHub MCP token is verified configured. The screen
 // discriminator is the only difference from newIssuesState — it
 // drives the message-routing pick-up in update.go.
@@ -428,7 +428,7 @@ func newPRsState() *issuesState {
 // newKanbanState is the shared constructor for the issues and PRs
 // kanban surfaces. It seeds an empty state with the noneIssueProvider
 // so a render before screen entry doesn't panic; the per-screen
-// dispatch path (Ctrl+I / Ctrl+P) installs the real provider once
+// dispatch path (Ctrl+I / Ctrl+R) installs the real provider once
 // configuration has been verified.
 func newKanbanState(screen screenID) *issuesState {
 	s := &issuesState{

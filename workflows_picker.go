@@ -74,7 +74,7 @@ func (m model) updateWorkflowPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// renderWorkflowPicker draws the centred modal. Width is min(60,
+// renderWorkflowPicker draws the centred modal. Width is min(72,
 // screen-8); height fits the rows + chrome. Empty Items renders a
 // dim "no workflows" row with a hint to open the builder.
 func (m model) renderWorkflowPicker() string {
@@ -82,7 +82,7 @@ func (m model) renderWorkflowPicker() string {
 	if pkr == nil {
 		return ""
 	}
-	width := 60
+	width := 72
 	if width > m.width-8 {
 		width = m.width - 8
 	}

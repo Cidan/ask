@@ -91,7 +91,6 @@ func (p agentAPIProvider) BaseSlashCommands() []slashCmd {
 		{"/resume", "resume a previous " + name + " session"},
 		{"/new", "start a new " + name + " session"},
 		{"/clear", "start a new " + name + " session"},
-		{"/model", "select the " + name + " model"},
 		{"/effort", "select the " + name + " reasoning effort"},
 	}
 }

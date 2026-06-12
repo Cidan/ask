@@ -141,7 +141,7 @@ func (m model) modalOpen() bool {
 
 // popoverOpen reports whether a visible inline picker owns list navigation.
 // These overlays keep m.mode unchanged, so the screen-switch dispatcher
-// needs this separate check before treating Ctrl+P as ActionScreenPRs.
+// needs this separate check before treating a list-nav key as a screen-switch action.
 func (m model) popoverOpen() bool {
 	if m.workflowPicker != nil {
 		return m.screen == screenAsk || isIssueScreen(m.screen)

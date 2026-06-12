@@ -176,8 +176,7 @@ func TestApplyProviderSwitch_ClearsUsageFields(t *testing.T) {
 	m.providerModel = "claude-fable-5"
 	m.lastUsageTokens = 123_456
 	m.modelForContext = "claude-fable-5"
-	m.providerSwitchProvIdx = 1 // swap to openai
-	next, _ := m.applyProviderSwitch("gpt-5.5")
+	next, _ := m.applyProviderModelSwitch(providerRegistry[1], "gpt-5.5")
 	mi := next.(model)
 	if mi.lastUsageTokens != 0 {
 		t.Errorf("lastUsageTokens should be 0 after switch, got %d", mi.lastUsageTokens)
