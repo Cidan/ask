@@ -43,7 +43,19 @@ const (
 	ActionTabClose        Action = "tab.close"
 	ActionTabPrev         Action = "tab.prev"
 	ActionTabNext         Action = "tab.next"
-	ActionAppSuspend      Action = "app.suspend"
+	// ActionTabPrevAlt / ActionTabNextAlt are the vertical-feeling
+	// tab-switch pair (default Ctrl+Up / Ctrl+Down) introduced with
+	// sidebar tab mode, where tabs stack vertically. They work in both
+	// tab modes — in bar mode they're simply a second binding.
+	ActionTabPrevAlt Action = "tab.prevAlt"
+	ActionTabNextAlt Action = "tab.nextAlt"
+	// ActionSidebarFocus (default Tab) swaps keyboard focus between
+	// the typing area and the sidebar tab list. Only intercepted when
+	// sidebar tab mode is active AND the active tab has no local use
+	// for the key (path/slash completion, non-chat screens) — see
+	// app.handleSidebarKey and model.wantsTabKey.
+	ActionSidebarFocus Action = "sidebar.focus"
+	ActionAppSuspend   Action = "app.suspend"
 )
 
 // KeyBinding is a parsed Mod+Code pair. The zero value (Mod==0,
@@ -234,11 +246,14 @@ var defaultKeyBindings = map[Action]KeyBinding{
 	// Reload ships unbound: Ctrl+R belongs to the PRs screen. Users
 	// who want a reload key bind one in /config → Keybindings.
 	ActionReload:     {},
-	ActionTabNew:     {Mod: tea.ModCtrl, Code: 't'},
-	ActionTabClose:   {Mod: tea.ModCtrl, Code: 'd'},
-	ActionTabPrev:    {Mod: tea.ModCtrl, Code: tea.KeyLeft},
-	ActionTabNext:    {Mod: tea.ModCtrl, Code: tea.KeyRight},
-	ActionAppSuspend: {Mod: tea.ModCtrl, Code: 'z'},
+	ActionTabNew:       {Mod: tea.ModCtrl, Code: 't'},
+	ActionTabClose:     {Mod: tea.ModCtrl, Code: 'd'},
+	ActionTabPrev:      {Mod: tea.ModCtrl, Code: tea.KeyLeft},
+	ActionTabNext:      {Mod: tea.ModCtrl, Code: tea.KeyRight},
+	ActionTabPrevAlt:   {Mod: tea.ModCtrl, Code: tea.KeyUp},
+	ActionTabNextAlt:   {Mod: tea.ModCtrl, Code: tea.KeyDown},
+	ActionSidebarFocus: {Code: tea.KeyTab},
+	ActionAppSuspend:   {Mod: tea.ModCtrl, Code: 'z'},
 }
 
 func init() {
@@ -346,6 +361,9 @@ var actionGroups = []actionMetaGroup{
 		{ActionTabClose, "Close tab"},
 		{ActionTabPrev, "Previous tab"},
 		{ActionTabNext, "Next tab"},
+		{ActionTabPrevAlt, "Previous tab (alt)"},
+		{ActionTabNextAlt, "Next tab (alt)"},
+		{ActionSidebarFocus, "Focus sidebar (sidebar mode)"},
 	}},
 	{Heading: "Pickers & dispatch", Items: []actionMetaItem{
 		{ActionProviderSwitch, "Model picker"},

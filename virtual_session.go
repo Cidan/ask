@@ -34,6 +34,12 @@ type VirtualSession struct {
 	LastProvider     string                        `json:"lastProvider,omitempty"`
 	ProviderSessions map[string]ProviderSessionRef `json:"providerSessions"`
 
+	// Title is the short LLM-generated description of the
+	// conversation (tab_title.go), surfaced on sidebar cards and
+	// rehydrated on /resume. Falls back to Preview when empty —
+	// pre-title sessions never had one.
+	Title string `json:"title,omitempty"`
+
 	// AddedDirs are absolute paths the user registered with /add-dir.
 	// Persisted alongside the session so a later /resume rehydrates
 	// m.addedDirs and the relaunched provider runs with --add-dir /
@@ -324,6 +330,7 @@ func (m *model) recordVirtualSession(nativeID string) {
 	providerID := m.provider.ID()
 	vsID := m.virtualSessionID
 	addedDirs := append([]string(nil), m.addedDirs...)
+	tabTitle := m.tabTitle
 	now := time.Now().UTC()
 	var newID string
 	err := mutateVirtualSessions(func(store *virtualSessionStore) error {
@@ -334,6 +341,13 @@ func (m *model) recordVirtualSession(nativeID string) {
 		// empty source-side list.
 		if vs := store.findByID(newID); vs != nil {
 			vs.AddedDirs = addedDirs
+			// Backfill the tab title: the LLM title usually lands
+			// before the first turn completes (i.e. before this VS
+			// exists), so the turn-completion upsert is where it
+			// first reaches disk.
+			if vs.Title == "" && tabTitle != "" {
+				vs.Title = tabTitle
+			}
 		}
 		return nil
 	})

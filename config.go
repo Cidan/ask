@@ -658,6 +658,29 @@ type uiConfig struct {
 	SkipAllPermissions *bool  `json:"skipAllPermissions,omitempty"`
 	Worktree           *bool  `json:"worktree,omitempty"`
 	Theme              string `json:"theme,omitempty"`
+	// TabMode selects how open tabs are presented: "bar" (default —
+	// the single-row strip along the bottom) or "sidebar" (a
+	// permanent right-hand column of task cards; see sidebar.go).
+	// A string enum rather than a bool so future modes (left
+	// sidebar, auto) are a new value, not a config migration.
+	TabMode string `json:"tabMode,omitempty"`
+}
+
+// Tab presentation modes for uiConfig.TabMode. The empty string
+// normalises to bar so pre-sidebar configs keep working unchanged.
+const (
+	tabModeBar     = "bar"
+	tabModeSidebar = "sidebar"
+)
+
+// parseTabMode normalises the persisted TabMode string. Anything that
+// isn't exactly "sidebar" — including the empty default and future
+// typos — is the classic bottom bar.
+func parseTabMode(s string) string {
+	if s == tabModeSidebar {
+		return tabModeSidebar
+	}
+	return tabModeBar
 }
 
 func configPath() (string, error) {

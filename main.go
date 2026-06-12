@@ -98,6 +98,7 @@ func newTab(id int, cfg askConfig) (*model, error) {
 		toolOutputMode:     parseToolOutputMode(cfg.UI.ToolOutput),
 		skipAllPermissions: cfg.UI.SkipAllPermissions != nil && *cfg.UI.SkipAllPermissions,
 		worktree:           cfg.UI.Worktree != nil && *cfg.UI.Worktree,
+		sidebarMode:        parseTabMode(cfg.UI.TabMode) == tabModeSidebar,
 		historyIdx:         -1,
 		shellOutIdx:        -1,
 		shellHistoryIdx:    -1,

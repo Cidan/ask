@@ -19,6 +19,15 @@ func (m model) workflowTabHandleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if currentKeyMap().Matches(ActionTabClose, msg) {
 		return m, closeTabCmd(m.id)
 	}
+	// Enter on a finished supplanted run hands the tab back to the
+	// conversation it took over (sidebar tab mode). Dedicated
+	// workflow tabs have nothing underneath — Enter stays absorbed.
+	if msg.Mod == 0 && msg.Code == tea.KeyEnter {
+		if r := m.workflowRun; r != nil && (r.done || r.failed) && r.supplanted != nil {
+			return m.restoreSupplantedTab()
+		}
+		return m, nil
+	}
 	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
 		// Ctrl+C on a running workflow tab cancels the chain — the
 		// proc is killed and the tab flips to the failed banner.
@@ -41,6 +50,44 @@ func (m model) workflowTabHandleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.chat, cmd = m.chat.Update(msg)
 		m.lastContentFP = ""
 		return m, cmd
+	}
+	return m, nil
+}
+
+// restoreSupplantedTab hands a tab back to the conversation a
+// workflow supplanted (sidebar tab mode): the pre-run provider /
+// session snapshot is reinstated, the run state is dropped, and the
+// input area returns. The step summaries stay in the transcript as a
+// permanent record of the run. The proc is already dead — finalize
+// killed it — so the next user turn relaunches with --resume on the
+// restored session id.
+func (m model) restoreSupplantedTab() (tea.Model, tea.Cmd) {
+	r := m.workflowRun
+	if r == nil || r.supplanted == nil || (!r.done && !r.failed) {
+		return m, nil
+	}
+	snap := r.supplanted
+	m.workflowRun = nil
+	m.provider = snap.provider
+	m.providerModel = snap.providerModel
+	m.providerEffort = snap.providerEffort
+	m.providerSlashCmds = snap.providerSlashCmds
+	m.sessionID = snap.sessionID
+	m.sessionMinted = snap.sessionMinted
+	m.virtualSessionID = snap.virtualSessionID
+	m.resumeCwd = snap.resumeCwd
+	m.worktreeName = snap.worktreeName
+	m.skipAllPermissions = snap.skipAllPermissions
+	m.screen = snap.screen
+	m.busy = false
+	m.status = ""
+	m.todos = nil
+	m.appendHistory(outputStyle.Render(dimStyle.Render(
+		"returned to chat — workflow log preserved above")))
+	m.lastContentFP = ""
+	if m.fc != nil {
+		m.fc.vpFP = ""
+		m.fc.vbFP = ""
 	}
 	return m, nil
 }

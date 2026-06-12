@@ -817,6 +817,26 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		return m, nil
 
+	case tabTitleMsg:
+		if msg.tabID != m.id {
+			return m, nil
+		}
+		// Empty title = generation failed; keep the first-prompt
+		// fallback already seeded by maybeStartTabTitle. A /new or
+		// /clear between dispatch and arrival cleared tabTitle, in
+		// which case the stale title must not resurrect.
+		if strings.TrimSpace(msg.title) == "" || m.tabTitle == "" {
+			return m, nil
+		}
+		m.tabTitle = msg.title
+		(&m).persistTabTitle()
+		return m, nil
+
+	case tabModeChangedMsg:
+		m.sidebarMode = msg.sidebar
+		m.lastContentFP = ""
+		return m, nil
+
 	case imagePastedMsg:
 		debugLog("imagePastedMsg bytes=%d mime=%q pngBytes=%d w=%d h=%d err=%v",
 			len(msg.data), msg.mime, len(msg.pngForKitty), msg.width, msg.height, msg.err)
@@ -1757,6 +1777,12 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 	m.mode = modeInput
 	m.history = nil
 	m.addedDirs = append([]string(nil), vs.AddedDirs...)
+	// Rehydrate the sidebar-card title: the persisted LLM title when
+	// one was generated, else the recorded first-prompt preview.
+	m.tabTitle = vs.Title
+	if m.tabTitle == "" && vs.Preview != "" {
+		m.tabTitle = fallbackTabTitle(vs.Preview)
+	}
 
 	providerID := m.provider.ID()
 	opts := HistoryOpts{
@@ -1899,6 +1925,7 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		m.virtualSessionID = ""
 		m.history = nil
 		m.addedDirs = nil
+		m.tabTitle = ""
 		(&m).clearSelection()
 		m.appendHistory(outputStyle.Render(promptStyle.Render("✓ new session")))
 		return m, nil

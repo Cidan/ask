@@ -278,6 +278,21 @@ type focusTabMsg struct {
 	tabID int
 }
 
+// tabTitleMsg delivers the asynchronously-generated tab title
+// (tab_title.go). An empty title means generation failed — the
+// handler keeps the first-prompt fallback already on the model.
+type tabTitleMsg struct {
+	tabID int
+	title string
+}
+
+// tabModeChangedMsg broadcasts a /config Tab Mode toggle to the app
+// layer (which re-layouts and resets sidebar focus) and to every tab
+// (which refreshes its sidebarMode mirror).
+type tabModeChangedMsg struct {
+	sidebar bool
+}
+
 // spawnWorkflowTabMsg asks the app layer to open a new tab dedicated
 // to running `Workflow` against `Source`, rooted at `Cwd`. Issued by
 // the issues screen when the user hits `f` (Source carries an
@@ -618,6 +633,20 @@ type model struct {
 	// model and consulted by the screen handler before normal key
 	// dispatch so picker keys never bleed into the kanban behind it.
 	workflowPicker *workflowPickerState
+
+	// tabTitle is the short human-readable description of what this
+	// tab is doing, surfaced on the sidebar card (sidebar tab mode).
+	// Seeded from the first user prompt (fallbackTabTitle) the moment
+	// a turn is sent, then refined asynchronously by a one-shot LLM
+	// title call (tab_title.go) and persisted on the VirtualSession.
+	// Empty until the first turn; /new and /clear reset it.
+	tabTitle string
+
+	// sidebarMode mirrors cfg.UI.TabMode == "sidebar" on the tab so
+	// per-turn paths (title generation gating) don't re-read the
+	// config file. Set at newTab; kept fresh by tabModeChangedMsg
+	// broadcasts from the /config toggle.
+	sidebarMode bool
 }
 
 // workflowRunState carries per-tab workflow execution state. Owned
@@ -685,6 +714,36 @@ type workflowRunState struct {
 	// error and the chain aborts at this step.
 	failed       bool
 	failedReason string
+
+	// supplanted is non-nil when the run took over a live chat tab
+	// instead of spawning a dedicated one (sidebar tab mode —
+	// workflows never open new tabs there). It snapshots the
+	// provider/session state the tab held before the run so Enter on
+	// the finished banner restores the conversation exactly where the
+	// user left it (restoreSupplantedTab). Nil on a dedicated
+	// workflow tab — there is nothing underneath to return to.
+	supplanted *workflowTabSnapshot
+}
+
+// workflowTabSnapshot is the pre-run state of a chat tab a workflow
+// supplanted (sidebar tab mode). Captured by app.supplantWorkflow
+// right before the run state is attached; consumed once by
+// restoreSupplantedTab when the user presses Enter on the finished
+// banner. Only fields the step runner mutates are recorded — history
+// is deliberately not snapshotted so the step summary log stays in
+// the transcript as a permanent record.
+type workflowTabSnapshot struct {
+	provider           Provider
+	providerModel      string
+	providerEffort     string
+	providerSlashCmds  []providerSlashEntry
+	sessionID          string
+	sessionMinted      bool
+	virtualSessionID   string
+	resumeCwd          string
+	worktreeName       string
+	skipAllPermissions bool
+	screen             screenID
 }
 
 // loopRunFrame is the per-loop execution cursor, live only while the

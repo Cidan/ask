@@ -200,8 +200,22 @@ func prepareProviderSessionAt(args ProviderSessionArgs, worktreeName, rootCwd st
 // sendToProvider delivers a user turn (text + pending attachments) to
 // the active provider session, starting a fresh subprocess if needed.
 // Returns the right tea.Cmd composition for spinner ticks and stream
-// readers.
+// readers. The thin wrapper also seeds the tab title from the first
+// prompt and kicks the async LLM title refinement (tab_title.go) —
+// a no-op outside sidebar tab mode.
 func (m model) sendToProvider(line string) (tea.Model, tea.Cmd) {
+	titleCmd := (&m).maybeStartTabTitle(line)
+	newM, cmd := m.dispatchProviderTurn(line)
+	if titleCmd == nil {
+		return newM, cmd
+	}
+	if cmd == nil {
+		return newM, titleCmd
+	}
+	return newM, tea.Batch(cmd, titleCmd)
+}
+
+func (m model) dispatchProviderTurn(line string) (tea.Model, tea.Cmd) {
 	nAtt := len(m.pending)
 	debugLog("sendToProvider provider=%s line=%q attachments=%d procNil=%v busy=%v sessionID=%q",
 		m.provider.ID(), line, nAtt, m.proc == nil, m.busy, m.sessionID)

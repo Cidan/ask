@@ -1202,6 +1202,12 @@ func (m model) renderWorkflowBanner() string {
 	if cancelClause == "" {
 		cancelClause = "cancel from /config"
 	}
+	// A supplanted run (sidebar tab mode) hands the tab back to the
+	// chat it took over on Enter; surface that as the primary action.
+	returnClause := ""
+	if r.supplanted != nil {
+		returnClause = "enter return to chat"
+	}
 	var title, line2 string
 	sourceLabel := workflowBannerSourceLabel(r.Source)
 	switch {
@@ -1216,6 +1222,7 @@ func (m model) renderWorkflowBanner() string {
 			sourceLabel,
 			fmt.Sprintf("step %d", r.StepIdx+1),
 			reason,
+			returnClause,
 			closeClause,
 		))
 	case r.done:
@@ -1224,6 +1231,7 @@ func (m model) renderWorkflowBanner() string {
 		line2 = dimStyle.Render(joinHintClauses(
 			sourceLabel,
 			fmt.Sprintf("%d step(s)", len(r.Workflow.Steps)),
+			returnClause,
 			closeClause,
 		))
 	default:

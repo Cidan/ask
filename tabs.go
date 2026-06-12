@@ -34,6 +34,17 @@ type app struct {
 	// users who never started a session don't see a stray banner.
 	quitting    bool
 	quittingVID string
+
+	// tabMode mirrors cfg.UI.TabMode ("bar" | "sidebar") at the app
+	// layer, which owns tab presentation. Seeded by newApp from the
+	// first tab, refreshed on every openTab config reload and by
+	// tabModeChangedMsg from the /config toggle.
+	tabMode string
+
+	// sidebarFocus is true while the sidebar tab list owns the
+	// keyboard (sidebar mode only). The list cursor is a.active —
+	// there is deliberately no separate selection state.
+	sidebarFocus bool
 }
 
 // newApp wraps the first tab in the app struct. Config is deliberately
@@ -41,12 +52,17 @@ type app struct {
 // between tabs (including the default provider) take effect on the
 // very next Ctrl+T.
 func newApp(first *model) app {
+	mode := tabModeBar
+	if first.sidebarMode {
+		mode = tabModeSidebar
+	}
 	return app{
-		tabs:   []*model{first},
-		active: 0,
-		nextID: first.id + 1,
-		width:  first.width,
-		height: first.height,
+		tabs:    []*model{first},
+		active:  0,
+		nextID:  first.id + 1,
+		width:   first.width,
+		height:  first.height,
+		tabMode: mode,
 	}
 }
 
@@ -70,7 +86,11 @@ func (a app) activeTab() *model { return a.tabs[a.active] }
 
 // tabBarHeight returns 1 when more than one tab is open; the active tab's
 // body is layouted in height-1 rows so the tab strip can claim the bottom row.
+// Sidebar mode has no bottom strip — the column replaces it entirely.
 func (a app) tabBarHeight() int {
+	if a.sidebarVisible() {
+		return 0
+	}
 	if len(a.tabs) > 1 {
 		return 1
 	}
@@ -114,19 +134,70 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case km.Matches(ActionAppSuspend, m):
 			return a.suspendApp()
 		case km.Matches(ActionTabNew, m):
+			a.sidebarFocus = false
 			return a.openTab()
 		case km.Matches(ActionTabPrev, m):
 			return a.switchTab(a.active - 1)
 		case km.Matches(ActionTabNext, m):
 			return a.switchTab(a.active + 1)
+		case km.Matches(ActionTabPrevAlt, m):
+			return a.switchTab(a.active - 1)
+		case km.Matches(ActionTabNextAlt, m):
+			return a.switchTab(a.active + 1)
+		}
+		if a.sidebarVisible() {
+			if nm, cmd, handled := a.handleSidebarKey(m); handled {
+				return nm, cmd
+			}
 		}
 		return a.dispatchActive(msg)
 
-	case tea.MouseClickMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg,
-		tea.MouseWheelMsg, tea.PasteMsg, imagePastedMsg:
+	case tea.MouseClickMsg:
+		// Clicks landing on the sidebar column switch to the card
+		// under the cursor; chrome rows absorb. Everything left of
+		// the column is the active tab's business.
+		if a.sidebarVisible() && m.X >= a.bodyWidth() {
+			if idx := a.sidebarCardAt(m.Y); idx >= 0 {
+				newA, _ := a.focusTab(idx)
+				return newA, nil
+			}
+			return a, nil
+		}
 		return a.dispatchActive(msg)
 
+	case tea.MouseWheelMsg:
+		// Wheel events over the sidebar must not scroll the chat
+		// underneath — absorb them.
+		if a.sidebarVisible() && m.X >= a.bodyWidth() {
+			return a, nil
+		}
+		return a.dispatchActive(msg)
+
+	case tea.MouseMotionMsg, tea.MouseReleaseMsg,
+		tea.PasteMsg, imagePastedMsg:
+		return a.dispatchActive(msg)
+
+	case tabModeChangedMsg:
+		if m.sidebar {
+			a.tabMode = tabModeSidebar
+		} else {
+			a.tabMode = tabModeBar
+		}
+		a.sidebarFocus = false
+		// Tell every tab so the sidebarMode mirrors refresh, then
+		// re-broadcast dimensions — the body width just changed.
+		newA, bcCmd := a.broadcast(msg)
+		a2 := newA.(app)
+		newA2, resizeCmd := a2.broadcastResize()
+		return newA2, tea.Batch(bcCmd, resizeCmd)
+
 	case spawnWorkflowTabMsg:
+		// Sidebar mode never opens a new tab for a workflow — the run
+		// supplants the originating tab's chat and the user returns
+		// to it with Enter once the chain finishes.
+		if a.tabModeSidebarOn() {
+			return a.supplantWorkflow(m)
+		}
 		return a.openWorkflowTab(m)
 	case focusTabMsg:
 		idx := a.indexOfTab(m.tabID)
@@ -187,6 +258,16 @@ func (a app) View() tea.View {
 		return tea.View{Content: "last session: " + a.quittingVID + "\n"}
 	}
 	v := a.activeTab().View()
+	if a.sidebarVisible() {
+		body := bodyContentAtHeight(v.Content, a.height)
+		v.Content = joinBodySidebar(body, a.renderSidebar(), a.bodyWidth())
+		if a.sidebarFocus {
+			// The list owns the keyboard; a blinking caret in the
+			// input would claim otherwise.
+			v.Cursor = nil
+		}
+		return v
+	}
 	if len(a.tabs) <= 1 {
 		return v
 	}
@@ -244,10 +325,13 @@ func (a app) dispatchByTabID(tabID int, msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 	// An MCP request is a strong signal the user cares about that tab —
-	// bring it to focus so the modal is visible.
+	// bring it to focus so the modal is visible. In sidebar mode focus
+	// theft is hostile (the user can see the ⚠ badge on the card and
+	// switch when ready), so the request just parks on the tab's modal
+	// state until they do.
 	switch msg.(type) {
 	case askToolRequestMsg, approvalRequestMsg:
-		if idx != a.active {
+		if idx != a.active && !a.tabModeSidebarOn() {
 			if tm, ok := a.focusTab(idx); ok {
 				a = tm
 			}
@@ -278,9 +362,10 @@ func (a app) broadcast(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // broadcastResize tells every tab the current body dimensions so their
 // viewports, input widths and modal layouts stay consistent as the terminal
-// resizes or tabs open/close.
+// resizes or tabs open/close. In sidebar mode the body width excludes the
+// column so tab layout never draws underneath it.
 func (a app) broadcastResize() (tea.Model, tea.Cmd) {
-	resized := tea.WindowSizeMsg{Width: a.width, Height: a.bodyHeight()}
+	resized := tea.WindowSizeMsg{Width: a.bodyWidth(), Height: a.bodyHeight()}
 	return a.broadcast(resized)
 }
 
@@ -302,6 +387,7 @@ func (a app) openTab() (tea.Model, tea.Cmd) {
 	// toggles, etc.). Caching at app-startup would silently strand
 	// the old values in every subsequent tab.
 	cfg, _ := loadConfig()
+	a.tabMode = parseTabMode(cfg.UI.TabMode)
 	t, err := newTab(a.nextID, cfg)
 	if err != nil {
 		active := a.activeTab()
@@ -322,6 +408,77 @@ func (a app) openTab() (tea.Model, tea.Cmd) {
 	modAny, resizeCmd := a.broadcastResize()
 	a2 := modAny.(app)
 	return a2, tea.Batch(resizeCmd, initCmd)
+}
+
+// supplantWorkflow runs a workflow *inside* the originating tab
+// instead of spawning a dedicated one (sidebar tab mode). The tab's
+// provider/session state is snapshotted onto the run
+// (workflowTabSnapshot) so Enter on the finished banner restores the
+// conversation; the step summaries appended during the run stay in
+// the transcript as a permanent record. A tab that is mid-turn (or
+// already hosting a run, or streaming a shell command) refuses with a
+// toast — supplanting it would kill live work.
+func (a app) supplantWorkflow(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
+	idx := a.indexOfTab(req.OriginTabID)
+	if idx < 0 {
+		idx = a.active
+	}
+	t := a.tabs[idx]
+	if t.workflowRun != nil || t.busy || t.procStarting || t.shellProc != nil {
+		return a, a.activeTab().toast.show(
+			"workflow not started: tab is busy — let the current work finish first")
+	}
+	// An idle provider session may still be live; the steps must not
+	// Send into it (each step is a fresh one-shot). The snapshot keeps
+	// sessionID so the restored chat resumes seamlessly on next turn.
+	t.drainPendingReplies()
+	t.killProc()
+	t.workflowRun = &workflowRunState{
+		Workflow: req.Workflow,
+		Source:   req.Source,
+		StepIdx:  0,
+		supplanted: &workflowTabSnapshot{
+			provider:           t.provider,
+			providerModel:      t.providerModel,
+			providerEffort:     t.providerEffort,
+			providerSlashCmds:  t.providerSlashCmds,
+			sessionID:          t.sessionID,
+			sessionMinted:      t.sessionMinted,
+			virtualSessionID:   t.virtualSessionID,
+			resumeCwd:          t.resumeCwd,
+			worktreeName:       t.worktreeName,
+			skipAllPermissions: t.skipAllPermissions,
+			screen:             t.screen,
+		},
+	}
+	// Same contract as a dedicated workflow tab: skip-permissions on,
+	// no modals. Any idle overlay (config modal, session picker,
+	// model picker) is dismissed — the banner owns the tab now.
+	t.skipAllPermissions = true
+	t.screen = screenAsk
+	t.mode = modeInput
+	t.modelPicker = nil
+	t.workflowPicker = nil
+	t.configGlobalPickerActive = false
+	t.configProjectPickerActive = false
+	t.configThemePickerActive = false
+	t.configProviderPickerActive = false
+	t.configMemoryPickerActive = false
+	t.configKeybindingsPickerActive = false
+	t.lastContentFP = ""
+	if t.fc != nil {
+		t.fc.vpFP = ""
+		t.fc.vbFP = ""
+	}
+	a.sidebarFocus = false
+	workflowTracker().markWorking(req.Cwd, req.Source.Key(), req.Workflow.Name, t.id)
+	if idx != a.active {
+		if tm, ok := a.focusTab(idx); ok {
+			a = tm
+		}
+	}
+	startStep := func() tea.Msg { return workflowRunStartStepMsg{tabID: t.id} }
+	return a, startStep
 }
 
 // openWorkflowTab spawns a fresh tab pinned to a workflow run. The
