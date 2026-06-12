@@ -5,9 +5,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"charm.land/fantasy"
 )
 
-func swapTitleGenerator(t *testing.T, fn func(providerID, modelID, prompt string) (string, error)) {
+func swapTitleGenerator(t *testing.T, fn func(providerID, modelID, prompt string) (string, fantasy.Usage, error)) {
 	t.Helper()
 	prev := generateTabTitleText
 	generateTabTitleText = fn
@@ -46,8 +48,8 @@ func TestSanitizeTabTitle(t *testing.T) {
 }
 
 func TestMaybeStartTabTitleGating(t *testing.T) {
-	swapTitleGenerator(t, func(_, _, _ string) (string, error) {
-		return "Generated title", nil
+	swapTitleGenerator(t, func(_, _, _ string) (string, fantasy.Usage, error) {
+		return "Generated title", fantasy.Usage{}, nil
 	})
 
 	// Bar mode: never generates, never seeds.
@@ -96,8 +98,8 @@ func TestMaybeStartTabTitleGating(t *testing.T) {
 }
 
 func TestGenerateTabTitleCmdSwallowsErrors(t *testing.T) {
-	swapTitleGenerator(t, func(_, _, _ string) (string, error) {
-		return "", errors.New("network down")
+	swapTitleGenerator(t, func(_, _, _ string) (string, fantasy.Usage, error) {
+		return "", fantasy.Usage{}, errors.New("network down")
 	})
 	msg := generateTabTitleCmd(7, "fake", "", "prompt")().(tabTitleMsg)
 	if msg.tabID != 7 || msg.title != "" {

@@ -117,6 +117,14 @@ func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel, maxTok
 				if err != nil {
 					return "", err
 				}
+				// The sub-agent's calls bill the same account as the
+				// parent — count them on the session meter. lm may be a
+				// different provider/model than the parent (named
+				// subagent pinning), so price against the sub-agent's
+				// own identity.
+				if cost, known := stepCostUSD(lm.Provider(), lm.Model(), result.TotalUsage); known && env.emit != nil {
+					env.emit(costMsg{costUSD: cost})
+				}
 				return strings.TrimSpace(result.Response.Content.Text()), nil
 			}
 

@@ -113,7 +113,7 @@ func TestSidebarGeometry(t *testing.T) {
 
 func TestSidebarScrollKeepsActiveVisible(t *testing.T) {
 	a := newSidebarTestApp(t, 12)
-	a.height = 10 // header 2 → 8 rows → 2 visible cards
+	a.height = 12 // header 2 → 10 rows → 2 visible cards
 	visible := a.sidebarVisibleCards()
 	if visible != 2 {
 		t.Fatalf("visible cards = %d, want 2", visible)

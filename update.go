@@ -357,6 +357,21 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		m.lastUsageTokens = msg.tokens
+		if msg.costKnown {
+			m.sessionCostUSD += msg.costUSD
+			m.sessionCostKnown = true
+		}
+		if m.streamCh != nil {
+			return m, nextStreamCmd(m.streamCh)
+		}
+		return m, nil
+
+	case costMsg:
+		if msg.proc != m.proc {
+			return m, nil
+		}
+		m.sessionCostUSD += msg.costUSD
+		m.sessionCostKnown = true
 		if m.streamCh != nil {
 			return m, nextStreamCmd(m.streamCh)
 		}
@@ -820,6 +835,12 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 	case tabTitleMsg:
 		if msg.tabID != m.id {
 			return m, nil
+		}
+		// The title call was billed regardless of whether its text is
+		// usable — count it before any early return.
+		if msg.costKnown {
+			m.sessionCostUSD += msg.costUSD
+			m.sessionCostKnown = true
 		}
 		// Empty title = generation failed; keep the first-prompt
 		// fallback already seeded by maybeStartTabTitle. A /new or
@@ -1777,6 +1798,11 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 	m.mode = modeInput
 	m.history = nil
 	m.addedDirs = append([]string(nil), vs.AddedDirs...)
+	// The tab now hosts a different conversation: restart the spend
+	// meter. Historical spend isn't persisted, so a resumed session
+	// counts dollars since resume only.
+	m.sessionCostUSD = 0
+	m.sessionCostKnown = false
 	// Rehydrate the sidebar-card title: the persisted LLM title when
 	// one was generated, else the recorded first-prompt preview.
 	m.tabTitle = vs.Title
@@ -1926,6 +1952,8 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		m.history = nil
 		m.addedDirs = nil
 		m.tabTitle = ""
+		m.sessionCostUSD = 0
+		m.sessionCostKnown = false
 		(&m).clearSelection()
 		m.appendHistory(outputStyle.Render(promptStyle.Render("✓ new session")))
 		return m, nil

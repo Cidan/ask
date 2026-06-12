@@ -143,13 +143,23 @@ func TestDeepseekProvider_SessionLifecycle(t *testing.T) {
 	}
 	msgs := readSessionMsgs(t, ch, isTurnComplete)
 	var done providerDoneMsg
+	var usage *usageMsg
 	for _, m := range msgs {
-		if d, ok := m.(providerDoneMsg); ok {
-			done = d
+		switch v := m.(type) {
+		case providerDoneMsg:
+			done = v
+		case usageMsg:
+			u := v
+			usage = &u
 		}
 	}
 	if done.res.SessionID != "ses-lifecycle" || done.res.Result != "answer one" {
 		t.Errorf("done msg wrong: %+v", done.res)
+	}
+	// A real spec + catalog default model prices every step onto the
+	// usageMsg (10 input tokens at deepseek-v4-pro's 0.435/1M rate).
+	if usage == nil || !usage.costKnown || usage.costUSD != 10*0.435/1e6 {
+		t.Errorf("usageMsg cost wrong: %+v", usage)
 	}
 
 	// The system prompt reached the wire as the first message.

@@ -47,12 +47,25 @@ type streamStatusMsg struct {
 }
 
 // usageMsg carries the running context size in tokens pulled from an
-// assistant event's message.usage block. Emitted once per assistant
-// message; update.go uses it to keep model.lastUsageTokens fresh for
-// the ctx chip segment.
+// assistant event's message.usage block, plus that step's estimated
+// dollar cost (catwalk pricing; costKnown is false for models the
+// catalog can't price). Emitted once per assistant message; update.go
+// uses it to keep model.lastUsageTokens fresh for the ctx chip segment
+// and to accumulate model.sessionCostUSD for the sidebar cost row.
 type usageMsg struct {
-	tokens int
-	proc   *providerProc
+	tokens    int
+	costUSD   float64
+	costKnown bool
+	proc      *providerProc
+}
+
+// costMsg adds an out-of-band spend increment to the session cost
+// meter: API calls that don't flow through the main loop's
+// OnStepFinish (task sub-agents, the compaction summarizer). Only
+// emitted when the catalog could price the call.
+type costMsg struct {
+	costUSD float64
+	proc    *providerProc
 }
 
 // providerModelMsg carries the model name claude reports in its
@@ -280,10 +293,14 @@ type focusTabMsg struct {
 
 // tabTitleMsg delivers the asynchronously-generated tab title
 // (tab_title.go). An empty title means generation failed — the
-// handler keeps the first-prompt fallback already on the model.
+// handler keeps the first-prompt fallback already on the model. The
+// cost fields carry the title call's own spend (it is a real API
+// call) so the session cost meter counts it.
 type tabTitleMsg struct {
-	tabID int
-	title string
+	tabID     int
+	title     string
+	costUSD   float64
+	costKnown bool
 }
 
 // tabModeChangedMsg broadcasts a /config Tab Mode toggle to the app
@@ -596,6 +613,18 @@ type model struct {
 	// most recent assistant event's message.usage block. Divided by
 	// modelContextLimit(modelForContext) for the ctx chip segment.
 	lastUsageTokens int
+
+	// sessionCostUSD accumulates the estimated API spend (dollars) of
+	// this tab's session: every main-loop step, plus the off-loop
+	// calls (task sub-agents, the compaction summarizer, the tab-title
+	// call). Priced from the catwalk catalog — sessionCostKnown stays
+	// false until at least one priceable call lands, so the sidebar
+	// never shows a $0.00 that actually means "unpriceable model".
+	// Reset wherever the conversation resets (/new, /clear, /resume
+	// pick, cross-provider swap); a resumed session counts spend since
+	// resume only (historical spend is not persisted).
+	sessionCostUSD   float64
+	sessionCostKnown bool
 
 	// modelForContext is the model id from claude's system/init event,
 	// preferred over providerModel for the context-limit denominator

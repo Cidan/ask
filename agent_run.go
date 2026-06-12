@@ -122,6 +122,15 @@ func (s *agentSession) setTurnCancel(fn context.CancelFunc) {
 	s.turnCancel = fn
 }
 
+// stepCost prices one API call of this session's model. Safe on
+// spec-less sessions (tests): unknown spec means unpriceable.
+func (s *agentSession) stepCost(u fantasy.Usage) (float64, bool) {
+	if s.spec == nil {
+		return 0, false
+	}
+	return stepCostUSD(s.spec.id, s.modelID, u)
+}
+
 // interruptTurn cancels the in-flight turn, if any. Returns whether a
 // turn was actually cancelled.
 func (s *agentSession) interruptTurn() bool {
@@ -155,6 +164,9 @@ func (s *agentSession) emit(msg tea.Msg) {
 		m.proc = s.proc
 		msg = m
 	case usageMsg:
+		m.proc = s.proc
+		msg = m
+	case costMsg:
 		m.proc = s.proc
 		msg = m
 	case providerModelMsg:
@@ -342,7 +354,12 @@ func (s *agentSession) runTurn(turn agentTurn) {
 			return nil
 		},
 		OnStepFinish: func(step fantasy.StepResult) error {
-			s.emit(usageMsg{tokens: contextTokensFromUsage(step.Usage)})
+			cost, known := s.stepCost(step.Usage)
+			s.emit(usageMsg{
+				tokens:    contextTokensFromUsage(step.Usage),
+				costUSD:   cost,
+				costKnown: known,
+			})
 			s.emit(streamStatusMsg{status: "thinking…"})
 			return nil
 		},
@@ -477,6 +494,11 @@ func (s *agentSession) compact(ctx context.Context, turn agentTurn, result *fant
 	if err != nil {
 		debugLog("agent compact failed: %v", err)
 		return
+	}
+	// The summarizer is a real API call outside the main loop's
+	// OnStepFinish — count its spend on the session meter.
+	if cost, known := s.stepCost(sum.TotalUsage); known {
+		s.emit(costMsg{costUSD: cost})
 	}
 	summary := strings.TrimSpace(sum.Response.Content.Text())
 	if summary == "" {

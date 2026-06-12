@@ -79,7 +79,7 @@ One `package main`, one file per concern.
 | `mcp_servers.go`       | User-facing MCP server config: `mcpServers` maps (user-global + per-project) merged over project-root `.mcp.json` (claude-code convention), `${VAR}`/`${VAR:-default}` expansion, per-server type inference, timeout, enabled/disabled tool filters, Disabled tombstones. |
 | `mcp_oauth.go`         | OAuth for remote MCP servers (`oauth: true`): SDK authorization-code + PKCE + dynamic client registration, browser launch via swappable `mcpOAuthOpenBrowser`, one-shot loopback callback listener, tokens persisted 0600 under `~/.config/ask/mcp-oauth/` (valid stored tokens skip the browser; expiry re-runs the flow). |
 | `model_picker.go`      | Ctrl+M unified model picker (crush-style): search input, “Recently used” group first (`cfg.RecentModels`, capped push-front), then one section per provider with human-friendly catwalk names; ↑/↓ skip headers, Enter applies the pick to the current tab and persists it as the provider default model (`applyProviderModelSwitch` + `applyVSProviderSwap`; cfg.Provider untouched). Picking a model whose provider has no key drops into an inline API-key prompt (`providerKeySpecs`) that saves to ask.json and proceeds; per-provider “Enter your own…” rows cover custom ids. Replaced the old Ctrl+B switcher AND the `/config` per-provider key sub-pickers AND the `/model` and `/provider` slash commands. |
-| `sidebar.go`           | Sidebar tab mode (cfg.UI.TabMode == "sidebar"): right-hand column of per-tab task cards (title / provider·model / live activity + ⚠✓✗● badges), ~1/5 width clamped to [30,48], degrade to the bottom bar below 90 total cols. The list cursor IS `app.active` — zero view-local selection state. Focus model: `ActionSidebarFocus` (Tab) swaps input↔list when the tab has no local Tab use (`model.wantsTabKey`), Up/Down/j/k switch tabs live (no Enter), any printable rune bounces focus back into the input and types, Ctrl+Up/Down (`ActionTabPrevAlt`/`NextAlt`) switch from anywhere, click on a card switches. Activity line prefers the agent's in_progress todo over `m.status`. See "Sidebar tab mode" below. |
+| `sidebar.go`           | Sidebar tab mode (cfg.UI.TabMode == "sidebar"): right-hand column of per-tab task cards (title / provider·model / session $ spend / live activity + ⚠✓✗● badges), ~1/5 width clamped to [30,48], degrade to the bottom bar below 90 total cols. The list cursor IS `app.active` — zero view-local selection state. Focus model: `ActionSidebarFocus` (Tab) swaps input↔list when the tab has no local Tab use (`model.wantsTabKey`), Up/Down/j/k switch tabs live (no Enter), any printable rune bounces focus back into the input and types, Ctrl+Up/Down (`ActionTabPrevAlt`/`NextAlt`) switch from anywhere, click on a card switches. Activity line prefers the agent's in_progress todo over `m.status`. See "Sidebar tab mode" below. |
 | `tab_title.go`         | Tab titles for the sidebar cards: seeded instantly from the first user prompt (`fallbackTabTitle`), refined async by a one-shot fantasy LLM call (`generateTabTitleText`, swappable; crush session-title pattern, 30s timeout) → `tabTitleMsg`, persisted on `VirtualSession.Title` (backfilled by `recordVirtualSession` when the title lands before the VS exists) and rehydrated on /resume. Generation is gated on sidebar mode so bar-mode users never pay for the call. |
 | `commands.go`          | `cd` / `ls` handlers and `ls` formatting.                               |
 | `paths.go`             | Path picker state, tilde expansion, completion.                         |
@@ -136,7 +136,7 @@ exercised by the user; code alone won't catch layout regressions.
 | `chat_workflow_test.go`    | `Ctrl+F` chat-source flow — transcript filter, key uniqueness, prompt assembly, dispatcher gates (busy/empty/no-workflows/workflow-tab), end-to-end picker → spawn. |
 | `keymap_test.go`           | `ParseKeyBinding` / `KeyBinding.String` round-trip, default keymap coverage, load-from-config (unknown/malformed entries skipped, empty-string unbinds), `currentKeyMap` invalidation. |
 | `keymap_dispatch_test.go`  | End-to-end: overridden keymap rewires `tabs.go` tab navigation; `/config → Keybindings` capture persists to disk and re-binding to default deletes the entry. |
-| `sidebar_test.go`          | Sidebar mode — tabMode parse, geometry (1/5 clamp, degrade threshold, zero bar height), scroll-window/card hit-testing, key routing (Tab focus + completion non-theft, Up/Down switch, type-to-return, Esc, Ctrl+Up/Down both modes), focus-steal suppression (sidebar) vs focus-steal (bar), card title/meta/activity/badge derivation, view composition + `joinBodySidebar`/`clipText`, tabModeChangedMsg propagation, workflow supplant (snapshot, tracker, busy refusal, bar-mode fallback to dedicated tab) and Enter-restore (incl. still-running and dedicated-tab guards). |
+| `sidebar_test.go`          | Sidebar mode — tabMode parse, geometry (1/5 clamp, degrade threshold, zero bar height), scroll-window/card hit-testing, key routing (Tab focus + completion non-theft, Up/Down switch, type-to-return, Esc, Ctrl+Up/Down both modes), focus-steal suppression (sidebar) vs focus-steal (bar), card title/meta/cost/activity/badge derivation, view composition + `joinBodySidebar`/`clipText`, tabModeChangedMsg propagation, workflow supplant (snapshot, tracker, busy refusal, bar-mode fallback to dedicated tab) and Enter-restore (incl. still-running and dedicated-tab guards). |
 | `tab_title_test.go`        | Tab titles — fallback/sanitize (think-tag strip, quote/period trim, clip), `maybeStartTabTitle` gating (bar mode / workflow tab / blank / already titled), swapped-generator cmd round-trip incl. error swallow, `tabTitleMsg` handler (foreign tab, empty title, stale-after-/new), VS persistence + `recordVirtualSession` backfill + /resume rehydration (Title, Preview fallback). |
 | `deepseek_test.go`         | Provider metadata/registry/workflow validation, effort→wire mapping, no-key fail-fast, full session lifecycle against `fakeLM` (send, system prompt on wire, kill/exited, resume replays transcript), Materialize, `modelContextLimit`. |
 | `agent_run_test.go`        | `fakeLM` (scripted `StreamPart`s) + runtime scenarios: text turn protocol order (done before complete), tool round-trip incl. wire history threading, interrupt = clean end, error turn, shutdown, loop-detection trip, compaction (summary head + auto-continuation), dangling-call repair, task sub-agent tool. |
@@ -155,6 +155,7 @@ exercised by the user; code alone won't catch layout regressions.
 | `anthropic_test.go`        | Anthropic spec — metadata/registry, effort→wire incl. clamping, cache-breakpoint placement (`anthropicPrepareStep` marks system + last 2, strips stale, never mutates caller; `anthropicDecorateTools` marks last tool), no-key fail-fast, lifecycle w/ image attachment → wire FilePart, persisted transcript free of cache markers, context windows. |
 | `openai_test.go`           | OpenAI spec — metadata/registry, Responses-API prefix predicate, encrypted-reasoning + summary options, effort mapping, no-key fail-fast, lifecycle (images accepted), context windows. |
 | `catalog_test.go`          | catwalk lookups — model hit/miss, default-first id list, window/image fallbacks, effort clamping (down to nearest, up from below-range). |
+| `cost_test.go`             | Session cost meter — `stepCostUSD` catalog pricing math + unpriceable fallbacks, `formatUSD`, usageMsg/costMsg/tabTitleMsg accumulation + foreign-proc/tab gating, resets (/new, /clear, cross-provider swap keeps same-provider), task-tool sub-agent cost emission, sidebar cost row derivation. |
 | `util_test.go` / `paths_test.go` | Pure helpers, path completion, frontmatter parsing.       |
 
 ### Testing conventions
@@ -575,9 +576,18 @@ cols rendering silently degrades to the bar (behaviour like workflow
 supplanting still follows the *mode*, not the width). The column is a
 pure projection of `a.tabs`: the selection cursor IS `app.active`, the
 scroll offset is derived, and every card reads live model state
-(title, provider/model, in_progress todo / stream status / workflow
-step, ⚠ needs-input · ✓ done · ✗ failed · ● busy badges) at render
-time. `app.tabMode` mirrors the config (seeded by `newApp` from the
+(title, provider/model, accumulated session spend in USD, in_progress
+todo / stream status / workflow step, ⚠ needs-input · ✓ done · ✗
+failed · ● busy badges) at render time. The cost row is fed by
+`model.sessionCostUSD`: usage.go’s `stepCostUSD` prices every API call
+against catwalk’s embedded per-1M rates (crush’s formula — cache
+writes at the in-cached rate, cache reads at the out-cached rate) and
+the meter counts main-loop steps (`usageMsg`), task sub-agents and the
+compaction summarizer (`costMsg`), and the tab-title call
+(`tabTitleMsg`). Unpriceable models (custom ids / no catalog) render
+an empty row, never a fake $0.00; the meter resets with the
+conversation (/new, /clear, /resume pick, cross-provider swap) and
+survives same-provider model swaps. `app.tabMode` mirrors the config (seeded by `newApp` from the
 first tab, refreshed on `openTab` reloads and `tabModeChangedMsg`
 broadcasts from the /config toggle, which also refresh each tab's
 `m.sidebarMode`).

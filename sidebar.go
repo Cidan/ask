@@ -3,7 +3,8 @@ package main
 // Sidebar tab mode: an alternate presentation of open tabs as a
 // permanent right-hand column of task cards (cfg.UI.TabMode ==
 // "sidebar"). Each card shows what the tab's agent is doing — a short
-// LLM-generated title (tab_title.go), the provider/model, and a live
+// LLM-generated title (tab_title.go), the provider/model, the
+// session's accumulated dollar spend (usage.go), and a live
 // activity line (current in_progress todo / stream status / workflow
 // step) — plus attention badges so the user can see at a glance when
 // a background tab needs input or finished.
@@ -44,8 +45,8 @@ const (
 	// total columns sidebar mode renders as the classic bottom bar.
 	sidebarMinTotalWidth = 90
 	// sidebarCardHeight is the fixed per-card footprint: title, meta,
-	// activity, separator blank.
-	sidebarCardHeight = 4
+	// cost, activity, separator blank.
+	sidebarCardHeight = 5
 	// sidebarHeaderHeight is the "tabs N/M" header plus its blank.
 	sidebarHeaderHeight = 2
 )
@@ -210,10 +211,12 @@ func (a app) sidebarCardLines(i, inner int) []string {
 
 	meta := dimStyle.Render(clipText("  "+t.sidebarMeta(), inner))
 
+	cost := dimStyle.Render(clipText("  "+t.sidebarCost(), inner))
+
 	activity, activityStyle := t.sidebarActivity()
 	activityLine := activityStyle.Render(clipText("  "+activity, inner))
 
-	return []string{titleLine, meta, activityLine, ""}
+	return []string{titleLine, meta, cost, activityLine, ""}
 }
 
 // sidebarTitle is the card headline: the generated/seeded tab title
@@ -234,6 +237,36 @@ func (m *model) sidebarMeta() string {
 		return ""
 	}
 	return providerMeta(m.provider.ID(), m.providerModel)
+}
+
+// sidebarCost is the dim third row: the session's accumulated API
+// spend in dollars and cents, live-updated per step (usage.go prices
+// each call via the catwalk catalog). Before any priceable call lands
+// it shows an honest $0.00 only when the current provider/model pair
+// is in the catalog; unpriceable models (custom ids, providers
+// without a catalog) render an empty row instead of a fake zero.
+func (m *model) sidebarCost() string {
+	if m.sessionCostKnown {
+		return formatUSD(m.sessionCostUSD)
+	}
+	if m.provider != nil && modelPricingKnown(m.provider.ID(), m.effectiveModelID()) {
+		return formatUSD(0)
+	}
+	return ""
+}
+
+// effectiveModelID resolves the model the next turn would actually
+// run: the tab's explicit pick, else the provider's default.
+func (m *model) effectiveModelID() string {
+	if m.providerModel != "" {
+		return m.providerModel
+	}
+	if m.provider != nil {
+		if spec, ok := agentSpecByID(m.provider.ID()); ok {
+			return spec.defaultModel
+		}
+	}
+	return ""
 }
 
 // needsUserInput reports whether the tab is blocked on a human — an

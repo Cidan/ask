@@ -40,12 +40,14 @@ var tabTitleTimeout = 30 * time.Second
 // tokens before emitting text; the sanitizer clamps the result anyway.
 const tabTitleMaxOutputTokens = int64(512)
 
-// generateTabTitleText runs the one-shot LLM title call. Swappable
-// package var so tests script the result with zero network.
-var generateTabTitleText = func(providerID, modelID, prompt string) (string, error) {
+// generateTabTitleText runs the one-shot LLM title call, returning the
+// raw title text and the call's token usage (so the dispatcher can
+// price it onto the session cost meter). Swappable package var so
+// tests script the result with zero network.
+var generateTabTitleText = func(providerID, modelID, prompt string) (string, fantasy.Usage, error) {
 	spec, ok := agentSpecByID(providerID)
 	if !ok {
-		return "", fmt.Errorf("tab title: provider %q has no agent spec", providerID)
+		return "", fantasy.Usage{}, fmt.Errorf("tab title: provider %q has no agent spec", providerID)
 	}
 	cfg, _ := loadConfig()
 	if modelID == "" {
@@ -53,7 +55,7 @@ var generateTabTitleText = func(providerID, modelID, prompt string) (string, err
 	}
 	lm, err := spec.buildModel(cfg, modelID)
 	if err != nil {
-		return "", err
+		return "", fantasy.Usage{}, err
 	}
 	agent := fantasy.NewAgent(lm, fantasy.WithSystemPrompt(tabTitleSystemPrompt))
 	ctx, cancel := context.WithTimeout(context.Background(), tabTitleTimeout)
@@ -63,26 +65,35 @@ var generateTabTitleText = func(providerID, modelID, prompt string) (string, err
 		MaxOutputTokens: maxOutputTokensPtr(tabTitleMaxOutputTokens),
 	})
 	if err != nil {
-		return "", err
+		return "", fantasy.Usage{}, err
 	}
 	if res == nil {
-		return "", fmt.Errorf("tab title: empty response")
+		return "", fantasy.Usage{}, fmt.Errorf("tab title: empty response")
 	}
-	return res.Response.Content.Text(), nil
+	return res.Response.Content.Text(), res.TotalUsage, nil
 }
 
 // generateTabTitleCmd dispatches the background title call and lands
-// the sanitized result as a tabTitleMsg. Failures return an empty
-// title — the handler keeps the first-prompt fallback, never errors
-// at the user.
+// the sanitized result as a tabTitleMsg, priced via the catwalk
+// catalog. Failures return an empty title — the handler keeps the
+// first-prompt fallback, never errors at the user.
 func generateTabTitleCmd(tabID int, providerID, modelID, prompt string) tea.Cmd {
 	return func() tea.Msg {
-		raw, err := generateTabTitleText(providerID, modelID, prompt)
+		raw, usage, err := generateTabTitleText(providerID, modelID, prompt)
 		if err != nil {
 			debugLog("tab title generation: %v", err)
 			return tabTitleMsg{tabID: tabID}
 		}
-		return tabTitleMsg{tabID: tabID, title: sanitizeTabTitle(raw)}
+		// Resolve the same default the generator used so the catalog
+		// lookup prices the model actually called.
+		costModel := modelID
+		if costModel == "" {
+			if spec, ok := agentSpecByID(providerID); ok {
+				costModel = spec.defaultModel
+			}
+		}
+		cost, known := stepCostUSD(providerID, costModel, usage)
+		return tabTitleMsg{tabID: tabID, title: sanitizeTabTitle(raw), costUSD: cost, costKnown: known}
 	}
 }
 

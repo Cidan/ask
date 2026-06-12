@@ -18,16 +18,22 @@ import (
 // task tool) is served by genFn. Calls are recorded for assertions on
 // what history reached the wire.
 type fakeLM struct {
-	mu     sync.Mutex
-	turns  [][]fantasy.StreamPart
-	idx    int
-	calls  []fantasy.Call
-	genFn  func(call fantasy.Call) (*fantasy.Response, error)
-	blocks map[int]bool // turn index → block until ctx cancel
+	mu      sync.Mutex
+	turns   [][]fantasy.StreamPart
+	idx     int
+	calls   []fantasy.Call
+	genFn   func(call fantasy.Call) (*fantasy.Response, error)
+	blocks  map[int]bool // turn index → block until ctx cancel
+	modelID string       // Model() override; cost tests pin catalog ids
 }
 
 func (f *fakeLM) Provider() string { return "deepseek" }
-func (f *fakeLM) Model() string    { return "fake-model" }
+func (f *fakeLM) Model() string {
+	if f.modelID != "" {
+		return f.modelID
+	}
+	return "fake-model"
+}
 
 func (f *fakeLM) Generate(_ context.Context, call fantasy.Call) (*fantasy.Response, error) {
 	f.mu.Lock()

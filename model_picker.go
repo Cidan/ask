@@ -620,6 +620,11 @@ func (m model) applyProviderModelSwitch(newProv Provider, model string) (tea.Mod
 		m.sessionID = ""
 		m.sessionMinted = false
 		m.resumeCwd = ""
+		// The conversation resets, so the spend meter does too. A
+		// same-provider model swap keeps the session (and its
+		// accumulated spend — money already billed).
+		m.sessionCostUSD = 0
+		m.sessionCostKnown = false
 		if m.virtualSessionID != "" {
 			historyCmd = m.applyVSProviderSwap(oldProvName, newProv)
 		}
