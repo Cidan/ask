@@ -32,6 +32,7 @@ type agentTaskParams struct {
 	Prompt          string `json:"prompt" description:"the self-contained task for the sub-agent, including everything it needs to know"`
 	Agent           string `json:"agent,omitempty" description:"named agent definition to run (see <available_agents>); empty runs the default read-only researcher on the current model"`
 	RunInBackground bool   `json:"run_in_background,omitempty" description:"run the sub-agent as a background job and return its job id immediately; poll with job_output"`
+	Description     string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this sub-agent is doing"`
 }
 
 // agentTaskTool spawns a child fantasy agent. The default is the

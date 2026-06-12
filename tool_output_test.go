@@ -40,20 +40,99 @@ func TestRenderToolCallBlock_SortedKeys(t *testing.T) {
 	}
 }
 
-func TestRenderToolCallBlock_ShortFiltersToAllowlist(t *testing.T) {
-	// Bash in short mode shows only command, hides other inputs the user
-	// asked the renderer to elide.
+func TestRenderToolCallBlock_ShortPhraseIsTheWholeRendering(t *testing.T) {
+	// Every native tool call carries a model-authored phrase; in short
+	// mode that phrase is the entire rendering — no param rows at all.
 	input := map[string]any{
 		"command":           "ls /tmp",
-		"description":       "list tmp",
+		"description":       "Listing temp files",
 		"run_in_background": true,
 	}
-	out := renderToolCallBlock("Bash", input, toolOutputShort)
-	if !strings.Contains(out, "command") || !strings.Contains(out, "ls /tmp") {
-		t.Errorf("short Bash should keep command; got %q", out)
+	out := renderToolCallBlock("bash", input, toolOutputShort)
+	if !strings.Contains(out, "Listing temp files") || !strings.Contains(out, "bash") {
+		t.Errorf("short mode should render the phrase headline; got %q", out)
 	}
-	if strings.Contains(out, "description") || strings.Contains(out, "run_in_background") {
-		t.Errorf("short Bash should drop non-allowlisted inputs; got %q", out)
+	if strings.Contains(out, "ls /tmp") || strings.Contains(out, "command") || strings.Contains(out, "run_in_background") {
+		t.Errorf("short mode with a phrase should drop all params; got %q", out)
+	}
+	if strings.Contains(out, "\n") {
+		t.Errorf("phrase rendering should be a single line; got %q", out)
+	}
+}
+
+func TestRenderToolCallBlock_ShortNoPhraseFallsBackToAllowlist(t *testing.T) {
+	// Calls without a phrase (old transcripts, MCP tools) fall back to
+	// the highest-signal fields for known tools.
+	input := map[string]any{
+		"command":           "ls /tmp",
+		"run_in_background": true,
+	}
+	out := renderToolCallBlock("bash", input, toolOutputShort)
+	if !strings.Contains(out, "command") || !strings.Contains(out, "ls /tmp") {
+		t.Errorf("short bash without phrase should keep command; got %q", out)
+	}
+	if strings.Contains(out, "run_in_background") {
+		t.Errorf("short bash should drop non-allowlisted inputs; got %q", out)
+	}
+}
+
+func TestRenderToolCallBlock_FullKeepsParamsBesidePhrase(t *testing.T) {
+	input := map[string]any{
+		"command":     "go test ./...",
+		"description": "Running the test suite",
+	}
+	out := renderToolCallBlock("bash", input, toolOutputFull)
+	if !strings.Contains(out, "Running the test suite") {
+		t.Errorf("full mode should keep the phrase headline; got %q", out)
+	}
+	if !strings.Contains(out, "command") || !strings.Contains(out, "go test ./...") {
+		t.Errorf("full mode should keep the params; got %q", out)
+	}
+	if strings.Contains(out, "description:") {
+		t.Errorf("full mode should not duplicate the phrase as a row; got %q", out)
+	}
+}
+
+func TestToolCallPhrase_RejectsPayloadDescriptions(t *testing.T) {
+	// Tools whose "description" field is real payload (issue bodies,
+	// arbitrary MCP params) produce long or multi-line values that must
+	// not masquerade as the call headline.
+	if got := toolCallPhrase(map[string]any{"description": "line one\nline two"}); got != "" {
+		t.Errorf("multi-line description must not be a phrase; got %q", got)
+	}
+	long := strings.Repeat("x", toolPhraseMaxChars+1)
+	if got := toolCallPhrase(map[string]any{"description": long}); got != "" {
+		t.Errorf("over-long description must not be a phrase; got %q", got)
+	}
+	if got := toolCallPhrase(map[string]any{"description": 42}); got != "" {
+		t.Errorf("non-string description must not be a phrase; got %q", got)
+	}
+	if got := toolCallPhrase(map[string]any{"description": "  Looking for files  "}); got != "Looking for files" {
+		t.Errorf("phrase should be trimmed; got %q", got)
+	}
+	// And the renderer falls back to the allowlist when rejected.
+	out := renderToolCallBlock("read", map[string]any{
+		"file_path":   "/x.go",
+		"description": "a\nb",
+	}, toolOutputShort)
+	if !strings.Contains(out, "/x.go") {
+		t.Errorf("rejected phrase should fall back to allowlist fields; got %q", out)
+	}
+}
+
+func TestShortToolFields_CoverNativeToolNames(t *testing.T) {
+	// The fallback allowlist is keyed by the native lowercase tool
+	// names — a regression here silently degrades short mode to bare
+	// headers (the bug shipped when the CLI providers were removed).
+	for _, name := range []string{"bash", "read", "write", "edit", "glob", "grep", "ls", "fetch", "task", "job_output", "job_kill", "end_turn"} {
+		if _, ok := shortToolFields[name]; !ok {
+			t.Errorf("shortToolFields missing native tool %q", name)
+		}
+	}
+	for name := range shortToolFields {
+		if name != strings.ToLower(name) {
+			t.Errorf("shortToolFields key %q is not lowercase — stale CLI-era entry?", name)
+		}
 	}
 }
 

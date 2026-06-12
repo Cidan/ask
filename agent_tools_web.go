@@ -22,8 +22,9 @@ const (
 const agentFetchToolDescription = `Fetch a URL over HTTP GET and return its content. HTML pages are reduced to readable text; other content types return raw (capped at 100KB). Use for documentation, APIs, and references the task points at.`
 
 type agentFetchParams struct {
-	URL     string `json:"url" description:"the http(s) URL to fetch"`
-	Timeout int    `json:"timeout,omitempty" description:"max seconds to wait (default 30, max 120)"`
+	URL         string `json:"url" description:"the http(s) URL to fetch"`
+	Timeout     int    `json:"timeout,omitempty" description:"max seconds to wait (default 30, max 120)"`
+	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 // agentFetchClient is swappable in tests; production uses a client
@@ -43,7 +44,7 @@ func agentFetchTool(env *agentToolEnv) fantasy.AgentTool {
 			if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 				return fantasy.NewTextErrorResponse("only http and https URLs are supported: " + raw), nil
 			}
-			if denied := env.requestApproval(ctx, "fetch", map[string]any{"url": raw}); denied != nil {
+			if denied := env.requestApproval(ctx, "fetch", map[string]any{"url": raw, "description": p.Description}); denied != nil {
 				return *denied, nil
 			}
 

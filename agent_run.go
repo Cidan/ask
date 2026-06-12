@@ -322,7 +322,13 @@ func (s *agentSession) runTurn(turn agentTurn) {
 				input:      input,
 				background: background,
 			})
-			s.emit(streamStatusMsg{status: "running " + tc.ToolName + "…"})
+			// The model-authored phrase makes the status context-specific
+			// ("bash: looking for the latest files") instead of generic.
+			status := "running " + tc.ToolName + "…"
+			if phrase := toolCallPhrase(input); phrase != "" {
+				status = tc.ToolName + ": " + phrase
+			}
+			s.emit(streamStatusMsg{status: status})
 			return nil
 		},
 		OnToolResult: func(tr fantasy.ToolResultContent) error {

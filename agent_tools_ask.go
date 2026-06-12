@@ -36,7 +36,8 @@ type agentAskQuestion struct {
 }
 
 type agentAskParams struct {
-	Questions []agentAskQuestion `json:"questions" description:"one or more questions to ask the user together in a tabbed modal"`
+	Questions   []agentAskQuestion `json:"questions" description:"one or more questions to ask the user together in a tabbed modal"`
+	Description string             `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what is being asked"`
 }
 
 // agentAskUserQuestionTool is the in-process twin of the MCP bridge's

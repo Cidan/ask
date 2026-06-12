@@ -66,6 +66,47 @@ func TestNativeBridgeTool_SchemaCarriesJSONSchemaTags(t *testing.T) {
 	}
 }
 
+func TestNativeBridgeTool_InjectsDescriptionPhrase(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+
+	// Tools without their own description param get the injected
+	// required phrase param so their calls render a headline too.
+	info := bridgeToolByName(t, env, "linear_list_issues").Info()
+	prop, ok := info.Parameters["description"].(map[string]any)
+	if !ok {
+		t.Fatalf("injected description param missing: %+v", info.Parameters)
+	}
+	if doc, _ := prop["description"].(string); doc != toolPhraseFieldDoc {
+		t.Errorf("injected doc wrong: %q", doc)
+	}
+	var required bool
+	for _, r := range info.Required {
+		if r == "description" {
+			required = true
+		}
+	}
+	if !required {
+		t.Errorf("injected description must be required: %v", info.Required)
+	}
+
+	// Tools whose input already uses "description" as real payload
+	// (linear_update_issue: the issue's Markdown body) keep their own
+	// schema untouched — no clobber, no forced requirement.
+	upd := bridgeToolByName(t, env, "linear_update_issue").Info()
+	uprop, ok := upd.Parameters["description"].(map[string]any)
+	if !ok {
+		t.Fatalf("linear_update_issue description param missing: %+v", upd.Parameters)
+	}
+	if doc, _ := uprop["description"].(string); !strings.Contains(doc, "Markdown") {
+		t.Errorf("payload description doc was clobbered: %q", doc)
+	}
+	for _, r := range upd.Required {
+		if r == "description" {
+			t.Errorf("payload description must not become required: %v", upd.Required)
+		}
+	}
+}
+
 func TestNativeBridgeTool_LinearGateErrors(t *testing.T) {
 	isolateHome(t)
 	env, _ := newTestToolEnv(t)

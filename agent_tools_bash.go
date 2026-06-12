@@ -195,7 +195,7 @@ const agentBashToolDescription = `Run a shell command in the working directory a
 
 type agentBashParams struct {
 	Command         string `json:"command" description:"the shell command to execute"`
-	Description     string `json:"description,omitempty" description:"short human-readable summary of what the command does (under 10 words)"`
+	Description     string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this command does"`
 	Timeout         int    `json:"timeout,omitempty" description:"max seconds to wait before the command is killed (default 120, max 600)"`
 	RunInBackground bool   `json:"run_in_background,omitempty" description:"start the command as a background job and return its job id immediately"`
 }
@@ -312,8 +312,9 @@ func bashResponse(output string, rawTruncated bool, res shellResult) fantasy.Too
 const agentJobOutputToolDescription = `Read the accumulated output of a background job started with bash run_in_background. Set wait to block until the job exits (up to 30s).`
 
 type agentJobOutputParams struct {
-	JobID string `json:"job_id" description:"the job id returned when the background command started"`
-	Wait  bool   `json:"wait,omitempty" description:"block until the job finishes (30s cap) before returning output"`
+	JobID       string `json:"job_id" description:"the job id returned when the background command started"`
+	Wait        bool   `json:"wait,omitempty" description:"block until the job finishes (30s cap) before returning output"`
+	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 func agentJobOutputTool(env *agentToolEnv) fantasy.AgentTool {
@@ -356,7 +357,8 @@ func agentJobOutputTool(env *agentToolEnv) fantasy.AgentTool {
 const agentJobKillToolDescription = `Kill a background job started with bash run_in_background. The job's whole process group receives SIGKILL.`
 
 type agentJobKillParams struct {
-	JobID string `json:"job_id" description:"the job id to kill"`
+	JobID       string `json:"job_id" description:"the job id to kill"`
+	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 func agentJobKillTool(env *agentToolEnv) fantasy.AgentTool {

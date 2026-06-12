@@ -15,9 +15,10 @@ import (
 const agentReadToolDescription = `Read a file from the filesystem. Returns the content with 1-based line numbers (cat -n format). Use offset/limit for large files; lines longer than 2000 chars are truncated. Reading a file is required before editing or overwriting it.`
 
 type agentReadParams struct {
-	FilePath string `json:"file_path" description:"absolute or cwd-relative path of the file to read"`
-	Offset   int    `json:"offset,omitempty" description:"1-based line number to start reading from (default 1)"`
-	Limit    int    `json:"limit,omitempty" description:"maximum number of lines to return (default 2000)"`
+	FilePath    string `json:"file_path" description:"absolute or cwd-relative path of the file to read"`
+	Offset      int    `json:"offset,omitempty" description:"1-based line number to start reading from (default 1)"`
+	Limit       int    `json:"limit,omitempty" description:"maximum number of lines to return (default 2000)"`
+	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 func agentReadTool(env *agentToolEnv) fantasy.AgentTool {
@@ -110,8 +111,9 @@ func agentReadTool(env *agentToolEnv) fantasy.AgentTool {
 const agentWriteToolDescription = `Create or overwrite a file with the given content. Overwriting an existing file requires reading it first in this session. Parent directories are created automatically.`
 
 type agentWriteParams struct {
-	FilePath string `json:"file_path" description:"absolute or cwd-relative path of the file to write"`
-	Content  string `json:"content" description:"the full new content of the file"`
+	FilePath    string `json:"file_path" description:"absolute or cwd-relative path of the file to write"`
+	Content     string `json:"content" description:"the full new content of the file"`
+	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 func agentWriteTool(env *agentToolEnv) fantasy.AgentTool {
@@ -144,8 +146,9 @@ func agentWriteTool(env *agentToolEnv) fantasy.AgentTool {
 			}
 
 			if denied := env.requestApproval(ctx, "write", map[string]any{
-				"file_path": path,
-				"content":   p.Content,
+				"file_path":   path,
+				"content":     p.Content,
+				"description": p.Description,
 			}); denied != nil {
 				return *denied, nil
 			}
@@ -169,10 +172,11 @@ func agentWriteTool(env *agentToolEnv) fantasy.AgentTool {
 const agentEditToolDescription = `Replace an exact string in a file. old_string must match the file content exactly, including whitespace and indentation, and must be unique in the file unless replace_all is set. Use an empty old_string to create a new file. The file must have been read in this session before editing.`
 
 type agentEditParams struct {
-	FilePath   string `json:"file_path" description:"absolute or cwd-relative path of the file to edit"`
-	OldString  string `json:"old_string" description:"the exact text to replace; empty creates a new file with new_string as its content"`
-	NewString  string `json:"new_string" description:"the replacement text"`
-	ReplaceAll bool   `json:"replace_all,omitempty" description:"replace every occurrence of old_string instead of requiring uniqueness"`
+	FilePath    string `json:"file_path" description:"absolute or cwd-relative path of the file to edit"`
+	OldString   string `json:"old_string" description:"the exact text to replace; empty creates a new file with new_string as its content"`
+	NewString   string `json:"new_string" description:"the replacement text"`
+	ReplaceAll  bool   `json:"replace_all,omitempty" description:"replace every occurrence of old_string instead of requiring uniqueness"`
+	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 func agentEditTool(env *agentToolEnv) fantasy.AgentTool {
@@ -193,9 +197,10 @@ func agentEditTool(env *agentToolEnv) fantasy.AgentTool {
 					return fantasy.NewTextErrorResponse(path + " already exists; read it and edit with a non-empty old_string, or use write to overwrite"), nil
 				}
 				if denied := env.requestApproval(ctx, "edit", map[string]any{
-					"file_path":  path,
-					"old_string": "",
-					"new_string": p.NewString,
+					"file_path":   path,
+					"old_string":  "",
+					"new_string":  p.NewString,
+					"description": p.Description,
 				}); denied != nil {
 					return *denied, nil
 				}
@@ -255,6 +260,7 @@ func agentEditTool(env *agentToolEnv) fantasy.AgentTool {
 				"old_string":  p.OldString,
 				"new_string":  p.NewString,
 				"replace_all": p.ReplaceAll,
+				"description": p.Description,
 			}); denied != nil {
 				return *denied, nil
 			}

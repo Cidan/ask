@@ -7,17 +7,21 @@ import (
 
 // Shared helpers for the "Tool Output" config tri-state: one gate,
 // one pair of message types (toolCallMsg / toolResultMsg), and the
-// renderers below. Per-provider extraction lives in claude.go and
-// codex.go so each wire format stays in its own file.
+// renderers below. The agent runtime (agent_run.go) emits the
+// messages; every native tool carries a model-authored "description"
+// phrase that becomes the call's headline here and the streaming
+// status line there.
 
 // toolOutputMode is the user-visible tri-state for tool output rendering.
 //
-//	full  — show the call header, every input field, and the result body
-//	       (including the "Command running in background with ID: …" ack
-//	       Bash emits for run_in_background calls).
-//	short — show the call header, only the highest-signal input fields
-//	       per known tool (see shortToolFields), and the result body for
-//	       foreground calls. Background-call results are suppressed.
+//	full  — show the call header (with the description phrase), every
+//	       input field, and the result body (including the "started
+//	       background job" ack bash emits for run_in_background calls).
+//	short — show the call header with the description phrase only; for
+//	       calls without a phrase, fall back to the highest-signal
+//	       input fields per known tool (see shortToolFields). The
+//	       result body renders for foreground calls; background-call
+//	       results are suppressed.
 //	off   — render nothing for tool calls or their results, not even
 //	       headers.
 type toolOutputMode string
@@ -48,27 +52,24 @@ func parseToolOutputMode(s string) toolOutputMode {
 }
 
 // shortToolFields lists the input keys we surface for each known tool
-// when the mode is "short". A tool not present here renders just the
-// header in short mode — letting the user know something happened
-// without dumping arbitrary input maps. New built-ins should be added
-// here with their highest-signal field(s).
+// when the mode is "short" AND the call carries no description phrase
+// (old transcripts, MCP tools without one). A tool not present here
+// renders just the header in short mode — letting the user know
+// something happened without dumping arbitrary input maps. New
+// built-ins should be added here with their highest-signal field(s).
 var shortToolFields = map[string][]string{
-	// Claude built-ins.
-	"Bash":         {"command"},
-	"BashOutput":   {"bash_id"},
-	"Edit":         {"file_path"},
-	"ExitPlanMode": {"plan"},
-	"Glob":         {"pattern"},
-	"Grep":         {"glob", "output_mode", "pattern"},
-	"KillBash":     {"shell_id"},
-	"NotebookEdit": {"notebook_path"},
-	"Read":         {"file_path"},
-	"Task":         {"description"},
-	"WebFetch":     {"url"},
-	"WebSearch":    {"query"},
-	"Write":        {"file_path"},
-	// Codex tool surface (commandExecution becomes "shell").
-	"shell": {"command"},
+	"bash":       {"command"},
+	"edit":       {"file_path"},
+	"end_turn":   {"summary"},
+	"fetch":      {"url"},
+	"glob":       {"pattern"},
+	"grep":       {"include", "pattern"},
+	"job_kill":   {"job_id"},
+	"job_output": {"job_id"},
+	"ls":         {"path"},
+	"read":       {"file_path"},
+	"task":       {"agent", "prompt"},
+	"write":      {"file_path"},
 }
 
 // filterShortInputs keeps only the allowlisted keys for the named tool
@@ -141,23 +142,64 @@ func (m model) shouldRenderToolResult(msg toolResultMsg) bool {
 	return true
 }
 
-// renderToolCallBlock formats a tool invocation as a history entry:
+// toolPhraseFieldDoc is the schema doc every native tool's
+// "description" param carries (struct tags repeat it verbatim; the
+// bridge adapter injects it into generated schemas). One sentence,
+// model-facing: the model authors the phrase in the same tool call.
+const toolPhraseFieldDoc = "one short human-readable phrase (under 10 words) telling the user what this call is doing"
+
+// toolPhraseMaxChars bounds what qualifies as a phrase. Inputs whose
+// "description" field is real payload (linear_create_issue's Markdown
+// body, arbitrary MCP tools) produce long or multi-line values that
+// must not masquerade as the call headline.
+const toolPhraseMaxChars = 120
+
+// toolCallPhrase extracts the model-authored description phrase from
+// a tool input map. Empty when absent or when the value doesn't look
+// like a short single-line phrase.
+func toolCallPhrase(input map[string]any) string {
+	s, _ := input["description"].(string)
+	s = strings.TrimSpace(s)
+	if s == "" || len(s) > toolPhraseMaxChars || strings.ContainsRune(s, '\n') {
+		return ""
+	}
+	return s
+}
+
+// renderToolCallBlock formats a tool invocation as a history entry.
+// Every native tool call carries a model-authored phrase, so the
+// normal shape is one line:
 //
-//	▸ Read
+//	▸ bash — Looking for the latest files
+//
+// In short mode (the default) the phrase IS the rendering — no input
+// rows. Calls without a phrase (old transcripts, MCP tools that lack
+// the param) fall back to the shortToolFields allowlist:
+//
+//	▸ read
 //	    file_path: /foo/bar.go
 //
-// input fields render as "key: value" rows under a dimmed style so the
-// call stays distinct from the result that follows. Non-string inputs
-// are JSON-encoded so arrays and nested maps remain legible. In short
-// mode, the input map is filtered through shortToolFields so only the
-// highest-signal keys per known tool show up.
+// Full mode keeps the phrase in the header and renders every input
+// field as "key: value" rows (minus the description, which would just
+// duplicate the header). Non-string inputs are JSON-encoded so arrays
+// and nested maps remain legible.
 func renderToolCallBlock(name string, input map[string]any, mode toolOutputMode) string {
+	phrase := toolCallPhrase(input)
+	header := diffPathStyle.Render("▸ " + nonEmpty(name, "tool"))
+	if phrase != "" {
+		header += diffContextStyle.Render(" — " + phrase)
+	}
+	lines := []string{outputStyle.Render(header)}
 	if mode == toolOutputShort {
+		if phrase != "" {
+			return lines[0]
+		}
 		input = filterShortInputs(name, input)
 	}
-	header := diffPathStyle.Render("▸ " + nonEmpty(name, "tool"))
-	lines := []string{outputStyle.Render(header)}
 	for _, k := range sortedKeys(input) {
+		if k == "description" && phrase != "" {
+			continue
+		}
 		lines = append(lines, outputStyle.Render(diffContextStyle.Render("    "+k+": "+formatToolInputValue(input[k]))))
 	}
 	return strings.Join(lines, "\n")

@@ -196,7 +196,8 @@ func TestAgentSession_TextTurn(t *testing.T) {
 
 func TestAgentSession_ToolRoundTrip(t *testing.T) {
 	lm := &fakeLM{turns: [][]fantasy.StreamPart{
-		toolCallTurn("c1", "ping", `{"v":"abc"}`, fantasy.Usage{InputTokens: 50}),
+		toolCallTurn("c1", "ping", `{"v":"abc","description":"pinging the fake"}`, fantasy.Usage{InputTokens: 50}),
+		toolCallTurn("c2", "ping", `{"v":"xyz"}`, fantasy.Usage{InputTokens: 60}),
 		textTurn("did it", fantasy.Usage{InputTokens: 80}),
 	}}
 	s := newTestAgentSession(t, lm, nil)
@@ -205,36 +206,53 @@ func TestAgentSession_ToolRoundTrip(t *testing.T) {
 	}
 	msgs := readSessionMsgs(t, s.ch, isTurnComplete)
 
-	var call toolCallMsg
-	var result toolResultMsg
+	var calls []toolCallMsg
+	var results []toolResultMsg
+	var statuses []string
 	var finalText string
 	for _, m := range msgs {
 		switch v := m.(type) {
 		case toolCallMsg:
-			call = v
+			calls = append(calls, v)
 		case toolResultMsg:
-			result = v
+			results = append(results, v)
+		case streamStatusMsg:
+			statuses = append(statuses, v.status)
 		case assistantTextMsg:
 			finalText = v.text
 		}
 	}
-	if call.name != "ping" || call.input["v"] != "abc" {
-		t.Errorf("toolCallMsg wrong: %+v", call)
+	if len(calls) != 2 || calls[0].name != "ping" || calls[0].input["v"] != "abc" || calls[1].input["v"] != "xyz" {
+		t.Errorf("toolCallMsgs wrong: %+v", calls)
 	}
-	if result.name != "ping" || result.output != "pong:abc" || result.isError {
-		t.Errorf("toolResultMsg wrong: %+v", result)
+	if len(results) != 2 || results[0].output != "pong:abc" || results[1].output != "pong:xyz" || results[0].isError {
+		t.Errorf("toolResultMsgs wrong: %+v", results)
 	}
 	if finalText != "did it" {
 		t.Errorf("final text %q", finalText)
 	}
+	// The status line is the model-authored phrase when present, the
+	// generic "running <tool>…" when not.
+	var sawPhrase, sawGeneric bool
+	for _, st := range statuses {
+		if st == "ping: pinging the fake" {
+			sawPhrase = true
+		}
+		if st == "running ping…" {
+			sawGeneric = true
+		}
+	}
+	if !sawPhrase || !sawGeneric {
+		t.Errorf("status lines wrong: phrase=%v generic=%v (%q)", sawPhrase, sawGeneric, statuses)
+	}
 
 	// Second wire call must carry the assistant tool call + tool result.
-	calls := lm.streamCalls()
-	if len(calls) != 2 {
-		t.Fatalf("want 2 model calls, got %d", len(calls))
+	calls2 := lm.streamCalls()
+	if len(calls2) != 3 {
+		t.Fatalf("want 3 model calls, got %d", len(calls2))
 	}
 	var sawToolCall, sawToolResult bool
-	for _, m := range calls[1].Prompt {
+	for _, m := range calls2[1].Prompt {
 		for _, part := range m.Content {
 			if _, ok := fantasy.AsMessagePart[fantasy.ToolCallPart](part); ok {
 				sawToolCall = true
@@ -248,13 +266,15 @@ func TestAgentSession_ToolRoundTrip(t *testing.T) {
 		t.Errorf("second call missing tool history: call=%v result=%v", sawToolCall, sawToolResult)
 	}
 
-	// Persisted-shape history: user, assistant(tool_call), tool, assistant(text).
+	// Persisted-shape history: user, assistant(tool_call), tool,
+	// assistant(tool_call), tool, assistant(text).
 	roles := make([]fantasy.MessageRole, 0, len(s.messages))
 	for _, m := range s.messages {
 		roles = append(roles, m.Role)
 	}
 	want := []fantasy.MessageRole{
 		fantasy.MessageRoleUser, fantasy.MessageRoleAssistant,
+		fantasy.MessageRoleTool, fantasy.MessageRoleAssistant,
 		fantasy.MessageRoleTool, fantasy.MessageRoleAssistant,
 	}
 	if fmt.Sprint(roles) != fmt.Sprint(want) {

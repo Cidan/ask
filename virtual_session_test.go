@@ -866,15 +866,6 @@ func TestTranslate_PassesWorktreeCwdToMaterialize(t *testing.T) {
 	}
 }
 
-// ---- US-013: claudeProvider.Materialize round-trip ----
-
-// When the workspace passed in is a symlink, the synthetic file must land
-// under the canonical-encoded dir (matching where claude itself reads via
-// getcwd(2)) and the returned nativeCwd must point at the canonical path
-// so subsequent --resume launches don't drift back to the symlink form.
-
-// ---- US-014: codexProvider.Materialize round-trip ----
-
 // ---- US-011: NeutralTurn extraction ----
 
 func TestNeutralTurnsFromHistory_MapsKindsAndSkipsTools(t *testing.T) {

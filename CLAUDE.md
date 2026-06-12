@@ -74,7 +74,7 @@ One `package main`, one file per concern.
 | `skills.go`            | Agent Skills standard (agentskills.io): SKILL.md discovery (~/.config/ask/skills, ~/.agents/skills, ~/.claude/skills + project .agents/.claude/.ask skills dirs at cwd AND git root, project wins), name/description validation, `<available_skills>` trigger block (progressive disclosure — body loads via the read tool), `/skill-name` slash expansion (`expandSkillInvocation` in runTurn), user-invocable skills surfaced through `ProbeInit`. Generic `parseMarkdownFrontmatter` shared with subagent defs. |
 | `agent_tools_ask.go`   | In-process twins of the bridge's `ask_user_question` / `end_turn` — same modal/workflow machinery, no HTTP loopback. |
 | `agent_tools_bridge.go`| Native twins of every other bridge tool (12 `linear_*`, 6 `workflow_*`): a generic `nativeBridgeTool` adapter generates fantasy schemas via the same jsonschema machinery the MCP SDK uses (field docs survive verbatim) and wraps the shared cwd-parameterized cores in mcp_linear.go/mcp_workflows.go. In-process sessions never attach the loopback bridge. |
-| `agent_memory.go`      | In-process twins of hook_memory.go's claude hooks: session-start recall appended to the system prompt (once, byte-stable), per-prompt recall appended to the wire prompt, and `memoryAwareTool` wrapping read/edit/write with a per-file recall footer. All no-op when the memory service is closed. |
+| `agent_memory.go`      | Memory recall injection: session-start recall appended to the system prompt (once, byte-stable), per-prompt recall appended to the wire prompt, and `memoryAwareTool` wrapping read/edit/write with a per-file recall footer. All no-op when the memory service is closed. |
 | `agent_tools_mcp.go`   | MCP client v2 (`mcpManager`/`mcpServerConn`): per-session manager over stdio/http/sse transports (official go-sdk v1.6.1), lazy ping-and-rebuild before every call + one renew-and-retry, `tools/list_changed` → live toolset refresh, MCP elicitation → ask's question modal (form mode: enum/boolean/free-form, typed answers; URL mode + headless decline), image tool-results as real media when the model has vision. Tools are `mcp__<server>__<tool>`. |
 | `mcp_servers.go`       | User-facing MCP server config: `mcpServers` maps (user-global + per-project) merged over project-root `.mcp.json` (claude-code convention), `${VAR}`/`${VAR:-default}` expansion, per-server type inference, timeout, enabled/disabled tool filters, Disabled tombstones. |
 | `mcp_oauth.go`         | OAuth for remote MCP servers (`oauth: true`): SDK authorization-code + PKCE + dynamic client registration, browser launch via swappable `mcpOAuthOpenBrowser`, one-shot loopback callback listener, tokens persisted 0600 under `~/.config/ask/mcp-oauth/` (valid stored tokens skip the browser; expiry re-runs the flow). |
@@ -118,11 +118,12 @@ exercised by the user; code alone won't catch layout regressions.
 | File                       | Scope                                                             |
 |----------------------------|-------------------------------------------------------------------|
 | `testhelpers_test.go`      | `fakeProvider`, `initGitRepo`, `isolateHome`, `newTestModel`, etc. |
-| `provider_test.go`         | Provider registry + claudeProvider metadata + Send protocol.     |
+| `provider_test.go`         | Provider registry lookup/fallback, providerProc kill + stream drain, user-bar text. |
 | `worktree_test.go`         | `.claude/worktrees/` lifecycle against tmp git repos.            |
 | `cwd_guard_test.go`        | `validateAskCwd` / `validateExecutorCwd` plus the entry-path gates (sendToProvider, /resume, Ctrl+M, Init). |
 | `config_test.go`           | `loadConfig` / `saveConfig` / ollama validation.                 |
 | `update_test.go`           | `model.Update` dispatcher behavior via `fakeProvider`.           |
+| `tool_output_test.go`      | Tool-call rendering — phrase headline (short mode = phrase only, full = phrase + param rows, no duplicate description row), payload-description rejection heuristics (`toolCallPhrase`), `shortToolFields` native-lowercase-name coverage, tri-state cycling, result clamping. |
 | `workflows_test.go`        | Workflow tracker (markWorking/markFinal/lookup/clear), schema round-trip (incl. loop steps), prompt assembly, glyph table, `effectiveMaxIterations`. |
 | `workflows_screen_test.go` | Workflows builder state machine — add/rename/delete persistence + edit-while-running guard + loop tree (`stepRows`, add loop/inner, edit max-iters, delete loop/child). |
 | `workflows_picker_test.go` | Picker open/navigate/Enter dispatches `spawnWorkflowTabMsg`. |
@@ -133,12 +134,12 @@ exercised by the user; code alone won't catch layout regressions.
 | `keymap_dispatch_test.go`  | End-to-end: overridden keymap rewires `tabs.go` tab navigation; `/config → Keybindings` capture persists to disk and re-binding to default deletes the entry. |
 | `deepseek_test.go`         | Provider metadata/registry/workflow validation, effort→wire mapping, no-key fail-fast, full session lifecycle against `fakeLM` (send, system prompt on wire, kill/exited, resume replays transcript), Materialize, `modelContextLimit`. |
 | `agent_run_test.go`        | `fakeLM` (scripted `StreamPart`s) + runtime scenarios: text turn protocol order (done before complete), tool round-trip incl. wire history threading, interrupt = clean end, error turn, shutdown, loop-detection trip, compaction (summary head + auto-continuation), dangling-call repair, task sub-agent tool. |
-| `agent_tools_test.go`      | Tool behaviors on `t.TempDir()`: read windows/caps/rejections, write/edit guards (read-before-mutate, stale mtime, uniqueness, replace_all, CRLF), glob/grep/ls, bash via swapped `agentRunShell` (output, exit codes, cancel-kills-pgroup, background jobs), approval denials (`StopTurn`), fetch via httptest, todos validation. |
+| `agent_tools_test.go`      | Tool behaviors on `t.TempDir()`: read windows/caps/rejections, write/edit guards (read-before-mutate, stale mtime, uniqueness, replace_all, CRLF), glob/grep/ls, bash via swapped `agentRunShell` (output, exit codes, cancel-kills-pgroup, background jobs), approval denials (`StopTurn`), fetch via httptest, todos validation, required description-phrase schema across the coding core. |
 | `agent_tools_ask_test.go`  | Native ask_user_question/end_turn — message shapes via swapped `agentSendToProgram`, cancelled/headless replies. |
 | `agent_tools_mcp_test.go`  | MCP manager against in-process `mcp.Server`s over httptest — attach/skip/schema/IsError, image results (placeholder vs media by vision), unreachable-server skip, `tools/list_changed` live refresh, dead-server graceful error, elicitation schema mapping + accept/cancel/headless/url flows. |
 | `mcp_servers_test.go`      | Server-config resolution — effectiveType inference, `${VAR}`/`${VAR:-default}` expansion (copy semantics), 3-layer merge (.mcp.json ← global ← project) incl. Disabled tombstones + junk drops + stable order, tool allow/deny filters. |
 | `mcp_oauth_test.go`        | OAuth plumbing — token path/0600 round-trip, persisting token source saves on change, callback listener captures code/state via swapped browser opener, stored-valid-token served without a flow, fresh handler yields nil source (transport 401s into Authorize). |
-| `agent_tools_bridge_test.go`| Native bridge twins — full 18-tool coverage check, jsonschema field-doc fidelity, linear gate error, malformed input, workflow CRUD round-trip against project config, workflow_run dispatch via swapped `mcpSpawnWorkflowTab`, loopback never in `agentSessionMCPServers`. |
+| `agent_tools_bridge_test.go`| Native bridge twins — full 18-tool coverage check, jsonschema field-doc fidelity, description-phrase injection (+ payload-description non-clobber), linear gate error, malformed input, workflow CRUD round-trip against project config, workflow_run dispatch via swapped `mcpSpawnWorkflowTab`, loopback never in `agentSessionMCPServers`. |
 | `skills_test.go`           | Skills — discovery validation (bad name / dir mismatch / no description skipped) + project-over-global precedence, trigger block (progressive disclosure, hidden skills), `/name args` expansion incl. user-invocable gating, frontmatter parser, ProbeInit → slash entries. |
 | `agent_subagents_test.go`  | Subagents — def discovery/precedence/field parsing, tool grant sets, spec registry, claude model aliases, cross-provider model resolution (swapped LM var), task tool: named agent runs on the pinned provider w/ def prompt + report tail, background job lifecycle (bgTask signals, job_output), default researcher unchanged, `/skill` expansion reaches the wire. |
 | `agent_session_test.go`    | Store round-trip (typed parts survive), CreatedAt preservation, list ordering, LoadHistory tool-output modes, Materialize. |
@@ -557,10 +558,10 @@ identity, model/effort options, `buildModel` (via a swappable
 package-level var for tests), `callOptions` (effort→wire),
 `prepareStep`/`decorateTools` hooks, image capability, context window,
 and config-block accessors. Registration order is explicit in
-provider.go's single `init()` — claude first (the default for an empty
-config) until the CLI providers are removed.
+provider.go's single `init()` — anthropic first (the default for an
+empty config), then openai, then deepseek.
 Everything else (tabs, workflows, banner, cancellation, the Ctrl+M picker)
-works because the session emits the exact claude message protocol:
+works because the session emits the shared provider message protocol:
 `streamStatusMsg`, `assistantTextMsg` (one per completed text block,
 emitted at `OnTextEnd`), `toolCallMsg`/`toolResultMsg`, `toolDiffMsg`
 (via `unifiedDiff` + `parseUnifiedDiff` after edit/write),
@@ -612,17 +613,36 @@ plus native twins of EVERY bridge tool: `ask_user_question`/`end_turn`
 loopback bridge is never attached in-process — only the project
 GitHub MCP and user-configured servers (mcp_servers.go) ride the MCP
 client as `mcp__<server>__<tool>` tools. Memory recall is injected
-natively (agent_memory.go) at the same three points claude gets it
-via hooks. Permissions: when `SkipAllPermissions` is off, mutating
+natively (agent_memory.go) at three points: the system prompt at
+session start, the wire prompt per user turn, and a per-file footer
+on read/edit/write results. Permissions: when `SkipAllPermissions`
+is off, mutating
 tools (bash beyond the safe read-only list, edit/write, fetch) block
 on the existing approval modal; denial returns an error result with
 `StopTurn` so the model ends its turn instead of retrying.
+
+**Description phrases.** Every native tool — the coding core, the
+modal pair, and the bridge twins (injected generically by
+`nativeBridgeTool`, skipping inputs whose own `description` is real
+payload like linear_create_issue's Markdown body) — takes a
+*required* `description` param: a model-authored phrase (under 10
+words) saying what the call is doing. The claude-code/crush trick:
+the model writes the headline itself in the same tool call, no
+second summarization pass. The UI renders it as the call headline
+(`▸ bash — Looking for the latest files`, tool_output.go) — in
+short mode (default) the phrase IS the whole entry; full mode adds
+the param rows — and as the streaming status (`bash: Looking for
+the latest files`, agent_run.go). `toolCallPhrase` gates what
+qualifies (single line, ≤120 chars) so payload `description` fields
+on MCP/bridge tools never masquerade as the headline; calls without
+a phrase (old transcripts, MCP tools) fall back to the
+`shortToolFields` allowlist, keyed by the native lowercase names.
 
 ### Sessions & turn hygiene
 
 Transcripts persist as fantasy message arrays (typed parts survive
 JSON round-trip) under `~/.config/ask/agent-sessions/<provider>/`,
-keyed by the same cwd encoding claude's project dirs use. Resume
+keyed by a claude-code-style cwd encoding for the project dirs. Resume
 replays the stored messages into the next wire call; Materialize
 seeds a fresh transcript from NeutralTurns for cross-provider
 Ctrl+M provider swaps. Before persisting, `repairDanglingToolCalls`
@@ -632,13 +652,13 @@ detection (identical tool-step signatures, >5 repeats in a 10-step
 window) stops runaway turns; context pressure (≤20K headroom of the
 model's window) stops the turn, summarizes the transcript into a new
 user-role head message, and auto-queues a continuation turn when the
-model was mid-tool-loop. A cancelled turn is not persisted — like a
-killed claude proc, resume lands at the last completed turn.
+model was mid-tool-loop. A cancelled turn is not persisted — resume
+lands at the last completed turn.
 
 ## Clipboard and thumbnails
 
 - Only Wayland is supported. Don't add X11 / macOS fallbacks without asking.
-- `wl-paste --list-types` picks the first `image/{png,jpeg,gif,webp}` entry; the raw bytes go straight to Claude (whatever mime), a PNG re-encode goes to Kitty.
+- `wl-paste --list-types` picks the first `image/{png,jpeg,gif,webp}` entry; the raw bytes go straight to the provider (whatever mime), a PNG re-encode goes to Kitty.
 - Kitty transmit writes APC sequences **directly to `/dev/tty`**, not stdout, so Bubble Tea's renderer can't interleave with the image upload.
 - Placeholders are emitted inside `View()` via `kittyPlaceholderRows(id, cols, rows)`. Rows of `U+10EEEE` + diacritics encode `(row, col)` and the foreground color encodes the low 24 bits of the image ID.
 - `kitty_diacritics.go` is the canonical Kitty lookup table — do not edit entries; if you need more than 297 indices, you've misdesigned the grid.
@@ -670,7 +690,7 @@ agent_tools_bridge.go) and the question modal is driven by
 - No new runtime dependencies without asking. We already carry Charm (bubbletea/bubbles/lipgloss/glamour/ultraviolet), `charm.land/fantasy` (the agent runtime behind the deepseek provider — user-approved), the official MCP SDK, golang.org/x/net (fetch tool's HTML→text), and stdlib.
 - Only emojis that already exist in the codebase (`✓`, `✗`, `▸`, `›`, `▏`) — nothing new unless the user asks.
 - Comments: default to none. Only add one when a reader cannot derive the reason from the code.
-- Debug logging uses `debugLog(format, args...)` and is a no-op unless `ASK_DEBUG=1`. Add one when crossing an async boundary (paste command, MCP handler, claude stream, tool dispatch).
+- Debug logging uses `debugLog(format, args...)` and is a no-op unless `ASK_DEBUG=1`. Add one when crossing an async boundary (paste command, MCP handler, provider stream, tool dispatch).
 
 ## Known-fragile areas
 

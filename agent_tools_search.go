@@ -21,8 +21,9 @@ import (
 const agentGlobToolDescription = `Find files by glob pattern, relative to the search path. Supports ** for crossing directories and {a,b} alternation (e.g. "**/*.go", "src/**/*.{ts,tsx}"). Results are sorted by modification time, newest first.`
 
 type agentGlobParams struct {
-	Pattern string `json:"pattern" description:"glob pattern matched against paths relative to the search directory"`
-	Path    string `json:"path,omitempty" description:"directory to search (default: working directory)"`
+	Pattern     string `json:"pattern" description:"glob pattern matched against paths relative to the search directory"`
+	Path        string `json:"path,omitempty" description:"directory to search (default: working directory)"`
+	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 func agentGlobTool(env *agentToolEnv) fantasy.AgentTool {
@@ -177,6 +178,7 @@ type agentGrepParams struct {
 	Path        string `json:"path,omitempty" description:"directory or file to search (default: working directory)"`
 	Include     string `json:"include,omitempty" description:"only search files matching this glob, e.g. *.go or *.{ts,tsx}"`
 	LiteralText bool   `json:"literal_text,omitempty" description:"treat pattern as a literal string instead of a regexp"`
+	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 // agentRgPath is resolved once; tests force the pure-Go fallback by
@@ -389,8 +391,9 @@ func grepWithGo(ctx context.Context, p agentGrepParams, root string) ([]grepMatc
 const agentLsToolDescription = `List a directory as a tree. Directories end with /. Use depth to limit recursion; output is capped at 1000 entries.`
 
 type agentLsParams struct {
-	Path  string `json:"path,omitempty" description:"directory to list (default: working directory)"`
-	Depth int    `json:"depth,omitempty" description:"maximum directory depth to descend (0 = unlimited)"`
+	Path        string `json:"path,omitempty" description:"directory to list (default: working directory)"`
+	Depth       int    `json:"depth,omitempty" description:"maximum directory depth to descend (0 = unlimited)"`
+	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 func agentLsTool(env *agentToolEnv) fantasy.AgentTool {

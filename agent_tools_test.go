@@ -685,3 +685,39 @@ func TestHTMLToText(t *testing.T) {
 		t.Error("plain text should survive")
 	}
 }
+
+func TestCoreTools_RequireDescriptionPhrase(t *testing.T) {
+	// Every coding-core tool takes a required "description" — the
+	// model-authored phrase the UI renders as the call headline and
+	// streaming status. Required (not omitempty) so every call carries
+	// one.
+	env, _ := newTestToolEnv(t)
+	tools := []fantasy.AgentTool{
+		agentReadTool(env), agentWriteTool(env), agentEditTool(env),
+		agentGlobTool(env), agentGrepTool(env), agentLsTool(env),
+		agentBashTool(env), agentJobOutputTool(env), agentJobKillTool(env),
+		agentFetchTool(env), agentTodosTool(env),
+		agentTaskTool(env, func() fantasy.LanguageModel { return nil }, nil),
+		agentAskUserQuestionTool(env),
+	}
+	for _, tool := range tools {
+		info := tool.Info()
+		prop, ok := info.Parameters["description"].(map[string]any)
+		if !ok {
+			t.Errorf("%s: missing description param: %+v", info.Name, info.Parameters)
+			continue
+		}
+		if doc, _ := prop["description"].(string); !strings.Contains(doc, "phrase") {
+			t.Errorf("%s: description doc must explain the phrase contract; got %q", info.Name, doc)
+		}
+		var required bool
+		for _, r := range info.Required {
+			if r == "description" {
+				required = true
+			}
+		}
+		if !required {
+			t.Errorf("%s: description must be required so every call carries a phrase; required=%v", info.Name, info.Required)
+		}
+	}
+}

@@ -48,6 +48,18 @@ func nativeBridgeTool[In, Out any](name, description string,
 	} else {
 		debugLog("bridge tool %s: schema: %v", name, err)
 	}
+	// Every native tool carries the user-facing phrase param so the
+	// transcript line reads "what is this call doing" instead of raw
+	// params. Tools whose input already defines "description" as real
+	// payload (linear_create_issue / linear_update_issue use it for
+	// the issue's Markdown body) are left untouched.
+	if _, exists := properties["description"]; !exists {
+		properties["description"] = map[string]any{
+			"type":        "string",
+			"description": toolPhraseFieldDoc,
+		}
+		required = append(required, "description")
+	}
 	return &bridgeAgentTool[In, Out]{
 		name:        name,
 		description: description,

@@ -16,7 +16,8 @@ type agentTodoEntry struct {
 }
 
 type agentTodosParams struct {
-	Todos []agentTodoEntry `json:"todos" description:"the complete task list, replacing any previous list"`
+	Todos       []agentTodoEntry `json:"todos" description:"the complete task list, replacing any previous list"`
+	Description string           `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 func agentTodosTool(env *agentToolEnv) fantasy.AgentTool {

@@ -479,14 +479,14 @@ func TestUpdate_ToolCallMsgDroppedWhenQuiet(t *testing.T) {
 }
 
 func TestUpdate_ToolCallMsgShortFiltersInputs(t *testing.T) {
-	// Short mode keeps the call but only the highest-signal input fields
-	// per the shortToolFields allowlist.
+	// Short mode renders the model-authored phrase as the whole entry;
+	// the raw params stay out of the transcript.
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}
 	m.toolOutputMode = toolOutputShort
 	m.quietMode = false
 	m2, _ := runUpdate(t, m, toolCallMsg{
-		name: "Bash",
+		name: "bash",
 		input: map[string]any{
 			"command":     "ls",
 			"description": "list files",
@@ -496,11 +496,11 @@ func TestUpdate_ToolCallMsgShortFiltersInputs(t *testing.T) {
 	if len(m2.history) != 1 {
 		t.Fatalf("want 1 history entry, got %d", len(m2.history))
 	}
-	if !strings.Contains(m2.history[0].text, "ls") {
-		t.Errorf("short Bash should keep command; got %q", m2.history[0].text)
+	if !strings.Contains(m2.history[0].text, "list files") {
+		t.Errorf("short bash should render the phrase; got %q", m2.history[0].text)
 	}
-	if strings.Contains(m2.history[0].text, "description") {
-		t.Errorf("short Bash should drop description; got %q", m2.history[0].text)
+	if strings.Contains(m2.history[0].text, "command") {
+		t.Errorf("short bash with a phrase should drop the params; got %q", m2.history[0].text)
 	}
 }
 
