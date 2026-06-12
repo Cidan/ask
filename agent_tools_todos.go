@@ -7,7 +7,14 @@ import (
 	"charm.land/fantasy"
 )
 
-const agentTodosToolDescription = `Replace your task list for this session. Use it to plan multi-step work and show progress: send the FULL list every time (it replaces the previous one). Keep at most one item in_progress; mark items completed as soon as they are done.`
+const agentTodosToolDescription = `Replace your task list for this session. The user watches this list live — it is the progress UI for long tasks, so it must track reality at every moment, not retrospectively.
+
+Cadence contract — one call per transition:
+  - Plan: create the list and mark the first item in_progress BEFORE you start working on it.
+  - The moment an item is done: call todos again, marking it completed and the next item in_progress in the same call.
+  - Never batch: doing all the work and then reporting every item completed in one final call is a failure mode — the user stared at a stale list the whole run.
+
+Send the FULL list every time (it replaces the previous one). Keep exactly one item in_progress while work is underway. Skip the tool entirely for trivial single-step tasks.`
 
 type agentTodoEntry struct {
 	Content    string `json:"content" description:"imperative description of the task"`
@@ -54,8 +61,19 @@ func agentTodosTool(env *agentToolEnv) fantasy.AgentTool {
 			if env.emit != nil {
 				env.emit(todoUpdatedMsg{todos: items})
 			}
+			// The trailing nudge rides every response so the cadence
+			// contract sits in context right where the model reads the
+			// ack — models reliably plan once and then forget the list
+			// exists without it.
+			note := ""
+			switch {
+			case inProgress == 1 && completed < len(items):
+				note = " — call todos again the moment the in_progress item is done; do not batch completions"
+			case inProgress == 0 && completed < len(items):
+				note = " — no item is in_progress; mark the one you are about to work on before continuing"
+			}
 			return fantasy.NewTextResponse(fmt.Sprintf(
-				"(todo list updated: %d items, %d completed)", len(items), completed)), nil
+				"(todo list updated: %d items, %d completed)%s", len(items), completed, note)), nil
 		},
 	)
 }

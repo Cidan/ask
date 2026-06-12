@@ -664,6 +664,28 @@ func TestAgentTodosTool(t *testing.T) {
 	if len(got) != 3 || got[1].ActiveForm != "Doing second" || got[0].Status != "completed" {
 		t.Errorf("todoUpdatedMsg payload wrong: %+v", got)
 	}
+	// In-flight list → the ack carries the "call again when done"
+	// nudge so the cadence contract sits in context on every call.
+	if !strings.Contains(resp.Content, "the moment the in_progress item is done") {
+		t.Errorf("in-flight ack should nudge the next update; got %q", resp.Content)
+	}
+
+	// Pending items but nothing in_progress → nudge to start one.
+	resp = runTool(t, tool, agentTodosParams{Todos: []agentTodoEntry{
+		{Content: "a", Status: "completed"},
+		{Content: "b", Status: "pending"},
+	}})
+	if !strings.Contains(resp.Content, "no item is in_progress") {
+		t.Errorf("stalled list should nudge starting an item; got %q", resp.Content)
+	}
+
+	// Everything completed → clean ack, no nudge.
+	resp = runTool(t, tool, agentTodosParams{Todos: []agentTodoEntry{
+		{Content: "a", Status: "completed"},
+	}})
+	if strings.Contains(resp.Content, "—") {
+		t.Errorf("fully-completed list should ack without a nudge; got %q", resp.Content)
+	}
 
 	if resp = runTool(t, tool, agentTodosParams{Todos: []agentTodoEntry{{Content: "x", Status: "bogus"}}}); !resp.IsError {
 		t.Error("invalid status must error")
