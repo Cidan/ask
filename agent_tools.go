@@ -30,19 +30,24 @@ type agentToolEnv struct {
 	// Overridable so tests can script decisions without a tea.Program.
 	approve func(ctx context.Context, toolName string, input map[string]any) (bool, error)
 
-	// Workflow guard: a one-time, in-process checkpoint that forces the
+	// Workflow guard: a two-stage, in-process checkpoint that forces the
 	// model to consult the project's workflows before it starts tracking
-	// multi-step work. workflowsAvailable is computed once at session
-	// start (true only when the project or user scope actually defines a
-	// workflow). workflowsChecked flips when the model invokes
-	// workflow_list. workflowGuardFired ensures the todos tool punts the
-	// model back to workflow_list at most once, so a model that checks
-	// and finds nothing fitting is never blocked twice. See the guard in
-	// agentTodosTool and the disarm in agentInvokeTool.Run.
-	wfMu               sync.Mutex
-	workflowsAvailable bool
-	workflowsChecked   bool
-	workflowGuardFired bool
+	// multi-step work, AND to reconcile the workflow decision with the
+	// user instead of silently proceeding inline. workflowsAvailable is
+	// computed once at session start (true only when the project or user
+	// scope actually defines a workflow). workflowsChecked flips when the
+	// model invokes workflow_list; workflowRunDispatched flips when it
+	// invokes workflow_run. workflowGuardFired and decisionGuardFired
+	// ensure the todos tool punts the model back at most once per stage,
+	// so a model that legitimately proceeds inline is never blocked more
+	// than these two checkpoints. See the guards in agentTodosTool and
+	// the disarms in agentInvokeTool.Run.
+	wfMu                  sync.Mutex
+	workflowsAvailable    bool
+	workflowsChecked      bool
+	workflowRunDispatched bool
+	workflowGuardFired    bool
+	decisionGuardFired    bool
 }
 
 func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, emit func(tea.Msg)) *agentToolEnv {
@@ -68,6 +73,16 @@ func (env *agentToolEnv) markWorkflowsChecked() {
 	env.wfMu.Unlock()
 }
 
+// markWorkflowRunDispatched records that the model actually launched a
+// workflow via workflow_run. This permanently satisfies the decision
+// guard: a model that ran a workflow is never punted back to reconcile
+// an inline decision. Called from the registry invoke path.
+func (env *agentToolEnv) markWorkflowRunDispatched() {
+	env.wfMu.Lock()
+	env.workflowRunDispatched = true
+	env.wfMu.Unlock()
+}
+
 // workflowGuardShouldFire reports whether the todos tool should reject
 // this call and steer the model to workflow_list first. It fires at
 // most once per session and only when the project actually has
@@ -81,6 +96,26 @@ func (env *agentToolEnv) workflowGuardShouldFire() bool {
 		return false
 	}
 	env.workflowGuardFired = true
+	return true
+}
+
+// workflowDecisionGuardShouldFire reports whether the todos tool should
+// reject this call and steer the model to reconcile its workflow
+// decision with the user. It is the second-stage guard: it fires only
+// after the first guard is satisfied (the model has looked at the
+// workflows, workflowsChecked == true) but the model is now starting
+// inline work without ever having dispatched a workflow_run — the exact
+// failure where a weak model asks the user, gets a yes, then proceeds
+// inline anyway. It fires at most once per session and never when a
+// workflow was actually run. The first call that returns true latches
+// decisionGuardFired so a later todos call always proceeds.
+func (env *agentToolEnv) workflowDecisionGuardShouldFire() bool {
+	env.wfMu.Lock()
+	defer env.wfMu.Unlock()
+	if !env.workflowsAvailable || !env.workflowsChecked || env.workflowRunDispatched || env.decisionGuardFired {
+		return false
+	}
+	env.decisionGuardFired = true
 	return true
 }
 

@@ -211,11 +211,17 @@ func (t *agentInvokeTool) Run(ctx context.Context, call fantasy.ToolCall) (fanta
 	if err != nil {
 		return fantasy.NewTextErrorResponse("invalid params: " + err.Error()), nil
 	}
-	// Looking at the project's workflows disarms the todos workflow
-	// guard — the model has done what the guard asks, so its task list
-	// goes through unimpeded from here on.
-	if t.env != nil && name == "workflow_list" {
-		t.env.markWorkflowsChecked()
+	// Looking at the project's workflows disarms the first-stage todos
+	// workflow guard; actually running one disarms the second-stage
+	// decision guard. The model has done what each guard asks, so its
+	// task list goes through unimpeded from here on.
+	if t.env != nil {
+		switch name {
+		case "workflow_list":
+			t.env.markWorkflowsChecked()
+		case "workflow_run":
+			t.env.markWorkflowRunDispatched()
+		}
 	}
 	return inner.Run(ctx, fantasy.ToolCall{
 		ID:    call.ID,
