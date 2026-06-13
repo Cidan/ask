@@ -117,7 +117,7 @@ func newTestAgentSession(t *testing.T, lm *fakeLM, store *agentSessionStore) *ag
 		sessionID:     "ses-test",
 		store:         store,
 	}
-	s.env = newAgentToolEnv(s.args.Cwd, 1, true, s.emit)
+	s.env = newAgentToolEnv(s.args.Cwd, 1, true, true, s.emit)
 	s.tools = []fantasy.AgentTool{
 		fantasy.NewAgentTool("ping", "test echo tool",
 			func(_ context.Context, in struct {

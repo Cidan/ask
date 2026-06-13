@@ -979,7 +979,7 @@ func TestWorkflowNative_EditDecodesStepsJSON(t *testing.T) {
 		Name:  "alpha",
 		Steps: []workflowStep{{Name: "old", Provider: "fake"}},
 	}})
-	env := newAgentToolEnv(cwd, 1, true, nil)
+	env := newAgentToolEnv(cwd, 1, true, true, nil)
 	var tool fantasy.AgentTool
 	for _, bt := range agentBridgeTools(env) {
 		if bt.Info().Name == "workflow_edit" {

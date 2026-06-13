@@ -24,7 +24,7 @@ func newTestToolEnv(t *testing.T) (*agentToolEnv, *[]tea.Msg) {
 	t.Helper()
 	var mu sync.Mutex
 	msgs := &[]tea.Msg{}
-	env := newAgentToolEnv(t.TempDir(), 1, true, func(m tea.Msg) {
+	env := newAgentToolEnv(t.TempDir(), 1, true, true, func(m tea.Msg) {
 		mu.Lock()
 		defer mu.Unlock()
 		*msgs = append(*msgs, m)
@@ -818,7 +818,7 @@ func TestAgentTodosWorkflowGuard(t *testing.T) {
 	}
 
 	var msgs []tea.Msg
-	env := newAgentToolEnv(cwd, 1, true, func(m tea.Msg) { msgs = append(msgs, m) })
+	env := newAgentToolEnv(cwd, 1, true, true, func(m tea.Msg) { msgs = append(msgs, m) })
 	if !env.workflowsAvailable {
 		t.Fatal("env.workflowsAvailable should be true when the project defines a workflow")
 	}
@@ -871,7 +871,7 @@ func TestAgentTodosWorkflowGuard_DisarmedByCheck(t *testing.T) {
 		t.Fatalf("saveAllWorkflows: %v", err)
 	}
 	var msgs []tea.Msg
-	env := newAgentToolEnv(cwd, 1, true, func(m tea.Msg) { msgs = append(msgs, m) })
+	env := newAgentToolEnv(cwd, 1, true, true, func(m tea.Msg) { msgs = append(msgs, m) })
 
 	// Invoking workflow_list through the registry disarms the guard.
 	inner := registryTool("workflow_list", "list workflows", []string{"description"})
@@ -940,7 +940,7 @@ func TestAgentTodosWorkflowGuard_DisarmedByRun(t *testing.T) {
 		t.Fatalf("saveAllWorkflows: %v", err)
 	}
 	var msgs []tea.Msg
-	env := newAgentToolEnv(cwd, 1, true, func(m tea.Msg) { msgs = append(msgs, m) })
+	env := newAgentToolEnv(cwd, 1, true, true, func(m tea.Msg) { msgs = append(msgs, m) })
 
 	// The model looked AND ran a workflow.
 	listInner := registryTool("workflow_list", "list workflows", []string{"description"})
@@ -1009,11 +1009,11 @@ func TestAgentTodosWorkflowGuard_InertWithoutWorkflows(t *testing.T) {
 	}
 }
 
-// TestRequireTodosBeforeEdit verifies the hard precondition: an edit
-// is refused (file untouched) until a todos call has applied a task
-// list this session, after which the same edit lands. This is what
-// guarantees the workflow guard (inside todos) is always reached before
-// the model starts mutating.
+// TestRequireTodosBeforeEdit verifies the hard precondition when the
+// gate is on: an edit is refused (file untouched) until a todos call
+// has applied a task list this session, after which the same edit
+// lands. This is what guarantees the workflow guard (inside todos) is
+// reached before the model starts mutating in that mode.
 func TestRequireTodosBeforeEdit(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 	path := writeTestFile(t, env.cwd, "f.txt", "hello world\n")
@@ -1150,5 +1150,127 @@ func TestCoreTools_RequireDescriptionPhrase(t *testing.T) {
 		if !required {
 			t.Errorf("%s: description must be required so every call carries a phrase; required=%v", info.Name, info.Required)
 		}
+	}
+}
+
+// TestRequireTodos_GateOff_EditAllowed verifies that when
+// gateTodosBeforeMutate is false, the edit tool does NOT refuse with
+// a todos-required notice.
+func TestRequireTodos_GateOff_EditAllowed(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	env.gateTodosBeforeMutate = false
+	path := writeTestFile(t, env.cwd, "f.txt", "hello world\n")
+	env.files.recordRead(path)
+	edit := agentEditTool(env)
+	params := agentEditParams{FilePath: path, OldString: "hello", NewString: "goodbye"}
+	resp := runTool(t, edit, params)
+	if resp.IsError || strings.Contains(resp.Content, "todos tool") {
+		t.Fatalf("edit should succeed when gate is off; got %q", resp.Content)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "goodbye world\n" {
+		t.Fatalf("edit should have landed; got %q", string(b))
+	}
+}
+
+// TestRequireTodos_GateOff_WriteAllowed verifies that when
+// gateTodosBeforeMutate is false, the write tool does NOT refuse.
+func TestRequireTodos_GateOff_WriteAllowed(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	env.gateTodosBeforeMutate = false
+	path := filepath.Join(env.cwd, "new.txt")
+	write := agentWriteTool(env)
+	resp := runTool(t, write, agentWriteParams{FilePath: path, Content: "data\n"})
+	if resp.IsError || strings.Contains(resp.Content, "todos tool") {
+		t.Fatalf("write should succeed when gate is off; got %q", resp.Content)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "data\n" {
+		t.Fatalf("write should have landed; got %q", string(b))
+	}
+}
+
+// TestWorkflowGuard_GateOff_Inert verifies the workflow guard is inert
+// when gateTodosBeforeMutate is false.
+func TestWorkflowGuard_GateOff_Inert(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	if err := saveAllWorkflows(cwd, []workflowDef{
+		{Name: "ship-it", Scope: workflowScopeRepo, Steps: []workflowStep{
+			{Name: "do", Provider: "deepseek", Model: "deepseek-chat", Prompt: "go"},
+		}},
+	}); err != nil {
+		t.Fatalf("saveAllWorkflows: %v", err)
+	}
+	var msgs []tea.Msg
+	env := newAgentToolEnv(cwd, 1, true, true, func(m tea.Msg) { msgs = append(msgs, m) })
+	env.gateTodosBeforeMutate = false
+	if !env.workflowsAvailable {
+		t.Fatal("env.workflowsAvailable should be true when project defines workflows")
+	}
+	tool := agentTodosTool(env)
+	list := agentTodosParams{Todos: []agentTodoEntry{
+		{Content: "a", Status: "in_progress"},
+	}}
+	resp := runTool(t, tool, list)
+	if resp.IsError || strings.Contains(resp.Content, "NOT applied") {
+		t.Fatalf("guard must be inert when gate is off: %q", resp.Content)
+	}
+	applied := false
+	for _, m := range msgs {
+		if _, ok := m.(todoUpdatedMsg); ok {
+			applied = true
+		}
+	}
+	if !applied {
+		t.Error("todos call should apply when gate is off")
+	}
+}
+
+// TestWorkflowGuard_GateOn_Fires verifies the guard fires when
+// gateTodosBeforeMutate is true.
+func TestWorkflowGuard_GateOn_Fires(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	if err := saveAllWorkflows(cwd, []workflowDef{
+		{Name: "ship-it", Scope: workflowScopeRepo, Steps: []workflowStep{
+			{Name: "do", Provider: "deepseek", Model: "deepseek-chat", Prompt: "go"},
+		}},
+	}); err != nil {
+		t.Fatalf("saveAllWorkflows: %v", err)
+	}
+	var msgs []tea.Msg
+	env := newAgentToolEnv(cwd, 1, true, true, func(m tea.Msg) { msgs = append(msgs, m) })
+	env.gateTodosBeforeMutate = true
+	if !env.workflowsAvailable {
+		t.Fatal("env.workflowsAvailable should be true")
+	}
+	tool := agentTodosTool(env)
+	list := agentTodosParams{Todos: []agentTodoEntry{
+		{Content: "a", Status: "in_progress"},
+	}}
+	resp := runTool(t, tool, list)
+	if !strings.Contains(resp.Content, "NOT applied") || !strings.Contains(resp.Content, "workflow_list") {
+		t.Errorf("guard should steer to workflow_list when gate is on; got %q", resp.Content)
+	}
+	for _, m := range msgs {
+		if _, ok := m.(todoUpdatedMsg); ok {
+			t.Fatal("rejected todos call must not emit a todoUpdatedMsg")
+		}
+	}
+}
+
+// TestGateTodosBeforeMutate_EnvDefaultFalse verifies the env field
+// defaults to false.
+func TestGateTodosBeforeMutate_EnvDefaultFalse(t *testing.T) {
+	cwd := t.TempDir()
+	var msgs []tea.Msg
+	env := newAgentToolEnv(cwd, 1, true, false, func(m tea.Msg) { msgs = append(msgs, m) })
+	if env.gateTodosBeforeMutate {
+		t.Error("gateTodosBeforeMutate should default to false")
+	}
+	if notice := env.workflowGuardNotice(); notice != "" {
+		t.Errorf("workflowGuardNotice should be empty when gate is off; got %q", notice)
+	}
+	if notice := env.requireTodosNotice(); notice != "" {
+		t.Errorf("requireTodosNotice should be empty when gate is off; got %q", notice)
 	}
 }

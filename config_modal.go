@@ -55,6 +55,10 @@ func (m model) globalConfigItems() []configItem {
 	if m.worktree {
 		worktree = "on"
 	}
+	gateTodos := "off"
+	if m.gateTodosBeforeMutate {
+		gateTodos = "on"
+	}
 	// The Default Provider row reflects what's saved on disk, not the
 	// current tab's provider. The picker only writes cfg.Provider and
 	// leaves m.provider alone, so reading m.provider here would show a
@@ -86,6 +90,7 @@ func (m model) globalConfigItems() []configItem {
 		{"Tool Output", toolOut, "toolOutput"},
 		{"Skip All Permissions", skipPerms, "skipAllPermissions"},
 		{"Worktree", worktree, "worktree"},
+		{"Gate Todos Before Mutate", gateTodos, "gateTodosBeforeMutate"},
 		{"Theme", m.themeName, "theme"},
 		{"Default Provider", provName, "provider"},
 		{"Memory...", mem, "memory"},
@@ -357,6 +362,23 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 			ensureWorktreeGitignore()
 		} else {
 			m.worktreeName = ""
+		}
+		m.killProc()
+		return m, nil
+	case "gateTodosBeforeMutate":
+		m.gateTodosBeforeMutate = !m.gateTodosBeforeMutate
+		v := m.gateTodosBeforeMutate
+		if err := withConfigLock(func() error {
+			cfg, _ := loadConfig()
+			cfg.UI.GateTodosBeforeMutate = &v
+			return saveConfig(cfg)
+		}); err != nil {
+			debugLog("saveConfig err: %v", err)
+		}
+		if m.proc != nil {
+			if s, ok := m.proc.payload.(*agentSession); ok {
+				s.env.gateTodosBeforeMutate = m.gateTodosBeforeMutate
+			}
 		}
 		m.killProc()
 		return m, nil

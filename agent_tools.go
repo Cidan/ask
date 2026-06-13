@@ -26,6 +26,13 @@ type agentToolEnv struct {
 	files           *agentFileTracker
 	jobs            *agentJobManager
 
+	// gateTodosBeforeMutate gates the two guards below: when true (opt-in),
+	// the todos tool enforces the workflow check and the write/edit tools
+	// refuse to mutate until a task list has been applied. When false
+	// (default), both guards are inert — the model can write/edit without
+	// calling todos and the workflow guard never fires.
+	gateTodosBeforeMutate bool
+
 	// approve gates a mutating tool call behind the ask approval modal.
 	// Overridable so tests can script decisions without a tea.Program.
 	approve func(ctx context.Context, toolName string, input map[string]any) (bool, error)
@@ -50,23 +57,26 @@ type agentToolEnv struct {
 	decisionGuardFired    bool
 
 	// todosApplied flips true the first time a todos call successfully
-	// applies a task list this session. The write/edit tools refuse to
-	// mutate until it is set (see requireTodosNotice), making the todos
-	// call a mandatory chokepoint before any code change — which in turn
-	// guarantees the workflow guard (which lives inside todos) is always
-	// reached before the model starts editing. Guarded by wfMu.
+	// applies a task list this session. When gateTodosBeforeMutate is
+	// true (opt-in), the write/edit tools refuse to mutate until it is
+	// set (see requireTodosNotice), making the todos call a mandatory
+	// chokepoint before any code change and guaranteeing the workflow
+	// guard (which lives inside todos) is reached before the model starts
+	// editing. When the gate is false (default), this flag is unused.
+	// Guarded by wfMu.
 	todosApplied bool
 }
 
-func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, emit func(tea.Msg)) *agentToolEnv {
+func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, gateTodosBeforeMutate bool, emit func(tea.Msg)) *agentToolEnv {
 	env := &agentToolEnv{
-		cwd:                cwd,
-		tabID:              tabID,
-		skipPermissions:    skipPermissions,
-		emit:               emit,
-		files:              newAgentFileTracker(),
-		jobs:               newAgentJobManager(),
-		workflowsAvailable: len(listAllWorkflows(cwd)) > 0,
+		cwd:                   cwd,
+		tabID:                 tabID,
+		skipPermissions:       skipPermissions,
+		gateTodosBeforeMutate: gateTodosBeforeMutate,
+		emit:                  emit,
+		files:                 newAgentFileTracker(),
+		jobs:                  newAgentJobManager(),
+		workflowsAvailable:    len(listAllWorkflows(cwd)) > 0,
 	}
 	env.approve = env.approveViaModal
 	return env
@@ -130,12 +140,16 @@ func (env *agentToolEnv) workflowDecisionGuardShouldFire() bool {
 // workflowGuardNotice runs the two-stage workflow guard and returns the
 // steering notice the calling tool should return INSTEAD of doing its
 // work, or "" when the call may proceed. It is called only from the
-// todos tool — and because write/edit refuse to mutate before a todos
-// call has applied (see requireTodosNotice), the model can never reach
-// an edit without first passing through this guard. Inert when env is
-// nil or the project defines no workflows.
+// todos tool. When gateTodosBeforeMutate is true (opt-in), write/edit
+// refuse to mutate before a todos call has applied (see
+// requireTodosNotice), so the model cannot reach an edit without first
+// passing through this guard. Inert when env is nil, the project defines
+// no workflows, or the gate is false (default).
 func (env *agentToolEnv) workflowGuardNotice() string {
 	if env == nil {
+		return ""
+	}
+	if !env.gateTodosBeforeMutate {
 		return ""
 	}
 	if env.workflowGuardShouldFire() {
@@ -157,12 +171,17 @@ func (env *agentToolEnv) markTodosApplied() {
 
 // requireTodosNotice returns the steering notice a mutating tool
 // (write/edit) should return INSTEAD of mutating when no todos call has
-// applied a task list yet this session, or "" once one has. This makes
-// the todos call a mandatory precondition for any code change: the user
-// always gets a live task list, and the workflow guard inside todos is
-// always reached before the model starts editing. Inert when env is nil.
+// applied a task list yet this session, or "" once one has. When
+// gateTodosBeforeMutate is true (opt-in), this makes the todos call a
+// mandatory precondition for any code change: the user always gets a
+// live task list, and the workflow guard inside todos is reached before
+// the model starts editing. Inert when env is nil or the gate is false
+// (default).
 func (env *agentToolEnv) requireTodosNotice() string {
 	if env == nil {
+		return ""
+	}
+	if !env.gateTodosBeforeMutate {
 		return ""
 	}
 	env.wfMu.Lock()

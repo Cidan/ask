@@ -176,7 +176,7 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 		session.sessionID = newUUIDv4()
 	}
 
-	session.env = newAgentToolEnv(args.Cwd, args.TabID, args.SkipAllPermissions, session.emit)
+	session.env = newAgentToolEnv(args.Cwd, args.TabID, args.SkipAllPermissions, cfg.UI.GateTodosBeforeMutate != nil && *cfg.UI.GateTodosBeforeMutate, session.emit)
 	setupAgentSessionTools(session, cfg)
 
 	proc := &providerProc{
