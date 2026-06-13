@@ -121,17 +121,25 @@ func agentWriteTool(env *agentToolEnv) fantasy.AgentTool {
 		"write",
 		agentWriteToolDescription,
 		func(ctx context.Context, p agentWriteParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			// When gateTodosBeforeMutate is on, no mutation before a task
-			// list exists: writing is code-change intent, and the todos call
-			// is the mandatory chokepoint where workflows are checked.
-			// Refuse until todos has applied.
-			if notice := env.requireTodosNotice(); notice != "" {
-				return fantasy.NewTextResponse(notice), nil
-			}
 			if strings.TrimSpace(p.FilePath) == "" {
 				return fantasy.NewTextErrorResponse("file_path is required"), nil
 			}
 			path := env.absPath(p.FilePath)
+			// When gateTodosBeforeMutate is on, no mutation before a task
+			// list exists: writing is code-change intent, and the todos call
+			// is the mandatory chokepoint where workflows are checked.
+			// Refuse until todos has applied.
+			//
+			// Workflow plan files live under ask/plans/ and must be writable
+			// before a workflow_run can be submitted (the runner gates on the
+			// start plan existing). Allowing them through here breaks the
+			// circular dependency between "write the plan" and "create a task
+			// list / run a workflow".
+			if !isPathUnderWorkflowPlans(env.cwd, path) {
+				if notice := env.requireTodosNotice(); notice != "" {
+					return fantasy.NewTextResponse(notice), nil
+				}
+			}
 			oldContent := ""
 			mode := os.FileMode(0o644)
 			if info, err := os.Stat(path); err == nil {
@@ -191,13 +199,6 @@ func agentEditTool(env *agentToolEnv) fantasy.AgentTool {
 		"edit",
 		agentEditToolDescription,
 		func(ctx context.Context, p agentEditParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			// When gateTodosBeforeMutate is on, no mutation before a task
-			// list exists: editing is code-change intent, and the todos call
-			// is the mandatory chokepoint where workflows are checked.
-			// Refuse until todos has applied.
-			if notice := env.requireTodosNotice(); notice != "" {
-				return fantasy.NewTextResponse(notice), nil
-			}
 			if strings.TrimSpace(p.FilePath) == "" {
 				return fantasy.NewTextErrorResponse("file_path is required"), nil
 			}
@@ -205,6 +206,20 @@ func agentEditTool(env *agentToolEnv) fantasy.AgentTool {
 				return fantasy.NewTextErrorResponse("old_string and new_string are identical — nothing to do"), nil
 			}
 			path := env.absPath(p.FilePath)
+			// When gateTodosBeforeMutate is on, no mutation before a task
+			// list exists: editing is code-change intent, and the todos call
+			// is the mandatory chokepoint where workflows are checked.
+			// Refuse until todos has applied.
+			//
+			// Workflow plan files live under ask/plans/ and must be writable
+			// before a workflow_run can be submitted. Allowing them through
+			// here breaks the circular dependency between "edit the plan" and
+			// "create a task list / run a workflow".
+			if !isPathUnderWorkflowPlans(env.cwd, path) {
+				if notice := env.requireTodosNotice(); notice != "" {
+					return fantasy.NewTextResponse(notice), nil
+				}
+			}
 
 			if p.OldString == "" {
 				if _, err := os.Stat(path); err == nil {

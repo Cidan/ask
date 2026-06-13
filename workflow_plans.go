@@ -58,6 +58,24 @@ func stepNotesDir(cwd, stepName, loopName string, iteration int) string {
 	return filepath.Join(base, sanitizeStepName(stepName))
 }
 
+// isPathUnderWorkflowPlans reports whether path is inside the
+// ask/plans/ tree for cwd's project root. It returns false when cwd has
+// no project root or when path is the plans directory itself.
+func isPathUnderWorkflowPlans(cwd, path string) bool {
+	plansDir := workflowPlansDir(cwd)
+	if plansDir == "" {
+		return false
+	}
+	rel, err := filepath.Rel(plansDir, path)
+	if err != nil {
+		return false
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}
+
 // sanitizeStepName maps a workflow step name onto a filesystem-safe
 // path component. Runes outside [a-zA-Z0-9._-] become '-'; runs
 // collapse; empty results fall back to "step".

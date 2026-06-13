@@ -1105,6 +1105,57 @@ func TestRequireTodos_AppliesInAllProjects(t *testing.T) {
 	}
 }
 
+// TestRequireTodos_BypassedForWorkflowPlans_Write verifies that writes
+// under ask/plans/ bypass the require-todos gate. This is required so
+// the model can pre-create the workflow start plan before calling
+// workflow_run, breaking the circular dependency where the gate blocked
+// the very writes the workflow runner demands.
+func TestRequireTodos_BypassedForWorkflowPlans_Write(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	path := filepath.Join(env.cwd, "ask", "plans", "start", "plan.md")
+	write := agentWriteTool(env)
+
+	resp := runTool(t, write, agentWriteParams{FilePath: path, Content: "# start plan\n"})
+	if resp.IsError || strings.Contains(resp.Content, "todos tool") {
+		t.Fatalf("write under ask/plans should bypass require-todos gate; got %q", resp.Content)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "# start plan\n" {
+		t.Fatalf("plan file should be written; got %q", string(b))
+	}
+}
+
+// TestRequireTodos_BypassedForWorkflowPlans_Edit verifies that edits
+// inside ask/plans/ bypass the require-todos gate.
+func TestRequireTodos_BypassedForWorkflowPlans_Edit(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	path := writeTestFile(t, env.cwd, filepath.Join("ask", "plans", "start", "plan.md"), "# old\n")
+	env.files.recordRead(path)
+	edit := agentEditTool(env)
+
+	resp := runTool(t, edit, agentEditParams{FilePath: path, OldString: "# old", NewString: "# new"})
+	if resp.IsError || strings.Contains(resp.Content, "todos tool") {
+		t.Fatalf("edit under ask/plans should bypass require-todos gate; got %q", resp.Content)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "# new\n" {
+		t.Fatalf("plan file should be edited; got %q", string(b))
+	}
+}
+
+// TestRequireTodos_StillBlocksPathsOutsideWorkflowPlans confirms that
+// the bypass is narrowly scoped to the ask/plans/ tree; ordinary paths
+// are still gated.
+func TestRequireTodos_StillBlocksPathsOutsideWorkflowPlans(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	path := filepath.Join(env.cwd, "regular.txt")
+	resp := runTool(t, agentWriteTool(env), agentWriteParams{FilePath: path, Content: "x"})
+	if !strings.Contains(resp.Content, "todos tool") {
+		t.Fatalf("non-plans write should still be gated; got %q", resp.Content)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("non-plans write must not create the file before todos is applied")
+	}
+}
+
 func TestHTMLToText(t *testing.T) {
 	out := htmlToText("<ul><li>one</li><li>two</li></ul><pre>code  here</pre>")
 	if !strings.Contains(out, "one") || !strings.Contains(out, "two") || !strings.Contains(out, "code  here") {
