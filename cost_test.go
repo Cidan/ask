@@ -169,14 +169,14 @@ func TestProviderSwapCostMeter(t *testing.T) {
 	pB.id = "openai"
 	withRegisteredProviders(t, pA, pB)
 
-	// Cross-provider: the conversation resets, so the meter does too.
+	// Cross-provider swap now keeps the spend meter.
 	m := newTestModel(t, pA)
 	m.sessionCostUSD = 0.42
 	m.sessionCostKnown = true
 	next, _ := m.applyProviderModelSwitch(providerRegistry[1], "gpt-5.5")
 	mi := next.(model)
-	if mi.sessionCostUSD != 0 || mi.sessionCostKnown {
-		t.Errorf("cross-provider swap kept cost: %v known=%v", mi.sessionCostUSD, mi.sessionCostKnown)
+	if mi.sessionCostUSD != 0.42 || !mi.sessionCostKnown {
+		t.Errorf("cross-provider swap dropped cost: %v known=%v", mi.sessionCostUSD, mi.sessionCostKnown)
 	}
 
 	// Same-provider model swap keeps the session — and its spend.
