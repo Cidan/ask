@@ -125,15 +125,17 @@ type agentInvokeToolParams struct {
 type agentInvokeTool struct {
 	registry func() []fantasy.AgentTool
 	isCore   func(name string) bool
+	env      *agentToolEnv
 	opts     fantasy.ProviderOptions
 }
 
 // agentInvokeToolTool builds the invoke_tool core tool. registry
 // returns the current deferred tool set; isCore reports whether a
 // name belongs to the core tools so the error message can steer the
-// model back to a direct call.
-func agentInvokeToolTool(registry func() []fantasy.AgentTool, isCore func(string) bool) fantasy.AgentTool {
-	return &agentInvokeTool{registry: registry, isCore: isCore}
+// model back to a direct call. env (optional) lets the invoke path
+// disarm the todos workflow guard when workflow_list is called.
+func agentInvokeToolTool(registry func() []fantasy.AgentTool, isCore func(string) bool, env *agentToolEnv) fantasy.AgentTool {
+	return &agentInvokeTool{registry: registry, isCore: isCore, env: env}
 }
 
 func (t *agentInvokeTool) Info() fantasy.ToolInfo {
@@ -208,6 +210,12 @@ func (t *agentInvokeTool) Run(ctx context.Context, call fantasy.ToolCall) (fanta
 	raw, err := json.Marshal(params)
 	if err != nil {
 		return fantasy.NewTextErrorResponse("invalid params: " + err.Error()), nil
+	}
+	// Looking at the project's workflows disarms the todos workflow
+	// guard — the model has done what the guard asks, so its task list
+	// goes through unimpeded from here on.
+	if t.env != nil && name == "workflow_list" {
+		t.env.markWorkflowsChecked()
 	}
 	return inner.Run(ctx, fantasy.ToolCall{
 		ID:    call.ID,

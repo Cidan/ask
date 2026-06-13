@@ -225,7 +225,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		agentAskUserQuestionTool(env),
 		agentEndTurnTool(env),
 		agentSearchToolsTool(s.deferredTools),
-		agentInvokeToolTool(s.deferredTools, s.isCoreToolName),
+		agentInvokeToolTool(s.deferredTools, s.isCoreToolName, env),
 	}
 	// web_search is the rare second deliberate core exception (alongside
 	// fetch): an agent cannot reach for current information unless it sees

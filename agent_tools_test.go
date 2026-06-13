@@ -802,6 +802,131 @@ func TestAgentTodosTool(t *testing.T) {
 	}
 }
 
+func TestAgentTodosWorkflowGuard(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	// A project with at least one workflow arms the guard.
+	if err := saveAllWorkflows(cwd, []workflowDef{
+		{Name: "ship-it", Scope: workflowScopeRepo, Steps: []workflowStep{
+			{Name: "do", Provider: "deepseek", Model: "deepseek-chat", Prompt: "go"},
+		}},
+	}); err != nil {
+		t.Fatalf("saveAllWorkflows: %v", err)
+	}
+
+	var msgs []tea.Msg
+	env := newAgentToolEnv(cwd, 1, true, func(m tea.Msg) { msgs = append(msgs, m) })
+	if !env.workflowsAvailable {
+		t.Fatal("env.workflowsAvailable should be true when the project defines a workflow")
+	}
+	tool := agentTodosTool(env)
+
+	list := agentTodosParams{Todos: []agentTodoEntry{
+		{Content: "a", Status: "in_progress"},
+		{Content: "b", Status: "pending"},
+	}}
+
+	// First call: rejected, list NOT applied, no todoUpdatedMsg emitted.
+	resp := runTool(t, tool, list)
+	if resp.IsError {
+		t.Fatalf("guard notice should not be an error response: %q", resp.Content)
+	}
+	if !strings.Contains(resp.Content, "NOT applied") || !strings.Contains(resp.Content, "workflow_list") {
+		t.Errorf("guard should steer to workflow_list and say the list was not applied; got %q", resp.Content)
+	}
+	for _, m := range msgs {
+		if _, ok := m.(todoUpdatedMsg); ok {
+			t.Fatal("rejected todos call must not emit a todoUpdatedMsg")
+		}
+	}
+
+	// Second call: guard already fired this session → list goes through.
+	msgs = nil
+	resp = runTool(t, tool, list)
+	if resp.IsError || strings.Contains(resp.Content, "NOT applied") {
+		t.Fatalf("guard must fire at most once; second call should apply: %q", resp.Content)
+	}
+	applied := false
+	for _, m := range msgs {
+		if _, ok := m.(todoUpdatedMsg); ok {
+			applied = true
+		}
+	}
+	if !applied {
+		t.Error("second todos call should apply the list")
+	}
+}
+
+func TestAgentTodosWorkflowGuard_DisarmedByCheck(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	if err := saveAllWorkflows(cwd, []workflowDef{
+		{Name: "ship-it", Scope: workflowScopeRepo, Steps: []workflowStep{
+			{Name: "do", Provider: "deepseek", Model: "deepseek-chat", Prompt: "go"},
+		}},
+	}); err != nil {
+		t.Fatalf("saveAllWorkflows: %v", err)
+	}
+	var msgs []tea.Msg
+	env := newAgentToolEnv(cwd, 1, true, func(m tea.Msg) { msgs = append(msgs, m) })
+
+	// Invoking workflow_list through the registry disarms the guard.
+	inner := registryTool("workflow_list", "list workflows", []string{"description"})
+	inner.fn = func(_ context.Context, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		return fantasy.NewTextResponse("[]"), nil
+	}
+	invoke := agentInvokeToolTool(staticRegistry(inner), nil, env)
+	if r := runTool(t, invoke, map[string]any{
+		"tool_name":   "workflow_list",
+		"description": "listing workflows",
+	}); r.IsError {
+		t.Fatalf("workflow_list invoke failed: %q", r.Content)
+	}
+	if !env.workflowsChecked {
+		t.Fatal("invoking workflow_list should set workflowsChecked")
+	}
+
+	// With the guard disarmed, the very first todos call applies.
+	resp := runTool(t, agentTodosTool(env), agentTodosParams{Todos: []agentTodoEntry{
+		{Content: "a", Status: "in_progress"},
+	}})
+	if resp.IsError || strings.Contains(resp.Content, "NOT applied") {
+		t.Fatalf("checked project should not trip the guard: %q", resp.Content)
+	}
+	applied := false
+	for _, m := range msgs {
+		if _, ok := m.(todoUpdatedMsg); ok {
+			applied = true
+		}
+	}
+	if !applied {
+		t.Error("todos call after a workflow check should apply the list")
+	}
+}
+
+func TestAgentTodosWorkflowGuard_InertWithoutWorkflows(t *testing.T) {
+	// No workflows defined → the guard never fires, even on the first call.
+	env, msgs := newTestToolEnv(t)
+	if env.workflowsAvailable {
+		t.Fatal("a workflow-less project must not arm the guard")
+	}
+	resp := runTool(t, agentTodosTool(env), agentTodosParams{Todos: []agentTodoEntry{
+		{Content: "a", Status: "in_progress"},
+	}})
+	if resp.IsError || strings.Contains(resp.Content, "NOT applied") {
+		t.Fatalf("guard must stay inert without workflows: %q", resp.Content)
+	}
+	got := false
+	for _, m := range *msgs {
+		if _, ok := m.(todoUpdatedMsg); ok {
+			got = true
+		}
+	}
+	if !got {
+		t.Error("first todos call should apply when no workflows exist")
+	}
+}
+
 func TestHTMLToText(t *testing.T) {
 	out := htmlToText("<ul><li>one</li><li>two</li></ul><pre>code  here</pre>")
 	if !strings.Contains(out, "one") || !strings.Contains(out, "two") || !strings.Contains(out, "code  here") {
@@ -826,7 +951,7 @@ func TestCoreTools_RequireDescriptionPhrase(t *testing.T) {
 		agentTaskTool(env, func() fantasy.LanguageModel { return nil }, nil),
 		agentAskUserQuestionTool(env),
 		agentSearchToolsTool(func() []fantasy.AgentTool { return nil }),
-		agentInvokeToolTool(func() []fantasy.AgentTool { return nil }, nil),
+		agentInvokeToolTool(func() []fantasy.AgentTool { return nil }, nil, nil),
 	}
 	for _, tool := range tools {
 		info := tool.Info()

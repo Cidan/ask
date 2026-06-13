@@ -114,7 +114,7 @@ func TestInvokeTool_Dispatch(t *testing.T) {
 		captured = c
 		return fantasy.NewTextResponse("issue body"), nil
 	}
-	tool := agentInvokeToolTool(staticRegistry(inner), nil)
+	tool := agentInvokeToolTool(staticRegistry(inner), nil, nil)
 
 	resp := runTool(t, tool, map[string]any{
 		"tool_name":   "linear_get_issue",
@@ -139,7 +139,7 @@ func TestInvokeTool_RequiredFieldCheck(t *testing.T) {
 	// replicate the check (json.Unmarshal would silently zero-value
 	// the missing param otherwise).
 	inner := registryTool("linear_get_issue", "get issue", []string{"number", "description"})
-	tool := agentInvokeToolTool(staticRegistry(inner), nil)
+	tool := agentInvokeToolTool(staticRegistry(inner), nil, nil)
 
 	resp := runTool(t, tool, map[string]any{
 		"tool_name":   "linear_get_issue",
@@ -160,7 +160,7 @@ func TestInvokeTool_PhraseInjection(t *testing.T) {
 		captured = c.Input
 		return fantasy.NewTextResponse("ok"), nil
 	}
-	tool := agentInvokeToolTool(staticRegistry(inner), nil)
+	tool := agentInvokeToolTool(staticRegistry(inner), nil, nil)
 	resp := runTool(t, tool, map[string]any{
 		"tool_name":   "workflow_list",
 		"description": "listing workflows",
@@ -182,7 +182,7 @@ func TestInvokeTool_PhraseInjection(t *testing.T) {
 		mcpCaptured = c.Input
 		return fantasy.NewTextResponse("ok"), nil
 	}
-	tool = agentInvokeToolTool(staticRegistry(mcpInner), nil)
+	tool = agentInvokeToolTool(staticRegistry(mcpInner), nil, nil)
 	if resp = runTool(t, tool, map[string]any{
 		"tool_name":   "mcp__srv__thing",
 		"description": "calling the thing",
@@ -198,7 +198,7 @@ func TestInvokeTool_PhraseInjection(t *testing.T) {
 
 func TestInvokeTool_UnknownAndCoreNames(t *testing.T) {
 	isCore := func(name string) bool { return name == "bash" }
-	tool := agentInvokeToolTool(staticRegistry(), isCore)
+	tool := agentInvokeToolTool(staticRegistry(), isCore, nil)
 
 	resp := runTool(t, tool, map[string]any{"tool_name": "bash", "description": "running a command"})
 	if !resp.IsError || !strings.Contains(resp.Content, "core tool") {
@@ -220,7 +220,7 @@ func TestInvokeTool_ResponsePassThrough(t *testing.T) {
 		inner.fn = func(context.Context, fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			return resp, err
 		}
-		return agentInvokeToolTool(staticRegistry(inner), nil)
+		return agentInvokeToolTool(staticRegistry(inner), nil, nil)
 	}
 	call := map[string]any{"tool_name": "inner", "description": "calling inner"}
 
@@ -397,7 +397,7 @@ func TestAgentSession_InvokeToolUnwrapInTranscript(t *testing.T) {
 	}}
 	s := newTestAgentSession(t, lm, nil)
 	reg := staticRegistry(registryTool("ping_reg", "registry ping", nil))
-	s.tools = append(s.tools, agentInvokeToolTool(reg, s.isCoreToolName))
+	s.tools = append(s.tools, agentInvokeToolTool(reg, s.isCoreToolName, nil))
 
 	if err := s.queueTurn("use the registry tool"); err != nil {
 		t.Fatal(err)

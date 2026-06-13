@@ -29,19 +29,59 @@ type agentToolEnv struct {
 	// approve gates a mutating tool call behind the ask approval modal.
 	// Overridable so tests can script decisions without a tea.Program.
 	approve func(ctx context.Context, toolName string, input map[string]any) (bool, error)
+
+	// Workflow guard: a one-time, in-process checkpoint that forces the
+	// model to consult the project's workflows before it starts tracking
+	// multi-step work. workflowsAvailable is computed once at session
+	// start (true only when the project or user scope actually defines a
+	// workflow). workflowsChecked flips when the model invokes
+	// workflow_list. workflowGuardFired ensures the todos tool punts the
+	// model back to workflow_list at most once, so a model that checks
+	// and finds nothing fitting is never blocked twice. See the guard in
+	// agentTodosTool and the disarm in agentInvokeTool.Run.
+	wfMu               sync.Mutex
+	workflowsAvailable bool
+	workflowsChecked   bool
+	workflowGuardFired bool
 }
 
 func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, emit func(tea.Msg)) *agentToolEnv {
 	env := &agentToolEnv{
-		cwd:             cwd,
-		tabID:           tabID,
-		skipPermissions: skipPermissions,
-		emit:            emit,
-		files:           newAgentFileTracker(),
-		jobs:            newAgentJobManager(),
+		cwd:                cwd,
+		tabID:              tabID,
+		skipPermissions:    skipPermissions,
+		emit:               emit,
+		files:              newAgentFileTracker(),
+		jobs:               newAgentJobManager(),
+		workflowsAvailable: len(listAllWorkflows(cwd)) > 0,
 	}
 	env.approve = env.approveViaModal
 	return env
+}
+
+// markWorkflowsChecked disarms the workflow guard: once the model has
+// invoked workflow_list, the todos tool stops punting it back. Called
+// from the registry invoke path.
+func (env *agentToolEnv) markWorkflowsChecked() {
+	env.wfMu.Lock()
+	env.workflowsChecked = true
+	env.wfMu.Unlock()
+}
+
+// workflowGuardShouldFire reports whether the todos tool should reject
+// this call and steer the model to workflow_list first. It fires at
+// most once per session and only when the project actually has
+// workflows the model hasn't yet looked at. The first call that
+// returns true latches workflowGuardFired so a later todos call always
+// proceeds.
+func (env *agentToolEnv) workflowGuardShouldFire() bool {
+	env.wfMu.Lock()
+	defer env.wfMu.Unlock()
+	if !env.workflowsAvailable || env.workflowsChecked || env.workflowGuardFired {
+		return false
+	}
+	env.workflowGuardFired = true
+	return true
 }
 
 // approveViaModal is the production approval path: route an

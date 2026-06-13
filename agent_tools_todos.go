@@ -16,6 +16,19 @@ Cadence contract — one call per transition:
 
 Send the FULL list every time (it replaces the previous one). Keep exactly one item in_progress while work is underway. Skip the tool entirely for trivial single-step tasks.`
 
+// workflowGuardTodosNotice is returned (instead of applying the list)
+// the first time the model calls todos in a project that has workflows
+// without having consulted them. It does not apply the list — the model
+// must check workflows and then resend.
+const workflowGuardTodosNotice = `Your task list was NOT applied. You are about to start multi-step work but you haven't checked this project's workflows yet — that check is a precondition, not a suggestion.
+
+Do this now:
+  1. Call search_tools with query "workflow_*", then invoke workflow_list to see the defined workflows.
+  2. If any workflow fits this task — even loosely — tell the user it exists and let them decide whether to run it. An established workflow is always preferred over ad-hoc execution.
+  3. If none fit, just proceed.
+
+Then resend this exact todos call — it will go through. This guard fires only once per session.`
+
 type agentTodoEntry struct {
 	Content    string `json:"content" description:"imperative description of the task"`
 	Status     string `json:"status" enum:"pending,in_progress,completed" description:"current state of the task"`
@@ -32,6 +45,16 @@ func agentTodosTool(env *agentToolEnv) fantasy.AgentTool {
 		"todos",
 		agentTodosToolDescription,
 		func(ctx context.Context, p agentTodosParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			// Reaching for a task list is the clearest signal the model is
+			// about to start multi-step work — the exact moment it should
+			// already have consulted the project's workflows. If it hasn't,
+			// punt it back ONCE (per session) to workflow_list before the
+			// list is applied. The guard self-disarms after one fire and
+			// only triggers when the project actually defines workflows, so
+			// a model that checks and finds nothing fitting is never blocked.
+			if env != nil && env.workflowGuardShouldFire() {
+				return fantasy.NewTextResponse(workflowGuardTodosNotice), nil
+			}
 			inProgress := 0
 			completed := 0
 			items := make([]todoItem, 0, len(p.Todos))
