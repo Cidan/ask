@@ -58,6 +58,13 @@ type agentSession struct {
 	tools        []fantasy.AgentTool
 	deferred     []fantasy.AgentTool
 
+	// providerWebSearch is the provider-executed web search tool
+	// (anthropic / openai), registered via WithProviderDefinedTools so
+	// the API runs the search server-side. Nil for providers using the
+	// Brave-backed core web_search tool instead. Set once at setup; read
+	// only on the run goroutine, so no lock is needed.
+	providerWebSearch fantasy.ProviderTool
+
 	providerOpts    fantasy.ProviderOptions
 	temperature     *float64
 	contextWindow   int64
@@ -306,14 +313,22 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	// never appears as a construct in the transcript.
 	displayNames := map[string]string{}
 
-	agent := fantasy.NewAgent(s.model,
+	agentOpts := []fantasy.AgentOption{
 		fantasy.WithSystemPrompt(s.system),
 		fantasy.WithTools(s.currentTools()...),
 		fantasy.WithStopConditions(
 			agentLoopDetectionCondition(),
 			s.contextPressureCondition(&shouldCompact),
 		),
-	)
+	}
+	if s.providerWebSearch != nil {
+		// Provider-executed web search (anthropic / openai). The API runs
+		// the search; its server_tool_use / result blocks stream through
+		// OnToolCall / OnToolResult like any other tool (ProviderExecuted),
+		// so the transcript renders it under the name "web_search".
+		agentOpts = append(agentOpts, fantasy.WithProviderDefinedTools(s.providerWebSearch))
+	}
+	agent := fantasy.NewAgent(s.model, agentOpts...)
 
 	var prepareStep fantasy.PrepareStepFunction
 	if s.spec != nil {

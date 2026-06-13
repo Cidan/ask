@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -643,10 +644,113 @@ func TestAgentFetchTool(t *testing.T) {
 	}
 }
 
+func TestAgentWebSearchTool(t *testing.T) {
+	isolateHome(t)
+	env, _ := newTestToolEnv(t)
+	tool := agentWebSearchTool(env)
+
+	// No key configured: graceful non-error notice, not a failure.
+	t.Setenv("BRAVE_API_KEY", "")
+	resp := runTool(t, tool, agentWebSearchParams{Query: "golang generics"})
+	if resp.IsError || resp.StopTurn {
+		t.Fatalf("no-key result must be a plain notice, got %+v", resp)
+	}
+	if !strings.Contains(resp.Content, "not configured") || !strings.Contains(resp.Content, "/config") {
+		t.Errorf("no-key notice should point at /config: %q", resp.Content)
+	}
+
+	// Empty query is rejected before any network.
+	if r := runTool(t, tool, agentWebSearchParams{Query: "  "}); !r.IsError {
+		t.Error("empty query must be an error")
+	}
+
+	var gotToken, gotQuery, gotCount string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken = r.Header.Get("X-Subscription-Token")
+		gotQuery = r.URL.Query().Get("q")
+		gotCount = r.URL.Query().Get("count")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"web":{"results":[
+			{"title":"Go Generics","url":"https://go.dev/generics","description":"An <b>intro</b> to generics."},
+			{"title":"Tutorial","url":"https://example.com/t","description":"Step by step."}
+		]}}`)
+	}))
+	defer srv.Close()
+
+	base, _ := url.Parse(srv.URL)
+	prevClient := braveSearchClient
+	braveSearchClient = &http.Client{Transport: rewriteTransport{base: base}}
+	t.Cleanup(func() { braveSearchClient = prevClient })
+
+	t.Setenv("BRAVE_API_KEY", "test-token")
+	resp = runTool(t, tool, agentWebSearchParams{Query: "golang generics", Count: 5})
+	if resp.IsError {
+		t.Fatalf("search failed: %s", resp.Content)
+	}
+	if gotToken != "test-token" {
+		t.Errorf("subscription token header = %q, want test-token", gotToken)
+	}
+	if gotQuery != "golang generics" {
+		t.Errorf("query param = %q", gotQuery)
+	}
+	if gotCount != "5" {
+		t.Errorf("count param = %q, want 5", gotCount)
+	}
+	if !strings.Contains(resp.Content, "Go Generics") || !strings.Contains(resp.Content, "https://go.dev/generics") {
+		t.Errorf("results missing title/url:\n%s", resp.Content)
+	}
+	if strings.Contains(resp.Content, "<b>") {
+		t.Errorf("description HTML should be reduced to text:\n%s", resp.Content)
+	}
+
+	// Config value beats env var and is used as the token.
+	if err := withConfigLock(func() error {
+		cfg, _ := loadConfig()
+		cfg.WebSearch.BraveAPIKey = "cfg-token"
+		return saveConfig(cfg)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = runTool(t, tool, agentWebSearchParams{Query: "x"})
+	if gotToken != "cfg-token" {
+		t.Errorf("config key should win over env: token=%q", gotToken)
+	}
+
+	// HTTP error from the API surfaces as an error result.
+	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	}))
+	defer errSrv.Close()
+	errBase, _ := url.Parse(errSrv.URL)
+	braveSearchClient = &http.Client{Transport: rewriteTransport{base: errBase}}
+	if r := runTool(t, tool, agentWebSearchParams{Query: "x"}); !r.IsError || !strings.Contains(r.Content, "web search failed") {
+		t.Errorf("HTTP 429 should be an error result: %+v", r)
+	}
+
+	// Permission denial stops the turn.
+	braveSearchClient = &http.Client{Transport: rewriteTransport{base: base}}
+	env.skipPermissions = false
+	env.approve = func(context.Context, string, map[string]any) (bool, error) { return false, nil }
+	if r := runTool(t, tool, agentWebSearchParams{Query: "x"}); !r.IsError || !r.StopTurn {
+		t.Errorf("denied web_search should stop turn: %+v", r)
+	}
+}
+
+// rewriteTransport sends every request to base.Host (the httptest
+// server) while preserving the original path and query, so a tool with a
+// hard-coded endpoint can be pointed at a fake server in tests.
+type rewriteTransport struct{ base *url.URL }
+
+func (rt rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.URL.Scheme = rt.base.Scheme
+	req.URL.Host = rt.base.Host
+	req.Host = rt.base.Host
+	return http.DefaultTransport.RoundTrip(req)
+}
+
 func TestAgentTodosTool(t *testing.T) {
 	env, msgs := newTestToolEnv(t)
 	tool := agentTodosTool(env)
-
 	resp := runTool(t, tool, agentTodosParams{Todos: []agentTodoEntry{
 		{Content: "first", Status: "completed"},
 		{Content: "second", Status: "in_progress", ActiveForm: "Doing second"},

@@ -75,6 +75,10 @@ func (m model) globalConfigItems() []configItem {
 	} else if memoryConfigEnabled(cfg) {
 		mem = "off (open failed)"
 	}
+	webSearch := "off"
+	if resolveBraveAPIKey(cfg.WebSearch) != "" {
+		webSearch = "on"
+	}
 	items := []configItem{
 		{"Quiet Mode", quiet, "quiet"},
 		{"Cursor Blink", blink, "cursorBlink"},
@@ -86,6 +90,7 @@ func (m model) globalConfigItems() []configItem {
 		{"Theme", m.themeName, "theme"},
 		{"Default Provider", provName, "provider"},
 		{"Memory...", mem, "memory"},
+		{"Web Search...", webSearch, "webSearch"},
 		{"Keybindings...", "", "keybindings"},
 	}
 	return items
@@ -154,6 +159,9 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.configMemoryPickerActive {
 		return m.updateConfigMemoryPicker(msg)
+	}
+	if m.configWebSearchPickerActive {
+		return m.updateConfigWebSearchPicker(msg)
 	}
 	if m.configKeybindingsPickerActive {
 		return m.updateConfigKeybindingsPicker(msg)
@@ -388,6 +396,9 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "memory":
 		m = m.openConfigMemoryPicker()
+		return m, nil
+	case "webSearch":
+		m = m.openConfigWebSearchPicker()
 		return m, nil
 	case "keybindings":
 		m = m.openConfigKeybindingsPicker()

@@ -777,6 +777,23 @@ func (m model) View() tea.View {
 					Max: image.Pt(pX+pW, pY+pH),
 				})
 			}
+			if m.configWebSearchPickerActive {
+				picker := m.viewConfigWebSearchPicker()
+				pW := lipgloss.Width(picker)
+				pH := lipgloss.Height(picker)
+				pX := (m.width - pW) / 2
+				pY := (m.height - pH) / 2
+				if pX < 0 {
+					pX = 0
+				}
+				if pY < 0 {
+					pY = 0
+				}
+				uv.NewStyledString(picker).Draw(canvas, image.Rectangle{
+					Min: image.Pt(pX, pY),
+					Max: image.Pt(pX+pW, pY+pH),
+				})
+			}
 			if m.configKeybindingsPickerActive {
 				picker := m.viewConfigKeybindingsPicker()
 				pW := lipgloss.Width(picker)

@@ -45,6 +45,15 @@ type agentProviderSpec struct {
 	// supportsImages gates image attachments per model.
 	supportsImages func(modelID string) bool
 
+	// nativeWebSearch, when non-nil, returns the provider-executed web
+	// search tool for this provider (anthropic / openai). Sessions whose
+	// spec sets it register the provider-defined tool under the name
+	// "web_search" and DO NOT attach the Brave-backed core tool — the
+	// provider runs the search server-side and bills it directly. Specs
+	// without first-party search (DeepSeek and other openaicompat
+	// backends) leave this nil and get the Brave tool instead.
+	nativeWebSearch func(modelID string) fantasy.ProviderTool
+
 	contextWindow func(modelID string) int64
 
 	// maxOutputTokens is the per-turn output budget sent as max_tokens.
@@ -217,6 +226,18 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		agentEndTurnTool(env),
 		agentSearchToolsTool(s.deferredTools),
 		agentInvokeToolTool(s.deferredTools, s.isCoreToolName),
+	}
+	// web_search is the rare second deliberate core exception (alongside
+	// fetch): an agent cannot reach for current information unless it sees
+	// the tool unprompted. Providers with first-party search (anthropic,
+	// openai) run it server-side via WithProviderDefinedTools — registered
+	// under the same name "web_search" so the model's mental model is
+	// uniform. Everyone else gets the Brave-backed native core tool, which
+	// degrades to a graceful "not configured" notice without a key.
+	if s.spec != nil && s.spec.nativeWebSearch != nil {
+		s.providerWebSearch = s.spec.nativeWebSearch(s.modelID)
+	} else {
+		s.coreTools = append(s.coreTools, agentWebSearchTool(env))
 	}
 	s.coreTools = wrapFileToolsWithMemory(s.coreTools, s.args.Cwd)
 	s.coreTools = wrapReadToolWithRules(s.coreTools, s.args.Cwd, discoverRules(s.args.Cwd))

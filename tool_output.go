@@ -71,6 +71,7 @@ var shortToolFields = map[string][]string{
 	"read":         {"file_path"},
 	"search_tools": {"query"},
 	"task":         {"agent", "prompt"},
+	"web_search":   {"query"},
 	"write":        {"file_path"},
 }
 

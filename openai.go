@@ -93,6 +93,12 @@ var openaiSpec = agentProviderSpec{
 		// (custom) ids to true and let the catalog override.
 		return catalogSupportsImages(catwalk.InferenceProviderOpenAI, modelID, true)
 	},
+	nativeWebSearch: func(string) fantasy.ProviderTool {
+		// OpenAI's Responses-API web search. Runs server-side; results
+		// stream back as provider-executed tool calls/results. This spec
+		// always uses the Responses API, so the tool is always available.
+		return openai.WebSearchTool(nil)
+	},
 	contextWindow: func(modelID string) int64 {
 		return catalogContextWindow(catwalk.InferenceProviderOpenAI, modelID, openaiFallbackContextWindow)
 	},

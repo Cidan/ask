@@ -527,6 +527,16 @@ type model struct {
 	configMemoryFieldEditing string
 	configMemoryFieldDraft   string
 
+	// configWebSearchPickerActive toggles the /config → Web Search
+	// sub-picker. It carries the Brave Search API key (the only knob).
+	// Pressing Enter on the key row opens the inline editor
+	// (configWebSearchEditing flips true); the draft accumulates
+	// keystrokes/pastes and Enter persists it to cfg.WebSearch.BraveAPIKey.
+	configWebSearchPickerActive bool
+	configWebSearchCursor       int
+	configWebSearchEditing      bool
+	configWebSearchDraft        string
+
 	// /config now layers into Global Options (existing knobs) vs
 	// Project Options (per-cwd issue provider). configGlobalPicker-
 	// Active is the gate for the Global submenu — it carries the

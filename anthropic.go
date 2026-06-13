@@ -136,6 +136,12 @@ var anthropicSpec = agentProviderSpec{
 		// (custom) ids to true and let the catalog override.
 		return catalogSupportsImages(catwalk.InferenceProviderAnthropic, modelID, true)
 	},
+	nativeWebSearch: func(string) fantasy.ProviderTool {
+		// Anthropic's server-side web search (web_search_20250305). Runs
+		// in the API; results stream back as provider-executed tool
+		// calls/results. Default options — the model picks queries.
+		return anthropic.WebSearchTool(nil)
+	},
 	contextWindow: func(modelID string) int64 {
 		return catalogContextWindow(catwalk.InferenceProviderAnthropic, modelID, anthropicFallbackContextWindow)
 	},

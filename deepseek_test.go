@@ -287,6 +287,17 @@ func TestDeepseekMaxOutputTokens(t *testing.T) {
 	}
 }
 
+func TestDeepseekNoNativeWebSearch(t *testing.T) {
+	// openaicompat backends have no first-party search; they fall back to
+	// the Brave-backed core web_search tool, so nativeWebSearch stays nil.
+	if deepseekSpec.nativeWebSearch != nil {
+		t.Error("deepseek must not declare a native web search")
+	}
+	if kimiSpec.nativeWebSearch != nil {
+		t.Error("kimi must not declare a native web search")
+	}
+}
+
 func TestModelContextLimit_DeepSeek(t *testing.T) {
 	if got := modelContextLimit("deepseek-v4-pro"); got != deepseekContextWindow {
 		t.Errorf("deepseek-v4-pro limit = %d want %d", got, deepseekContextWindow)

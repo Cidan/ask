@@ -289,3 +289,20 @@ func TestAnthropicSupportsImages(t *testing.T) {
 		t.Error("unknown claude ids default to image-capable")
 	}
 }
+
+func TestAnthropicNativeWebSearch(t *testing.T) {
+	if anthropicSpec.nativeWebSearch == nil {
+		t.Fatal("anthropic must provide a native web_search tool")
+	}
+	tool := anthropicSpec.nativeWebSearch("claude-fable-5")
+	if tool == nil {
+		t.Fatal("nativeWebSearch returned nil")
+	}
+	pdt, ok := tool.(fantasy.ProviderDefinedTool)
+	if !ok {
+		t.Fatalf("expected ProviderDefinedTool, got %T", tool)
+	}
+	if pdt.Name != "web_search" {
+		t.Errorf("provider tool name = %q, want web_search", pdt.Name)
+	}
+}

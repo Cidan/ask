@@ -471,6 +471,7 @@ func (a app) supplantWorkflow(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
 	t.configThemePickerActive = false
 	t.configProviderPickerActive = false
 	t.configMemoryPickerActive = false
+	t.configWebSearchPickerActive = false
 	t.configKeybindingsPickerActive = false
 	t.lastContentFP = ""
 	if t.fc != nil {

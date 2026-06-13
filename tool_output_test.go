@@ -124,7 +124,7 @@ func TestShortToolFields_CoverNativeToolNames(t *testing.T) {
 	// The fallback allowlist is keyed by the native lowercase tool
 	// names — a regression here silently degrades short mode to bare
 	// headers (the bug shipped when the CLI providers were removed).
-	for _, name := range []string{"bash", "read", "write", "edit", "glob", "grep", "ls", "fetch", "task", "job_output", "job_kill", "end_turn"} {
+	for _, name := range []string{"bash", "read", "write", "edit", "glob", "grep", "ls", "fetch", "web_search", "task", "job_output", "job_kill", "end_turn"} {
 		if _, ok := shortToolFields[name]; !ok {
 			t.Errorf("shortToolFields missing native tool %q", name)
 		}

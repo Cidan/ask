@@ -170,3 +170,20 @@ func TestOpenAIMaxOutputTokens(t *testing.T) {
 		t.Errorf("unknown model must use the fallback budget: %d", got)
 	}
 }
+
+func TestOpenAINativeWebSearch(t *testing.T) {
+	if openaiSpec.nativeWebSearch == nil {
+		t.Fatal("openai must provide a native web_search tool")
+	}
+	tool := openaiSpec.nativeWebSearch("gpt-5.5")
+	if tool == nil {
+		t.Fatal("nativeWebSearch returned nil")
+	}
+	pdt, ok := tool.(fantasy.ProviderDefinedTool)
+	if !ok {
+		t.Fatalf("expected ProviderDefinedTool, got %T", tool)
+	}
+	if pdt.Name != "web_search" {
+		t.Errorf("provider tool name = %q, want web_search", pdt.Name)
+	}
+}

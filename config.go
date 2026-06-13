@@ -54,6 +54,7 @@ type askConfig struct {
 	OpenAI    apiProviderConfig `json:"openai,omitempty"`
 	UI        uiConfig          `json:"ui,omitempty"`
 	Memory    memoryConfig      `json:"memory,omitempty"`
+	WebSearch webSearchConfig   `json:"webSearch,omitempty"`
 
 	// MCPServers are user-global MCP servers attached to every
 	// in-process agent session. Per-project entries (projectConfig)
@@ -588,6 +589,7 @@ const (
 	moonshotEnvAPIKey  = "MOONSHOT_API_KEY"
 	anthropicEnvAPIKey = "ANTHROPIC_API_KEY"
 	openaiEnvAPIKey    = "OPENAI_API_KEY"
+	braveEnvAPIKey     = "BRAVE_API_KEY"
 )
 
 // resolveAPIProviderKey returns the API key to use: an explicit config
@@ -615,6 +617,27 @@ func resolveAnthropicAPIKey(c apiProviderConfig) string {
 
 func resolveOpenAIAPIKey(c apiProviderConfig) string {
 	return resolveAPIProviderKey(c, openaiEnvAPIKey)
+}
+
+// webSearchConfig holds the generic web-search settings. Today the only
+// knob is the Brave Search API key, used by the native Brave-backed
+// web_search tool for providers without first-party search (DeepSeek and
+// any other openaicompat backend). Anthropic and OpenAI sessions use
+// their provider-executed web search instead and never consult this.
+// Held in 0600 config alongside the provider keys — same trust model.
+type webSearchConfig struct {
+	BraveAPIKey string `json:"braveApiKey,omitempty"`
+}
+
+// resolveBraveAPIKey returns the Brave Search key: an explicit config
+// value wins, otherwise the BRAVE_API_KEY environment variable. Empty
+// means unconfigured — the web_search tool then returns a graceful
+// notice telling the model to alert the user instead of failing hard.
+func resolveBraveAPIKey(c webSearchConfig) string {
+	if c.BraveAPIKey != "" {
+		return c.BraveAPIKey
+	}
+	return os.Getenv(braveEnvAPIKey)
 }
 
 // resolveDeepSeekBaseURL returns the configured base URL or the

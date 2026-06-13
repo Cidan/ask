@@ -350,6 +350,44 @@ func TestSetupAgentSessionTools_RegistrySurface(t *testing.T) {
 	}
 }
 
+func TestSetupAgentSessionTools_WebSearchSelection(t *testing.T) {
+	isolateHome(t)
+
+	// No native search → Brave core tool on the wire, no provider tool.
+	noNative := &agentSession{args: ProviderSessionArgs{Cwd: t.TempDir(), TabID: 1}}
+	noNative.env = newAgentToolEnv(noNative.args.Cwd, 1, true, func(tea.Msg) {})
+	setupAgentSessionTools(noNative, askConfig{})
+	wire := map[string]bool{}
+	for _, name := range toolNames(noNative.currentTools()) {
+		wire[name] = true
+	}
+	if !wire["web_search"] {
+		t.Errorf("brave web_search must be on the wire when the spec has no native search: %v", wire)
+	}
+	if noNative.providerWebSearch != nil {
+		t.Error("providerWebSearch must stay nil without a native spec")
+	}
+
+	// Native search → provider tool set, web_search OFF the wire.
+	spec := &agentProviderSpec{
+		id: "test-native",
+		nativeWebSearch: func(string) fantasy.ProviderTool {
+			return fantasy.ProviderDefinedTool{ID: "web_search", Name: "web_search"}
+		},
+	}
+	native := &agentSession{args: ProviderSessionArgs{Cwd: t.TempDir(), TabID: 2}, spec: spec}
+	native.env = newAgentToolEnv(native.args.Cwd, 2, true, func(tea.Msg) {})
+	setupAgentSessionTools(native, askConfig{})
+	for _, name := range toolNames(native.currentTools()) {
+		if name == "web_search" {
+			t.Error("web_search must NOT be on the wire when the provider runs it natively")
+		}
+	}
+	if native.providerWebSearch == nil {
+		t.Error("providerWebSearch must be set from the spec's nativeWebSearch")
+	}
+}
+
 func TestAgentSession_InvokeToolUnwrapInTranscript(t *testing.T) {
 	lm := &fakeLM{turns: [][]fantasy.StreamPart{
 		toolCallTurn("c1", "invoke_tool",
