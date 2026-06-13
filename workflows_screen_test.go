@@ -267,6 +267,31 @@ func TestWorkflowsBuilder_RenameWorkflowPersists(t *testing.T) {
 	}
 }
 
+// TestWorkflowsBuilder_EditDescriptionPersists exercises the
+// description editor: cursor on a workflow → 'e' opens the prompt
+// textarea with a workflow-scoped target, type, Ctrl+S saves to the
+// workflow's Description.
+func TestWorkflowsBuilder_EditDescriptionPersists(t *testing.T) {
+	m, cwd := seedWorkflowsBuilder(t, []workflowDef{{Name: "wf"}})
+	m.workflowsBuilder.focus = workflowsBuilderFocusLeft
+	m.workflowsBuilder.listCursor = 1
+
+	m1, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: 'e'})
+	if m1.workflowsBuilder.prompt == nil || m1.workflowsBuilder.promptTarget != "description" {
+		t.Fatalf("expected description prompt editor open; got target=%q prompt=%v",
+			m1.workflowsBuilder.promptTarget, m1.workflowsBuilder.prompt)
+	}
+	m1.workflowsBuilder.prompt.SetValue("Use for any change you ship.")
+	m2, _, _ := workflowsScreen{}.updateKey(m1, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 's'})
+	if m2.workflowsBuilder.prompt != nil {
+		t.Errorf("prompt editor should close after Ctrl+S")
+	}
+	got := projectWorkflows(cwd)
+	if len(got) != 1 || got[0].Description != "Use for any change you ship." {
+		t.Errorf("expected description persisted on disk; got %+v", got)
+	}
+}
+
 // TestWorkflowsBuilder_DeleteWorkflowConfirms exercises the destroy
 // confirm flow.
 func TestWorkflowsBuilder_DeleteWorkflowConfirms(t *testing.T) {

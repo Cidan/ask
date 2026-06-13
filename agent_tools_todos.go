@@ -28,10 +28,11 @@ const workflowGuardTodosNotice = `Your task list was NOT applied. You are about 
 
 Do this now, in order:
   1. Call search_tools with query "workflow_*", then invoke workflow_list to see the defined workflows.
-  2. State a one-line verdict, out loud, before doing anything else. Either:
+  2. Read each workflow's "description" — it states, in the author's words, what the workflow is FOR and when to use it. Judge fit against THAT description, not against the step names. (Step names like "open PR" or "validate" describe HOW a workflow runs, not WHICH tasks it covers — inferring scope from them is how a fitting workflow gets wrongly declined.) If a workflow has no description, read its steps with workflow_get before deciding.
+  3. State a one-line verdict, out loud, before doing anything else. Either:
        - "Workflow <name> fits." — then STOP. Do NOT start the task with read/edit/bash. Tell the user the workflow's name and ask exactly: "Run workflow <name>, or should I handle this directly?" An established workflow is ALWAYS preferred over ad-hoc execution.
-       - "No workflow fits because <reason>." — then you may proceed inline.
-  3. If the user approves running the workflow, your VERY NEXT action MUST be to invoke the workflow_run tool (search_tools "workflow_*" → invoke_tool workflow_run with the workflow name). Running the workflow means CALLING workflow_run — it does NOT mean doing the task yourself with your normal tools. Doing the task yourself is only correct when the user explicitly chose "handle this directly" or when no workflow fit.
+       - "No workflow fits because <reason>." — then you may proceed inline. When in doubt about fit, surface the workflow to the user rather than declining it yourself.
+  4. If the user approves running the workflow, your VERY NEXT action MUST be to invoke the workflow_run tool (search_tools "workflow_*" → invoke_tool workflow_run with the workflow name). Running the workflow means CALLING workflow_run — it does NOT mean doing the task yourself with your normal tools. Doing the task yourself is only correct when the user explicitly chose "handle this directly" or when no workflow fit.
 
 Then resend this exact todos call — it will go through. This guard fires only once per session.`
 
@@ -45,7 +46,7 @@ const workflowDecisionGuardNotice = `Your task list was NOT applied. You consult
 
 Reconcile this before continuing:
   - If a workflow fits and the user approved it: STOP. Do not start the task. Your next action MUST be to invoke the workflow_run tool with that workflow's name. Inline tools (read/edit/bash) are the wrong move here.
-  - If you are proceeding inline on purpose: confirm with the user that they want it handled directly INSTEAD of the workflow, and state which workflow you are declining and why.
+  - If you are proceeding inline on purpose: confirm with the user that they want it handled directly INSTEAD of the workflow, and state which workflow you are declining and why. Base that decision on the workflow's description (what it is FOR), not on its step names — a workflow whose steps mention "PR" or "validate" can still be the right fit for a refactor, deletion, or fix. If your only reason for declining is the step structure, you are probably declining wrongly: surface it to the user instead.
 
 Then resend this exact todos call — it will go through. This decision guard fires only once per session.`
 

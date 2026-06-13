@@ -185,6 +185,67 @@ func TestNativeBridgeTool_WorkflowCRUDRoundTrip(t *testing.T) {
 	}
 }
 
+func TestNativeBridgeTool_WorkflowDescriptionRoundTrip(t *testing.T) {
+	isolateHome(t)
+	env, _ := newTestToolEnv(t)
+
+	create := bridgeToolByName(t, env, "workflow_create")
+	resp, err := create.Run(context.Background(), fantasy.ToolCall{
+		ID: "1", Name: "workflow_create",
+		Input: `{"name":"ship","description":"Use for any code change you ship.","steps":[{"name":"s","provider":"deepseek","prompt":"p"}]}`,
+	})
+	if err != nil || resp.IsError {
+		t.Fatalf("create: %+v %v", resp, err)
+	}
+
+	// list surfaces the description so the agent can judge fit.
+	list := bridgeToolByName(t, env, "workflow_list")
+	resp, err = list.Run(context.Background(), fantasy.ToolCall{ID: "2", Name: "workflow_list", Input: `{}`})
+	if err != nil || resp.IsError {
+		t.Fatalf("list: %+v %v", resp, err)
+	}
+	if !strings.Contains(resp.Content, "Use for any code change you ship.") {
+		t.Errorf("workflow_list must surface the description: %q", resp.Content)
+	}
+
+	// edit replaces the description; omitting it would leave it unchanged.
+	edit := bridgeToolByName(t, env, "workflow_edit")
+	resp, err = edit.Run(context.Background(), fantasy.ToolCall{
+		ID: "3", Name: "workflow_edit",
+		Input: `{"name":"ship","description":"Updated purpose statement."}`,
+	})
+	if err != nil || resp.IsError {
+		t.Fatalf("edit: %+v %v", resp, err)
+	}
+	items, err := workflowItemsForCwd(env.cwd)
+	if err != nil || len(items) != 1 || items[0].Description != "Updated purpose statement." {
+		t.Fatalf("edit must persist new description: %+v %v", items, err)
+	}
+
+	// Omitting description on a later edit leaves it intact (rename only).
+	resp, err = edit.Run(context.Background(), fantasy.ToolCall{
+		ID: "4", Name: "workflow_edit",
+		Input: `{"name":"ship","new_name":"deploy"}`,
+	})
+	if err != nil || resp.IsError {
+		t.Fatalf("rename edit: %+v %v", resp, err)
+	}
+	items, _ = workflowItemsForCwd(env.cwd)
+	if len(items) != 1 || items[0].Name != "deploy" || items[0].Description != "Updated purpose statement." {
+		t.Errorf("omitted description must stay unchanged across a rename: %+v", items)
+	}
+
+	// get returns the description.
+	get := bridgeToolByName(t, env, "workflow_get")
+	resp, err = get.Run(context.Background(), fantasy.ToolCall{ID: "5", Name: "workflow_get", Input: `{"name":"deploy"}`})
+	if err != nil || resp.IsError {
+		t.Fatalf("get: %+v %v", resp, err)
+	}
+	if !strings.Contains(resp.Content, "Updated purpose statement.") {
+		t.Errorf("workflow_get must return the description: %q", resp.Content)
+	}
+}
+
 func TestNativeBridgeTool_WorkflowRunDispatches(t *testing.T) {
 	isolateHome(t)
 	env, _ := newTestToolEnv(t)

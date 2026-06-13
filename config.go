@@ -187,7 +187,19 @@ type workflowsConfig struct {
 // the scope, so the on-disk shapes stay byte-identical to pre-scope
 // workflows.
 type workflowDef struct {
-	Name  string         `json:"name"`
+	Name string `json:"name"`
+
+	// Description is a free-text statement of what the workflow is FOR
+	// and when it should be used — the trigger conditions, in the
+	// author's own words. It is surfaced verbatim in workflow_list so
+	// the agent judges fit against the author's stated intent instead
+	// of reverse-engineering purpose from step names (a real failure
+	// mode: a "ship" workflow whose steps mention "open PR" got
+	// misread as feature-only and wrongly declined for a refactor).
+	// Optional — omitempty keeps pre-description workflows
+	// byte-identical on disk.
+	Description string `json:"description,omitempty"`
+
 	Steps []workflowStep `json:"steps,omitempty"`
 
 	Scope string `json:"-"`

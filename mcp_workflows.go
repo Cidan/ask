@@ -52,9 +52,10 @@ type workflowListStepView struct {
 }
 
 type workflowListItem struct {
-	Name  string                 `json:"name" jsonschema:"workflow name"`
-	Scope string                 `json:"scope" jsonschema:"where the workflow is stored: 'user' (~/.config/ask/ask.json, machine-local) or 'repo' (<root>/.ask/workflows/, committed and shared)"`
-	Steps []workflowListStepView `json:"steps" jsonschema:"steps in execution order; prompts omitted to keep the listing small"`
+	Name        string                 `json:"name" jsonschema:"workflow name"`
+	Scope       string                 `json:"scope" jsonschema:"where the workflow is stored: 'user' (~/.config/ask/ask.json, machine-local) or 'repo' (<root>/.ask/workflows/, committed and shared)"`
+	Description string                 `json:"description,omitempty" jsonschema:"the author's statement of what this workflow is for and when to use it; judge fit against THIS, not the step names"`
+	Steps       []workflowListStepView `json:"steps" jsonschema:"steps in execution order; prompts omitted to keep the listing small"`
 }
 
 type workflowListOutput struct {
@@ -93,9 +94,10 @@ type workflowStepView struct {
 }
 
 type workflowDefView struct {
-	Name  string             `json:"name"`
-	Scope string             `json:"scope" jsonschema:"where the workflow is stored: 'user' or 'repo'"`
-	Steps []workflowStepView `json:"steps"`
+	Name        string             `json:"name"`
+	Scope       string             `json:"scope" jsonschema:"where the workflow is stored: 'user' or 'repo'"`
+	Description string             `json:"description,omitempty" jsonschema:"the author's statement of what this workflow is for and when to use it"`
+	Steps       []workflowStepView `json:"steps"`
 }
 
 type workflowGetOutput struct {
@@ -103,9 +105,10 @@ type workflowGetOutput struct {
 }
 
 type workflowCreateInput struct {
-	Name  string             `json:"name" jsonschema:"new workflow name; must be unique within the chosen scope"`
-	Scope string             `json:"scope,omitempty" jsonschema:"where to store the workflow: 'user' (default; machine-local ask.json) or 'repo' (<root>/.ask/workflows/, committed and shared with the team)"`
-	Steps []workflowStepView `json:"steps,omitempty" jsonschema:"steps to create the workflow with; may be empty"`
+	Name        string             `json:"name" jsonschema:"new workflow name; must be unique within the chosen scope"`
+	Scope       string             `json:"scope,omitempty" jsonschema:"where to store the workflow: 'user' (default; machine-local ask.json) or 'repo' (<root>/.ask/workflows/, committed and shared with the team)"`
+	Description string             `json:"description,omitempty" jsonschema:"what this workflow is for and when to use it; surfaced in workflow_list so the agent judges fit against your stated intent"`
+	Steps       []workflowStepView `json:"steps,omitempty" jsonschema:"steps to create the workflow with; may be empty"`
 }
 
 type workflowCreateOutput struct {
@@ -113,10 +116,11 @@ type workflowCreateOutput struct {
 }
 
 type workflowEditInput struct {
-	Name    string              `json:"name" jsonschema:"existing workflow name to edit"`
-	Scope   string              `json:"scope,omitempty" jsonschema:"scope holding the workflow ('user' or 'repo'); required when the name exists in both scopes"`
-	NewName string              `json:"new_name,omitempty" jsonschema:"optional new name; must be unique within the workflow's scope"`
-	Steps   *[]workflowStepView `json:"steps,omitempty" jsonschema:"if provided, replaces the entire steps array (full-replace semantics); omit to leave steps unchanged"`
+	Name        string              `json:"name" jsonschema:"existing workflow name to edit"`
+	Scope       string              `json:"scope,omitempty" jsonschema:"scope holding the workflow ('user' or 'repo'); required when the name exists in both scopes"`
+	NewName     string              `json:"new_name,omitempty" jsonschema:"optional new name; must be unique within the workflow's scope"`
+	Description *string             `json:"description,omitempty" jsonschema:"if provided, replaces the description (pass an empty string to clear it); omit to leave it unchanged"`
+	Steps       *[]workflowStepView `json:"steps,omitempty" jsonschema:"if provided, replaces the entire steps array (full-replace semantics); omit to leave steps unchanged"`
 }
 
 type workflowEditOutput struct {
@@ -182,7 +186,7 @@ const (
 
 A workflow lives in one of two scopes: 'user' (machine-local, stored in ~/.config/ask/ask.json) or 'repo' (stored as one JSON file per workflow under <project root>/.ask/workflows/ — committed to the repo and shared with the team). Repo-scope workflows list first. The same name may exist in both scopes; each item's 'scope' field disambiguates.
 
-Returns each workflow's name, scope, and its steps' (name, provider, model). Step prompts are omitted to keep the listing payload small — call workflow_get to see the full prompt for a specific workflow.`
+Returns each workflow's name, scope, description (what it's for and when to use it — judge fit against this), and its steps' (name, provider, model). Step prompts are omitted to keep the listing payload small — call workflow_get to see the full prompt for a specific workflow.`
 
 	workflowGetToolDescription = `Get the full definition of a workflow including each step's prompt.
 
@@ -191,6 +195,8 @@ Pass scope ('user' or 'repo') to read a specific copy; with no scope the repo co
 	workflowCreateToolDescription = `Create a new workflow.
 
 The name must be non-empty and not collide with any existing workflow in the chosen scope. scope picks where it is stored: 'user' (default — machine-local ask.json) or 'repo' (one JSON file under <project root>/.ask/workflows/, committed and shared with the team).
+
+description is optional but strongly recommended: state what the workflow is FOR and when to use it (its trigger conditions, in plain words). That text is surfaced verbatim in workflow_list, and the agent judges whether the workflow fits a task against it — without a description it must guess intent from the step names, which is unreliable.
 
 Each step is one of two kinds:
   - Agent step (kind omitted or ""): name required; provider must be a registered agent CLI (claude, codex, ...); model optional (empty = provider default); prompt may be empty.
@@ -202,7 +208,7 @@ Errors on duplicate name within the scope, empty step name, unknown provider, a 
 
 	workflowEditToolDescription = `Edit an existing workflow in place (it stays in its scope).
 
-Pass new_name to rename. Pass steps to replace the entire steps array (full-replace semantics — no per-step CRUD). Omit a field to leave it unchanged. Steps follow the same agent/loop shape documented on workflow_create. When the name exists in both scopes you must pass scope to pick which copy to edit; use workflow_copy to move a workflow between scopes.
+Pass new_name to rename. Pass description to replace the workflow's purpose statement (empty string clears it). Pass steps to replace the entire steps array (full-replace semantics — no per-step CRUD). Omit a field to leave it unchanged. Steps follow the same agent/loop shape documented on workflow_create. When the name exists in both scopes you must pass scope to pick which copy to edit; use workflow_copy to move a workflow between scopes.
 
 Errors when the workflow doesn't exist, when the name is ambiguous across scopes and no scope was given, when new_name collides within the scope, when a step is malformed (empty name, unknown provider, nested loop, empty loop), or when the workflow is currently running anywhere in this process.`
 
@@ -452,9 +458,10 @@ func innerStepsDefToListView(in []workflowStep) []workflowInnerListStepView {
 // workflowDef. Used by every tool that returns a single workflow.
 func workflowDefToView(w workflowDef) workflowDefView {
 	return workflowDefView{
-		Name:  w.Name,
-		Scope: workflowScopeTag(w.Scope),
-		Steps: stepsDefToView(w.Steps),
+		Name:        w.Name,
+		Scope:       workflowScopeTag(w.Scope),
+		Description: w.Description,
+		Steps:       stepsDefToView(w.Steps),
 	}
 }
 
@@ -506,9 +513,10 @@ func workflowListCore(cwd string, _ workflowListInput) (*mcp.CallToolResult, wor
 	out := workflowListOutput{Workflows: make([]workflowListItem, 0, len(items))}
 	for _, w := range items {
 		out.Workflows = append(out.Workflows, workflowListItem{
-			Name:  w.Name,
-			Scope: workflowScopeTag(w.Scope),
-			Steps: stepsDefToListView(w.Steps),
+			Name:        w.Name,
+			Scope:       workflowScopeTag(w.Scope),
+			Description: w.Description,
+			Steps:       stepsDefToListView(w.Steps),
 		})
 	}
 	return okResult(fmt.Sprintf("%d workflow(s) defined", len(out.Workflows))), out, nil
@@ -554,7 +562,7 @@ func workflowCreateCore(cwd string, in workflowCreateInput) (*mcp.CallToolResult
 	if err := validateSteps(in.Steps); err != nil {
 		return errResult(err.Error()), workflowCreateOutput{}, nil
 	}
-	def := workflowDef{Name: name, Scope: scope, Steps: stepsViewToDef(in.Steps)}
+	def := workflowDef{Name: name, Scope: scope, Description: strings.TrimSpace(in.Description), Steps: stepsViewToDef(in.Steps)}
 
 	var collision bool
 	if err := mutateWorkflows(cwd, func(items []workflowDef) ([]workflowDef, error) {
@@ -649,6 +657,9 @@ func workflowEditCore(cwd string, in workflowEditInput) (*mcp.CallToolResult, wo
 		}
 		w := items[idx]
 		w.Name = newName
+		if in.Description != nil {
+			w.Description = strings.TrimSpace(*in.Description)
+		}
 		if in.Steps != nil {
 			w.Steps = stepsViewToDef(*in.Steps)
 		}

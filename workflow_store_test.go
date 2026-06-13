@@ -32,6 +32,50 @@ func TestWorkflowFileName(t *testing.T) {
 
 // ----- two-scope round trip -----
 
+func TestWorkflowStore_DescriptionRoundTrip(t *testing.T) {
+	cwd := isolateHome(t)
+	const desc = "Use for ANY code change you intend to ship: features, refactors, deletions, fixes."
+	items := []workflowDef{
+		{Name: "described", Scope: workflowScopeRepo, Description: desc,
+			Steps: []workflowStep{{Name: "s1", Provider: "fake"}}},
+		{Name: "bare", Scope: workflowScopeUser,
+			Steps: []workflowStep{{Name: "s1", Provider: "fake"}}},
+	}
+	if err := saveAllWorkflows(cwd, items); err != nil {
+		t.Fatalf("saveAllWorkflows: %v", err)
+	}
+
+	// Repo description survives the file round-trip.
+	data, err := os.ReadFile(filepath.Join(cwd, ".ask", "workflows", "described.json"))
+	if err != nil {
+		t.Fatalf("repo file missing: %v", err)
+	}
+	if !strings.Contains(string(data), `"description"`) {
+		t.Errorf("description should persist under the json:description key: %s", data)
+	}
+
+	// An absent description must NOT write the key (omitempty keeps
+	// pre-description workflows byte-identical on disk).
+	cfg, _ := loadConfig()
+	pc := loadProjectConfig(cfg, cwd)
+	for _, w := range pc.Workflows.Items {
+		if w.Name == "bare" && w.Description != "" {
+			t.Errorf("bare workflow should have empty description, got %q", w.Description)
+		}
+	}
+
+	got := listAllWorkflows(cwd)
+	var described workflowDef
+	for _, w := range got {
+		if w.Name == "described" {
+			described = w
+		}
+	}
+	if described.Description != desc {
+		t.Errorf("description lost on round trip: got %q want %q", described.Description, desc)
+	}
+}
+
 func TestWorkflowStore_TwoScopeRoundTrip(t *testing.T) {
 	cwd := isolateHome(t)
 	items := []workflowDef{

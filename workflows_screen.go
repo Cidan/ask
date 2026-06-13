@@ -596,6 +596,23 @@ func (m model) workflowsBuilderUpdateLeft(msg tea.KeyPressMsg) (model, tea.Cmd, 
 		b.renaming = "workflow"
 		b.renameDraft = b.items[b.listCursor-1].Name
 		return m, nil, true
+	case msg.Mod == 0 && msg.Code == 'e':
+		_, ok := b.selectedWorkflowIdx()
+		if !ok {
+			return m, nil, true
+		}
+		if guard := b.runningGuard(); guard != "" {
+			b.toast = guard
+			return m, nil, true
+		}
+		// The description is a multi-line free-text statement of what
+		// the workflow is for; reuse the prompt textarea (same editor
+		// the step prompt / loop exit-condition use) with a
+		// workflow-scoped commit target.
+		ta := newPromptTextarea(b.items[b.listCursor-1].Description)
+		b.prompt = &ta
+		b.promptTarget = "description"
+		return m, nil, true
 	case msg.Mod == 0 && msg.Code == 'd':
 		_, ok := b.selectedWorkflowIdx()
 		if !ok {
@@ -1130,6 +1147,19 @@ func (m model) workflowsBuilderUpdatePrompt(msg tea.KeyPressMsg) (model, tea.Cmd
 		return m, nil, true
 	case msg.Mod == tea.ModCtrl && msg.Code == 's':
 		val := b.prompt.Value()
+		if b.promptTarget == "description" {
+			// Workflow-scoped, not step-scoped: commit to the
+			// selected workflow's Description.
+			if idx, ok := b.selectedWorkflowIdx(); ok {
+				b.items[idx].Description = strings.TrimSpace(val)
+				if err := b.commitItems(); err != nil {
+					b.toast = "save failed: " + err.Error()
+				}
+			}
+			b.prompt = nil
+			b.promptTarget = ""
+			return m, nil, true
+		}
 		if t, ok := b.currentStepTarget(); ok {
 			step := b.stepAt(t)
 			if b.promptTarget == "exit" {
@@ -1333,7 +1363,7 @@ func (b *workflowsBuilderState) renderBase(width, height int) string {
 // narrow pane.
 func (b *workflowsBuilderState) activeHint() string {
 	if b.focus == workflowsBuilderFocusLeft {
-		return "↑/↓ navigate · enter open · r rename · c copy to other scope · s move scope · d delete · esc back"
+		return "↑/↓ navigate · enter open · r rename · e description · c copy to other scope · s move scope · d delete · esc back"
 	}
 	switch b.rightMode {
 	case workflowsBuilderRightSteps:
@@ -1409,11 +1439,15 @@ func (b *workflowsBuilderState) renderRightSteps(width, height int) string {
 	for i, row := range treeRows {
 		rows = append(rows, b.renderStepTreeRow(row, wf, cols, innerW, i == b.stepsCursor, active))
 	}
+	subtitle := fmt.Sprintf("%s scope · %s — runs top to bottom", workflowScopeTag(wf.Scope), stepsCount(len(wf.Steps)))
+	if strings.TrimSpace(wf.Description) != "" {
+		subtitle = workflowPromptPreview(wf.Description)
+	}
 	return renderWorkflowsPane(workflowsPaneArgs{
 		width:    width,
 		height:   height,
 		title:    "Workflow · " + wf.Name,
-		subtitle: fmt.Sprintf("%s scope · %s — runs top to bottom", workflowScopeTag(wf.Scope), stepsCount(len(wf.Steps))),
+		subtitle: subtitle,
 		header:   renderWorkflowStepHeader(cols, innerW),
 		rows:     rows,
 		cursor:   b.stepsCursor,
@@ -1907,7 +1941,14 @@ func (b *workflowsBuilderState) renderPromptEditor(width, height int) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(activeTheme.accent).
 		Padding(1, 2)
-	title := configTitleStyle.Render("Step prompt")
+	titleText := "Step prompt"
+	switch b.promptTarget {
+	case "description":
+		titleText = "Workflow description — what it's for and when to use it"
+	case "exit":
+		titleText = "Loop exit condition"
+	}
+	title := configTitleStyle.Render(titleText)
 	hint := dimStyle.Render("ctrl+s save · esc cancel · enter newline")
 	w := width - 8
 	if w < 40 {
