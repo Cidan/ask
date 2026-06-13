@@ -147,10 +147,10 @@ func mcpResultText(res *mcp.CallToolResult) string {
 }
 
 // agentBridgeTools builds the full native tool set for one session:
-// the 12 linear_* tools and the 7 workflow_* tools (CRUD + copy +
-// run). ask_user_question and end_turn already have natives in
-// agent_tools_ask.go. Tool names match what the bridge exposes so
-// prompts and saved workflows keep working unchanged.
+// the 12 linear_* tools and the 8 workflow_* tools (CRUD + copy +
+// run + clear_plans). ask_user_question and end_turn already have
+// natives in agent_tools_ask.go. Tool names match what the bridge
+// exposes so prompts and saved workflows keep working unchanged.
 func agentBridgeTools(env *agentToolEnv) []fantasy.AgentTool {
 	cwd := func() string { return env.cwd }
 	return []fantasy.AgentTool{
@@ -230,6 +230,10 @@ func agentBridgeTools(env *agentToolEnv) []fantasy.AgentTool {
 		nativeBridgeTool("workflow_run", workflowRunToolDescription,
 			func(_ context.Context, in workflowRunInput) (*mcp.CallToolResult, workflowRunOutput, error) {
 				return workflowRunCore(cwd(), env.tabID, in)
+			}),
+		nativeBridgeTool("clear_plans", clearPlansToolDescription,
+			func(_ context.Context, in clearPlansInput) (*mcp.CallToolResult, clearPlansOutput, error) {
+				return clearPlansCore(cwd(), in)
 			}),
 	}
 }
