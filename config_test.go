@@ -28,6 +28,7 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	qmTrue := true
 	diffsTrue := true
 	worktreeTrue := true
+	gateTodosTrue := true
 	memOn := true
 	want := askConfig{
 		Provider: "anthropic",
@@ -39,11 +40,12 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 			},
 		},
 		UI: uiConfig{
-			QuietMode:   &qmTrue,
-			RenderDiffs: &diffsTrue,
-			ToolOutput:  string(toolOutputShort),
-			Worktree:    &worktreeTrue,
-			Theme:       "catppuccin-mocha",
+			QuietMode:             &qmTrue,
+			RenderDiffs:           &diffsTrue,
+			ToolOutput:            string(toolOutputShort),
+			Worktree:              &worktreeTrue,
+			GateTodosBeforeMutate: &gateTodosTrue,
+			Theme:                 "catppuccin-mocha",
 		},
 		Memory: memoryConfig{Enabled: &memOn},
 		DeepSeek: apiProviderConfig{
@@ -77,6 +79,9 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	}
 	if got.UI.Theme != "catppuccin-mocha" {
 		t.Errorf("theme lost: %q", got.UI.Theme)
+	}
+	if got.UI.GateTodosBeforeMutate == nil || *got.UI.GateTodosBeforeMutate != true {
+		t.Errorf("gateTodosBeforeMutate lost in roundtrip: %+v", got.UI.GateTodosBeforeMutate)
 	}
 	if got.Memory.Enabled == nil || *got.Memory.Enabled != true {
 		t.Errorf("memory.enabled lost in roundtrip: %+v", got.Memory.Enabled)

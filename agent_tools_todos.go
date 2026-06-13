@@ -51,11 +51,12 @@ Reconcile this before continuing:
 Then resend this exact todos call — it will go through. This decision guard fires only once per session.`
 
 // requireTodosBeforeMutateNotice is returned by write/edit (instead of
-// mutating) when the model has not yet applied a task list this session.
-// It makes the todos call a hard precondition for any code change: the
-// user always gets a live task list, and because the workflow guard
-// lives inside todos, the model can never start editing without first
-// passing through the workflow check.
+// mutating) when the model has not yet applied a task list this session
+// and gateTodosBeforeMutate is true (opt-in). It makes the todos call a
+// hard precondition for any code change in that mode: the user always
+// gets a live task list, and because the workflow guard lives inside
+// todos, the model can never start editing without first passing through
+// the workflow check.
 const requireTodosBeforeMutateNotice = `No edit was made. Before changing any file you must create a task list with the todos tool — this is a hard precondition, not a suggestion.
 
 Do this now:

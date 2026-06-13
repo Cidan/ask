@@ -586,6 +586,7 @@ type apiProviderConfig struct {
 // suffix is path-compatibility only (unrelated to model versions) and
 // is what the OpenAI-style SDK expects to prefix /chat/completions.
 const deepseekDefaultBaseURL = "https://api.deepseek.com/v1"
+
 // The default is the international platform (platform.kimi.ai /
 // platform.moonshot.ai) that issues the kimi-k2.x models ask ships as
 // defaults. The China platform (api.moonshot.cn) is a SEPARATE account
@@ -711,10 +712,11 @@ type uiConfig struct {
 	// ToolOutput is the tri-state for tool-call rendering:
 	// "full" | "short" | "off". Empty string defers to
 	// defaultToolOutputMode.
-	ToolOutput         string `json:"toolOutput,omitempty"`
-	SkipAllPermissions *bool  `json:"skipAllPermissions,omitempty"`
-	Worktree           *bool  `json:"worktree,omitempty"`
-	Theme              string `json:"theme,omitempty"`
+	ToolOutput            string `json:"toolOutput,omitempty"`
+	SkipAllPermissions    *bool  `json:"skipAllPermissions,omitempty"`
+	Worktree              *bool  `json:"worktree,omitempty"`
+	GateTodosBeforeMutate *bool  `json:"gateTodosBeforeMutate,omitempty"`
+	Theme                 string `json:"theme,omitempty"`
 }
 
 func configPath() (string, error) {

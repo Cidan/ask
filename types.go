@@ -563,13 +563,14 @@ type model struct {
 
 	themeName string
 
-	quietMode          bool
-	cursorBlink        bool
-	renderDiffs        bool
-	toolOutputMode     toolOutputMode
-	skipAllPermissions bool
-	worktree           bool
-	worktreeName       string
+	quietMode             bool
+	cursorBlink           bool
+	renderDiffs           bool
+	toolOutputMode        toolOutputMode
+	skipAllPermissions    bool
+	gateTodosBeforeMutate bool
+	worktree              bool
+	worktreeName          string
 
 	// addedDirs lists absolute paths the user has registered with
 	// /add-dir for the current tab. Each entry surfaces to the active
