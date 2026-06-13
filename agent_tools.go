@@ -48,6 +48,14 @@ type agentToolEnv struct {
 	workflowRunDispatched bool
 	workflowGuardFired    bool
 	decisionGuardFired    bool
+
+	// todosApplied flips true the first time a todos call successfully
+	// applies a task list this session. The write/edit tools refuse to
+	// mutate until it is set (see requireTodosNotice), making the todos
+	// call a mandatory chokepoint before any code change — which in turn
+	// guarantees the workflow guard (which lives inside todos) is always
+	// reached before the model starts editing. Guarded by wfMu.
+	todosApplied bool
 }
 
 func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, emit func(tea.Msg)) *agentToolEnv {
@@ -117,6 +125,53 @@ func (env *agentToolEnv) workflowDecisionGuardShouldFire() bool {
 	}
 	env.decisionGuardFired = true
 	return true
+}
+
+// workflowGuardNotice runs the two-stage workflow guard and returns the
+// steering notice the calling tool should return INSTEAD of doing its
+// work, or "" when the call may proceed. It is called only from the
+// todos tool — and because write/edit refuse to mutate before a todos
+// call has applied (see requireTodosNotice), the model can never reach
+// an edit without first passing through this guard. Inert when env is
+// nil or the project defines no workflows.
+func (env *agentToolEnv) workflowGuardNotice() string {
+	if env == nil {
+		return ""
+	}
+	if env.workflowGuardShouldFire() {
+		return workflowGuardTodosNotice
+	}
+	if env.workflowDecisionGuardShouldFire() {
+		return workflowDecisionGuardNotice
+	}
+	return ""
+}
+
+// markTodosApplied records that a todos call applied a task list this
+// session, satisfying the require-todos gate on write/edit.
+func (env *agentToolEnv) markTodosApplied() {
+	env.wfMu.Lock()
+	env.todosApplied = true
+	env.wfMu.Unlock()
+}
+
+// requireTodosNotice returns the steering notice a mutating tool
+// (write/edit) should return INSTEAD of mutating when no todos call has
+// applied a task list yet this session, or "" once one has. This makes
+// the todos call a mandatory precondition for any code change: the user
+// always gets a live task list, and the workflow guard inside todos is
+// always reached before the model starts editing. Inert when env is nil.
+func (env *agentToolEnv) requireTodosNotice() string {
+	if env == nil {
+		return ""
+	}
+	env.wfMu.Lock()
+	applied := env.todosApplied
+	env.wfMu.Unlock()
+	if applied {
+		return ""
+	}
+	return requireTodosBeforeMutateNotice
 }
 
 // approveViaModal is the production approval path: route an

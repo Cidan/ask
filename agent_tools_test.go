@@ -112,6 +112,7 @@ func TestAgentReadTool(t *testing.T) {
 
 func TestAgentWriteTool(t *testing.T) {
 	env, msgs := newTestToolEnv(t)
+	env.markTodosApplied() // satisfy the require-todos gate; this test exercises write mechanics
 	write := agentWriteTool(env)
 	read := agentReadTool(env)
 
@@ -166,6 +167,7 @@ func TestAgentWriteTool(t *testing.T) {
 
 func TestAgentWriteTool_ApprovalDenied(t *testing.T) {
 	env, _ := newTestToolEnv(t)
+	env.markTodosApplied()
 	env.skipPermissions = false
 	var asked string
 	env.approve = func(_ context.Context, toolName string, _ map[string]any) (bool, error) {
@@ -186,6 +188,7 @@ func TestAgentWriteTool_ApprovalDenied(t *testing.T) {
 
 func TestAgentEditTool(t *testing.T) {
 	env, _ := newTestToolEnv(t)
+	env.markTodosApplied() // satisfy the require-todos gate; this test exercises edit mechanics
 	edit := agentEditTool(env)
 	read := agentReadTool(env)
 
@@ -1003,6 +1006,102 @@ func TestAgentTodosWorkflowGuard_InertWithoutWorkflows(t *testing.T) {
 	}
 	if !got {
 		t.Error("first todos call should apply when no workflows exist")
+	}
+}
+
+// TestRequireTodosBeforeEdit verifies the hard precondition: an edit
+// is refused (file untouched) until a todos call has applied a task
+// list this session, after which the same edit lands. This is what
+// guarantees the workflow guard (inside todos) is always reached before
+// the model starts mutating.
+func TestRequireTodosBeforeEdit(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	path := writeTestFile(t, env.cwd, "f.txt", "hello world\n")
+	env.files.recordRead(path) // satisfy read-before-mutate
+
+	edit := agentEditTool(env)
+	params := agentEditParams{FilePath: path, OldString: "hello", NewString: "goodbye"}
+
+	// No todos yet → refused, file untouched, steered to the todos tool.
+	resp := runTool(t, edit, params)
+	if resp.IsError {
+		t.Fatalf("require-todos notice should not be an error: %q", resp.Content)
+	}
+	if !strings.Contains(resp.Content, "todos tool") {
+		t.Errorf("edit before todos should be steered to the todos tool; got %q", resp.Content)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "hello world\n" {
+		t.Fatalf("ungated edit must not mutate the file; got %q", string(b))
+	}
+
+	// Apply a task list, then retry: the edit lands.
+	if r := runTool(t, agentTodosTool(env), agentTodosParams{Todos: []agentTodoEntry{
+		{Content: "edit f.txt", Status: "in_progress"},
+	}}); r.IsError {
+		t.Fatalf("todos apply failed: %q", r.Content)
+	}
+	if !env.todosApplied {
+		t.Fatal("a successful todos call must set todosApplied")
+	}
+	resp = runTool(t, edit, params)
+	if resp.IsError || strings.Contains(resp.Content, "todos tool") {
+		t.Fatalf("edit after todos should apply: %q", resp.Content)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "goodbye world\n" {
+		t.Fatalf("edit should have landed; got %q", string(b))
+	}
+}
+
+// TestRequireTodosBeforeWrite mirrors the edit case for the write tool.
+func TestRequireTodosBeforeWrite(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	path := filepath.Join(env.cwd, "new.txt")
+	write := agentWriteTool(env)
+	params := agentWriteParams{FilePath: path, Content: "data\n"}
+
+	// No todos yet → refused, no file created.
+	resp := runTool(t, write, params)
+	if !strings.Contains(resp.Content, "todos tool") {
+		t.Errorf("write before todos should be steered to the todos tool; got %q", resp.Content)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("ungated write must not create the file")
+	}
+
+	// Apply a task list, then retry: the write lands.
+	if r := runTool(t, agentTodosTool(env), agentTodosParams{Todos: []agentTodoEntry{
+		{Content: "create new.txt", Status: "in_progress"},
+	}}); r.IsError {
+		t.Fatalf("todos apply failed: %q", r.Content)
+	}
+	resp = runTool(t, write, params)
+	if resp.IsError || strings.Contains(resp.Content, "todos tool") {
+		t.Fatalf("write after todos should apply: %q", resp.Content)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "data\n" {
+		t.Fatalf("write should have landed; got %q", string(b))
+	}
+}
+
+// TestRequireTodos_AppliesInAllProjects confirms the gate fires even
+// when the project defines NO workflows — the user wants a live task
+// list everywhere, so even a workflow-less project must create one
+// before mutating.
+func TestRequireTodos_AppliesInAllProjects(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	if env.workflowsAvailable {
+		t.Fatal("this test assumes a workflow-less project")
+	}
+	path := writeTestFile(t, env.cwd, "f.txt", "hello\n")
+	env.files.recordRead(path)
+	resp := runTool(t, agentEditTool(env), agentEditParams{
+		FilePath: path, OldString: "hello", NewString: "bye",
+	})
+	if !strings.Contains(resp.Content, "todos tool") {
+		t.Fatalf("require-todos gate must fire even without workflows; got %q", resp.Content)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "hello\n" {
+		t.Fatalf("ungated edit must not mutate the file; got %q", string(b))
 	}
 }
 

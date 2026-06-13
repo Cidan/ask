@@ -49,6 +49,20 @@ Reconcile this before continuing:
 
 Then resend this exact todos call — it will go through. This decision guard fires only once per session.`
 
+// requireTodosBeforeMutateNotice is returned by write/edit (instead of
+// mutating) when the model has not yet applied a task list this session.
+// It makes the todos call a hard precondition for any code change: the
+// user always gets a live task list, and because the workflow guard
+// lives inside todos, the model can never start editing without first
+// passing through the workflow check.
+const requireTodosBeforeMutateNotice = `No edit was made. Before changing any file you must create a task list with the todos tool — this is a hard precondition, not a suggestion.
+
+Do this now:
+  1. Call the todos tool with the full plan for this work: one item per concrete step, the first marked in_progress.
+  2. Then retry this edit/write — it will go through.
+
+The task list is the live progress UI the user watches, and creating it is also the moment the project's workflows are checked. Even a one-file change needs a one-item list first.`
+
 type agentTodoEntry struct {
 	Content    string `json:"content" description:"imperative description of the task"`
 	Status     string `json:"status" enum:"pending,in_progress,completed" description:"current state of the task"`
@@ -66,24 +80,14 @@ func agentTodosTool(env *agentToolEnv) fantasy.AgentTool {
 		agentTodosToolDescription,
 		func(ctx context.Context, p agentTodosParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			// Reaching for a task list is the clearest signal the model is
-			// about to start multi-step work — the exact moment it should
-			// already have consulted the project's workflows. Two guards
-			// gate this in sequence, each at most once per session:
-			//   1. workflowGuardShouldFire: the model hasn't looked at the
-			//      workflows at all → punt it to workflow_list.
-			//   2. workflowDecisionGuardShouldFire: the model looked but is
-			//      now starting inline work without ever running a workflow
-			//      → punt it back to reconcile that decision with the user.
-			// Both self-disarm and only trigger when the project actually
-			// defines workflows, so a model that legitimately proceeds
-			// inline is never blocked more than these two checkpoints.
-			if env != nil {
-				if env.workflowGuardShouldFire() {
-					return fantasy.NewTextResponse(workflowGuardTodosNotice), nil
-				}
-				if env.workflowDecisionGuardShouldFire() {
-					return fantasy.NewTextResponse(workflowDecisionGuardNotice), nil
-				}
+			// about to start multi-step work — and because write/edit refuse
+			// to mutate until a todos list has applied, this is the
+			// guaranteed chokepoint where the project's workflows get
+			// checked. The two-stage guard punts the model at most twice per
+			// session, self-disarms, and only triggers when the project
+			// actually defines workflows; see workflowGuardNotice.
+			if notice := env.workflowGuardNotice(); notice != "" {
+				return fantasy.NewTextResponse(notice), nil
 			}
 			inProgress := 0
 			completed := 0
@@ -111,6 +115,9 @@ func agentTodosTool(env *agentToolEnv) fantasy.AgentTool {
 			if inProgress > 1 {
 				return fantasy.NewTextErrorResponse("keep at most one todo in_progress at a time"), nil
 			}
+			// The list is valid and about to apply — satisfy the
+			// require-todos gate so subsequent write/edit calls proceed.
+			env.markTodosApplied()
 			if env.emit != nil {
 				env.emit(todoUpdatedMsg{todos: items})
 			}
