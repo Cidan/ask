@@ -1,20 +1,17 @@
 package main
 
-// Sidebar tab mode: an alternate presentation of open tabs as a
-// permanent right-hand column of task cards (cfg.UI.TabMode ==
-// "sidebar"). Each card shows what the tab's agent is doing — a short
-// LLM-generated title (tab_title.go), the provider/model, the
-// session's accumulated dollar spend (usage.go), and a live
-// activity line (current in_progress todo / stream status / workflow
-// step) — plus attention badges so the user can see at a glance when
-// a background tab needs input or finished.
+// Sidebar: the only presentation of open tabs — a permanent right-hand
+// column of task cards. Each card shows what the tab's agent is doing —
+// a short LLM-generated title (tab_title.go), the provider/model, the
+// session's accumulated dollar spend (usage.go), and a live activity
+// line (current in_progress todo / stream status / workflow step) —
+// plus attention badges so the user can see at a glance when a
+// background tab needs input or finished.
 //
-// Geometry: the sidebar claims ~1/6 of the terminal (clamped to
-// [sidebarMinWidth, sidebarMaxWidth]); below sidebarMinTotalWidth
-// total columns the app silently degrades to the classic bottom bar
-// rather than rendering an unusable sliver. The active tab's body is
-// laid out at bodyWidth() and joined line-by-line with the rendered
-// column (joinBodySidebar).
+// Geometry: the sidebar claims ~1/5 of the terminal (clamped to
+// [sidebarMinWidth, sidebarMaxWidth]). The active tab's body is laid
+// out at bodyWidth() and joined line-by-line with the rendered column
+// (joinBodySidebar).
 //
 // Focus model: the sidebar list cursor IS app.active — selection has
 // no view-local state, so the column is a pure projection of a.tabs.
@@ -41,9 +38,7 @@ const (
 	// sidebarMaxWidth caps the column so huge terminals don't waste
 	// a quarter of the screen on chrome.
 	sidebarMaxWidth = 48
-	// sidebarMinTotalWidth is the degrade threshold: below this many
-	// total columns sidebar mode renders as the classic bottom bar.
-	sidebarMinTotalWidth = 90
+
 	// sidebarCardHeight is the fixed per-card footprint: title, meta,
 	// cost, activity, separator blank.
 	sidebarCardHeight = 5
@@ -51,17 +46,9 @@ const (
 	sidebarHeaderHeight = 2
 )
 
-// tabModeSidebar reports whether sidebar mode is configured,
-// regardless of whether the current width can render it. Behavioural
-// consequences (workflow supplant, focus-steal suppression) follow
-// the mode; rendering follows sidebarVisible.
-func (a app) tabModeSidebarOn() bool { return a.tabMode == tabModeSidebar }
-
-// sidebarVisible reports whether the sidebar column is actually
-// rendered this frame: mode on AND the terminal wide enough.
-func (a app) sidebarVisible() bool {
-	return a.tabModeSidebarOn() && a.width >= sidebarMinTotalWidth
-}
+// sidebarVisible always returns true — the sidebar is the only tab
+// presentation mode and is always rendered.
+func (a app) sidebarVisible() bool { return true }
 
 // sidebarWidth is the rendered column width: ~1/5 of the terminal,
 // clamped. Zero when the sidebar isn't visible.
@@ -79,8 +66,8 @@ func (a app) sidebarWidth() int {
 	return w
 }
 
-// bodyWidth is what tabs get to lay out in: full width in bar mode,
-// the remainder left of the sidebar otherwise.
+// bodyWidth is what tabs get to lay out in: full terminal width
+// minus the sidebar column.
 func (a app) bodyWidth() int {
 	w := a.width - a.sidebarWidth()
 	if w < 1 {
@@ -270,9 +257,8 @@ func (m *model) effectiveModelID() string {
 }
 
 // needsUserInput reports whether the tab is blocked on a human — an
-// ask-question or approval modal is up. In sidebar mode these no
-// longer steal focus (see dispatchByTabID); the badge is how the
-// user finds them.
+// ask-question or approval modal is up. These never steal focus (see
+// dispatchByTabID); the badge is how the user finds them.
 func (m *model) needsUserInput() bool {
 	return m.mode == modeAskQuestion || m.mode == modeApproval
 }

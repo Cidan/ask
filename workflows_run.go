@@ -20,8 +20,8 @@ func (m model) workflowTabHandleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, closeTabCmd(m.id)
 	}
 	// Enter on a finished supplanted run hands the tab back to the
-	// conversation it took over (sidebar tab mode). Dedicated
-	// workflow tabs have nothing underneath — Enter stays absorbed.
+	// conversation it took over. Dedicated workflow tabs have nothing
+	// underneath — Enter stays absorbed.
 	if msg.Mod == 0 && msg.Code == tea.KeyEnter {
 		if r := m.workflowRun; r != nil && (r.done || r.failed) && r.supplanted != nil {
 			return m.restoreSupplantedTab()
@@ -55,7 +55,7 @@ func (m model) workflowTabHandleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // restoreSupplantedTab hands a tab back to the conversation a
-// workflow supplanted (sidebar tab mode): the pre-run provider /
+// workflow supplanted: the pre-run provider /
 // session snapshot is reinstated, the run state is dropped, and the
 // input area returns. The step summaries stay in the transcript as a
 // permanent record of the run. The proc is already dead — finalize

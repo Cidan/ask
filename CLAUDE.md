@@ -84,8 +84,8 @@ One `package main`, one file per concern.
 | `mcp_servers.go`       | User-facing MCP server config: `mcpServers` maps (user-global + per-project) merged over project-root `.mcp.json` (claude-code convention), `${VAR}`/`${VAR:-default}` expansion, per-server type inference, timeout, enabled/disabled tool filters, Disabled tombstones. |
 | `mcp_oauth.go`         | OAuth for remote MCP servers (`oauth: true`): SDK authorization-code + PKCE + dynamic client registration, browser launch via swappable `mcpOAuthOpenBrowser`, one-shot loopback callback listener, tokens persisted 0600 under `~/.config/ask/mcp-oauth/` (valid stored tokens skip the browser; expiry re-runs the flow). |
 | `model_picker.go`      | Ctrl+M unified model picker (crush-style): search input, “Recently used” group first (`cfg.RecentModels`, capped push-front), then one section per provider with human-friendly catwalk names; ↑/↓ skip headers, Enter applies the pick to the current tab and persists it as the provider default model (`applyProviderModelSwitch` + `applyVSProviderSwap`; cfg.Provider untouched). Picking a model whose provider has no key drops into an inline API-key prompt (`providerKeySpecs`) that saves to ask.json and proceeds; per-provider “Enter your own…” rows cover custom ids. Replaced the old Ctrl+B switcher AND the `/config` per-provider key sub-pickers AND the `/model` and `/provider` slash commands. |
-| `sidebar.go`           | Sidebar tab mode (cfg.UI.TabMode == "sidebar"): right-hand column of per-tab task cards (title / provider·model / session $ spend / live activity + ⚠✓✗● badges), ~1/5 width clamped to [30,48], degrade to the bottom bar below 90 total cols. The list cursor IS `app.active` — zero view-local selection state. Focus model: `ActionSidebarFocus` (Tab) swaps input↔list when the tab has no local Tab use (`model.wantsTabKey`), Up/Down/j/k switch tabs live (no Enter), any printable rune bounces focus back into the input and types, Ctrl+Up/Down (`ActionTabPrevAlt`/`NextAlt`) switch from anywhere, click on a card switches. Activity line prefers the agent's in_progress todo over `m.status`. See "Sidebar tab mode" below. |
-| `tab_title.go`         | Tab titles for the sidebar cards: seeded instantly from the first user prompt (`fallbackTabTitle`), refined async by a one-shot fantasy LLM call (`generateTabTitleText`, swappable; crush session-title pattern, 30s timeout) → `tabTitleMsg`, persisted on `VirtualSession.Title` (backfilled by `recordVirtualSession` when the title lands before the VS exists) and rehydrated on /resume. Generation is gated on sidebar mode so bar-mode users never pay for the call. |
+| `sidebar.go`           | Right-hand column of per-tab task cards (title / provider·model / session $ spend / live activity + ⚠✓✗● badges), ~1/5 width clamped to [30,48]. The sidebar is the only tab mode (the bottom bar has been removed). The list cursor IS `app.active` — zero view-local selection state. Focus model: `ActionSidebarFocus` (Tab) swaps input↔list when the tab has no local Tab use (`model.wantsTabKey`), Up/Down/j/k switch tabs live (no Enter), any printable rune bounces focus back into the input and types, Ctrl+Up/Down (`ActionTabPrevAlt`/`NextAlt`) switch from anywhere, click on a card switches. Activity line prefers the agent's in_progress todo over `m.status`. |
+| `tab_title.go`         | Tab titles for the sidebar cards: seeded instantly from the first user prompt (`fallbackTabTitle`), refined async by a one-shot fantasy LLM call (`generateTabTitleText`, swappable; crush session-title pattern, 30s timeout) → `tabTitleMsg`, persisted on `VirtualSession.Title` (backfilled by `recordVirtualSession` when the title lands before the VS exists) and rehydrated on /resume. Generation always runs since the sidebar is the only tab mode. |
 | `commands.go`          | `cd` / `ls` handlers and `ls` formatting.                               |
 | `paths.go`             | Path picker state, tilde expansion, completion.                         |
 | `shell.go`             | Shell-mode execution: `$SHELL -c` fork, stdout/stderr pipe streaming, 100-line cap, cwd capture via `pwd > tmpfile`, pgroup SIGKILL on cancel. |
@@ -143,8 +143,8 @@ exercised by the user; code alone won't catch layout regressions.
 | `keymap_test.go`           | `ParseKeyBinding` / `KeyBinding.String` round-trip, default keymap coverage, load-from-config (unknown/malformed entries skipped, empty-string unbinds), `currentKeyMap` invalidation. |
 | `keymap_dispatch_test.go`  | End-to-end: overridden keymap rewires `tabs.go` tab navigation; `/config → Keybindings` capture persists to disk and re-binding to default deletes the entry. |
 | `config_websearch_test.go` | `/config → Web Search` picker — Global row presence, open/edit/commit (Brave key persisted to `cfg.WebSearch.BraveAPIKey`), paste accumulation, masked summary, clear-to-empty, Esc close. |
-| `sidebar_test.go`          | Sidebar mode — tabMode parse, geometry (1/5 clamp, degrade threshold, zero bar height), scroll-window/card hit-testing, key routing (Tab focus + completion non-theft, Up/Down switch, type-to-return, Esc, Ctrl+Up/Down both modes), focus-steal suppression (sidebar) vs focus-steal (bar), card title/meta/cost/activity/badge derivation, view composition + `joinBodySidebar`/`clipText`, tabModeChangedMsg propagation, workflow supplant (snapshot, tracker, busy refusal, bar-mode fallback to dedicated tab) and Enter-restore (incl. still-running and dedicated-tab guards). |
-| `tab_title_test.go`        | Tab titles — fallback/sanitize (think-tag strip, quote/period trim, clip), `maybeStartTabTitle` gating (bar mode / workflow tab / blank / already titled), swapped-generator cmd round-trip incl. error swallow, `tabTitleMsg` handler (foreign tab, empty title, stale-after-/new), VS persistence + `recordVirtualSession` backfill + /resume rehydration (Title, Preview fallback). |
+| `sidebar_test.go`          | Sidebar — geometry (1/5 clamp), scroll-window/card hit-testing, key routing (Tab focus + completion non-theft, Up/Down switch, type-to-return, Esc, Ctrl+Up/Down both modes), focus-steal suppression, card title/meta/cost/activity/badge derivation, view composition + `joinBodySidebar`/`clipText`, workflow supplant (snapshot, tracker, busy refusal) and Enter-restore. |
+| `tab_title_test.go`        | Tab titles — fallback/sanitize (think-tag strip, quote/period trim, clip), `maybeStartTabTitle` gating (workflow tab / blank / already titled), swapped-generator cmd round-trip incl. error swallow, `tabTitleMsg` handler (foreign tab, empty title, stale-after-/new), VS persistence + `recordVirtualSession` backfill + /resume rehydration (Title, Preview fallback). |
 | `deepseek_test.go`         | Provider metadata/registry/workflow validation, effort→wire mapping, no-key fail-fast, full session lifecycle against `fakeLM` (send, system prompt on wire, kill/exited, resume replays transcript), Materialize, `modelContextLimit`. |
 | `agent_run_test.go`        | `fakeLM` (scripted `StreamPart`s) + runtime scenarios: text turn protocol order (done before complete), tool round-trip incl. wire history threading, interrupt = clean end, error turn, shutdown, loop-detection trip, compaction (summary head + auto-continuation), dangling-call repair, task sub-agent tool. |
 | `agent_tools_test.go`      | Tool behaviors on `t.TempDir()`: read windows/caps/rejections, write/edit guards (read-before-mutate, stale mtime, uniqueness, replace_all, CRLF), glob/grep/ls, bash via swapped `agentRunShell` (output, exit codes, cancel-kills-pgroup, background jobs), approval denials (`StopTurn`), fetch via httptest, Brave `web_search` (no-key notice, empty-query reject, token/query/count headers + config-beats-env via swapped `braveSearchClient`, HTML-stripped results, HTTP-error result, approval `StopTurn`), todos validation, the two-stage workflow guard (todos-only: fire/disarm-by-check/disarm-by-run/inert), the require-todos-before-mutate gate (edit + write refused until a todos list applies, then it lands; fires in workflow-less projects too), required description-phrase schema across the coding core. |
@@ -577,12 +577,9 @@ run finalises (or the tab closes), the lock releases.
 
 ## Sidebar tab mode
 
-`cfg.UI.TabMode` (`/config → Global Options → Tab Mode`) selects how
-tabs present: `"bar"` (default, the bottom strip) or `"sidebar"` — a
-permanent right-hand column owned by the app layer (`sidebar.go`).
-Width is ~1/5 of the terminal clamped to [30,48] cols; below 90 total
-cols rendering silently degrades to the bar (behaviour like workflow
-supplanting still follows the *mode*, not the width). The column is a
+The sidebar is the only tab mode (the bottom bar has been removed).
+It is a permanent right-hand column owned by the app layer (`sidebar.go`).
+Width is ~1/5 of the terminal clamped to [30,48] cols. The column is a
 pure projection of `a.tabs`: the selection cursor IS `app.active`, the
 scroll offset is derived, and every card reads live model state
 (title, provider/model, accumulated session spend in USD, in_progress
@@ -596,10 +593,7 @@ compaction summarizer (`costMsg`), and the tab-title call
 (`tabTitleMsg`). Unpriceable models (custom ids / no catalog) render
 an empty row, never a fake $0.00; the meter resets with the
 conversation (/new, /clear, /resume pick, cross-provider swap) and
-survives same-provider model swaps. `app.tabMode` mirrors the config (seeded by `newApp` from the
-first tab, refreshed on `openTab` reloads and `tabModeChangedMsg`
-broadcasts from the /config toggle, which also refresh each tab's
-`m.sidebarMode`).
+survives same-provider model swaps.
 
 Keyboard: `ActionSidebarFocus` (default Tab) swaps focus between the
 typing area and the list — intercepted at the app layer only when the
@@ -610,12 +604,10 @@ j/k) switch the active tab immediately — no Enter — typing any
 printable rune bounces focus back into the input and types it, Esc /
 Enter / Tab return, Ctrl+D closes the selected tab, everything else is
 absorbed. `ActionTabPrevAlt`/`ActionTabNextAlt` (Ctrl+Up/Down) switch
-tabs from anywhere in both modes. Mouse clicks on a card switch to it;
-wheel events over the column are absorbed.
+tabs from anywhere. Mouse clicks on a card switch to it; wheel events
+over the column are absorbed.
 
-Behavioural changes while the mode is on:
-
-- **No focus theft.** `dispatchByTabID` no longer force-focuses a tab
+- **No focus theft.** `dispatchByTabID` never force-focuses a tab
   whose ask/approval modal fires — the request parks on the tab's
   modal state and the card shows the ⚠ badge until the user switches.
 - **Workflows supplant instead of spawning.** `spawnWorkflowTabMsg`
@@ -625,10 +617,11 @@ Behavioural changes while the mode is on:
   the tab flips to the read-only banner, and when the chain finishes
   Enter restores the conversation (`restoreSupplantedTab`) with the
   step summaries left in the transcript. Closing the tab mid-run still
-  marks the run failed. Bar mode keeps the dedicated-tab behaviour.
+  marks the run failed.
 - **Tab titles.** The first prompt seeds `m.tabTitle` instantly and a
   one-shot LLM call (`tab_title.go`) refines it in the background;
   titles persist on the VirtualSession and rehydrate on /resume.
+
 
 ## In-process API providers (fantasy agents)
 

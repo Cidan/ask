@@ -8,8 +8,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// newSidebarTestApp builds an app with n freshly-stubbed tabs running
-// in sidebar mode at a comfortable size. Tab ids are 1..n. The
+// newSidebarTestApp builds an app with n freshly-stubbed tabs at a
+// comfortable size. Tab ids are 1..n. The
 // process cwd is pinned with t.Chdir because focusTab/closeTab
 // os.Chdir into tab cwds (per-test temp dirs) — without the pin the
 // dangling cwd poisons later tests in the package.
@@ -22,17 +22,15 @@ func newSidebarTestApp(t *testing.T, n int) app {
 	for i := 0; i < n; i++ {
 		m := newTestModel(t, newFakeProvider())
 		m.id = i + 1
-		m.sidebarMode = true
 		mm := m
 		tabs = append(tabs, &mm)
 	}
 	return app{
-		tabs:    tabs,
-		active:  0,
-		nextID:  n + 1,
-		width:   120,
-		height:  40,
-		tabMode: tabModeSidebar,
+		tabs:   tabs,
+		active: 0,
+		nextID: n + 1,
+		width:  120,
+		height: 40,
 	}
 }
 
@@ -50,18 +48,6 @@ func asApp(t *testing.T, m tea.Model) app {
 }
 
 // --- geometry -----------------------------------------------------------
-
-func TestParseTabMode(t *testing.T) {
-	if got := parseTabMode(""); got != tabModeBar {
-		t.Errorf("empty = %q, want bar", got)
-	}
-	if got := parseTabMode("sidebar"); got != tabModeSidebar {
-		t.Errorf("sidebar = %q", got)
-	}
-	if got := parseTabMode("weird"); got != tabModeBar {
-		t.Errorf("unknown = %q, want bar", got)
-	}
-}
 
 func TestSidebarGeometry(t *testing.T) {
 	a := newSidebarTestApp(t, 2)
@@ -86,29 +72,19 @@ func TestSidebarGeometry(t *testing.T) {
 		t.Errorf("width 180: sidebar = %d, want 36", got)
 	}
 
-	// Below the degrade threshold the sidebar disappears entirely and
-	// the classic bar geometry returns (tabBarHeight 1 with >1 tab).
-	a.width = sidebarMinTotalWidth - 1
-	if a.sidebarVisible() {
-		t.Error("sidebar visible below degrade threshold")
+	// Sidebar is always visible at every width.
+	a.width = sidebarMinWidth - 1
+	if !a.sidebarVisible() {
+		t.Error("sidebar should always be visible")
 	}
-	if got := a.sidebarWidth(); got != 0 {
-		t.Errorf("degraded sidebar width = %d, want 0", got)
-	}
-	if got := a.tabBarHeight(); got != 1 {
-		t.Errorf("degraded tabBarHeight = %d, want 1", got)
+	if got := a.sidebarWidth(); got != sidebarMinWidth {
+		t.Errorf("narrow sidebar width = %d, want clamped to %d", got, sidebarMinWidth)
 	}
 
-	// Above the threshold there is never a bottom bar.
+	// tabBarHeight is always 0.
 	a.width = 120
 	if got := a.tabBarHeight(); got != 0 {
-		t.Errorf("sidebar tabBarHeight = %d, want 0", got)
-	}
-
-	// Bar mode is untouched.
-	a.tabMode = tabModeBar
-	if a.sidebarVisible() || a.sidebarWidth() != 0 || a.bodyWidth() != 120 {
-		t.Error("bar mode leaked sidebar geometry")
+		t.Errorf("tabBarHeight = %d, want 0", got)
 	}
 }
 
@@ -255,24 +231,8 @@ func TestSidebarCtrlUpDownSwitchWithoutFocus(t *testing.T) {
 	if a.active != 0 {
 		t.Fatalf("Ctrl+Up: active = %d, want 0", a.active)
 	}
-	// They also work in bar mode — just a second binding.
-	a.tabMode = tabModeBar
-	m3, _ := a.Update(keyPress(tea.KeyDown, tea.ModCtrl, ""))
-	a = asApp(t, m3)
-	if a.active != 1 {
-		t.Fatalf("bar mode Ctrl+Down: active = %d, want 1", a.active)
-	}
 }
 
-func TestBarModeNeverInterceptsTab(t *testing.T) {
-	a := newSidebarTestApp(t, 2)
-	a.tabMode = tabModeBar
-	m1, _ := a.Update(keyPress(tea.KeyTab, 0, ""))
-	a = asApp(t, m1)
-	if a.sidebarFocus {
-		t.Fatal("bar mode intercepted Tab")
-	}
-}
 
 func TestWantsTabKeyBranches(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
@@ -313,7 +273,7 @@ func TestSidebarSuppressesFocusSteal(t *testing.T) {
 	m1, _ := a.Update(msg)
 	a = asApp(t, m1)
 	if a.active != 0 {
-		t.Fatalf("sidebar mode stole focus: active = %d", a.active)
+		t.Fatalf("sidebar stole focus: active = %d", a.active)
 	}
 	// The request still parked on the background tab's modal state —
 	// that's what the ⚠ badge reads.
@@ -324,20 +284,6 @@ func TestSidebarSuppressesFocusSteal(t *testing.T) {
 		t.Fatal("needsUserInput false with a parked ask modal")
 	}
 
-	// Bar mode keeps the historical focus-steal behavior.
-	b := newSidebarTestApp(t, 2)
-	b.tabMode = tabModeBar
-	reply2 := make(chan askReply, 1)
-	msg2 := askToolRequestMsg{
-		tabID:     b.tabs[1].id,
-		questions: []question{{kind: qPickOne, prompt: "pick", options: []string{"x"}}},
-		reply:     reply2,
-	}
-	m2, _ := b.Update(msg2)
-	b = asApp(t, m2)
-	if b.active != 1 {
-		t.Fatalf("bar mode did not focus the requesting tab: active = %d", b.active)
-	}
 }
 
 // --- card content -------------------------------------------------------
@@ -454,31 +400,6 @@ func TestClipText(t *testing.T) {
 	}
 }
 
-// --- tab mode toggle ----------------------------------------------------
-
-func TestTabModeChangedMsg(t *testing.T) {
-	a := newSidebarTestApp(t, 2)
-	a.sidebarFocus = true
-	m1, _ := a.Update(tabModeChangedMsg{sidebar: false})
-	a = asApp(t, m1)
-	if a.tabMode != tabModeBar {
-		t.Fatalf("tabMode = %q, want bar", a.tabMode)
-	}
-	if a.sidebarFocus {
-		t.Fatal("toggle left sidebar focus armed")
-	}
-	// The broadcast also refreshed each tab's mirror.
-	for i, tab := range a.tabs {
-		if tab.sidebarMode {
-			t.Errorf("tab %d sidebarMode still true", i)
-		}
-	}
-	m2, _ := a.Update(tabModeChangedMsg{sidebar: true})
-	a = asApp(t, m2)
-	if a.tabMode != tabModeSidebar || !a.tabs[0].sidebarMode {
-		t.Fatal("toggle back to sidebar did not propagate")
-	}
-}
 
 // --- workflow supplant --------------------------------------------------
 
@@ -572,33 +493,11 @@ func TestWorkflowSupplantDefersWhenBusy(t *testing.T) {
 	}
 }
 
-func TestWorkflowOpenTabDefersWhenBusy(t *testing.T) {
-	isolateHome(t)
-	resetWorkflowTrackerForTest()
-	withRegisteredProviders(t, newFakeProvider())
-	a := newSidebarTestApp(t, 1)
-	a.tabMode = tabModeBar
-	a.tabs[0].busy = true
-
-	msg := supplantTestMsg(a)
-	m1, cmd := a.Update(msg)
-	a = asApp(t, m1)
-	if len(a.tabs) != 1 {
-		t.Fatalf("deferred launch opened a tab: %d tabs", len(a.tabs))
-	}
-	if a.tabs[0].pendingWorkflow == nil {
-		t.Fatal("pendingWorkflow not stored on busy originating tab in bar mode")
-	}
-	if cmd != nil {
-		t.Fatal("no cmd expected on defer")
-	}
-}
 
 func TestPendingWorkflowFiresOnTurnComplete(t *testing.T) {
 	isolateHome(t)
 	resetWorkflowTrackerForTest()
 	a := newSidebarTestApp(t, 1)
-	a.tabMode = tabModeSidebar
 
 	// Prime the tab with a pending workflow.
 	wf := workflowDef{Name: "pipe", Steps: []workflowStep{{Name: "s1", Provider: "fake"}}}
@@ -655,24 +554,6 @@ func TestPendingWorkflowDiscardedOnProviderExited(t *testing.T) {
 	}
 }
 
-func TestWorkflowBarModeStillOpensTab(t *testing.T) {
-	isolateHome(t)
-	resetWorkflowTrackerForTest()
-	a := newSidebarTestApp(t, 1)
-	a.tabMode = tabModeBar
-	// The openWorkflowTab path constructs a real tab via newTab — give
-	// it a provider registry to resolve.
-	withRegisteredProviders(t, newFakeProvider())
-
-	m1, _ := a.Update(supplantTestMsg(a))
-	a = asApp(t, m1)
-	if len(a.tabs) != 2 {
-		t.Fatalf("bar mode: %d tabs, want 2 (dedicated workflow tab)", len(a.tabs))
-	}
-	if a.tabs[1].workflowRun == nil || a.tabs[1].workflowRun.supplanted != nil {
-		t.Fatal("dedicated workflow tab must have a run without a snapshot")
-	}
-}
 
 func TestRestoreSupplantedTabOnEnter(t *testing.T) {
 	prov := newFakeProvider()

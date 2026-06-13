@@ -44,16 +44,15 @@ const (
 	ActionTabPrev         Action = "tab.prev"
 	ActionTabNext         Action = "tab.next"
 	// ActionTabPrevAlt / ActionTabNextAlt are the vertical-feeling
-	// tab-switch pair (default Ctrl+Up / Ctrl+Down) introduced with
-	// sidebar tab mode, where tabs stack vertically. They work in both
-	// tab modes — in bar mode they're simply a second binding.
+	// tab-switch pair (default Ctrl+Up / Ctrl+Down), where tabs stack
+	// vertically in the sidebar.
 	ActionTabPrevAlt Action = "tab.prevAlt"
 	ActionTabNextAlt Action = "tab.nextAlt"
 	// ActionSidebarFocus (default Tab) swaps keyboard focus between
 	// the typing area and the sidebar tab list. Only intercepted when
-	// sidebar tab mode is active AND the active tab has no local use
-	// for the key (path/slash completion, non-chat screens) — see
-	// app.handleSidebarKey and model.wantsTabKey.
+	// the active tab has no local use for the key (path/slash
+	// completion, non-chat screens) — see app.handleSidebarKey and
+	// model.wantsTabKey.
 	ActionSidebarFocus Action = "sidebar.focus"
 	ActionAppSuspend   Action = "app.suspend"
 )
@@ -363,7 +362,7 @@ var actionGroups = []actionMetaGroup{
 		{ActionTabNext, "Next tab"},
 		{ActionTabPrevAlt, "Previous tab (alt)"},
 		{ActionTabNextAlt, "Next tab (alt)"},
-		{ActionSidebarFocus, "Focus sidebar (sidebar mode)"},
+		{ActionSidebarFocus, "Focus sidebar"},
 	}},
 	{Heading: "Pickers & dispatch", Items: []actionMetaItem{
 		{ActionProviderSwitch, "Model picker"},

@@ -86,7 +86,6 @@ func (m model) globalConfigItems() []configItem {
 		{"Tool Output", toolOut, "toolOutput"},
 		{"Skip All Permissions", skipPerms, "skipAllPermissions"},
 		{"Worktree", worktree, "worktree"},
-		{"Tab Mode", tabModeValue(m.sidebarMode), "tabMode"},
 		{"Theme", m.themeName, "theme"},
 		{"Default Provider", provName, "provider"},
 		{"Memory...", mem, "memory"},
@@ -94,15 +93,6 @@ func (m model) globalConfigItems() []configItem {
 		{"Keybindings...", "", "keybindings"},
 	}
 	return items
-}
-
-// tabModeValue renders the Tab Mode row's value column from the
-// model's live mirror so the row flips immediately on toggle.
-func tabModeValue(sidebar bool) string {
-	if sidebar {
-		return tabModeSidebar
-	}
-	return tabModeBar
 }
 
 func (m model) refreshHistoryCmd() tea.Cmd {
@@ -370,24 +360,6 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 		}
 		m.killProc()
 		return m, nil
-	case "tabMode":
-		m.sidebarMode = !m.sidebarMode
-		mode := tabModeBar
-		if m.sidebarMode {
-			mode = tabModeSidebar
-		}
-		if err := withConfigLock(func() error {
-			cfg, _ := loadConfig()
-			cfg.UI.TabMode = mode
-			return saveConfig(cfg)
-		}); err != nil {
-			debugLog("saveConfig err: %v", err)
-		}
-		// The app layer owns sidebar layout; broadcast so it (and
-		// every other tab's sidebarMode mirror) picks the change up
-		// immediately instead of at the next tab spawn.
-		sidebar := m.sidebarMode
-		return m, func() tea.Msg { return tabModeChangedMsg{sidebar: sidebar} }
 	case "theme":
 		m = m.openThemePicker()
 		return m, nil

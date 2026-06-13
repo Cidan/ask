@@ -1219,8 +1219,8 @@ func (m model) renderWorkflowBanner() string {
 	if cancelClause == "" {
 		cancelClause = "cancel from /config"
 	}
-	// A supplanted run (sidebar tab mode) hands the tab back to the
-	// chat it took over on Enter; surface that as the primary action.
+	// A supplanted run hands the tab back to the chat it took over on
+	// Enter; surface that as the primary action.
 	returnClause := ""
 	if r.supplanted != nil {
 		returnClause = "enter return to chat"

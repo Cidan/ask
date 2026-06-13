@@ -1,15 +1,13 @@
 package main
 
 // Tab titles: a short human-readable description of what each tab is
-// doing, surfaced on the sidebar cards (sidebar tab mode) and
+// doing, surfaced on the sidebar cards and
 // persisted on the VirtualSession for /resume.
 //
 // Two layers, cheapest first: the moment the first user turn is sent
 // the title is seeded from the prompt itself (fallbackTabTitle), then
 // a one-shot LLM call — the crush session-title pattern — refines it
-// asynchronously (generateTabTitleCmd → tabTitleMsg). Generation is
-// gated on sidebar mode being active so bar-mode users never pay for
-// an API call they can't see.
+// asynchronously (generateTabTitleCmd → tabTitleMsg).
 
 import (
 	"context"
@@ -99,10 +97,10 @@ func generateTabTitleCmd(tabID int, providerID, modelID, prompt string) tea.Cmd 
 
 // maybeStartTabTitle seeds the fallback title from the first user
 // prompt and returns the cmd that refines it via the LLM. Nil (and a
-// no-op) for workflow tabs, bar mode, already-titled tabs, blank
-// prompts, and invalid cwds (where the turn itself will be refused).
+// no-op) for workflow tabs, already-titled tabs, blank prompts, and
+// invalid cwds (where the turn itself will be refused).
 func (m *model) maybeStartTabTitle(line string) tea.Cmd {
-	if !m.sidebarMode || m.workflowRun != nil || m.tabTitle != "" || m.provider == nil {
+	if m.workflowRun != nil || m.tabTitle != "" || m.provider == nil {
 		return nil
 	}
 	if strings.TrimSpace(line) == "" {
