@@ -886,12 +886,31 @@ func TestAgentTodosWorkflowGuard_DisarmedByCheck(t *testing.T) {
 		t.Fatal("invoking workflow_list should set workflowsChecked")
 	}
 
-	// With the guard disarmed, the very first todos call applies.
+	// First guard is disarmed, but the model looked at the workflows and
+	// is now starting inline work without ever running one — the SECOND
+	// stage fires once, steering it to reconcile the decision.
 	resp := runTool(t, agentTodosTool(env), agentTodosParams{Todos: []agentTodoEntry{
 		{Content: "a", Status: "in_progress"},
 	}})
+	if resp.IsError {
+		t.Fatalf("decision guard notice should not be an error: %q", resp.Content)
+	}
+	if !strings.Contains(resp.Content, "NOT applied") || !strings.Contains(resp.Content, "workflow_run") {
+		t.Errorf("second-stage guard should steer to workflow_run; got %q", resp.Content)
+	}
+	for _, m := range msgs {
+		if _, ok := m.(todoUpdatedMsg); ok {
+			t.Fatal("decision-guard rejection must not emit a todoUpdatedMsg")
+		}
+	}
+
+	// Resend: the decision guard has fired once, so the list now applies.
+	msgs = nil
+	resp = runTool(t, agentTodosTool(env), agentTodosParams{Todos: []agentTodoEntry{
+		{Content: "a", Status: "in_progress"},
+	}})
 	if resp.IsError || strings.Contains(resp.Content, "NOT applied") {
-		t.Fatalf("checked project should not trip the guard: %q", resp.Content)
+		t.Fatalf("decision guard must fire at most once; resend should apply: %q", resp.Content)
 	}
 	applied := false
 	for _, m := range msgs {
@@ -900,7 +919,67 @@ func TestAgentTodosWorkflowGuard_DisarmedByCheck(t *testing.T) {
 		}
 	}
 	if !applied {
-		t.Error("todos call after a workflow check should apply the list")
+		t.Error("todos call after the decision guard fired should apply the list")
+	}
+}
+
+// TestAgentTodosWorkflowGuard_DisarmedByRun verifies that actually
+// dispatching a workflow_run satisfies BOTH guard stages: the first
+// todos call afterward applies without any punt.
+func TestAgentTodosWorkflowGuard_DisarmedByRun(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	if err := saveAllWorkflows(cwd, []workflowDef{
+		{Name: "ship-it", Scope: workflowScopeRepo, Steps: []workflowStep{
+			{Name: "do", Provider: "deepseek", Model: "deepseek-chat", Prompt: "go"},
+		}},
+	}); err != nil {
+		t.Fatalf("saveAllWorkflows: %v", err)
+	}
+	var msgs []tea.Msg
+	env := newAgentToolEnv(cwd, 1, true, func(m tea.Msg) { msgs = append(msgs, m) })
+
+	// The model looked AND ran a workflow.
+	listInner := registryTool("workflow_list", "list workflows", []string{"description"})
+	listInner.fn = func(_ context.Context, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		return fantasy.NewTextResponse("[]"), nil
+	}
+	runInner := registryTool("workflow_run", "run a workflow", []string{"name", "description"})
+	runInner.fn = func(_ context.Context, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		return fantasy.NewTextResponse("dispatched"), nil
+	}
+	invoke := agentInvokeToolTool(staticRegistry(listInner, runInner), nil, env)
+	if r := runTool(t, invoke, map[string]any{
+		"tool_name": "workflow_list", "description": "listing workflows",
+	}); r.IsError {
+		t.Fatalf("workflow_list invoke failed: %q", r.Content)
+	}
+	if r := runTool(t, invoke, map[string]any{
+		"tool_name": "workflow_run", "description": "running workflow",
+		"params": map[string]any{"name": "ship-it"},
+	}); r.IsError {
+		t.Fatalf("workflow_run invoke failed: %q", r.Content)
+	}
+	if !env.workflowRunDispatched {
+		t.Fatal("invoking workflow_run should set workflowRunDispatched")
+	}
+
+	// Both stages satisfied → the first todos call applies.
+	msgs = nil
+	resp := runTool(t, agentTodosTool(env), agentTodosParams{Todos: []agentTodoEntry{
+		{Content: "a", Status: "in_progress"},
+	}})
+	if resp.IsError || strings.Contains(resp.Content, "NOT applied") {
+		t.Fatalf("running a workflow should disarm both guards: %q", resp.Content)
+	}
+	applied := false
+	for _, m := range msgs {
+		if _, ok := m.(todoUpdatedMsg); ok {
+			applied = true
+		}
+	}
+	if !applied {
+		t.Error("todos call after a workflow run should apply the list")
 	}
 }
 
