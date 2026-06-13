@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -63,9 +62,7 @@ func memoryProjectRoot(cwd string) string {
 // Empty when cwd is not in a git checkout, when git is not on PATH,
 // or when the path normalization fails.
 func gitMainRoot(cwd string) string {
-	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
-	cmd.Dir = cwd
-	out, err := cmd.Output()
+	out, err := vcsOutput(cwd, "git", "rev-parse", "--git-common-dir")
 	if err != nil {
 		return ""
 	}
@@ -95,9 +92,7 @@ func gitMainRoot(cwd string) string {
 // per-workspace memory partitioning in jj — fewer ask users hit this
 // today, and the symmetry with git can be revisited when it does.
 func jjRoot(cwd string) string {
-	cmd := exec.Command("jj", "root")
-	cmd.Dir = cwd
-	out, err := cmd.Output()
+	out, err := vcsOutput(cwd, "jj", "root")
 	if err != nil {
 		return ""
 	}

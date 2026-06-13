@@ -236,9 +236,25 @@ func samePathOrResolved(a, b string) bool {
 // non-ask reason, and we never prune when ask itself is launched inside one of
 // those workspaces.
 func pruneWorktrees() {
-	cwd := getwdOrEmpty()
-	backend := worktreeBackendAt(cwd)
-	if backend == workspaceBackendNone {
+	pruneWorktreesAt(getwdOrEmpty())
+}
+
+// pruneWorktreesAt is pruneWorktrees with the repo root injected so tests
+// can drive it against a temp checkout.
+func pruneWorktreesAt(cwd string) {
+	pruneWorktreesWith(cwd, worktreeLocks)
+}
+
+// pruneWorktreesWith is the testable core. locksFn enumerates the lock
+// state of every ask-managed worktree. When it fails — a wedged or
+// timed-out `git worktree list`, or the transient porcelain race where a
+// concurrent ask removes a `locked` file mid-read — we ABORT the entire
+// prune rather than proceed with an incomplete map: treating a worktree as
+// unlocked when it is in fact held by a live ask would `git worktree
+// remove` it out from under that instance. Best-effort cleanup must never
+// risk live state, so an unreadable lock table means "prune nothing."
+func pruneWorktreesWith(cwd string, locksFn func(string) (map[string]string, error)) {
+	if worktreeBackendAt(cwd) == workspaceBackendNone {
 		return
 	}
 	if worktreeNameFromCwd(cwd) != "" {
@@ -251,7 +267,11 @@ func pruneWorktrees() {
 		}
 		return
 	}
-	locks := worktreeLocks(cwd)
+	locks, err := locksFn(cwd)
+	if err != nil {
+		debugLog("worktree prune: cannot read lock state, skipping prune: %v", err)
+		return
+	}
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -345,24 +365,22 @@ func worktreeLockReason(locks map[string]string, path string) (string, bool) {
 // Keys come from each backend's native listing — git canonicalizes
 // through symlinks; jj uses paths we constructed ourselves. Use
 // worktreeLockReason for lookups so callers don't have to know which.
-func worktreeLocks(cwd string) map[string]string {
+func worktreeLocks(cwd string) (map[string]string, error) {
 	switch worktreeBackendAt(cwd) {
 	case workspaceBackendGit:
 		return gitWorktreeLocks(cwd)
 	case workspaceBackendJJ:
 		return jjWorktreeLocks(cwd)
 	default:
-		return nil
+		return nil, nil
 	}
 }
 
-func gitWorktreeLocks(cwd string) map[string]string {
-	cmd := exec.Command("git", "worktree", "list", "--porcelain")
-	cmd.Dir = cwd
-	out, err := cmd.Output()
+func gitWorktreeLocks(cwd string) (map[string]string, error) {
+	out, err := vcsOutput(cwd, "git", "worktree", "list", "--porcelain")
 	if err != nil {
 		debugLog("worktree list: %v", err)
-		return nil
+		return nil, err
 	}
 	locks := map[string]string{}
 	var curPath, reason string
@@ -390,16 +408,17 @@ func gitWorktreeLocks(cwd string) map[string]string {
 		}
 	}
 	flush()
-	return locks
+	return locks, nil
 }
 
-func jjWorktreeLocks(cwd string) map[string]string {
+func jjWorktreeLocks(cwd string) (map[string]string, error) {
 	entries, err := os.ReadDir(filepath.Join(cwd, ".claude", "worktrees"))
 	if err != nil {
-		if !os.IsNotExist(err) {
-			debugLog("jj workspace lock readdir: %v", err)
+		if os.IsNotExist(err) {
+			return nil, nil
 		}
-		return nil
+		debugLog("jj workspace lock readdir: %v", err)
+		return nil, err
 	}
 	locks := map[string]string{}
 	for _, e := range entries {
@@ -416,15 +435,13 @@ func jjWorktreeLocks(cwd string) map[string]string {
 		}
 		locks[path] = strings.TrimSpace(string(data))
 	}
-	return locks
+	return locks, nil
 }
 
 func unlockWorktreeAt(cwd, path string) error {
 	switch worktreeBackendAt(cwd) {
 	case workspaceBackendGit:
-		cmd := exec.Command("git", "worktree", "unlock", path)
-		cmd.Dir = cwd
-		if out, err := cmd.CombinedOutput(); err != nil {
+		if out, err := vcsCombined(cwd, "git", "worktree", "unlock", path); err != nil {
 			return fmt.Errorf("git worktree unlock %s: %w (%s)", path, err, bytes.TrimSpace(out))
 		}
 	case workspaceBackendJJ:
@@ -439,22 +456,19 @@ func unlockWorktreeAt(cwd, path string) error {
 func removeWorktreeAt(cwd, name, path string) error {
 	switch worktreeBackendAt(cwd) {
 	case workspaceBackendGit:
-		rm := exec.Command("git", "worktree", "remove", path)
-		rm.Dir = cwd
-		if out, err := rm.CombinedOutput(); err != nil {
+		if out, err := vcsCombined(cwd, "git", "worktree", "remove", path); err != nil {
 			return fmt.Errorf("git worktree remove %s: %w (%s)", path, err, bytes.TrimSpace(out))
 		}
 		debugLog("worktree removed %s", path)
 		branch := "worktree-" + name
-		br := exec.Command("git", "branch", "-d", branch)
-		br.Dir = cwd
-		if out, err := br.CombinedOutput(); err != nil {
+		if out, err := vcsCombined(cwd, "git", "branch", "-d", branch); err != nil {
 			return fmt.Errorf("git branch -d %s: %w (%s)", branch, err, bytes.TrimSpace(out))
 		}
 		debugLog("branch deleted %s", branch)
 		return nil
 	case workspaceBackendJJ:
-		if err := jjWorkspaceUpdateStale(path); err != nil {
+		// Prune runs at startup — bound these so a wedged jj can't hang launch.
+		if err := jjWorkspaceUpdateStale(vcsCombined, path); err != nil {
 			return err
 		}
 		dirty, err := jjWorkspaceHasChanges(path)
@@ -464,14 +478,12 @@ func removeWorktreeAt(cwd, name, path string) error {
 		if dirty {
 			return fmt.Errorf("jj workspace %s has working-copy changes", name)
 		}
-		workspaces, err := jjWorkspaceTargets(cwd)
+		workspaces, err := jjWorkspaceTargets(vcsCombined, cwd)
 		if err != nil {
 			return err
 		}
 		if _, ok := workspaces[name]; ok {
-			cmd := exec.Command("jj", "--ignore-working-copy", "workspace", "forget", name)
-			cmd.Dir = cwd
-			if out, err := cmd.CombinedOutput(); err != nil {
+			if out, err := vcsCombined(cwd, "jj", "--ignore-working-copy", "workspace", "forget", name); err != nil {
 				return fmt.Errorf("jj workspace forget %s: %w\n%s", name, err, bytes.TrimSpace(out))
 			}
 			debugLog("jj workspace forgot %s", name)
@@ -486,10 +498,8 @@ func removeWorktreeAt(cwd, name, path string) error {
 	}
 }
 
-func jjWorkspaceTargets(cwd string) (map[string]string, error) {
-	cmd := exec.Command("jj", "--ignore-working-copy", "workspace", "list", "-T", "name ++ \"|\" ++ target.commit_id() ++ \"\\n\"")
-	cmd.Dir = cwd
-	out, err := cmd.CombinedOutput()
+func jjWorkspaceTargets(run vcsRunner, cwd string) (map[string]string, error) {
+	out, err := run(cwd, "jj", "--ignore-working-copy", "workspace", "list", "-T", "name ++ \"|\" ++ target.commit_id() ++ \"\\n\"")
 	if err != nil {
 		return nil, fmt.Errorf("jj workspace list: %w\n%s", err, bytes.TrimSpace(out))
 	}
@@ -509,19 +519,15 @@ func jjWorkspaceTargets(cwd string) (map[string]string, error) {
 }
 
 func jjWorkspaceHasChanges(path string) (bool, error) {
-	cmd := exec.Command("jj", "diff", "--summary", "--color=never", "--no-pager")
-	cmd.Dir = path
-	out, err := cmd.CombinedOutput()
+	out, err := vcsCombined(path, "jj", "diff", "--summary", "--color=never", "--no-pager")
 	if err != nil {
 		return false, fmt.Errorf("jj diff --summary %s: %w\n%s", path, err, bytes.TrimSpace(out))
 	}
 	return strings.TrimSpace(string(out)) != "", nil
 }
 
-func jjWorkspaceUpdateStale(path string) error {
-	cmd := exec.Command("jj", "workspace", "update-stale")
-	cmd.Dir = path
-	out, err := cmd.CombinedOutput()
+func jjWorkspaceUpdateStale(run vcsRunner, path string) error {
+	out, err := run(path, "jj", "workspace", "update-stale")
 	if err != nil {
 		return fmt.Errorf("jj workspace update-stale %s: %w\n%s", path, err, bytes.TrimSpace(out))
 	}
@@ -747,10 +753,13 @@ func ensureResumeWorktree(resumeCwd string) error {
 		return fmt.Errorf("git worktree add %s: %w\n%s\n%s",
 			resumeCwd, err2, bytes.TrimSpace(out), bytes.TrimSpace(out2))
 	case workspaceBackendJJ:
+		// Resume is a foreground action — leave these unbounded so a
+		// legitimately slow `jj workspace` op is waited out, not aborted at
+		// the startup timeout.
 		if _, err := os.Stat(resumeCwd); err == nil {
-			return jjWorkspaceUpdateStale(resumeCwd)
+			return jjWorkspaceUpdateStale(unboundedVCSCombined, resumeCwd)
 		}
-		workspaces, err := jjWorkspaceTargets(repoRoot)
+		workspaces, err := jjWorkspaceTargets(unboundedVCSCombined, repoRoot)
 		if err != nil {
 			return err
 		}
