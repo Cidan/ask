@@ -521,6 +521,15 @@ func TestResolveDeepSeek_ConfigWinsEnvFallsBack(t *testing.T) {
 	if got := resolveDeepSeekBaseURL(apiProviderConfig{BaseURL: "http://localhost:9999/v1"}); got != "http://localhost:9999/v1" {
 		t.Errorf("explicit base URL lost, got %q", got)
 	}
+
+	// Kimi defaults to the international Moonshot platform — a .cn
+	// default would 401 international keys as "invalid authentication".
+	if got := resolveKimiBaseURL(apiProviderConfig{}); got != "https://api.moonshot.ai/v1" {
+		t.Errorf("kimi default base URL = %q, want international endpoint", got)
+	}
+	if got := resolveKimiBaseURL(apiProviderConfig{BaseURL: "https://api.moonshot.cn/v1"}); got != "https://api.moonshot.cn/v1" {
+		t.Errorf("explicit kimi base URL lost, got %q", got)
+	}
 }
 
 func TestResolveAnthropicOpenAIKeys(t *testing.T) {

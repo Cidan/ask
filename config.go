@@ -573,7 +573,13 @@ type apiProviderConfig struct {
 // suffix is path-compatibility only (unrelated to model versions) and
 // is what the OpenAI-style SDK expects to prefix /chat/completions.
 const deepseekDefaultBaseURL = "https://api.deepseek.com/v1"
-const moonshotDefaultBaseURL = "https://api.moonshot.cn/v1"
+// The default is the international platform (platform.kimi.ai /
+// platform.moonshot.ai) that issues the kimi-k2.x models ask ships as
+// defaults. The China platform (api.moonshot.cn) is a SEPARATE account
+// with its own keys — an international key sent to .cn 401s as
+// "invalid authentication". China-platform users override base_url in
+// their kimi config block.
+const moonshotDefaultBaseURL = "https://api.moonshot.ai/v1"
 
 // Conventional environment fallbacks consulted when the config field
 // is empty.
