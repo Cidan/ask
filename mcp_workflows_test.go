@@ -698,32 +698,37 @@ func TestWorkflowRun_DispatchesSpawnMessage(t *testing.T) {
 	}
 }
 
-func TestWorkflowRun_AppendEmptyOmitsRefBlock(t *testing.T) {
+func TestWorkflowRun_RejectsEmptyAppend(t *testing.T) {
 	b, cwd := newWorkflowMCPTestBridge(t, 1)
 	seedWorkflows(t, cwd, []workflowDef{{
 		Name:  "alpha",
 		Steps: []workflowStep{{Name: "s1", Provider: "fake"}},
 	}})
 	captured := installSpawnCaptor(t)
-	res, _, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "alpha"})
-	if err != nil {
-		t.Fatalf("err: %v", err)
+	// append is the only context channel into the fresh workflow session,
+	// so an empty/whitespace value is rejected before dispatch — the model
+	// must submit the full plan.
+	for _, append := range []string{"", "   \n\t "} {
+		res, _, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "alpha", Append: append})
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if !res.IsError {
+			t.Errorf("empty append %q must yield IsError", append)
+		}
+		if !strings.Contains(mcpResultText(res), "append is required") {
+			t.Errorf("error must mention append is required; got %q", mcpResultText(res))
+		}
 	}
-	if res.IsError {
-		t.Fatalf("run should succeed: %+v", res)
-	}
-	if len(*captured) != 1 {
-		t.Fatalf("expected 1 dispatch, got %d", len(*captured))
-	}
-	if got := (*captured)[0].Source.RefBlock(); got != "" {
-		t.Errorf("empty append should yield empty RefBlock; got %q", got)
+	if len(*captured) != 0 {
+		t.Errorf("rejected run must not dispatch; got %d", len(*captured))
 	}
 }
 
 func TestWorkflowRun_NotFound(t *testing.T) {
 	b, _ := newWorkflowMCPTestBridge(t, 1)
 	captured := installSpawnCaptor(t)
-	res, _, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "ghost"})
+	res, _, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "ghost", Append: "plan"})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -739,7 +744,7 @@ func TestWorkflowRun_RejectsEmptyStepWorkflow(t *testing.T) {
 	b, cwd := newWorkflowMCPTestBridge(t, 1)
 	seedWorkflows(t, cwd, []workflowDef{{Name: "stub"}})
 	captured := installSpawnCaptor(t)
-	res, _, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "stub"})
+	res, _, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "stub", Append: "plan"})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -760,7 +765,7 @@ func TestWorkflowRun_RejectsBadProviderInSteps(t *testing.T) {
 		Steps: []workflowStep{{Name: "s1", Provider: "ghost"}},
 	}})
 	captured := installSpawnCaptor(t)
-	res, _, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "bad"})
+	res, _, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "bad", Append: "plan"})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -779,7 +784,7 @@ func TestWorkflowRun_AskUINotReady(t *testing.T) {
 		Steps: []workflowStep{{Name: "s1", Provider: "fake"}},
 	}})
 	installFailingSpawn(t, "ask UI not ready")
-	res, _, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "alpha"})
+	res, _, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "alpha", Append: "plan"})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -1197,7 +1202,7 @@ func TestWorkflowTools_ScopedLifecycle(t *testing.T) {
 	if res == nil || !res.IsError {
 		t.Error("ambiguous delete must demand scope")
 	}
-	res, _, _ = b.workflowRunTool(ctx, newCallToolReq(), workflowRunInput{Name: "review"})
+	res, _, _ = b.workflowRunTool(ctx, newCallToolReq(), workflowRunInput{Name: "review", Append: "plan"})
 	if res == nil || !res.IsError {
 		t.Error("ambiguous run must demand scope")
 	}
@@ -1266,7 +1271,7 @@ func TestWorkflowRun_RepoScopedWorkflowDispatches(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	res, out, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "shared"})
+	res, out, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "shared", Append: "plan"})
 	if err != nil || res.IsError {
 		t.Fatalf("run: err=%v res=%v", err, mcpResultText(res))
 	}

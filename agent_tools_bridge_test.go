@@ -268,7 +268,7 @@ func TestNativeBridgeTool_WorkflowRunDispatches(t *testing.T) {
 	t.Cleanup(func() { mcpSpawnWorkflowTab = prev })
 
 	run := bridgeToolByName(t, env, "workflow_run")
-	resp, err := run.Run(context.Background(), fantasy.ToolCall{ID: "2", Name: "workflow_run", Input: `{"name":"go"}`})
+	resp, err := run.Run(context.Background(), fantasy.ToolCall{ID: "2", Name: "workflow_run", Input: `{"name":"go","append":"full plan and context"}`})
 	if err != nil || resp.IsError {
 		t.Fatalf("run: %+v %v", resp, err)
 	}
@@ -292,5 +292,35 @@ func TestSetupAgentSessionTools_NoLoopbackAttachAndNativesPresent(t *testing.T) 
 	}
 	if !names["workflow_run"] || !names["linear_list_issues"] {
 		t.Error("native bridge twins must be present")
+	}
+}
+
+// TestWorkflowRun_AppendIsRequiredInSchema pins that the generated
+// workflow_run schema marks `append` required — dropping omitempty from
+// the field is what forces the model to supply the full plan, and the
+// jsonschema generator infers "required" from the absence of omitempty.
+// A future edit that re-adds omitempty would silently make it optional;
+// this guards against that.
+func TestWorkflowRun_AppendIsRequiredInSchema(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	var run fantasy.AgentTool
+	for _, tool := range agentBridgeTools(env) {
+		if tool.Info().Name == "workflow_run" {
+			run = tool
+			break
+		}
+	}
+	if run == nil {
+		t.Fatal("workflow_run tool not found")
+	}
+	required := map[string]bool{}
+	for _, r := range run.Info().Required {
+		required[r] = true
+	}
+	if !required["name"] {
+		t.Error("name must be required")
+	}
+	if !required["append"] {
+		t.Errorf("append must be required; got required=%v", run.Info().Required)
 	}
 }

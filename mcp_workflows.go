@@ -150,7 +150,7 @@ type workflowCopyOutput struct {
 type workflowRunInput struct {
 	Name   string `json:"name" jsonschema:"workflow name to run"`
 	Scope  string `json:"scope,omitempty" jsonschema:"scope holding the workflow ('user' or 'repo'); required when the name exists in both scopes"`
-	Append string `json:"append,omitempty" jsonschema:"text appended after step 1's prompt as a Reference block; empty omits the block"`
+	Append string `json:"append" jsonschema:"REQUIRED. The workflow runs in a fresh session with NO access to this conversation — its history, file reads, and tool results do not carry over. This text is the ONLY context the run receives, threaded into step 1's prompt as a Reference block. Submit the FULL plan and all context the workflow needs to execute the task end to end: the goal, the concrete steps, relevant file paths, constraints, and acceptance criteria. Do not pass a one-line summary or a pointer back to this chat."`
 }
 
 type workflowRunOutput struct {
@@ -226,9 +226,13 @@ Errors when the source doesn't exist, the source name is ambiguous across scopes
 
 	workflowRunToolDescription = `Dispatch a workflow run in the background.
 
-Fire-and-forget: returns immediately with the session key. The workflow runs in a fresh tab; the user can switch to it with the tab bar to watch progress. Pass append to thread an arbitrary text blob into step 1's user prompt under a "Reference:" header; omit it to run the workflow with no extra context. When the name exists in both scopes pass scope to pick which copy runs.
+Fire-and-forget: returns immediately with the session key. The workflow runs in a fresh tab; the user can switch to it with the tab bar to watch progress. When the name exists in both scopes pass scope to pick which copy runs.
 
-Errors when the workflow doesn't exist, the name is ambiguous across scopes, when it has no steps, or when the UI isn't ready to spawn a tab.`
+CRITICAL — the workflow starts in a brand-new session with NO access to this conversation. Its message history, the files you have read, and your tool results DO NOT carry over. The append parameter is the ONLY channel of context into the run: its text is threaded into step 1's prompt as a "Reference:" block, and that is everything the workflow gets.
+
+append is REQUIRED. You MUST submit the FULL plan the workflow needs to carry the task through end to end on its own — the goal, the concrete steps to take, the relevant file paths, the constraints, and the acceptance criteria. Do NOT pass a bare one-line summary, and do NOT point back at "the conversation above" — the workflow cannot see it. Write append as if briefing someone who has never seen this chat.
+
+Errors when the workflow doesn't exist, the name is ambiguous across scopes, when it has no steps, when append is empty, or when the UI isn't ready to spawn a tab.`
 
 	endTurnToolDescription = `Report the end of your turn for the current workflow step. REQUIRED on every step.
 
@@ -754,6 +758,13 @@ func workflowRunCore(cwd string, tabID int, in workflowRunInput) (*mcp.CallToolR
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
 		return errResult("name is required"), workflowRunOutput{}, nil
+	}
+	// append is the sole context channel into the fresh workflow session —
+	// the run cannot see this conversation. Reject an empty/whitespace
+	// value so the model is forced to submit the full plan instead of
+	// dispatching a workflow with no brief.
+	if strings.TrimSpace(in.Append) == "" {
+		return errResult("append is required: the workflow runs in a fresh session with no access to this conversation, so you must submit the full plan and context (goal, steps, file paths, constraints, acceptance criteria) the workflow needs to execute the task end to end"), workflowRunOutput{}, nil
 	}
 	w, errRes := resolveWorkflowResult(cwd, name, in.Scope)
 	if errRes != nil {
