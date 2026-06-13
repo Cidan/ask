@@ -624,9 +624,9 @@ type model struct {
 	// call). Priced from the catwalk catalog — sessionCostKnown stays
 	// false until at least one priceable call lands, so the sidebar
 	// never shows a $0.00 that actually means "unpriceable model".
-	// Reset wherever the conversation resets (/new, /clear, /resume
-	// pick, cross-provider swap); a resumed session counts spend since
-	// resume only (historical spend is not persisted).
+	// Reset only on /new, /clear, and /resume pick — not on provider or
+	// model swaps. A resumed session counts spend since resume only
+	// (historical spend is not persisted).
 	sessionCostUSD   float64
 	sessionCostKnown bool
 

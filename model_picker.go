@@ -604,11 +604,10 @@ func (m model) applyProviderModelSwitch(newProv Provider, model string) (tea.Mod
 			debugLog("SaveSettings err: %v", err)
 		}
 	}
-	// Zero all usage telemetry so the chip never shows stale numbers
-	// from the previous provider. Both cross-provider and same-provider
-	// swaps clear — a model change for the same provider still drops
-	// session context, and the new session's first stream events will
-	// re-populate as needed.
+	// Clear token counts and context-model pointer so the chip
+	// starts fresh for the new session. The spend meter
+	// (sessionCostUSD / sessionCostKnown) follows the tab across
+	// provider swaps — the money is already billed.
 	m.lastUsageTokens = 0
 	m.modelForContext = ""
 	var historyCmd tea.Cmd
@@ -622,11 +621,9 @@ func (m model) applyProviderModelSwitch(newProv Provider, model string) (tea.Mod
 		m.sessionID = ""
 		m.sessionMinted = false
 		m.resumeCwd = ""
-		// The conversation resets, so the spend meter does too. A
-		// same-provider model swap keeps the session (and its
-		// accumulated spend — money already billed).
-		m.sessionCostUSD = 0
-		m.sessionCostKnown = false
+		// The spend meter follows the tab across provider swaps —
+		// the money is already billed and the session is being
+		// translated through the VS store, not discarded.
 		if m.virtualSessionID != "" {
 			historyCmd = m.applyVSProviderSwap(oldProvName, newProv)
 		}
