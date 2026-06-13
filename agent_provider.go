@@ -180,12 +180,22 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 	return proc, session.ch, nil
 }
 
-// setupAgentSessionTools assembles the session's tool surface: the
-// coding core, the native bridge twins (linear_*, workflow_* — the
-// loopback HTTP bridge is never attached in-process), plus an MCP
-// manager for the project GitHub MCP and every user-configured server
-// (mcp_servers.go). MCP failures are logged and skipped — a dead
-// remote must not block a coding session.
+// setupAgentSessionTools assembles the session's tool surface in two
+// tiers. The CORE tools below are the only tools sent to the model's
+// API tool definitions — every turn, every session. Everything else
+// (the native bridge twins, every MCP server tool) goes into the
+// DEFERRED REGISTRY: registered and callable, but discovered through
+// search_tools and dispatched through invoke_tool instead of riding
+// the wire (agent_tools_registry.go). MCP failures are logged and
+// skipped — a dead remote must not block a coding session.
+//
+// ⚠ DO NOT add new tools to the core list. New tools belong in the
+// deferred registry (s.deferredBase or an MCP server). Every core
+// addition costs context tokens on every call of every session and
+// churns anthropic's cached tool block. A tool earns a core slot only
+// by deliberate, documented exception — the bar is "the agent cannot
+// function without seeing it unprompted" (see "Tool registry vs core
+// tools" in CLAUDE.md).
 func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	env := s.env
 	s.coreTools = []fantasy.AgentTool{
@@ -205,9 +215,11 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 			func() int64 { return s.maxOutputTokens }),
 		agentAskUserQuestionTool(env),
 		agentEndTurnTool(env),
+		agentSearchToolsTool(s.deferredTools),
+		agentInvokeToolTool(s.deferredTools, s.isCoreToolName),
 	}
-	s.coreTools = append(s.coreTools, agentBridgeTools(env)...)
 	s.coreTools = wrapFileToolsWithMemory(s.coreTools, s.args.Cwd)
+	s.deferredBase = agentBridgeTools(env)
 	s.mcp = newMCPManager(s.args.TabID,
 		func() bool {
 			return s.spec != nil && s.spec.supportsImages != nil && s.spec.supportsImages(s.modelID)

@@ -45,13 +45,18 @@ type agentSession struct {
 	env    *agentToolEnv
 	system string
 
-	// coreTools are the harness natives; the live tool set (core +
-	// MCP, decorated per spec) is rebuilt by refreshToolset whenever a
-	// server's tool list changes and read per turn via currentTools.
-	coreTools []fantasy.AgentTool
-	mcp       *mcpManager
-	toolsMu   sync.Mutex
-	tools     []fantasy.AgentTool
+	// coreTools are the harness natives — the ONLY tools that reach
+	// the model's wire tool definitions. deferredBase holds the
+	// always-available registry tools (the native bridge twins); MCP
+	// tools join them in refreshToolset. The registry is reachable
+	// through search_tools/invoke_tool, never through the wire — see
+	// agent_tools_registry.go.
+	coreTools    []fantasy.AgentTool
+	deferredBase []fantasy.AgentTool
+	mcp          *mcpManager
+	toolsMu      sync.Mutex
+	tools        []fantasy.AgentTool
+	deferred     []fantasy.AgentTool
 
 	providerOpts    fantasy.ProviderOptions
 	temperature     *float64
@@ -74,20 +79,27 @@ type agentSession struct {
 	messages  []fantasy.Message
 }
 
-// refreshToolset rebuilds the live tool set (core + MCP) and re-runs
-// the spec's decoration (anthropic's strip-then-mark cache breakpoint)
-// so a tool-list change never leaves stale markers behind. Safe from
-// SDK goroutines; the next turn picks the new set up.
+// refreshToolset rebuilds the wire tool set (core only) and the
+// deferred registry (bridge twins + MCP) and re-runs the spec's
+// decoration (anthropic's strip-then-mark cache breakpoint) so a
+// tool-list change never leaves stale markers behind. MCP tools land
+// in the registry, NOT on the wire — the wire toolset stays
+// byte-stable for the whole session, which keeps anthropic's cached
+// tool block valid across MCP tools/list_changed refreshes. Safe from
+// SDK goroutines; the next turn (and the next search_tools call)
+// picks the new sets up.
 func (s *agentSession) refreshToolset() {
 	tools := append([]fantasy.AgentTool(nil), s.coreTools...)
+	deferred := append([]fantasy.AgentTool(nil), s.deferredBase...)
 	if s.mcp != nil {
-		tools = append(tools, s.mcp.tools()...)
+		deferred = append(deferred, s.mcp.tools()...)
 	}
 	if s.spec != nil && s.spec.decorateTools != nil {
 		s.spec.decorateTools(tools)
 	}
 	s.toolsMu.Lock()
 	s.tools = tools
+	s.deferred = deferred
 	s.toolsMu.Unlock()
 }
 
@@ -95,6 +107,25 @@ func (s *agentSession) currentTools() []fantasy.AgentTool {
 	s.toolsMu.Lock()
 	defer s.toolsMu.Unlock()
 	return append([]fantasy.AgentTool(nil), s.tools...)
+}
+
+// deferredTools snapshots the registry for search_tools/invoke_tool.
+func (s *agentSession) deferredTools() []fantasy.AgentTool {
+	s.toolsMu.Lock()
+	defer s.toolsMu.Unlock()
+	return append([]fantasy.AgentTool(nil), s.deferred...)
+}
+
+// isCoreToolName reports whether a name belongs to the core tools, so
+// invoke_tool can steer the model back to a direct call instead of a
+// generic "unknown tool" error.
+func (s *agentSession) isCoreToolName(name string) bool {
+	for _, t := range s.coreTools {
+		if t.Info().Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // agentStdin adapts the session's shutdown to the providerProc stdin
@@ -270,6 +301,10 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	shouldCompact := false
 	var textBuf strings.Builder
 	backgroundCalls := map[string]bool{}
+	// displayNames maps call ids to the unwrapped (inner) tool name so
+	// toolResultMsg matches the toolCallMsg the user saw — invoke_tool
+	// never appears as a construct in the transcript.
+	displayNames := map[string]string{}
 
 	agent := fantasy.NewAgent(s.model,
 		fantasy.WithSystemPrompt(s.system),
@@ -324,29 +359,39 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		OnToolCall: func(tc fantasy.ToolCallContent) error {
 			input := map[string]any{}
 			_ = json.Unmarshal([]byte(tc.Input), &input)
+			name := tc.ToolName
+			if name == "invoke_tool" {
+				// Display the real registry tool, not the plumbing.
+				name, input = unwrapInvokeToolCall(input)
+			}
+			displayNames[tc.ToolCallID] = name
 			background, _ := input["run_in_background"].(bool)
 			if background {
 				backgroundCalls[tc.ToolCallID] = true
 			}
 			s.emit(toolCallMsg{
 				id:         tc.ToolCallID,
-				name:       tc.ToolName,
+				name:       name,
 				input:      input,
 				background: background,
 			})
 			// The model-authored phrase makes the status context-specific
 			// ("bash: looking for the latest files") instead of generic.
-			status := "running " + tc.ToolName + "…"
+			status := "running " + name + "…"
 			if phrase := toolCallPhrase(input); phrase != "" {
-				status = tc.ToolName + ": " + phrase
+				status = name + ": " + phrase
 			}
 			s.emit(streamStatusMsg{status: status})
 			return nil
 		},
 		OnToolResult: func(tr fantasy.ToolResultContent) error {
+			name := tr.ToolName
+			if display, ok := displayNames[tr.ToolCallID]; ok {
+				name = display
+			}
 			s.emit(toolResultMsg{
 				toolUseID:  tr.ToolCallID,
-				name:       tr.ToolName,
+				name:       name,
 				output:     toolResultText(tr.Result),
 				isError:    toolResultIsError(tr.Result),
 				background: backgroundCalls[tr.ToolCallID],

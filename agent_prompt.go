@@ -34,6 +34,7 @@ const agentCoderPrompt = `You are a software engineering agent running inside as
 - Long-running commands (dev servers, watch modes): pass run_in_background, then poll with job_output and stop with job_kill. Never leave a foreground command hanging.
 - Use todos to plan multi-step work, and call it again at EVERY step transition — mark the finished item completed and the next one in_progress the moment it happens, never batched at the end. The user watches this list live; a list that still shows step 1 while you are on step 4 is a wrong status display.
 - Use fetch to read documentation URLs the project or user points at.
+- Your tool definitions are NOT the full surface: a registry of additional tools (issue tracking, workflow management, MCP integrations) is available through search_tools (discover names, descriptions, and input schemas) and invoke_tool (call a registry tool by name with its params). When a task needs a capability you do not see in your tools, search the registry before declaring it unavailable.
 - Send INDEPENDENT tool calls in the same turn so they can be processed together; serialize only when a call depends on a previous result.
 </tool_usage>
 

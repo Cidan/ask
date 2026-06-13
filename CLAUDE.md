@@ -41,8 +41,11 @@ ALL OF THE ABOVE IS NOT OPTIONAL. YOU MUST ALWAYS USE THE ABOVE REFERENCES.
 in-process on `charm.land/fantasy` against provider APIs (anthropic,
 openai, deepseek) — there are NO CLI subprocesses and NO loopback MCP
 server; every tool (coding core, linear/workflow bridge twins,
-question modal, external MCP clients) is native Go. ask renders
-markdown, images, and a custom question modal.
+question modal, external MCP clients) is native Go. The tool surface
+is two-tier: a small fixed CORE rides the wire tool definitions,
+everything else lives in a deferred registry reached through
+`search_tools` + `invoke_tool` (see "Tool registry vs core tools"
+below). ask renders markdown, images, and a custom question modal.
 
 ## Layout
 
@@ -59,7 +62,7 @@ One `package main`, one file per concern.
 | `anthropic.go`         | Anthropic spec: catwalk model list, effort→`output_config.effort` with catalog clamping, manual prompt-cache breakpoints (`anthropicPrepareStep`: system + last 2 messages; `anthropicDecorateTools`: last tool) — without these the API bills uncached every turn. |
 | `openai.go`            | OpenAI spec: Responses API (prefix predicate `openaiUseResponsesAPI` so new gpt-5.x/codex ids never fall back to chat completions), reasoning summaries + encrypted reasoning content (stateless resume), effort clamping. |
 | `catalog.go`           | catwalk embedded-catalog lookups: model ids (default first), context windows, image capability, effort-level clamping. No network — the snapshot ships with the module. |
-| `agent_run.go`         | The in-process agent runtime: session goroutine, fantasy agent loop ↔ provider-protocol msgs, per-spec PrepareStep, image file parts, interrupt, loop detection, auto-compaction, dangling-tool-call repair. |
+| `agent_run.go`         | The in-process agent runtime: session goroutine, fantasy agent loop ↔ provider-protocol msgs, per-spec PrepareStep, image file parts, interrupt, loop detection, auto-compaction, dangling-tool-call repair. `refreshToolset` splits the surface: core → wire tool definitions, bridge twins + MCP → the deferred registry; the live-emit callbacks unwrap `invoke_tool` so the transcript shows the real registry tool. |
 | `agent_prompt.go`      | Coder system prompt assembly: static head, env snapshot, CLAUDE.md/AGENTS.md inclusion, `askSteeringPrompt` tail. Byte-stable per session for DeepSeek's prefix cache. |
 | `agent_session.go`     | `agentSessionStore` — fantasy-message transcripts under `~/.config/ask/agent-sessions/<provider>/`, backing /resume, LoadHistory replay, and Materialize. |
 | `agent_diff.go`        | Pure-Go Myers unified diff (`unifiedDiff`) whose output round-trips `parseUnifiedDiff` so agent edits render through the existing diff pipeline. |
@@ -73,9 +76,10 @@ One `package main`, one file per concern.
 | `agent_subagents.go`   | Named subagent defs: `.claude/agents/*.md` + `~/.config/ask/agents` (frontmatter name/description/tools/model + ask's `provider` extension; body = system prompt), `<available_agents>` prompt block, tool grant sets (default read-only, `*` = coding core, never task/modal tools), claude model-alias mapping, cross-provider model resolution via `agentSpecByID`. |
 | `skills.go`            | Agent Skills standard (agentskills.io): SKILL.md discovery (~/.config/ask/skills, ~/.agents/skills, ~/.claude/skills + project .agents/.claude/.ask skills dirs at cwd AND git root, project wins), name/description validation, `<available_skills>` trigger block (progressive disclosure — body loads via the read tool), `/skill-name` slash expansion (`expandSkillInvocation` in runTurn), user-invocable skills surfaced through `ProbeInit`. Generic `parseMarkdownFrontmatter` shared with subagent defs. |
 | `agent_tools_ask.go`   | In-process twins of the bridge's `ask_user_question` / `end_turn` — same modal/workflow machinery, no HTTP loopback. |
-| `agent_tools_bridge.go`| Native twins of every other bridge tool (12 `linear_*`, 7 `workflow_*` incl. `workflow_copy`): a generic `nativeBridgeTool` adapter generates fantasy schemas via the same jsonschema machinery the MCP SDK uses (field docs survive verbatim) and wraps the shared cwd-parameterized cores in mcp_linear.go/mcp_workflows.go. In-process sessions never attach the loopback bridge. |
+| `agent_tools_bridge.go`| Native twins of every other bridge tool (12 `linear_*`, 7 `workflow_*` incl. `workflow_copy`): a generic `nativeBridgeTool` adapter generates fantasy schemas via the same jsonschema machinery the MCP SDK uses (field docs survive verbatim) and wraps the shared cwd-parameterized cores in mcp_linear.go/mcp_workflows.go. In-process sessions never attach the loopback bridge. These tools live in the deferred registry, never on the wire. |
+| `agent_tools_registry.go`| The deferred tool registry surface: `search_tools` (query the registry — `*` / prefix-`*` / substring — returning name + description + full input_schema per match) and `invoke_tool` (dispatch a registry tool by name via its `.Run`, with replicated required-field validation, phrase injection for natives, and verbatim response pass-through). `unwrapInvokeToolCall` maps invoke calls back to the inner tool for display. See "Tool registry vs core tools" below — **new tools go here, never into the core list**. |
 | `agent_memory.go`      | Memory recall injection: session-start recall appended to the system prompt (once, byte-stable), per-prompt recall appended to the wire prompt, and `memoryAwareTool` wrapping read/edit/write with a per-file recall footer. All no-op when the memory service is closed. |
-| `agent_tools_mcp.go`   | MCP client v2 (`mcpManager`/`mcpServerConn`): per-session manager over stdio/http/sse transports (official go-sdk v1.6.1), lazy ping-and-rebuild before every call + one renew-and-retry, `tools/list_changed` → live toolset refresh, MCP elicitation → ask's question modal (form mode: enum/boolean/free-form, typed answers; URL mode + headless decline), image tool-results as real media when the model has vision. Tools are `mcp__<server>__<tool>`. |
+| `agent_tools_mcp.go`   | MCP client v2 (`mcpManager`/`mcpServerConn`): per-session manager over stdio/http/sse transports (official go-sdk v1.6.1), lazy ping-and-rebuild before every call + one renew-and-retry, `tools/list_changed` → live deferred-registry refresh (the wire toolset never changes mid-session), MCP elicitation → ask's question modal (form mode: enum/boolean/free-form, typed answers; URL mode + headless decline), image tool-results as real media when the model has vision. Tools are `mcp__<server>__<tool>`. |
 | `mcp_servers.go`       | User-facing MCP server config: `mcpServers` maps (user-global + per-project) merged over project-root `.mcp.json` (claude-code convention), `${VAR}`/`${VAR:-default}` expansion, per-server type inference, timeout, enabled/disabled tool filters, Disabled tombstones. |
 | `mcp_oauth.go`         | OAuth for remote MCP servers (`oauth: true`): SDK authorization-code + PKCE + dynamic client registration, browser launch via swappable `mcpOAuthOpenBrowser`, one-shot loopback callback listener, tokens persisted 0600 under `~/.config/ask/mcp-oauth/` (valid stored tokens skip the browser; expiry re-runs the flow). |
 | `model_picker.go`      | Ctrl+M unified model picker (crush-style): search input, “Recently used” group first (`cfg.RecentModels`, capped push-front), then one section per provider with human-friendly catwalk names; ↑/↓ skip headers, Enter applies the pick to the current tab and persists it as the provider default model (`applyProviderModelSwitch` + `applyVSProviderSwap`; cfg.Provider untouched). Picking a model whose provider has no key drops into an inline API-key prompt (`providerKeySpecs`) that saves to ask.json and proceeds; per-provider “Enter your own…” rows cover custom ids. Replaced the old Ctrl+B switcher AND the `/config` per-provider key sub-pickers AND the `/model` and `/provider` slash commands. |
@@ -146,6 +150,7 @@ exercised by the user; code alone won't catch layout regressions.
 | `mcp_servers_test.go`      | Server-config resolution — effectiveType inference, `${VAR}`/`${VAR:-default}` expansion (copy semantics), 3-layer merge (.mcp.json ← global ← project) incl. Disabled tombstones + junk drops + stable order, tool allow/deny filters. |
 | `mcp_oauth_test.go`        | OAuth plumbing — token path/0600 round-trip, persisting token source saves on change, callback listener captures code/state via swapped browser opener, stored-valid-token served without a flow, fresh handler yields nil source (transport 401s into Authorize). |
 | `agent_tools_bridge_test.go`| Native bridge twins — full 19-tool coverage check, jsonschema field-doc fidelity, description-phrase injection (+ payload-description non-clobber), linear gate error, malformed input, workflow CRUD round-trip against project config, workflow_run dispatch via swapped `mcpSpawnWorkflowTab`, loopback never in `agentSessionMCPServers`. |
+| `agent_tools_registry_test.go`| Tool registry — search query forms (`*`/prefix/substring, schema fidelity, sorted, no-match name list, empty registry), invoke dispatch (identity + params JSON), replicated required-field check, phrase injection (natives yes, MCP no), unknown/core-name errors, response pass-through (IsError/StopTurn/image/hard error), `unwrapInvokeToolCall`, `refreshToolset` wire/registry split (decorateTools sees core only), session surface (bridge tools off the wire, in the registry), end-to-end fakeLM unwrap (toolCallMsg/toolResultMsg/status), loadHistory replay unwrap. |
 | `skills_test.go`           | Skills — discovery validation (bad name / dir mismatch / no description skipped) + project-over-global precedence, trigger block (progressive disclosure, hidden skills), `/name args` expansion incl. user-invocable gating, frontmatter parser, ProbeInit → slash entries. |
 | `agent_subagents_test.go`  | Subagents — def discovery/precedence/field parsing, tool grant sets, spec registry, claude model aliases, cross-provider model resolution (swapped LM var), task tool: named agent runs on the pinned provider w/ def prompt + report tail, background job lifecycle (bgTask signals, job_output), default researcher unchanged, `/skill` expansion reaches the wire. |
 | `agent_session_test.go`    | Store round-trip (typed parts survive), CreatedAt preservation, list ordering, LoadHistory tool-output modes, Materialize. |
@@ -692,37 +697,82 @@ volatile env (git status) is a labeled session-start snapshot.
 
 ### Tools
 
-Coding core (read/write/edit/glob/grep/ls/bash+jobs/fetch/todos/task)
-plus native twins of EVERY bridge tool: `ask_user_question`/`end_turn`
-(agent_tools_ask.go) and the full `linear_*`/`workflow_*` set
-(agent_tools_bridge.go, same cores as the bridge handlers). The
-loopback bridge is never attached in-process — only the project
-GitHub MCP and user-configured servers (mcp_servers.go) ride the MCP
-client as `mcp__<server>__<tool>` tools. Memory recall is injected
-natively (agent_memory.go) at three points: the system prompt at
-session start, the wire prompt per user turn, and a per-file footer
-on read/edit/write results. Permissions: when `SkipAllPermissions`
-is off, mutating
-tools (bash beyond the safe read-only list, edit/write, fetch) block
-on the existing approval modal; denial returns an error result with
-`StopTurn` so the model ends its turn instead of retrying.
+The surface is two-tier (`setupAgentSessionTools`,
+agent_provider.go):
+
+- **Core (wire)** — the 16 tools sent in the API tool definitions
+  every turn: read/write/edit/glob/grep/ls/bash+jobs/fetch/todos/
+  task, the modal pair `ask_user_question`/`end_turn`
+  (agent_tools_ask.go), and the registry pair
+  `search_tools`/`invoke_tool` (agent_tools_registry.go).
+- **Deferred registry** — everything else: the native bridge twins
+  (the full `linear_*`/`workflow_*` set, agent_tools_bridge.go, same
+  cores as the bridge handlers) and every MCP tool (the project
+  GitHub MCP plus user-configured servers, mcp_servers.go, as
+  `mcp__<server>__<tool>`). Registry tools are registered and
+  callable but never part of the wire tool definitions: the model
+  discovers them via `search_tools` (name + description + full
+  input_schema) and calls them via `invoke_tool`, which dispatches
+  straight to the inner tool's `.Run` and returns its response
+  verbatim (IsError/StopTurn/image all pass through).
+
+The loopback bridge is never attached in-process. Memory recall is
+injected natively (agent_memory.go) at three points: the system
+prompt at session start, the wire prompt per user turn, and a
+per-file footer on read/edit/write results. Permissions: when
+`SkipAllPermissions` is off, mutating tools (bash beyond the safe
+read-only list, edit/write, fetch) block on the existing approval
+modal; denial returns an error result with `StopTurn` so the model
+ends its turn instead of retrying. Registry tools carry no approval
+gate of their own — `invoke_tool` adds none, matching direct-call
+behavior.
+
+### Tool registry vs core tools
+
+**New tools go into the deferred registry, NEVER into the core list
+in `setupAgentSessionTools`.** Every core addition costs context
+tokens on every call of every session, and churns the wire toolset
+that anthropic's cached tool block depends on (`refreshToolset` keeps
+the wire set byte-stable for the whole session precisely because MCP
+`tools/list_changed` refreshes only touch the registry). A tool earns
+a core slot only by deliberate, documented exception, and the bar is
+"the agent cannot function without seeing it unprompted" — the
+registry pair itself and `end_turn` (the workflow runner's per-step
+contract) are the canonical examples. To add a registry tool, append
+it to `s.deferredBase` (native) or expose it from an MCP server; it
+becomes searchable and invokable with zero wire cost.
+
+Plumbing invariants worth knowing before touching this area:
+
+- `invoke_tool` replicates fantasy's required-field validation —
+  fantasy only validates wire tools, and `json.Unmarshal` would
+  silently zero-value a missing param otherwise.
+- The invoke-level `description` phrase is injected into the inner
+  params only when the inner tool *requires* `description` (the
+  natives); MCP tools never get unexpected keys.
+- `invoke_tool`/`search_tools` are invisible as constructs: the live
+  emit (agent_run.go OnToolCall/OnToolResult) and history replay
+  (agent_session.go loadHistory) both unwrap via
+  `unwrapInvokeToolCall`, so the transcript, status line, and resumed
+  sessions all show the real registry tool.
 
 **Description phrases.** Every native tool — the coding core, the
-modal pair, and the bridge twins (injected generically by
-`nativeBridgeTool`, skipping inputs whose own `description` is real
-payload like linear_create_issue's Markdown body) — takes a
-*required* `description` param: a model-authored phrase (under 10
-words) saying what the call is doing. The claude-code/crush trick:
-the model writes the headline itself in the same tool call, no
-second summarization pass. The UI renders it as the call headline
-(`▸ bash — Looking for the latest files`, tool_output.go) — in
-short mode (default) the phrase IS the whole entry; full mode adds
-the param rows — and as the streaming status (`bash: Looking for
-the latest files`, agent_run.go). `toolCallPhrase` gates what
-qualifies (single line, ≤120 chars) so payload `description` fields
-on MCP/bridge tools never masquerade as the headline; calls without
-a phrase (old transcripts, MCP tools) fall back to the
-`shortToolFields` allowlist, keyed by the native lowercase names.
+modal pair, the registry pair, and the bridge twins (injected
+generically by `nativeBridgeTool`, skipping inputs whose own
+`description` is real payload like linear_create_issue's Markdown
+body) — takes a *required* `description` param: a model-authored
+phrase (under 10 words) saying what the call is doing. The
+claude-code/crush trick: the model writes the headline itself in the
+same tool call, no second summarization pass. The UI renders it as
+the call headline (`▸ bash — Looking for the latest files`,
+tool_output.go) — in short mode (default) the phrase IS the whole
+entry; full mode adds the param rows — and as the streaming status
+(`bash: Looking for the latest files`, agent_run.go).
+`toolCallPhrase` gates what qualifies (single line, ≤120 chars) so
+payload `description` fields on MCP/bridge tools never masquerade as
+the headline; calls without a phrase (old transcripts, MCP tools)
+fall back to the `shortToolFields` allowlist, keyed by the native
+lowercase names.
 
 ### Sessions & turn hygiene
 

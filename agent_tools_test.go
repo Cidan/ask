@@ -721,6 +721,8 @@ func TestCoreTools_RequireDescriptionPhrase(t *testing.T) {
 		agentFetchTool(env), agentTodosTool(env),
 		agentTaskTool(env, func() fantasy.LanguageModel { return nil }, nil),
 		agentAskUserQuestionTool(env),
+		agentSearchToolsTool(func() []fantasy.AgentTool { return nil }),
+		agentInvokeToolTool(func() []fantasy.AgentTool { return nil }, nil),
 	}
 	for _, tool := range tools {
 		info := tool.Info()

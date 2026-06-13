@@ -228,9 +228,15 @@ func (st *agentSessionStore) loadHistory(id string, opts HistoryOpts) ([]history
 					if tc, ok := fantasy.AsMessagePart[fantasy.ToolCallPart](part); ok {
 						input := map[string]any{}
 						_ = json.Unmarshal([]byte(tc.Input), &input)
+						name := tc.ToolName
+						if name == "invoke_tool" {
+							// Replay shows the real registry tool, same as
+							// the live emit (agent_run.go).
+							name, input = unwrapInvokeToolCall(input)
+						}
 						entries = append(entries, historyEntry{
 							kind: histPrerendered,
-							text: renderToolCallBlock(tc.ToolName, input, mode),
+							text: renderToolCallBlock(name, input, mode),
 						})
 					}
 				}

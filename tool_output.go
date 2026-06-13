@@ -58,18 +58,20 @@ func parseToolOutputMode(s string) toolOutputMode {
 // something happened without dumping arbitrary input maps. New
 // built-ins should be added here with their highest-signal field(s).
 var shortToolFields = map[string][]string{
-	"bash":       {"command"},
-	"edit":       {"file_path"},
-	"end_turn":   {"summary"},
-	"fetch":      {"url"},
-	"glob":       {"pattern"},
-	"grep":       {"include", "pattern"},
-	"job_kill":   {"job_id"},
-	"job_output": {"job_id"},
-	"ls":         {"path"},
-	"read":       {"file_path"},
-	"task":       {"agent", "prompt"},
-	"write":      {"file_path"},
+	"bash":         {"command"},
+	"edit":         {"file_path"},
+	"end_turn":     {"summary"},
+	"fetch":        {"url"},
+	"glob":         {"pattern"},
+	"grep":         {"include", "pattern"},
+	"invoke_tool":  {"tool_name"},
+	"job_kill":     {"job_id"},
+	"job_output":   {"job_id"},
+	"ls":           {"path"},
+	"read":         {"file_path"},
+	"search_tools": {"query"},
+	"task":         {"agent", "prompt"},
+	"write":        {"file_path"},
 }
 
 // filterShortInputs keeps only the allowlisted keys for the named tool
