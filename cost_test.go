@@ -263,6 +263,107 @@ func TestSidebarCost(t *testing.T) {
 	}
 }
 
+func TestStepCostUSD_KimiPricing(t *testing.T) {
+	// kimi-k2.7-code: in 0.95, out 4.00, outCached 0.19 (per 1M).
+	got, ok := stepCostUSD("kimi", "kimi-k2.7-code", fantasy.Usage{
+		InputTokens: 1_000_000,
+	})
+	if !ok || got != 0.95 {
+		t.Errorf("kimi-k2.7-code 1M input = %v ok=%v, want 0.95 true", got, ok)
+	}
+
+	got, ok = stepCostUSD("kimi", "kimi-k2.7-code", fantasy.Usage{
+		OutputTokens: 1_000_000,
+	})
+	if !ok || got != 4.00 {
+		t.Errorf("kimi-k2.7-code 1M output = %v ok=%v, want 4.00 true", got, ok)
+	}
+
+	// Cache hit (read): 0.19/1M.
+	got, ok = stepCostUSD("kimi", "kimi-k2.7-code", fantasy.Usage{
+		CacheReadTokens: 1_000_000,
+	})
+	if !ok || got != 0.19 {
+		t.Errorf("kimi-k2.7-code 1M cache hit = %v ok=%v, want 0.19 true", got, ok)
+	}
+
+	// Cache miss (write): 0.95/1M.
+	got, ok = stepCostUSD("kimi", "kimi-k2.7-code", fantasy.Usage{
+		CacheCreationTokens: 1_000_000,
+	})
+	if !ok || got != 0.95 {
+		t.Errorf("kimi-k2.7-code 1M cache miss = %v ok=%v, want 0.95 true", got, ok)
+	}
+
+	// kimi-k2.5: in 0.60, out 3.00, outCached 0.10.
+	got, ok = stepCostUSD("kimi", "kimi-k2.5", fantasy.Usage{
+		InputTokens:  1_000_000,
+		OutputTokens: 1_000_000,
+	})
+	if !ok || got != 3.60 {
+		t.Errorf("kimi-k2.5 1M in + 1M out = %v ok=%v, want 3.60 true", got, ok)
+	}
+
+	// kimi-k2-thinking: same as kimi-k2.5 pricing.
+	got, ok = stepCostUSD("kimi", "kimi-k2-thinking", fantasy.Usage{
+		InputTokens:        1_000_000,
+		CacheReadTokens:    1_000_000,
+		OutputTokens:       500_000,
+	})
+	want := 2.20 // 0.60 + 0.10 + 1.50
+	if !ok || got != want {
+		t.Errorf("kimi-k2-thinking mixed = %v ok=%v, want %v true", got, ok, want)
+	}
+
+	// Custom model on Kimi — unpriceable.
+	if _, ok := stepCostUSD("kimi", "my-custom-model", fantasy.Usage{InputTokens: 5}); ok {
+		t.Error("custom kimi model must be unpriceable")
+	}
+}
+
+func TestModelPricingKnown_Kimi(t *testing.T) {
+	if !modelPricingKnown("kimi", "kimi-k2.7-code") {
+		t.Error("kimi-k2.7-code should have known pricing")
+	}
+	if !modelPricingKnown("kimi", "kimi-k2.5") {
+		t.Error("kimi-k2.5 should have known pricing")
+	}
+	if !modelPricingKnown("kimi", "kimi-k2-thinking") {
+		t.Error("kimi-k2-thinking should have known pricing")
+	}
+	if modelPricingKnown("kimi", "unknown-model") {
+		t.Error("unknown kimi model should have unknown pricing")
+	}
+}
+
+func TestSidebarCost_Kimi(t *testing.T) {
+	p := kimiAgentProvider()
+
+	// Known model on a catalog provider: an honest $0.00.
+	m := newTestModel(t, newFakeProvider())
+	m.provider = p
+	if got := m.sidebarCost(); got != "$0.00" {
+		t.Errorf("kimi sidebarCost with default model = %q, want $0.00", got)
+	}
+
+	// Custom model on Kimi: unpriceable → empty.
+	m2 := newTestModel(t, newFakeProvider())
+	m2.provider = p
+	m2.providerModel = "my-custom"
+	if got := m2.sidebarCost(); got != "" {
+		t.Errorf("kimi custom-model sidebarCost = %q, want empty", got)
+	}
+
+	// Accumulated spend renders dollars-and-cents.
+	m3 := newTestModel(t, newFakeProvider())
+	m3.provider = p
+	m3.sessionCostUSD = 0.19
+	m3.sessionCostKnown = true
+	if got := m3.sidebarCost(); got != "$0.19" {
+		t.Errorf("kimi sidebarCost with spend = %q, want $0.19", got)
+	}
+}
+
 func TestSidebarCardHasCostRow(t *testing.T) {
 	a := newSidebarTestApp(t, 2)
 	tab := a.tabs[1]

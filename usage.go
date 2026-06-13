@@ -49,13 +49,37 @@ func contextPercent(used, limit int) int {
 	return p
 }
 
+// kimiPricing holds per-model USD prices per 1M tokens charted from
+// platform.kimi.ai/docs/pricing. Keyed by model id.
+//
+// Kimi (Moonshot) uses automatic context caching: cache-hit input is
+// the lower price, cache-miss input the higher price (writing + read
+// miss). Both cost the same as uncached input — the internal fantasy
+// Usage fields CacheCreationTokens (miss) and CacheReadTokens (hit)
+// cover the split.
+var kimiPricing = map[string]struct{ in, inCached, out, outCached float64 }{
+	"kimi-k2.7-code":   {0.95, 0.95, 4.00, 0.19},
+	"kimi-k2.5":        {0.60, 0.60, 3.00, 0.10},
+	"kimi-k2-thinking": {0.60, 0.60, 3.00, 0.10},
+}
+
 // stepCostUSD prices one API call's token usage in dollars using the
-// catwalk catalog (the same formula crush uses): uncached input and
-// output at the base rates, cache writes at the in-cached rate, cache
-// reads at the out-cached rate. ok is false when the provider has no
-// catwalk catalog or the model id isn't in it (custom ids) — callers
-// must not display a $0.00 that actually means "no idea".
+// catwalk catalog (the same formula crush uses) and the Kimi lookaside
+// table: uncached input and output at the base rates, cache writes at
+// the in-cached rate, cache reads at the out-cached rate. ok is false
+// when neither the catwalk catalog nor the Kimi table covers the pair
+// — callers must not display a $0.00 that actually means "no idea".
 func stepCostUSD(providerID, modelID string, u fantasy.Usage) (float64, bool) {
+	if providerID == kimiProviderID {
+		if p, ok := kimiPricing[modelID]; ok {
+			cost := p.inCached/1e6*float64(u.CacheCreationTokens) +
+				p.outCached/1e6*float64(u.CacheReadTokens) +
+				p.in/1e6*float64(u.InputTokens) +
+				p.out/1e6*float64(u.OutputTokens)
+			return cost, true
+		}
+		return 0, false
+	}
 	cw, ok := catwalkProviderIDs[providerID]
 	if !ok {
 		return 0, false

@@ -144,9 +144,14 @@ func TestKimiProvider_SessionLifecycle(t *testing.T) {
 	if done.res.SessionID != "ses-lifecycle" || done.res.Result != "answer one" {
 		t.Errorf("done msg wrong: %+v", done.res)
 	}
-	// Kimi has no catalog pricing data, so usageMsg never has costKnown.
-	if usage == nil || usage.costKnown {
-		t.Errorf("usageMsg must exist and be cost-unknown: %+v", usage)
+	// Kimi models have pricing from the lookaside table — the
+	// usageMsg carries costKnown and a dollar amount.
+	if usage == nil || !usage.costKnown {
+		t.Errorf("usageMsg must exist and be cost-known: %+v", usage)
+	}
+	// 10 input tokens at $0.95/1M = $0.0000095.
+	if usage.costUSD < 0.0000094 || usage.costUSD > 0.0000096 {
+		t.Errorf("usage cost = %v, want ~0.0000095", usage.costUSD)
 	}
 
 	// The system prompt reached the wire as the first message.
