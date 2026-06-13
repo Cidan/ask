@@ -17,6 +17,9 @@ func modelContextLimit(model string) int {
 	if strings.HasPrefix(lower, "deepseek") {
 		return deepseekContextWindow
 	}
+	if strings.HasPrefix(lower, "kimi") {
+		return kimiContextWindow
+	}
 	if m, ok := catalogModel(catwalk.InferenceProviderAnthropic, model); ok && m.ContextWindow > 0 {
 		return int(m.ContextWindow)
 	}

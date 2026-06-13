@@ -353,6 +353,7 @@ func init() {
 	registerProvider(anthropicAgentProvider())
 	registerProvider(openaiAgentProvider())
 	registerProvider(deepseekAgentProvider())
+	registerProvider(kimiAgentProvider())
 }
 
 // providerByID returns the provider with the given ID, or the first

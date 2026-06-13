@@ -41,6 +41,8 @@ var providerKeySpecs = []providerKeySpec{
 		func(c *askConfig) *apiProviderConfig { return &c.OpenAI }},
 	{deepseekProviderID, "DeepSeek", deepseekEnvAPIKey,
 		func(c *askConfig) *apiProviderConfig { return &c.DeepSeek }},
+	{kimiProviderID, "Kimi (Moonshot)", moonshotEnvAPIKey,
+		func(c *askConfig) *apiProviderConfig { return &c.Moonshot }},
 }
 
 func providerKeySpecByID(id string) (providerKeySpec, bool) {
