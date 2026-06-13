@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -248,6 +250,15 @@ func TestStartWorkflowStep_UnknownProviderFails(t *testing.T) {
 		Source: issueWorkflowSource(issue),
 	}
 	workflowTracker().markWorking(cwd, issue.Key(), "wf", m.id)
+	// The start-plan gate fires for StepIdx 0; populate ask/plans/start/
+	// so the gate passes and we reach the provider check under test.
+	startDir := filepath.Join(cwd, "ask", "plans", "start")
+	if err := os.MkdirAll(startDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(startDir, "plan.md"), []byte("plan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	newM, _ := m.startWorkflowStep()
 	mm := newM.(model)
 	if !mm.workflowRun.failed {
@@ -531,6 +542,15 @@ func TestStartWorkflowStep_EntersLoop(t *testing.T) {
 		Source: issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1}),
 	}
 	workflowTracker().markWorking(cwd, m.workflowRun.Source.Key(), "wf", m.id)
+	// The start-plan gate fires for StepIdx 0; create ask/plans/start/ so
+	// the gate passes and we reach the loop-entry logic under test.
+	startDir := filepath.Join(cwd, "ask", "plans", "start")
+	if err := os.MkdirAll(startDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(startDir, "plan.md"), []byte("plan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	newM, _ := m.startWorkflowStep()
 	r := newM.(model).workflowRun
@@ -681,5 +701,235 @@ func TestHandleEndTurnSignal_NoEffectWhenNoRun(t *testing.T) {
 	}
 	if resp := <-reply; resp.registered {
 		t.Errorf("reply should be not-registered on a finished run; got %+v", resp)
+	}
+}
+
+// ----- plans-directory system tests -----
+
+// startPlanWorkspace creates the start-plan directory fixture and returns
+// the cwd so callers can write individual files into it.
+func startPlanWorkspace(t *testing.T) (cwd string) {
+	t.Helper()
+	cwd = isolateHome(t)
+	dir := filepath.Join(cwd, "ask", "plans", "start")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return cwd
+}
+
+// TestStartWorkflowStep_RejectsMissingStartPlan: StepIdx 0 without
+// ask/plans/start/ must finalise as failed with the gate message.
+func TestStartWorkflowStep_RejectsMissingStartPlan(t *testing.T) {
+	cwd := isolateHome(t)
+	resetWorkflowTrackerForTest()
+	m := newTestModel(t, newFakeProvider())
+	m.cwd = cwd
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{
+			Name:  "wf",
+			Steps: []workflowStep{{Name: "first"}},
+		},
+		Source: issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1}),
+	}
+	workflowTracker().markWorking(cwd, m.workflowRun.Source.Key(), "wf", m.id)
+	newM, _ := m.startWorkflowStep()
+	mm := newM.(model)
+	if !mm.workflowRun.failed {
+		t.Fatal("expected failed when start plan is missing")
+	}
+	if !strings.Contains(mm.workflowRun.failedReason, "start plan is missing") {
+		t.Errorf("failure reason must mention missing start plan; got %q", mm.workflowRun.failedReason)
+	}
+}
+
+// TestStartWorkflowStep_RejectsEmptyStartPlan: ask/plans/start/ exists
+// but contains no files — the gate must still reject.
+func TestStartWorkflowStep_RejectsEmptyStartPlan(t *testing.T) {
+	cwd := startPlanWorkspace(t)
+	resetWorkflowTrackerForTest()
+	withRegisteredProviders(t, newFakeProvider())
+	m := newTestModel(t, newFakeProvider())
+	m.cwd = cwd
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{
+			Name:  "wf",
+			Steps: []workflowStep{{Name: "first", Provider: "fake"}},
+		},
+		Source: issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1}),
+	}
+	workflowTracker().markWorking(cwd, m.workflowRun.Source.Key(), "wf", m.id)
+	newM, _ := m.startWorkflowStep()
+	mm := newM.(model)
+	if !mm.workflowRun.failed {
+		t.Fatal("expected failed when start plan is empty")
+	}
+	if !strings.Contains(mm.workflowRun.failedReason, "start plan is empty") {
+		t.Errorf("failure reason must mention empty start plan; got %q", mm.workflowRun.failedReason)
+	}
+}
+
+// TestBuildWorkflowStepPrompt_PlansDirs: the prompt carries the notes
+// directories the step should read/write, the previous step's notes dir
+// when applicable, and the "write your starting plan" instruction for step 1.
+func TestBuildWorkflowStepPrompt_PlansDirs(t *testing.T) {
+	step := workflowStep{Prompt: "Do the work."}
+	src := issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1})
+
+	// First step: sees its own notes dir + the "write your starting plan" nudge.
+	pc := &stepPromptCtx{notesDir: "/proj/ask/plans/start", isStartStep: true}
+	got := buildWorkflowStepPrompt(step, src, nil, pc)
+	for _, want := range []string{
+		"Workflow notes directories:",
+		"- Your notes directory: /proj/ask/plans/start",
+		"Write your starting plan into your notes directory (/proj/ask/plans/start)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("start-step prompt missing %q; got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Previous step's notes directory") {
+		t.Error("first step must not mention a previous notes directory")
+	}
+
+	// Subsequent step: sees its own notes dir + the previous one.
+	pc2 := &stepPromptCtx{notesDir: "/proj/ask/plans/review", prevNotesDir: "/proj/ask/plans/start"}
+	got = buildWorkflowStepPrompt(step, src, nil, pc2)
+	if !strings.Contains(got, "- Your notes directory: /proj/ask/plans/review") {
+		t.Errorf("subsequent-step prompt missing own notes dir; got:\n%s", got)
+	}
+	if !strings.Contains(got, "- Previous step's notes directory: /proj/ask/plans/start") {
+		t.Errorf("subsequent-step prompt missing previous notes dir; got:\n%s", got)
+	}
+	if strings.Contains(got, "Write your starting plan") {
+		t.Error("only the first step gets the starting-plan instruction")
+	}
+}
+
+// TestWorkflowFinalize_RemovesPlansOnSuccess: a successful finalise deletes
+// the entire ask/plans/ tree.
+func TestWorkflowFinalize_RemovesPlansOnSuccess(t *testing.T) {
+	cwd := isolateHome(t)
+	resetWorkflowTrackerForTest()
+
+	// Create back ask/plans/start/ + an extra step note.
+	startDir := filepath.Join(cwd, "ask", "plans", "start")
+	if err := os.MkdirAll(startDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(startDir, "plan.md"), []byte("plan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stepDir := filepath.Join(cwd, "ask", "plans", "step-two")
+	if err := os.MkdirAll(stepDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	m := newTestModel(t, newFakeProvider())
+	m.cwd = cwd
+	issue := issueRef{Provider: "github", Project: "ow/r", Number: 99}
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{Name: "wf", Steps: []workflowStep{{Name: "only"}}},
+		Source:   issueWorkflowSource(issue),
+	}
+	workflowTracker().markWorking(cwd, issue.Key(), "wf", m.id)
+
+	mm, _ := m.workflowFinalize(true, "")
+	if !mm.(model).workflowRun.done {
+		t.Fatal("finalize should mark done")
+	}
+	if _, err := os.Stat(filepath.Join(cwd, "ask", "plans")); !os.IsNotExist(err) {
+		t.Error("ask/plans/ must be removed after successful finalise")
+	}
+}
+
+// TestStepNotesDir_PathLayout: stepNotesDir produces the expected paths
+// for linear steps, start step, and loop iterations.
+func TestStepNotesDir_PathLayout(t *testing.T) {
+	cwd := startPlanWorkspace(t)
+
+	// Linear non-start-step; the function doesn't know about "firstness" — the
+	// caller decides.  A normal linear step gets ask/plans/<sanitized>/.
+	got := stepNotesDir(cwd, "code review", "", 0)
+	wantSuffix := filepath.Join("ask", "plans", "code-review")
+	if !strings.HasSuffix(got, wantSuffix) {
+		t.Errorf("linear step: got %q, want suffix %q", got, wantSuffix)
+	}
+
+	// Loop step.
+	got = stepNotesDir(cwd, "inner", "refinement loop", 3)
+	wantSuffix = filepath.Join("ask", "plans", "refinement-loop", "3")
+	if !strings.HasSuffix(got, wantSuffix) {
+		t.Errorf("loop step: got %q, want suffix %q", got, wantSuffix)
+	}
+
+	// Zero iteration or empty loop name falls back to linear.
+	got = stepNotesDir(cwd, "code review", "unused-loop", 0)
+	wantSuffix = filepath.Join("ask", "plans", "code-review")
+	if !strings.HasSuffix(got, wantSuffix) {
+		t.Errorf("zero-iteration step: got %q, want suffix %q", got, wantSuffix)
+	}
+}
+
+// TestSanitizeStepName: step names become safe path components.
+func TestSanitizeStepName(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"code review", "code-review"},
+		{"ship:validate & test", "ship-validate-test"},
+		{"---", "step"},
+		{"", "step"},
+		{"..", "step"},
+		{"hello.world_v2-beta", "hello.world_v2-beta"},
+		{"  leading/trailing  ", "leading-trailing"},
+		{"a b", "a-b"},
+		{"a--b", "a--b"},
+	}
+	for _, tc := range cases {
+		got := sanitizeStepName(tc.in)
+		if got != tc.want {
+			t.Errorf("sanitizeStepName(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestClearWorkflowPlans_Idempotent: clearing an empty dir, a missing dir,
+// and a dir with contents all succeed and are repeatable.
+func TestClearWorkflowPlans_Idempotent(t *testing.T) {
+	cwd := isolateHome(t)
+
+	// Missing dir: no-op.
+	if err := clearWorkflowPlans(cwd); err != nil {
+		t.Fatalf("clear absent: %v", err)
+	}
+
+	// Create ask/plans/ with subdirs.
+	base := filepath.Join(cwd, "ask", "plans")
+	if err := os.MkdirAll(filepath.Join(base, "start"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "step-two"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "start", "plan.md"), []byte("plan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First clear removes children.
+	if err := clearWorkflowPlans(cwd); err != nil {
+		t.Fatalf("first clear: %v", err)
+	}
+	for _, sub := range []string{"start", "step-two"} {
+		if _, err := os.Stat(filepath.Join(base, sub)); !os.IsNotExist(err) {
+			t.Errorf("%s should be removed after clear", sub)
+		}
+	}
+	// ask/plans/ itself still exists.
+	if _, err := os.Stat(base); os.IsNotExist(err) {
+		t.Error("ask/plans/ dir itself should survive clear")
+	}
+
+	// Second clear on the now-empty dir is a no-op.
+	if err := clearWorkflowPlans(cwd); err != nil {
+		t.Fatalf("second clear: %v", err)
 	}
 }

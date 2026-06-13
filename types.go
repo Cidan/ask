@@ -740,6 +740,16 @@ type workflowRunState struct {
 	// workflowRunStepDoneMsg.
 	currentStep strings.Builder
 
+	// currentNotesDir is the notes directory for the step currently
+	// in flight. Computed at dispatch and reused when advancing so the
+	// runner knows which directory the just-finished step wrote to.
+	currentNotesDir string
+
+	// prevNotesDir is the notes directory of the step whose output is
+	// being carried into the current dispatch. Empty for the workflow's
+	// first step.
+	prevNotesDir string
+
 	// done flips true once the final step exits cleanly. The banner
 	// shows "complete · ctrl+d to close" while the tab stays open.
 	done bool

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -28,6 +30,7 @@ func TestAgentBridgeTools_CoversEveryBridgeTool(t *testing.T) {
 		"linear_list_states", "linear_list_projects", "linear_list_cycles",
 		"workflow_list", "workflow_get", "workflow_create",
 		"workflow_edit", "workflow_delete", "workflow_copy", "workflow_run",
+		"clear_plans",
 	}
 	got := map[string]bool{}
 	for _, tool := range agentBridgeTools(env) {
@@ -322,5 +325,67 @@ func TestWorkflowRun_AppendIsRequiredInSchema(t *testing.T) {
 	}
 	if !required["append"] {
 		t.Errorf("append must be required; got required=%v", run.Info().Required)
+	}
+}
+
+// TestClearPlans_BridgeToolIdempotent: the clear_plans registry tool is
+// wired, clears ask/plans/ children (leaving the dir itself), and is
+// idempotent over empty or missing directories.
+func TestClearPlans_BridgeToolIdempotent(t *testing.T) {
+	isolateHome(t)
+	env, _ := newTestToolEnv(t)
+
+	tool := bridgeToolByName(t, env, "clear_plans")
+	if tool == nil {
+		t.Fatal("clear_plans tool not found in agentBridgeTools")
+	}
+	info := tool.Info()
+	if info.Name != "clear_plans" {
+		t.Fatalf("name: %s", info.Name)
+	}
+	if !strings.Contains(info.Description, "Clear the workflow plans directory") {
+		t.Errorf("description missing expected text: %s", info.Description)
+	}
+
+	// Clear when ask/plans/ does not exist: succeeds (no-op).
+	resp, err := tool.Run(context.Background(), fantasy.ToolCall{
+		ID: "1", Name: "clear_plans", Input: `{}`,
+	})
+	if err != nil || resp.IsError {
+		t.Fatalf("clear_plans on absent dir: %v %+v", err, resp)
+	}
+	if !strings.Contains(resp.Content, "cleared") {
+		t.Errorf("response should confirm cleared; got %q", resp.Content)
+	}
+
+	// Create some plan files.
+	base := filepath.Join(env.cwd, "ask", "plans")
+	if err := os.MkdirAll(filepath.Join(base, "start"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "start", "plan.md"), []byte("plan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Clear: removes start/ but leaves ask/plans/.
+	resp, err = tool.Run(context.Background(), fantasy.ToolCall{
+		ID: "2", Name: "clear_plans", Input: `{}`,
+	})
+	if err != nil || resp.IsError {
+		t.Fatalf("clear_plans with contents: %v %+v", err, resp)
+	}
+	if _, e := os.Stat(filepath.Join(base, "start")); !os.IsNotExist(e) {
+		t.Error("start/ should be removed after clear")
+	}
+	if _, e := os.Stat(base); os.IsNotExist(e) {
+		t.Error("ask/plans/ itself should survive clear")
+	}
+
+	// Clear again on empty dir: still succeeds.
+	resp, err = tool.Run(context.Background(), fantasy.ToolCall{
+		ID: "3", Name: "clear_plans", Input: `{}`,
+	})
+	if err != nil || resp.IsError {
+		t.Fatalf("clear_plans second time: %v %+v", err, resp)
 	}
 }

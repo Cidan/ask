@@ -113,6 +113,14 @@ func (m model) startWorkflowStep() (tea.Model, tea.Cmd) {
 	}
 	top := r.Workflow.Steps[r.StepIdx]
 
+	// Gate: the workflow must not start until the LLM has written a
+	// starting plan into ask/plans/start/.
+	if r.StepIdx == 0 && r.loop == nil {
+		if err := ensureStartPlanExists(m.cwd); err != nil {
+			return m.workflowFinalize(false, err.Error())
+		}
+	}
+
 	// Enter a loop step the first time the cursor lands on it.
 	if top.isLoop() && r.loop == nil {
 		if len(top.Steps) == 0 {
@@ -133,9 +141,31 @@ func (m model) startWorkflowStep() (tea.Model, tea.Cmd) {
 	// set by advanceWorkflowStep when the prior turn skipped end_turn (or
 	// a loop tail omitted its decision) so the re-prompt explains itself.
 	step := top
-	pc := &stepPromptCtx{remind: r.remind}
 	if r.loop != nil {
 		step = top.Steps[r.loop.innerIdx]
+	}
+	isStartStep := r.StepIdx == 0 && r.loop == nil
+	// When the first step is a loop, the first inner step of
+	// iteration 1 acts as the start step — it writes to
+	// ask/plans/start/ instead of ask/plans/<loop>/<iter>/.
+	isLoopStartStep := r.StepIdx == 0 && r.loop != nil && r.loop.iteration == 1 && r.loop.innerIdx == 0
+	var notesDir string
+	switch {
+	case isStartStep, isLoopStartStep:
+		notesDir = startPlanDir(m.cwd)
+	case r.loop != nil:
+		notesDir = stepNotesDir(m.cwd, step.Name, top.Name, r.loop.iteration)
+	default:
+		notesDir = stepNotesDir(m.cwd, step.Name, "", 0)
+	}
+	r.currentNotesDir = notesDir
+	pc := &stepPromptCtx{
+		remind:       r.remind,
+		notesDir:     notesDir,
+		prevNotesDir: r.prevNotesDir,
+		isStartStep:  isStartStep || isLoopStartStep,
+	}
+	if r.loop != nil {
 		pc.loop = &loopPromptCtx{
 			name:          top.Name,
 			iteration:     r.loop.iteration,
@@ -200,6 +230,9 @@ func (m model) workflowFinalize(ok bool, reason string) (tea.Model, tea.Cmd) {
 		r.done = true
 		workflowTracker().markFinal(m.cwd, r.Source.Key(), r.Workflow.Name, workflowStatusDone, r.StepIdx)
 		m.appendHistory(outputStyle.Render(promptStyle.Render("✓ workflow complete: " + r.Workflow.Name)))
+		if err := removeAllWorkflowPlans(m.cwd); err != nil {
+			debugLog("workflow cleanup: %v", err)
+		}
 	} else {
 		r.failed = true
 		r.failedReason = reason
@@ -263,6 +296,7 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 		}
 		// Got the summary: render the step's line, record output, advance.
 		m.appendHistory(stepSummaryLine(step.Name, step.Provider, step.Model, sig.summary, m.width))
+		r.prevNotesDir = r.currentNotesDir
 		if txt != "" {
 			r.stepLog = append(r.stepLog, txt)
 		}
@@ -295,6 +329,7 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 	// Break from any inner step exits the loop immediately, skipping the
 	// rest of the iteration.
 	if sig.decision == workflowLoopBreak {
+		r.prevNotesDir = r.currentNotesDir
 		if txt != "" {
 			r.loop.iterationLog = append(r.loop.iterationLog, txt)
 		}
@@ -307,6 +342,7 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 	// same iteration. (A "continue" and an omitted decision are equivalent
 	// here — only the tail's continue advances the iteration.)
 	if !isTail {
+		r.prevNotesDir = r.currentNotesDir
 		if txt != "" {
 			r.loop.iterationLog = append(r.loop.iterationLog, txt)
 		}
@@ -329,6 +365,7 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 
 	// Tail registered continue: record output, then start the next
 	// iteration or soft-exit if the iteration cap is reached.
+	r.prevNotesDir = r.currentNotesDir
 	if txt != "" {
 		r.loop.iterationLog = append(r.loop.iterationLog, txt)
 	}
@@ -457,11 +494,15 @@ const (
 )
 
 // stepPromptCtx carries the per-dispatch facts buildWorkflowStepPrompt
-// needs beyond the step itself: the loop framing (nil outside a loop) and
-// why this dispatch is a re-prompt (remindNone on a normal first dispatch).
+// needs beyond the step itself: the loop framing (nil outside a loop),
+// why this dispatch is a re-prompt (remindNone on a normal first dispatch),
+// and the current/previous notes directories.
 type stepPromptCtx struct {
-	loop   *loopPromptCtx
-	remind remindKind
+	loop         *loopPromptCtx
+	remind       remindKind
+	notesDir     string
+	prevNotesDir string
+	isStartStep  bool
 }
 
 // loopPromptCtx carries the per-dispatch loop facts injected into an
@@ -510,6 +551,19 @@ func buildWorkflowStepPrompt(step workflowStep, source workflowSource, prevOutpu
 				b.WriteString("\n---\n")
 			}
 			b.WriteString(strings.TrimSpace(entry))
+		}
+	}
+	if pc != nil && pc.notesDir != "" {
+		b.WriteString("\n\n")
+		b.WriteString("Workflow notes directories:\n")
+		b.WriteString("- Your notes directory: " + pc.notesDir)
+		if pc.prevNotesDir != "" {
+			b.WriteString("\n- Previous step's notes directory: " + pc.prevNotesDir)
+		}
+		if pc.isStartStep {
+			b.WriteString("\n\nThis is the first step. Write your starting plan into your notes directory (")
+			b.WriteString(pc.notesDir)
+			b.WriteString(") before doing any other work.")
 		}
 	}
 	var loop *loopPromptCtx

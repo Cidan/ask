@@ -230,9 +230,15 @@ Fire-and-forget: returns immediately with the session key. The workflow runs in 
 
 CRITICAL — the workflow starts in a brand-new session with NO access to this conversation. Its message history, the files you have read, and your tool results DO NOT carry over. The append parameter is the ONLY channel of context into the run: its text is threaded into step 1's prompt as a "Reference:" block, and that is everything the workflow gets.
 
+BEFORE calling workflow_run you MUST:
+  1. Call clear_plans to remove any stale plan artifacts from previous runs.
+  2. Write the starting plan for this task into ask/plans/start/ (create at least one file there).
+
+The workflow runner verifies that ask/plans/start/ exists and contains at least one file before step 1; if it is missing or empty, the run is rejected and you must create it and try again.
+
 append is REQUIRED. You MUST submit the FULL plan the workflow needs to carry the task through end to end on its own — the goal, the concrete steps to take, the relevant file paths, the constraints, and the acceptance criteria. Do NOT pass a bare one-line summary, and do NOT point back at "the conversation above" — the workflow cannot see it. Write append as if briefing someone who has never seen this chat.
 
-Errors when the workflow doesn't exist, the name is ambiguous across scopes, when it has no steps, when append is empty, or when the UI isn't ready to spawn a tab.`
+Errors when the workflow doesn't exist, the name is ambiguous across scopes, when it has no steps, when append is empty, when ask/plans/start/ is missing or empty, or when the UI isn't ready to spawn a tab.`
 
 	endTurnToolDescription = `Report the end of your turn for the current workflow step. REQUIRED on every step.
 
