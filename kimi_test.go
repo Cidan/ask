@@ -30,7 +30,7 @@ func TestKimiProvider_Metadata(t *testing.T) {
 		t.Errorf("MCP redirect capabilities must be off (native tools): %+v", caps)
 	}
 	picker := p.ModelPicker()
-	if len(picker.Options) != 2 || picker.Options[0] != "kimi-k2.5" || !picker.AllowCustom {
+	if len(picker.Options) != 3 || picker.Options[0] != "kimi-k2.7-code" || !picker.AllowCustom {
 		t.Errorf("model picker wrong: %+v", picker)
 	}
 	if efforts := p.EffortOptions(); len(efforts) != 2 || efforts[0] != "off" {
@@ -159,7 +159,7 @@ func TestKimiProvider_SessionLifecycle(t *testing.T) {
 		t.Error("system prompt must include coder rules and ask steering")
 	}
 	// Kimi always uses the fallback max output tokens.
-	if want := kimiSpec.maxOutputTokens("kimi-k2.5"); calls[0].MaxOutputTokens == nil ||
+	if want := kimiSpec.maxOutputTokens("kimi-k2.7-code"); calls[0].MaxOutputTokens == nil ||
 		*calls[0].MaxOutputTokens != want {
 		t.Errorf("wire MaxOutputTokens = %v want %d", calls[0].MaxOutputTokens, want)
 	}
@@ -266,6 +266,9 @@ func TestKimiStoreUsesHome(t *testing.T) {
 }
 
 func TestKimiMaxOutputTokens(t *testing.T) {
+	if got := kimiSpec.maxOutputTokens("kimi-k2.7-code"); got != kimiFallbackMaxOutputTokens {
+		t.Errorf("kimi-k2.7-code budget = %d want %d", got, kimiFallbackMaxOutputTokens)
+	}
 	if got := kimiSpec.maxOutputTokens("kimi-k2.5"); got != kimiFallbackMaxOutputTokens {
 		t.Errorf("kimi-k2.5 budget = %d want %d", got, kimiFallbackMaxOutputTokens)
 	}
@@ -278,6 +281,10 @@ func TestKimiMaxOutputTokens(t *testing.T) {
 }
 
 func TestKimiSupportsImages(t *testing.T) {
+	// kimi-k2.7-code supports vision.
+	if !kimiSpec.supportsImages("kimi-k2.7-code") {
+		t.Error("kimi-k2.7-code must support images")
+	}
 	// kimi-k2.5 supports vision.
 	if !kimiSpec.supportsImages("kimi-k2.5") {
 		t.Error("kimi-k2.5 must support images")
@@ -319,6 +326,9 @@ func TestKimiProvider_K2ThinkingRejectsImages(t *testing.T) {
 }
 
 func TestModelContextLimit_Kimi(t *testing.T) {
+	if got := modelContextLimit("kimi-k2.7-code"); got != kimiContextWindow {
+		t.Errorf("kimi-k2.7-code limit = %d want %d", got, kimiContextWindow)
+	}
 	if got := modelContextLimit("kimi-k2.5"); got != kimiContextWindow {
 		t.Errorf("kimi-k2.5 limit = %d want %d", got, kimiContextWindow)
 	}

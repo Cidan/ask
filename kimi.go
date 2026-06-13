@@ -10,12 +10,12 @@ import (
 
 const (
 	kimiProviderID             = "kimi"
-	kimiDefaultModel           = "kimi-k2.5"
+	kimiDefaultModel           = "kimi-k2.7-code"
 	kimiContextWindow          = 128_000
 	kimiFallbackMaxOutputTokens = 32_000
 )
 
-var kimiModelOptions = []string{"kimi-k2.5", "kimi-k2-thinking"}
+var kimiModelOptions = []string{"kimi-k2.7-code", "kimi-k2.5", "kimi-k2-thinking"}
 
 var kimiEffortOptions = []string{"off", "high"}
 
