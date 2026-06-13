@@ -84,6 +84,36 @@ func TestBuildAgentSystemPrompt_NonRepoOmitsGit(t *testing.T) {
 	}
 }
 
+func TestBuildAgentSystemPrompt_EagerRulesBlock(t *testing.T) {
+	isolateHome(t)
+	stubGitStatus(t, "")
+	cwd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rulesDir := filepath.Join(cwd, ".claude", "rules")
+	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Eager rule (no paths) → must appear in the system prompt.
+	if err := os.WriteFile(filepath.Join(rulesDir, "style.md"),
+		[]byte("# Style\nAlways use tabs.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Path-scoped rule → must NOT appear (it loads JIT on read).
+	if err := os.WriteFile(filepath.Join(rulesDir, "api.md"),
+		[]byte("---\npaths:\n  - \"src/**/*.go\"\n---\n# API\nValidate input.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prompt := buildAgentSystemPrompt(ProviderSessionArgs{Cwd: cwd})
+	if !strings.Contains(prompt, "<project_rules>") || !strings.Contains(prompt, "Always use tabs.") {
+		t.Errorf("eager rule must be in the system prompt:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "Validate input.") {
+		t.Error("path-scoped rule must not appear in the system prompt")
+	}
+}
+
 func TestAgentContextFiles_DedupeAndCap(t *testing.T) {
 	cwd := t.TempDir()
 	if err := os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("agents body"), 0o644); err != nil {

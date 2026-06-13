@@ -219,6 +219,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		agentInvokeToolTool(s.deferredTools, s.isCoreToolName),
 	}
 	s.coreTools = wrapFileToolsWithMemory(s.coreTools, s.args.Cwd)
+	s.coreTools = wrapReadToolWithRules(s.coreTools, s.args.Cwd, discoverRules(s.args.Cwd))
 	s.deferredBase = agentBridgeTools(env)
 	s.mcp = newMCPManager(s.args.TabID,
 		func() bool {

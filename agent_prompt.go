@@ -126,6 +126,11 @@ func buildAgentSystemPrompt(args ProviderSessionArgs) string {
 		b.WriteString("</project_instructions>")
 	}
 
+	if block := rulesPromptBlock(discoverRules(cwd)); block != "" {
+		b.WriteString("\n\n")
+		b.WriteString(block)
+	}
+
 	if mem := agentMemorySystemBlock(cwd); mem != "" {
 		b.WriteString("\n\n<project_memory>\n")
 		b.WriteString(mem)
