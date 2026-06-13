@@ -875,11 +875,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		(&m).persistTabTitle()
 		return m, nil
 
-	case tabModeChangedMsg:
-		m.sidebarMode = msg.sidebar
-		m.lastContentFP = ""
-		return m, nil
-
 	case imagePastedMsg:
 		debugLog("imagePastedMsg bytes=%d mime=%q pngBytes=%d w=%d h=%d err=%v",
 			len(msg.data), msg.mime, len(msg.pngForKitty), msg.width, msg.height, msg.err)

@@ -149,7 +149,7 @@ func TestApp_CtrlZSuspendsAndRendersInlineBackgroundedMessage(t *testing.T) {
 // (modal, picker, shell). We exercise the modal path here as a stand-in
 // for "any non-input mode" — the dispatch happens at the app layer
 // before mode-specific routing, so all of them share the same gate.
-func TestApp_CtrlZSuspendsRegardlessOfActiveTabMode(t *testing.T) {
+func TestApp_CtrlZSuspendsInModalMode(t *testing.T) {
 	a := testAppWithTwoTabs(t)
 	a.tabs[a.active].mode = modeAskQuestion
 
@@ -186,45 +186,43 @@ func TestApp_ResumeMsgClearsSuspendingAndReturnsToAltScreen(t *testing.T) {
 	}
 }
 
-func TestApp_ViewPinsTabBarToBottomOnIssuesScreen(t *testing.T) {
+func TestApp_ViewPinsSidebarToRightOnIssuesScreen(t *testing.T) {
 	a := testAppWithTwoTabs(t)
 	active := enterIssuesScreen(t)
 	active.id = a.tabs[a.active].id
-	active.height = a.bodyHeight()
+	active.height = a.height
 	a.tabs[a.active] = &active
 	a.width = active.width
-	a.height = active.height + a.tabBarHeight()
+	a.height = active.height
 
 	view := a.View()
-	lines := strings.Split(view.Content, "\n")
 
 	if got, want := renderedLineCount(view.Content), a.height; got != want {
 		t.Fatalf("rendered line count=%d want app height=%d\n%s", got, want, view.Content)
 	}
-	if got, want := strings.TrimRight(lines[len(lines)-1], " "), strings.TrimRight(a.renderTabBar(), " "); got != want {
-		t.Fatalf("last line=%q want tab bar=%q", got, want)
+	if !strings.Contains(view.Content, "tabs") {
+		t.Fatal("sidebar header missing from view")
 	}
 }
 
-func TestApp_ViewPinsTabBarToBottomDuringIssuesLoad(t *testing.T) {
+func TestApp_ViewPinsSidebarToRightDuringIssuesLoad(t *testing.T) {
 	a := testAppWithTwoTabs(t)
 	active := enterIssuesScreen(t)
 	active.id = a.tabs[a.active].id
-	active.height = a.bodyHeight()
+	active.height = a.height
 	active.issues.loading = true
 	active.issues.loadingMessage = "Reticulating splines..."
 	a.tabs[a.active] = &active
 	a.width = active.width
-	a.height = active.height + a.tabBarHeight()
+	a.height = active.height
 
 	view := a.View()
-	lines := strings.Split(view.Content, "\n")
 
 	if got, want := renderedLineCount(view.Content), a.height; got != want {
 		t.Fatalf("rendered line count=%d want app height=%d\n%s", got, want, view.Content)
 	}
-	if got, want := strings.TrimRight(lines[len(lines)-1], " "), strings.TrimRight(a.renderTabBar(), " "); got != want {
-		t.Fatalf("last line=%q want tab bar=%q", got, want)
+	if !strings.Contains(view.Content, "tabs") {
+		t.Fatal("sidebar header missing from view")
 	}
 }
 

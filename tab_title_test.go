@@ -52,18 +52,11 @@ func TestMaybeStartTabTitleGating(t *testing.T) {
 		return "Generated title", fantasy.Usage{}, nil
 	})
 
-	// Bar mode: never generates, never seeds.
+	// Seeds the fallback and returns the async cmd.
 	m := newTestModel(t, newFakeProvider())
-	if cmd := (&m).maybeStartTabTitle("do a thing"); cmd != nil || m.tabTitle != "" {
-		t.Fatal("bar mode generated a title")
-	}
-
-	// Sidebar mode: seeds the fallback and returns the async cmd.
-	m = newTestModel(t, newFakeProvider())
-	m.sidebarMode = true
 	cmd := (&m).maybeStartTabTitle("do a thing")
 	if cmd == nil {
-		t.Fatal("sidebar mode returned no title cmd")
+		t.Fatal("returned no title cmd")
 	}
 	if m.tabTitle != "do a thing" {
 		t.Fatalf("fallback title = %q", m.tabTitle)
@@ -83,7 +76,6 @@ func TestMaybeStartTabTitleGating(t *testing.T) {
 
 	// Workflow tabs never title themselves.
 	w := newTestModel(t, newFakeProvider())
-	w.sidebarMode = true
 	w.workflowRun = &workflowRunState{}
 	if cmd := (&w).maybeStartTabTitle("step prompt"); cmd != nil || w.tabTitle != "" {
 		t.Fatal("workflow tab generated a title")
@@ -91,7 +83,6 @@ func TestMaybeStartTabTitleGating(t *testing.T) {
 
 	// Blank prompts don't seed.
 	b := newTestModel(t, newFakeProvider())
-	b.sidebarMode = true
 	if cmd := (&b).maybeStartTabTitle("   "); cmd != nil || b.tabTitle != "" {
 		t.Fatal("blank prompt seeded a title")
 	}
