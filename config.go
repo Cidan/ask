@@ -49,6 +49,7 @@ type askConfig struct {
 	// currently anthropic.
 	Provider  string            `json:"provider,omitempty"`
 	DeepSeek  apiProviderConfig `json:"deepseek,omitempty"`
+	Moonshot  apiProviderConfig `json:"kimi,omitempty"`
 	Anthropic apiProviderConfig `json:"anthropic,omitempty"`
 	OpenAI    apiProviderConfig `json:"openai,omitempty"`
 	UI        uiConfig          `json:"ui,omitempty"`
@@ -572,11 +573,13 @@ type apiProviderConfig struct {
 // suffix is path-compatibility only (unrelated to model versions) and
 // is what the OpenAI-style SDK expects to prefix /chat/completions.
 const deepseekDefaultBaseURL = "https://api.deepseek.com/v1"
+const moonshotDefaultBaseURL = "https://api.moonshot.cn/v1"
 
 // Conventional environment fallbacks consulted when the config field
 // is empty.
 const (
 	deepseekEnvAPIKey  = "DEEPSEEK_API_KEY"
+	moonshotEnvAPIKey  = "MOONSHOT_API_KEY"
 	anthropicEnvAPIKey = "ANTHROPIC_API_KEY"
 	openaiEnvAPIKey    = "OPENAI_API_KEY"
 )
@@ -596,6 +599,10 @@ func resolveDeepSeekAPIKey(c apiProviderConfig) string {
 	return resolveAPIProviderKey(c, deepseekEnvAPIKey)
 }
 
+func resolveKimiAPIKey(c apiProviderConfig) string {
+	return resolveAPIProviderKey(c, moonshotEnvAPIKey)
+}
+
 func resolveAnthropicAPIKey(c apiProviderConfig) string {
 	return resolveAPIProviderKey(c, anthropicEnvAPIKey)
 }
@@ -611,6 +618,15 @@ func resolveDeepSeekBaseURL(c apiProviderConfig) string {
 		return c.BaseURL
 	}
 	return deepseekDefaultBaseURL
+}
+
+// resolveKimiBaseURL returns the configured base URL or the default
+// Moonshot API endpoint when unset.
+func resolveKimiBaseURL(c apiProviderConfig) string {
+	if c.BaseURL != "" {
+		return c.BaseURL
+	}
+	return moonshotDefaultBaseURL
 }
 
 // recentModelRef is one Ctrl+M picker "Recently used" entry.
