@@ -76,6 +76,30 @@ type approvalRequestMsg struct {
 
 const askToolDescription = `Ask the user one or more questions through a tabbed modal in the ask terminal UI.
 
+Use this tool when a decision is best made by the user and you cannot reasonably infer the answer from context, prior turns, or project conventions. Do not use it for trivia you can answer yourself, and do not use it as a substitute for a plan or a todo list.
+
+# Crafting in-depth, fully formed questions
+
+The user is reading the prompt cold, with no access to your chain of thought. Assume they cannot see any of your intermediate reasoning, the files you have read, or the tradeoffs you have been weighing. The prompt must therefore be a self-contained brief, not a fragment.
+
+Each question's prompt should:
+
+- Lead with the actual question, phrased precisely. The user should be able to answer it without re-reading the surrounding options.
+- Span a full paragraph when the decision warrants it. Short one-liners are fine for simple choices, but for anything with real consequences, write as much as you need to make the choice clear — multiple paragraphs, code snippets, or concrete examples are all welcome. Do not artificially compress.
+- State the rationale for asking. Explain WHY you are asking, what you have already considered or ruled out, and what the user knows that you do not (e.g. requirements, deadlines, audience, deployment constraints, prior art, taste, policy).
+- Lay out the tradeoffs between the options. For each option, briefly note what it gains, what it costs, and the failure mode it is most exposed to. Tradeoffs often matter more than the options themselves — surface them so the user can weigh in rather than guessing.
+- Make the recommendation explicit when you have one. If one option is clearly best in most scenarios and the choice only matters on the margins, say so. The user is free to override; a stated recommendation speeds up the common case.
+- Anticipate the "I would have asked you about X" follow-up. If there is a related decision the user is likely to want to make in the same pass, group it as another question in the same call rather than bouncing back and forth.
+- Name what happens on the default path. If the user were to dismiss or skip the question, what would you do? Saying so removes the cost of saying nothing.
+
+When NOT to ask:
+
+- You can answer it from the codebase, the conversation, or reasonable engineering judgment. Pick a default and state it; the user can correct you.
+- The question is rhetorical or for your own bookkeeping. Use a todo or a note, not the user.
+- The choice is reversible and cheap. Just make it and surface it in the result.
+
+# Modal shape
+
 Each question is one of three kinds:
   - "pick_one": user picks exactly one option
   - "pick_many": user picks zero or more options
