@@ -153,13 +153,13 @@ func TestMiniMaxProvider_SessionLifecycle(t *testing.T) {
 	if done.res.SessionID != "ses-lifecycle" || done.res.Result != "answer one" {
 		t.Errorf("done msg wrong: %+v", done.res)
 	}
-	// MiniMax-M3 has catwalk pricing — usageMsg should carry costKnown.
+	// MiniMax-M3 has a hardcoded pricing table (see minimaxPricing) —
+	// usageMsg should carry costKnown. 10 input tokens at $0.30/1M ≈ 0.000003.
 	if usage == nil || !usage.costKnown {
 		t.Errorf("usageMsg must exist and be cost-known: %+v", usage)
 	}
-	// 10 input tokens at $0.60/1M = $0.000006.
-	if usage.costUSD < 0.0000059 || usage.costUSD > 0.0000061 {
-		t.Errorf("usage cost = %v, want ~0.000006", usage.costUSD)
+	if usage.costUSD < 0.0000029 || usage.costUSD > 0.0000031 {
+		t.Errorf("usage cost = %v, want ~0.000003 (10 in * $0.30/1M)", usage.costUSD)
 	}
 
 	// The system prompt reached the wire as the first message.

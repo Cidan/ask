@@ -66,12 +66,35 @@ var kimiPricing = map[string]struct{ in, inCached, out, outCached float64 }{
 	"kimi-k2-thinking": {0.60, 0.60, 3.00, 0.10},
 }
 
+// minimaxPricing overrides the catwalk catalog for MiniMax-M3, whose
+// "Permanent 50% off" rates (platform.minimax.io/docs/guides/pricing-paygo)
+// landed upstream as a stale doubling — M3 here is at half the old in/out
+// numbers, and the cache-write field is 0 because M3 uses *passive*
+// caching ("No additional charge for cache writes"), not the explicit
+// cache_control model that M2.x still uses. Field semantics match Kimi:
+// inCached = rate for input written to cache (creation, 0 for M3);
+// outCached = rate for input read from cache (the cache-read discount).
+//
+// Rates are the ≤512k input tier — the common case. The >512k tier is
+// "limited quantity, contact sales" today and the public rollout is
+// upcoming; fantasy.Usage doesn't tell us which tier a call landed in,
+// so we model the cheaper tier and accept a 2× under-charge on long
+// sessions until upstream catwalk grows tiered pricing.
+//
+// TODO(prio): Priority tier (1.5× standard, set via service_tier=priority
+// on the wire) is not modeled — fantasy.Usage doesn't surface the flag.
+// Add cfg.MiniMax.ServiceTier when this becomes a real cost concern.
+var minimaxPricing = map[string]struct{ in, inCached, out, outCached float64 }{
+	"MiniMax-M3": {0.30, 0.00, 1.20, 0.06},
+}
+
 // stepCostUSD prices one API call's token usage in dollars using the
-// catwalk catalog (the same formula crush uses) and the Kimi lookaside
-// table: uncached input and output at the base rates, cache writes at
-// the in-cached rate, cache reads at the out-cached rate. ok is false
-// when neither the catwalk catalog nor the Kimi table covers the pair
-// — callers must not display a $0.00 that actually means "no idea".
+// catwalk catalog (the same formula crush uses), the Kimi lookaside
+// table, and the MiniMax lookaside table: uncached input and output at
+// the base rates, cache writes at the in-cached rate, cache reads at
+// the out-cached rate. ok is false when none of those three sources
+// covers the pair — callers must not display a $0.00 that actually
+// means "no idea".
 func stepCostUSD(providerID, modelID string, u fantasy.Usage) (float64, bool) {
 	if providerID == kimiProviderID {
 		if p, ok := kimiPricing[modelID]; ok {
@@ -82,6 +105,18 @@ func stepCostUSD(providerID, modelID string, u fantasy.Usage) (float64, bool) {
 			return cost, true
 		}
 		return 0, false
+	}
+	if providerID == minimaxProviderID {
+		if p, ok := minimaxPricing[modelID]; ok {
+			cost := p.inCached/1e6*float64(u.CacheCreationTokens) +
+				p.outCached/1e6*float64(u.CacheReadTokens) +
+				p.in/1e6*float64(u.InputTokens) +
+				p.out/1e6*float64(u.OutputTokens)
+			return cost, true
+		}
+		// M-series models not in our table (M2.x, highspeed, custom ids)
+		// fall through to the catwalk catalog path, which still holds the
+		// correct published values for those tiers.
 	}
 	cw, ok := catwalkProviderIDs[providerID]
 	if !ok {

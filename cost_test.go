@@ -364,6 +364,101 @@ func TestSidebarCost_Kimi(t *testing.T) {
 	}
 }
 
+func TestStepCostUSD_MiniMax(t *testing.T) {
+	// MiniMax-M3: in 0.30, out 1.20, outCached 0.06 (per 1M) — the new
+	// "Permanent 50% off" rates from platform.minimax.io/docs/guides/
+	// pricing-paygo. inCached is 0 because M3 uses passive caching
+	// (no charge for cache writes).
+	got, ok := stepCostUSD("minimax", "MiniMax-M3", fantasy.Usage{
+		InputTokens: 1_000_000,
+	})
+	if !ok || got != 0.30 {
+		t.Errorf("MiniMax-M3 1M input = %v ok=%v, want 0.30 true", got, ok)
+	}
+
+	got, ok = stepCostUSD("minimax", "MiniMax-M3", fantasy.Usage{
+		OutputTokens: 1_000_000,
+	})
+	if !ok || got != 1.20 {
+		t.Errorf("MiniMax-M3 1M output = %v ok=%v, want 1.20 true", got, ok)
+	}
+
+	// Cache read: 0.06/1M (the only "cached" rate M3 has).
+	got, ok = stepCostUSD("minimax", "MiniMax-M3", fantasy.Usage{
+		CacheReadTokens: 1_000_000,
+	})
+	if !ok || got != 0.06 {
+		t.Errorf("MiniMax-M3 1M cache read = %v ok=%v, want 0.06 true", got, ok)
+	}
+
+	// Cache write: 0 (passive caching — writes are free).
+	got, ok = stepCostUSD("minimax", "MiniMax-M3", fantasy.Usage{
+		CacheCreationTokens: 1_000_000,
+	})
+	if !ok || got != 0 {
+		t.Errorf("MiniMax-M3 1M cache write = %v ok=%v, want 0 true", got, ok)
+	}
+
+	// Mixed: 1M input + 1M output + 1M cache read = 0.30 + 1.20 + 0.06 = 1.56.
+	got, ok = stepCostUSD("minimax", "MiniMax-M3", fantasy.Usage{
+		InputTokens:      1_000_000,
+		OutputTokens:     1_000_000,
+		CacheReadTokens:  1_000_000,
+	})
+	if !ok || got != 1.56 {
+		t.Errorf("MiniMax-M3 mixed = %v ok=%v, want 1.56 true", got, ok)
+	}
+
+	// Zero usage on a known model: an honest $0.
+	got, ok = stepCostUSD("minimax", "MiniMax-M3", fantasy.Usage{})
+	if !ok || got != 0 {
+		t.Errorf("MiniMax-M3 zero usage = %v ok=%v, want 0 true", got, ok)
+	}
+
+	// Custom id on the MiniMax provider: unpriceable (not in our table,
+	// not in catwalk either).
+	if _, ok := stepCostUSD("minimax", "my-custom-model", fantasy.Usage{InputTokens: 5}); ok {
+		t.Error("custom MiniMax model must be unpriceable")
+	}
+}
+
+func TestModelPricingKnown_MiniMax(t *testing.T) {
+	if !modelPricingKnown("minimax", "MiniMax-M3") {
+		t.Error("MiniMax-M3 should have known pricing")
+	}
+	if modelPricingKnown("minimax", "unknown-model") {
+		t.Error("unknown MiniMax model should have unknown pricing")
+	}
+}
+
+func TestSidebarCost_MiniMax(t *testing.T) {
+	p := minimaxAgentProvider()
+
+	// Known model on a known-priced provider: an honest $0.00.
+	m := newTestModel(t, newFakeProvider())
+	m.provider = p
+	if got := m.sidebarCost(); got != "$0.00" {
+		t.Errorf("minimax sidebarCost with default model = %q, want $0.00", got)
+	}
+
+	// Custom model on MiniMax: unpriceable → empty.
+	m2 := newTestModel(t, newFakeProvider())
+	m2.provider = p
+	m2.providerModel = "my-custom"
+	if got := m2.sidebarCost(); got != "" {
+		t.Errorf("minimax custom-model sidebarCost = %q, want empty", got)
+	}
+
+	// Accumulated spend renders dollars-and-cents.
+	m3 := newTestModel(t, newFakeProvider())
+	m3.provider = p
+	m3.sessionCostUSD = 0.06
+	m3.sessionCostKnown = true
+	if got := m3.sidebarCost(); got != "$0.06" {
+		t.Errorf("minimax sidebarCost with spend = %q, want $0.06", got)
+	}
+}
+
 func TestSidebarCardHasCostRow(t *testing.T) {
 	a := newSidebarTestApp(t, 2)
 	tab := a.tabs[1]
