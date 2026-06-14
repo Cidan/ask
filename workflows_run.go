@@ -609,7 +609,7 @@ func buildWorkflowStepPrompt(step workflowStep, source workflowSource, prevOutpu
 			b.WriteString(pc.notesDir)
 			b.WriteString(") MUST be a directory, not a file. Create it if it does not exist, then write one or more files inside it (for example ")
 			b.WriteString(filepath.Join(pc.notesDir, "plan.md"))
-			b.WriteString("). Do NOT write a single file named \"start\". The workflow runner verifies the directory exists and contains files before step 1; if it is missing, empty, or a file, the run will be rejected.")
+			b.WriteString("). Do NOT write a single file named \"start\". The workflow runner verifies the directory exists and contains files before step 1; if it is missing, empty, or a file, this step will be re-prompted to fix the directory before any work is done.")
 		}
 	}
 	var loop *loopPromptCtx

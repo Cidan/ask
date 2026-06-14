@@ -234,11 +234,13 @@ BEFORE calling workflow_run you MUST:
   1. Call clear_plans to remove any stale plan artifacts from previous runs.
   2. Create the directory ask/plans/start/ and write the starting plan into one or more FILES INSIDE that directory — for example ask/plans/start/plan.md.
 
-CRITICAL: ask/plans/start/ must be a DIRECTORY, not a file. Do not write a single file named "start". The workflow runner verifies that ask/plans/start/ exists as a directory and contains at least one file before step 1. If it is missing, empty, or a file, the run is rejected and you must fix the directory and try again.
+CRITICAL: ask/plans/start/ must be a DIRECTORY, not a file. Do not write a single file named "start". The workflow runner verifies the shape before step 1. If it is missing, empty, or a file, step 1 is re-prompted to fix the directory before any work is done — the run itself is not aborted.
+
+After step 1, each step writes its notes to ask/plans/<step-name>/. Missing directories are created automatically, but if the path exists as a file the step is re-prompted to fix it.
 
 append is REQUIRED. You MUST submit the FULL plan the workflow needs to carry the task through end to end on its own — the goal, the concrete steps to take, the relevant file paths, the constraints, and the acceptance criteria. Do NOT pass a bare one-line summary, and do NOT point back at "the conversation above" — the workflow cannot see it. Write append as if briefing someone who has never seen this chat.
 
-Errors when the workflow doesn't exist, the name is ambiguous across scopes, when it has no steps, when append is empty, when ask/plans/start/ is missing or empty, or when the UI isn't ready to spawn a tab.`
+Errors when the workflow doesn't exist, the name is ambiguous across scopes, when it has no steps, when append is empty, or when the UI isn't ready to spawn a tab.`
 
 	endTurnToolDescription = `Report the end of your turn for the current workflow step. REQUIRED on every step.
 
