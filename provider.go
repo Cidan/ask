@@ -358,6 +358,7 @@ func init() {
 	registerProvider(openaiAgentProvider())
 	registerProvider(deepseekAgentProvider())
 	registerProvider(kimiAgentProvider())
+	registerProvider(minimaxAgentProvider())
 }
 
 // providerByID returns the provider with the given ID, or the first

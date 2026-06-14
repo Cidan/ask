@@ -20,6 +20,9 @@ func modelContextLimit(model string) int {
 	if strings.HasPrefix(lower, "kimi") {
 		return kimiContextWindow
 	}
+	if strings.HasPrefix(lower, "minimax") {
+		return int(catalogContextWindow(catwalk.InferenceProviderMiniMax, model, 200_000))
+	}
 	if m, ok := catalogModel(catwalk.InferenceProviderAnthropic, model); ok && m.ContextWindow > 0 {
 		return int(m.ContextWindow)
 	}
