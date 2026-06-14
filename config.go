@@ -52,6 +52,7 @@ type askConfig struct {
 	Moonshot  apiProviderConfig `json:"kimi,omitempty"`
 	Anthropic apiProviderConfig `json:"anthropic,omitempty"`
 	OpenAI    apiProviderConfig `json:"openai,omitempty"`
+	MiniMax   apiProviderConfig `json:"minimax,omitempty"`
 	UI        uiConfig          `json:"ui,omitempty"`
 	Memory    memoryConfig      `json:"memory,omitempty"`
 	WebSearch webSearchConfig   `json:"webSearch,omitempty"`
@@ -595,6 +596,8 @@ const deepseekDefaultBaseURL = "https://api.deepseek.com/v1"
 // their kimi config block.
 const moonshotDefaultBaseURL = "https://api.moonshot.ai/v1"
 
+const minimaxDefaultBaseURL = "https://api.minimax.io/v1"
+
 // Conventional environment fallbacks consulted when the config field
 // is empty.
 const (
@@ -603,6 +606,7 @@ const (
 	anthropicEnvAPIKey = "ANTHROPIC_API_KEY"
 	openaiEnvAPIKey    = "OPENAI_API_KEY"
 	braveEnvAPIKey     = "BRAVE_API_KEY"
+	minimaxEnvAPIKey   = "MINIMAX_API_KEY"
 )
 
 // resolveAPIProviderKey returns the API key to use: an explicit config
@@ -630,6 +634,10 @@ func resolveAnthropicAPIKey(c apiProviderConfig) string {
 
 func resolveOpenAIAPIKey(c apiProviderConfig) string {
 	return resolveAPIProviderKey(c, openaiEnvAPIKey)
+}
+
+func resolveMiniMaxAPIKey(c apiProviderConfig) string {
+	return resolveAPIProviderKey(c, minimaxEnvAPIKey)
 }
 
 // webSearchConfig holds the generic web-search settings. Today the only
@@ -669,6 +677,15 @@ func resolveKimiBaseURL(c apiProviderConfig) string {
 		return c.BaseURL
 	}
 	return moonshotDefaultBaseURL
+}
+
+// resolveMiniMaxBaseURL returns the configured base URL or the default
+// MiniMax API endpoint when unset.
+func resolveMiniMaxBaseURL(c apiProviderConfig) string {
+	if c.BaseURL != "" {
+		return c.BaseURL
+	}
+	return minimaxDefaultBaseURL
 }
 
 // recentModelRef is one Ctrl+M picker "Recently used" entry.
