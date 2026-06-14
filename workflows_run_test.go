@@ -638,6 +638,17 @@ func TestBuildWorkflowStepPrompt_EndTurnInstructions(t *testing.T) {
 	if got := buildWorkflowStepPrompt(step, src, nil, &stepPromptCtx{remind: remindNoSummary}); !strings.Contains(got, "REMINDER") {
 		t.Error("no-summary remind prompt should include the reminder")
 	}
+
+	// Plan-directory reminder carries the dynamic detail.
+	fix := buildWorkflowStepPrompt(step, src, nil, &stepPromptCtx{
+		remind:       remindFixPlanDir,
+		remindDetail: "ask/plans/start/ exists but is a FILE",
+	})
+	for _, want := range []string{"REMINDER", "ask/plans/start/ exists but is a FILE", "directory containing files"} {
+		if !strings.Contains(fix, want) {
+			t.Errorf("fix-plan-dir reminder missing %q; got:\n%s", want, fix)
+		}
+	}
 }
 
 // TestStepSummaryLine renders the per-step log entry: name, provider/model
@@ -718,74 +729,14 @@ func startPlanWorkspace(t *testing.T) (cwd string) {
 	return cwd
 }
 
-// TestStartWorkflowStep_RejectsMissingStartPlan: StepIdx 0 without
-// ask/plans/start/ must finalise as failed with the gate message.
-func TestStartWorkflowStep_RejectsMissingStartPlan(t *testing.T) {
+// TestStartWorkflowStep_RePromptsMissingStartPlan: StepIdx 0 without
+// ask/plans/start/ kicks back to the LLM instead of finalising the run.
+func TestStartWorkflowStep_RePromptsMissingStartPlan(t *testing.T) {
 	cwd := isolateHome(t)
 	resetWorkflowTrackerForTest()
-	m := newTestModel(t, newFakeProvider())
-	m.cwd = cwd
-	m.workflowRun = &workflowRunState{
-		Workflow: workflowDef{
-			Name:  "wf",
-			Steps: []workflowStep{{Name: "first"}},
-		},
-		Source: issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1}),
-	}
-	workflowTracker().markWorking(cwd, m.workflowRun.Source.Key(), "wf", m.id)
-	newM, _ := m.startWorkflowStep()
-	mm := newM.(model)
-	if !mm.workflowRun.failed {
-		t.Fatal("expected failed when start plan is missing")
-	}
-	if !strings.Contains(mm.workflowRun.failedReason, "start plan is missing") {
-		t.Errorf("failure reason must mention missing start plan; got %q", mm.workflowRun.failedReason)
-	}
-}
-
-// TestStartWorkflowStep_RejectsStartPlanAsFile: the LLM wrote
-// ask/plans/start as a regular file instead of a directory with files
-// inside it — the gate must reject with a clear, actionable message.
-func TestStartWorkflowStep_RejectsStartPlanAsFile(t *testing.T) {
-	cwd := isolateHome(t)
-	resetWorkflowTrackerForTest()
-	path := filepath.Join(cwd, "ask", "plans", "start")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("oops"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	m := newTestModel(t, newFakeProvider())
-	m.cwd = cwd
-	m.workflowRun = &workflowRunState{
-		Workflow: workflowDef{
-			Name:  "wf",
-			Steps: []workflowStep{{Name: "first"}},
-		},
-		Source: issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1}),
-	}
-	workflowTracker().markWorking(cwd, m.workflowRun.Source.Key(), "wf", m.id)
-	newM, _ := m.startWorkflowStep()
-	mm := newM.(model)
-	if !mm.workflowRun.failed {
-		t.Fatal("expected failed when start plan is a file")
-	}
-	if !strings.Contains(mm.workflowRun.failedReason, "FILE") {
-		t.Errorf("failure reason must say start is a file; got %q", mm.workflowRun.failedReason)
-	}
-	if !strings.Contains(mm.workflowRun.failedReason, "directory") {
-		t.Errorf("failure reason must direct the LLM to use a directory; got %q", mm.workflowRun.failedReason)
-	}
-}
-
-// TestStartWorkflowStep_RejectsEmptyStartPlan: ask/plans/start/ exists
-// but contains no files — the gate must still reject.
-func TestStartWorkflowStep_RejectsEmptyStartPlan(t *testing.T) {
-	cwd := startPlanWorkspace(t)
-	resetWorkflowTrackerForTest()
-	withRegisteredProviders(t, newFakeProvider())
-	m := newTestModel(t, newFakeProvider())
+	fake := newFakeProvider()
+	withRegisteredProviders(t, fake)
+	m := newTestModel(t, fake)
 	m.cwd = cwd
 	m.workflowRun = &workflowRunState{
 		Workflow: workflowDef{
@@ -795,13 +746,198 @@ func TestStartWorkflowStep_RejectsEmptyStartPlan(t *testing.T) {
 		Source: issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1}),
 	}
 	workflowTracker().markWorking(cwd, m.workflowRun.Source.Key(), "wf", m.id)
-	newM, _ := m.startWorkflowStep()
+	newM, cmd := m.startWorkflowStep()
 	mm := newM.(model)
-	if !mm.workflowRun.failed {
-		t.Fatal("expected failed when start plan is empty")
+	if mm.workflowRun.failed {
+		t.Fatalf("expected re-prompt, not failure; reason=%q", mm.workflowRun.failedReason)
 	}
-	if !strings.Contains(mm.workflowRun.failedReason, "start plan is empty") {
-		t.Errorf("failure reason must mention empty start plan; got %q", mm.workflowRun.failedReason)
+	if mm.workflowRun.remind != remindFixPlanDir {
+		t.Errorf("remind=%v want remindFixPlanDir", mm.workflowRun.remind)
+	}
+	if !strings.Contains(mm.workflowRun.remindDetail, "start plan is missing") {
+		t.Errorf("remindDetail must mention missing start plan; got %q", mm.workflowRun.remindDetail)
+	}
+	if !mm.busy {
+		t.Error("expected a provider dispatch (busy=true) for the re-prompt")
+	}
+	if cmd == nil {
+		t.Fatal("expected a dispatch cmd")
+	}
+}
+
+// TestStartWorkflowStep_RePromptsStartPlanAsFile: the LLM wrote
+// ask/plans/start as a regular file — kick it back to make a directory.
+func TestStartWorkflowStep_RePromptsStartPlanAsFile(t *testing.T) {
+	cwd := isolateHome(t)
+	resetWorkflowTrackerForTest()
+	path := filepath.Join(cwd, "ask", "plans", "start")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("oops"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeProvider()
+	withRegisteredProviders(t, fake)
+	m := newTestModel(t, fake)
+	m.cwd = cwd
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{
+			Name:  "wf",
+			Steps: []workflowStep{{Name: "first", Provider: "fake"}},
+		},
+		Source: issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1}),
+	}
+	workflowTracker().markWorking(cwd, m.workflowRun.Source.Key(), "wf", m.id)
+	newM, cmd := m.startWorkflowStep()
+	mm := newM.(model)
+	if mm.workflowRun.failed {
+		t.Fatalf("expected re-prompt, not failure; reason=%q", mm.workflowRun.failedReason)
+	}
+	if mm.workflowRun.remind != remindFixPlanDir {
+		t.Errorf("remind=%v want remindFixPlanDir", mm.workflowRun.remind)
+	}
+	if !strings.Contains(mm.workflowRun.remindDetail, "FILE") {
+		t.Errorf("remindDetail must say start is a file; got %q", mm.workflowRun.remindDetail)
+	}
+	if !strings.Contains(mm.workflowRun.remindDetail, "directory") {
+		t.Errorf("remindDetail must direct the LLM to use a directory; got %q", mm.workflowRun.remindDetail)
+	}
+	if !mm.busy {
+		t.Error("expected a provider dispatch (busy=true) for the re-prompt")
+	}
+	if cmd == nil {
+		t.Fatal("expected a dispatch cmd")
+	}
+}
+
+// TestStartWorkflowStep_RePromptsEmptyStartPlan: ask/plans/start/ exists
+// but contains no files — kick it back to add files inside the directory.
+func TestStartWorkflowStep_RePromptsEmptyStartPlan(t *testing.T) {
+	cwd := startPlanWorkspace(t)
+	resetWorkflowTrackerForTest()
+	fake := newFakeProvider()
+	withRegisteredProviders(t, fake)
+	m := newTestModel(t, fake)
+	m.cwd = cwd
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{
+			Name:  "wf",
+			Steps: []workflowStep{{Name: "first", Provider: "fake"}},
+		},
+		Source: issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1}),
+	}
+	workflowTracker().markWorking(cwd, m.workflowRun.Source.Key(), "wf", m.id)
+	newM, cmd := m.startWorkflowStep()
+	mm := newM.(model)
+	if mm.workflowRun.failed {
+		t.Fatalf("expected re-prompt, not failure; reason=%q", mm.workflowRun.failedReason)
+	}
+	if mm.workflowRun.remind != remindFixPlanDir {
+		t.Errorf("remind=%v want remindFixPlanDir", mm.workflowRun.remind)
+	}
+	if !strings.Contains(mm.workflowRun.remindDetail, "start plan is empty") {
+		t.Errorf("remindDetail must mention empty start plan; got %q", mm.workflowRun.remindDetail)
+	}
+	if !mm.busy {
+		t.Error("expected a provider dispatch (busy=true) for the re-prompt")
+	}
+	if cmd == nil {
+		t.Fatal("expected a dispatch cmd")
+	}
+}
+
+// TestStartWorkflowStep_RePromptsStepNotesDirAsFile: a non-start step's
+// notes directory (ask/plans/<step>/) must be a directory, not a file.
+func TestStartWorkflowStep_RePromptsStepNotesDirAsFile(t *testing.T) {
+	cwd := startPlanWorkspace(t)
+	resetWorkflowTrackerForTest()
+	// Step 1's notes dir is ask/plans/start/, already created by the fixture.
+	// Create step 2's notes dir as a file to trigger the guard.
+	stepDir := filepath.Join(cwd, "ask", "plans", "second")
+	if err := os.MkdirAll(filepath.Dir(stepDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stepDir, []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeProvider()
+	withRegisteredProviders(t, fake)
+	m := newTestModel(t, fake)
+	m.cwd = cwd
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{
+			Name: "wf",
+			Steps: []workflowStep{
+				{Name: "first", Provider: "fake"},
+				{Name: "second", Provider: "fake"},
+			},
+		},
+		Source:       issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1}),
+		StepIdx:      1,
+		prevNotesDir: filepath.Join(cwd, "ask", "plans", "start"),
+	}
+	workflowTracker().markWorking(cwd, m.workflowRun.Source.Key(), "wf", m.id)
+	newM, cmd := m.startWorkflowStep()
+	mm := newM.(model)
+	if mm.workflowRun.failed {
+		t.Fatalf("expected re-prompt, not failure; reason=%q", mm.workflowRun.failedReason)
+	}
+	if mm.workflowRun.StepIdx != 1 {
+		t.Errorf("StepIdx must stay on step 2; got %d", mm.workflowRun.StepIdx)
+	}
+	if mm.workflowRun.remind != remindFixPlanDir {
+		t.Errorf("remind=%v want remindFixPlanDir", mm.workflowRun.remind)
+	}
+	if !strings.Contains(mm.workflowRun.remindDetail, "FILE") {
+		t.Errorf("remindDetail must say the path is a file; got %q", mm.workflowRun.remindDetail)
+	}
+	if !mm.busy {
+		t.Error("expected a provider dispatch (busy=true) for the re-prompt")
+	}
+	if cmd == nil {
+		t.Fatal("expected a dispatch cmd")
+	}
+}
+
+// TestStartWorkflowStep_CreatesMissingStepNotesDir: a missing non-start
+// notes directory is created automatically so the step can proceed.
+func TestStartWorkflowStep_CreatesMissingStepNotesDir(t *testing.T) {
+	cwd := startPlanWorkspace(t)
+	resetWorkflowTrackerForTest()
+	fake := newFakeProvider()
+	withRegisteredProviders(t, fake)
+	m := newTestModel(t, fake)
+	m.cwd = cwd
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{
+			Name: "wf",
+			Steps: []workflowStep{
+				{Name: "first", Provider: "fake"},
+				{Name: "second", Provider: "fake"},
+			},
+		},
+		Source:       issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1}),
+		StepIdx:      1,
+		prevNotesDir: filepath.Join(cwd, "ask", "plans", "start"),
+	}
+	workflowTracker().markWorking(cwd, m.workflowRun.Source.Key(), "wf", m.id)
+	newM, cmd := m.startWorkflowStep()
+	mm := newM.(model)
+	if mm.workflowRun.failed {
+		t.Fatalf("expected dispatch, not failure; reason=%q", mm.workflowRun.failedReason)
+	}
+	if mm.workflowRun.remind != remindNone {
+		t.Errorf("remind should be none for auto-created dir; got %v", mm.workflowRun.remind)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, "ask", "plans", "second")); err != nil {
+		t.Errorf("missing notes dir should be created; stat err=%v", err)
+	}
+	if !mm.busy {
+		t.Error("expected a provider dispatch (busy=true)")
+	}
+	if cmd == nil {
+		t.Fatal("expected a dispatch cmd")
 	}
 }
 

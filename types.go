@@ -723,10 +723,14 @@ type workflowRunState struct {
 	linearText  string
 
 	// remind records why the current dispatch is a re-prompt (a missing
-	// end_turn call, or a loop tail that omitted its decision) so
-	// buildWorkflowStepPrompt can append the matching reminder. remindNone
-	// on a normal first dispatch.
+	// end_turn call, a loop tail that omitted its decision, or a plan
+	// directory that is not usable) so buildWorkflowStepPrompt can append
+	// the matching reminder. remindNone on a normal first dispatch.
 	remind remindKind
+
+	// remindDetail carries dynamic text for remindFixPlanDir so the LLM
+	// knows exactly which path is the wrong shape and what to do about it.
+	remindDetail string
 
 	// stepLog accumulates the assistant non-tool text emitted by each
 	// completed top-level step so the next step's prompt can include a

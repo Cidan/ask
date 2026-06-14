@@ -114,14 +114,6 @@ func (m model) startWorkflowStep() (tea.Model, tea.Cmd) {
 	}
 	top := r.Workflow.Steps[r.StepIdx]
 
-	// Gate: the workflow must not start until the LLM has written a
-	// starting plan into ask/plans/start/.
-	if r.StepIdx == 0 && r.loop == nil {
-		if err := ensureStartPlanExists(m.cwd); err != nil {
-			return m.workflowFinalize(false, err.Error())
-		}
-	}
-
 	// Enter a loop step the first time the cursor lands on it.
 	if top.isLoop() && r.loop == nil {
 		if len(top.Steps) == 0 {
@@ -162,6 +154,7 @@ func (m model) startWorkflowStep() (tea.Model, tea.Cmd) {
 	r.currentNotesDir = notesDir
 	pc := &stepPromptCtx{
 		remind:       r.remind,
+		remindDetail: r.remindDetail,
 		notesDir:     notesDir,
 		prevNotesDir: r.prevNotesDir,
 		isStartStep:  isStartStep || isLoopStartStep,
@@ -174,6 +167,23 @@ func (m model) startWorkflowStep() (tea.Model, tea.Cmd) {
 			exitCondition: top.ExitCondition,
 			isTail:        r.loop.innerIdx == len(top.Steps)-1,
 		}
+	}
+
+	// Validate the notes directory shape. The start directory must already
+	// exist as a directory with at least one file; all other step notes
+	// directories are auto-created when missing. If any directory exists as
+	// a regular file, kick the problem back to the current step instead of
+	// failing the run.
+	if pc.isStartStep {
+		if err := ensureStartPlanExists(m.cwd); err != nil {
+			r.remind = remindFixPlanDir
+			r.remindDetail = err.Error()
+			return m.sendToProvider(buildWorkflowStepPrompt(step, r.Source, r.contextForDispatch(), pc))
+		}
+	} else if err := ensureStepNotesDir(notesDir); err != nil {
+		r.remind = remindFixPlanDir
+		r.remindDetail = err.Error()
+		return m.sendToProvider(buildWorkflowStepPrompt(step, r.Source, r.contextForDispatch(), pc))
 	}
 
 	prov := providerByID(step.Provider)
@@ -281,6 +291,7 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 	sig := r.pendingEndTurn
 	r.pendingEndTurn = nil
 	r.remind = remindNone
+	r.remindDetail = ""
 
 	// Linear (non-loop) step.
 	if r.loop == nil {
@@ -297,6 +308,11 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 		}
 		// Got the summary: render the step's line, record output, advance.
 		m.appendHistory(stepSummaryLine(step.Name, step.Provider, step.Model, sig.summary, m.width))
+		if err := revalidateWorkflowNotesDir(m.cwd, r); err != nil {
+			r.remind = remindFixPlanDir
+			r.remindDetail = err.Error()
+			return m.dispatchOrFinalize()
+		}
 		r.prevNotesDir = r.currentNotesDir
 		if txt != "" {
 			r.stepLog = append(r.stepLog, txt)
@@ -343,6 +359,11 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 	// same iteration. (A "continue" and an omitted decision are equivalent
 	// here — only the tail's continue advances the iteration.)
 	if !isTail {
+		if err := revalidateWorkflowNotesDir(m.cwd, r); err != nil {
+			r.remind = remindFixPlanDir
+			r.remindDetail = err.Error()
+			return m.dispatchOrFinalize()
+		}
 		r.prevNotesDir = r.currentNotesDir
 		if txt != "" {
 			r.loop.iterationLog = append(r.loop.iterationLog, txt)
@@ -366,6 +387,11 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 
 	// Tail registered continue: record output, then start the next
 	// iteration or soft-exit if the iteration cap is reached.
+	if err := revalidateWorkflowNotesDir(m.cwd, r); err != nil {
+		r.remind = remindFixPlanDir
+		r.remindDetail = err.Error()
+		return m.dispatchOrFinalize()
+	}
 	r.prevNotesDir = r.currentNotesDir
 	if txt != "" {
 		r.loop.iterationLog = append(r.loop.iterationLog, txt)
@@ -385,6 +411,21 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 	r.loop.retry = 0
 	r.loop.retryText = ""
 	return m.dispatchOrFinalize()
+}
+
+// revalidateWorkflowNotesDir re-checks the current step's notes
+// directory. It is called at turn end before advancing the cursor so a
+// step that was fixing its directory gets another chance if the shape
+// is still wrong. The start directory must contain files; other
+// directories are auto-created when missing.
+func revalidateWorkflowNotesDir(cwd string, r *workflowRunState) error {
+	if r.currentNotesDir == "" {
+		return nil
+	}
+	if r.currentNotesDir == startPlanDir(cwd) {
+		return ensureStartPlanExists(cwd)
+	}
+	return ensureStepNotesDir(r.currentNotesDir)
 }
 
 // dispatchOrFinalize is the shared tail of advanceWorkflowStep: when
@@ -492,6 +533,7 @@ const (
 	remindNone       remindKind = iota
 	remindNoSummary             // the prior turn ended without calling end_turn
 	remindNoDecision            // a loop tail called end_turn but omitted its decision
+	remindFixPlanDir            // a workflow notes directory is missing or is a file
 )
 
 // stepPromptCtx carries the per-dispatch facts buildWorkflowStepPrompt
@@ -501,6 +543,7 @@ const (
 type stepPromptCtx struct {
 	loop         *loopPromptCtx
 	remind       remindKind
+	remindDetail string
 	notesDir     string
 	prevNotesDir string
 	isStartStep  bool
@@ -566,7 +609,7 @@ func buildWorkflowStepPrompt(step workflowStep, source workflowSource, prevOutpu
 			b.WriteString(pc.notesDir)
 			b.WriteString(") MUST be a directory, not a file. Create it if it does not exist, then write one or more files inside it (for example ")
 			b.WriteString(filepath.Join(pc.notesDir, "plan.md"))
-			b.WriteString("). Do NOT write a single file named \"start\". The workflow runner verifies the directory exists and contains files before step 1; if it is missing, empty, or a file, the run will be rejected.")
+			b.WriteString("). Do NOT write a single file named \"start\". The workflow runner verifies the directory exists and contains files before step 1; if it is missing, empty, or a file, this step will be re-prompted to fix the directory before any work is done.")
 		}
 	}
 	var loop *loopPromptCtx
@@ -579,7 +622,7 @@ func buildWorkflowStepPrompt(step workflowStep, source workflowSource, prevOutpu
 	b.WriteString(endTurnInstructionBlock(loop))
 	if remind != remindNone {
 		b.WriteString("\n\n")
-		b.WriteString(endTurnReminder(remind))
+		b.WriteString(endTurnReminder(remind, pc.remindDetail))
 	}
 	return strings.TrimSpace(b.String())
 }
@@ -618,12 +661,19 @@ func endTurnInstructionBlock(loop *loopPromptCtx) string {
 
 // endTurnReminder is appended to a re-prompted step's prompt, explaining
 // why it's being asked again without making it redo the work shown above.
-func endTurnReminder(k remindKind) string {
+func endTurnReminder(k remindKind, detail string) string {
 	switch k {
 	case remindNoDecision:
 		return "REMINDER: you called end_turn without a `decision`, which is required for the final step of a " +
 			"loop iteration. You have already done the work shown above — do NOT repeat it. Call end_turn again now " +
 			"with decision=\"continue\" or decision=\"break\"."
+	case remindFixPlanDir:
+		msg := "REMINDER: the workflow notes directory is not usable"
+		if detail != "" {
+			msg += ": " + detail
+		}
+		msg += ". You must make it a directory containing files, then call end_turn."
+		return msg
 	default: // remindNoSummary
 		return "REMINDER: your previous turn ended without calling end_turn. You have already done the work shown " +
 			"above — do NOT repeat it. Call the end_turn tool now (see the instructions above for what to include)."

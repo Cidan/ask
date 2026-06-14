@@ -103,6 +103,30 @@ func sanitizeStepName(name string) string {
 
 const startPlanDirInstruction = "ask/plans/start/ must be a DIRECTORY (not a file) and must contain at least one file. Create the directory, then write one or more files inside it — for example ask/plans/start/plan.md. Do not write a single file named start."
 
+// ensureStepNotesDir verifies that a non-start step's notes directory
+// exists as a directory. A missing directory is created automatically;
+// an existing regular file is an error so the runner can kick the
+// problem back to the LLM. The error text is LLM-facing.
+func ensureStepNotesDir(dir string) error {
+	if dir == "" {
+		return errors.New("notes directory path is empty")
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if mkerr := os.MkdirAll(dir, 0o755); mkerr != nil {
+				return fmt.Errorf("cannot create notes directory %s: %w", dir, mkerr)
+			}
+			return nil
+		}
+		return fmt.Errorf("cannot read notes directory %s: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s exists but is a FILE, not a directory. Remove it, then create it as a directory and write your notes files inside it", dir)
+	}
+	return nil
+}
+
 // ensureStartPlanExists verifies that ask/plans/start/ exists as a
 // directory and contains at least one non-directory entry before the
 // workflow begins. The error text is LLM-facing, so it repeats the
