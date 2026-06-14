@@ -232,9 +232,9 @@ CRITICAL — the workflow starts in a brand-new session with NO access to this c
 
 BEFORE calling workflow_run you MUST:
   1. Call clear_plans to remove any stale plan artifacts from previous runs.
-  2. Write the starting plan for this task into ask/plans/start/ (create at least one file there).
+  2. Create the directory ask/plans/start/ and write the starting plan into one or more FILES INSIDE that directory — for example ask/plans/start/plan.md.
 
-The workflow runner verifies that ask/plans/start/ exists and contains at least one file before step 1; if it is missing or empty, the run is rejected and you must create it and try again.
+CRITICAL: ask/plans/start/ must be a DIRECTORY, not a file. Do not write a single file named "start". The workflow runner verifies that ask/plans/start/ exists as a directory and contains at least one file before step 1. If it is missing, empty, or a file, the run is rejected and you must fix the directory and try again.
 
 append is REQUIRED. You MUST submit the FULL plan the workflow needs to carry the task through end to end on its own — the goal, the concrete steps to take, the relevant file paths, the constraints, and the acceptance criteria. Do NOT pass a bare one-line summary, and do NOT point back at "the conversation above" — the workflow cannot see it. Write append as if briefing someone who has never seen this chat.
 

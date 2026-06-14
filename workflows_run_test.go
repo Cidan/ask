@@ -743,6 +743,42 @@ func TestStartWorkflowStep_RejectsMissingStartPlan(t *testing.T) {
 	}
 }
 
+// TestStartWorkflowStep_RejectsStartPlanAsFile: the LLM wrote
+// ask/plans/start as a regular file instead of a directory with files
+// inside it — the gate must reject with a clear, actionable message.
+func TestStartWorkflowStep_RejectsStartPlanAsFile(t *testing.T) {
+	cwd := isolateHome(t)
+	resetWorkflowTrackerForTest()
+	path := filepath.Join(cwd, "ask", "plans", "start")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("oops"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := newTestModel(t, newFakeProvider())
+	m.cwd = cwd
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{
+			Name:  "wf",
+			Steps: []workflowStep{{Name: "first"}},
+		},
+		Source: issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1}),
+	}
+	workflowTracker().markWorking(cwd, m.workflowRun.Source.Key(), "wf", m.id)
+	newM, _ := m.startWorkflowStep()
+	mm := newM.(model)
+	if !mm.workflowRun.failed {
+		t.Fatal("expected failed when start plan is a file")
+	}
+	if !strings.Contains(mm.workflowRun.failedReason, "FILE") {
+		t.Errorf("failure reason must say start is a file; got %q", mm.workflowRun.failedReason)
+	}
+	if !strings.Contains(mm.workflowRun.failedReason, "directory") {
+		t.Errorf("failure reason must direct the LLM to use a directory; got %q", mm.workflowRun.failedReason)
+	}
+}
+
 // TestStartWorkflowStep_RejectsEmptyStartPlan: ask/plans/start/ exists
 // but contains no files — the gate must still reject.
 func TestStartWorkflowStep_RejectsEmptyStartPlan(t *testing.T) {
@@ -782,7 +818,9 @@ func TestBuildWorkflowStepPrompt_PlansDirs(t *testing.T) {
 	for _, want := range []string{
 		"Workflow notes directories:",
 		"- Your notes directory: /proj/ask/plans/start",
-		"Write your starting plan into your notes directory (/proj/ask/plans/start)",
+		"MUST be a directory, not a file",
+		"/proj/ask/plans/start/plan.md",
+		"Do NOT write a single file named \"start\"",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("start-step prompt missing %q; got:\n%s", want, got)
