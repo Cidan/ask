@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	lipgloss "charm.land/lipgloss/v2"
 )
 
 // workflowTabHandleKey gates input on a workflow tab. The user
@@ -307,7 +306,7 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 			return m.dispatchOrFinalize()
 		}
 		// Got the summary: render the step's line, record output, advance.
-		m.appendHistory(stepSummaryLine(step.Name, step.Provider, step.Model, sig.summary, m.width))
+		m.appendHistory(stepSummaryLine(step.Name, step.Provider, step.Model, sig.summary))
 		if err := revalidateWorkflowNotesDir(m.cwd, r); err != nil {
 			r.remind = remindFixPlanDir
 			r.remindDetail = err.Error()
@@ -341,7 +340,7 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 	}
 
 	// We have a summary: render the inner step's line.
-	m.appendHistory(stepSummaryLine(inner.Name, inner.Provider, inner.Model, sig.summary, m.width))
+	m.appendHistory(stepSummaryLine(inner.Name, inner.Provider, inner.Model, sig.summary))
 
 	// Break from any inner step exits the loop immediately, skipping the
 	// rest of the iteration.
@@ -699,26 +698,18 @@ func loopNoteLine(loopName, action, detail string) string {
 
 // stepSummaryLine renders a completed step's entry in the workflow log: a
 // styled "▸ name (provider/model)" header with the agent's end_turn
-// summary wrapped beneath it. This per-step content is what replaces the
-// raw transcript on a workflow tab. width is the tab width; the summary
-// wraps to fit with a small indent.
-func stepSummaryLine(name, provider, model, summary string, width int) string {
+// summary beneath it. This per-step content is what replaces the raw
+// transcript on a workflow tab. The summary is not pre-wrapped; the
+// viewport soft-wraps it at render time.
+func stepSummaryLine(name, provider, model, summary string) string {
 	header := promptStyle.Render("▸ " + nonEmpty(name, "step"))
 	if meta := providerMeta(provider, model); meta != "" {
 		header += dimStyle.Render(" (" + meta + ")")
 	}
-	lines := []string{outputStyle.Render(header)}
 	if s := strings.TrimSpace(summary); s != "" {
-		wrapWidth := width - 4
-		if wrapWidth < 20 {
-			wrapWidth = 20
-		}
-		wrapped := lipgloss.NewStyle().Width(wrapWidth).Render(s)
-		for _, ln := range strings.Split(wrapped, "\n") {
-			lines = append(lines, outputStyle.Render("  "+ln))
-		}
+		header += "\n" + outputStyle.Render("  " + s)
 	}
-	return strings.Join(lines, "\n")
+	return header
 }
 
 // providerMeta renders the "provider/model" suffix shown next to a step

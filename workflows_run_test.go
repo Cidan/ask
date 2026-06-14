@@ -652,12 +652,29 @@ func TestBuildWorkflowStepPrompt_EndTurnInstructions(t *testing.T) {
 }
 
 // TestStepSummaryLine renders the per-step log entry: name, provider/model
-// meta, and the agent's summary.
+// meta, and the agent's summary. The summary must NOT be pre-wrapped — the
+// viewport soft-wraps it at render time, so stepSummaryLine returns it as a
+// single unbroken rendered string.
 func TestStepSummaryLine(t *testing.T) {
-	got := stepSummaryLine("review", "codex", "gpt-5", "found two bugs", 100)
-	for _, want := range []string{"review", "codex/gpt-5", "found two bugs"} {
+	summary := "This is a very long summary that would absolutely wrap under the old narrow width-based logic and must remain a single unbroken rendered string"
+	got := stepSummaryLine("review", "codex", "gpt-5", summary)
+	for _, want := range []string{"review", "codex/gpt-5"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary line missing %q; got %q", want, got)
+		}
+	}
+	if !strings.Contains(got, summary) {
+		t.Errorf("full summary text must appear verbatim; got %q", got)
+	}
+	// No hard newline should break a word in the summary body. Splitting on
+	// newlines and looking for the summary header line (which starts with "▸")
+	// vs the summary body line — the body line must carry the full text.
+	for _, ln := range strings.Split(got, "\n") {
+		if strings.HasPrefix(ln, "▸") {
+			continue
+		}
+		if strings.Contains(ln, "summary") && !strings.Contains(ln, summary) {
+			t.Errorf("summary body line contains a fragment but not the full text — hard-wrapped; line=%q", ln)
 		}
 	}
 }
