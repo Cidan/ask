@@ -53,7 +53,7 @@ var deepseekLanguageModel = func(cfg apiProviderConfig, modelID string) (fantasy
 // controls, returning the per-call provider options and the sampling
 // temperature (DeepSeek recommends 0.0 for coding, but thinking mode
 // does not accept sampling params at all, so it only applies to
-// thinking=off).
+// thinking=off). The default (empty effort) is max.
 func deepseekProviderOptions(effort string) (fantasy.ProviderOptions, *float64) {
 	opts := &openaicompat.ProviderOptions{}
 	var temperature *float64
@@ -62,11 +62,11 @@ func deepseekProviderOptions(effort string) (fantasy.ProviderOptions, *float64) 
 		opts.ExtraBody = map[string]any{"thinking": map[string]any{"type": "disabled"}}
 		t := 0.0
 		temperature = &t
-	case "max":
-		e := openai.ReasoningEffortXHigh
-		opts.ReasoningEffort = &e
-	default: // "high" and unset both ride the default thinking mode
+	case "high":
 		e := openai.ReasoningEffortHigh
+		opts.ReasoningEffort = &e
+	default: // "max" and empty/unset both map to max effort (xhigh on the wire)
+		e := openai.ReasoningEffortXHigh
 		opts.ReasoningEffort = &e
 	}
 	return fantasy.ProviderOptions{deepseekProviderID: opts}, temperature

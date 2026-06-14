@@ -92,8 +92,8 @@ func TestDeepseekProviderOptions(t *testing.T) {
 
 	opts, temp = deepseekProviderOptions("")
 	ds = opts["deepseek"].(*openaicompat.ProviderOptions)
-	if ds.ReasoningEffort == nil || string(*ds.ReasoningEffort) != "high" || temp != nil {
-		t.Errorf("default effort must be high thinking: %+v", ds)
+	if ds.ReasoningEffort == nil || string(*ds.ReasoningEffort) != "xhigh" || temp != nil {
+		t.Errorf("default effort must be max thinking: %+v", ds)
 	}
 }
 
