@@ -355,6 +355,11 @@ func (rt *ruleAwareTool) Run(ctx context.Context, call fantasy.ToolCall) (fantas
 		}
 		rt.fired[r.Path] = true
 		add = append(add, fmt.Sprintf("## Rule for %s (%s)\n\n%s", rel, r.Rel, r.Body))
+		if linked := ruleLinkedDocs(rt.root, r.Body); len(linked) > 0 {
+			for _, d := range linked {
+				add = append(add, fmt.Sprintf("### Included from %s\n\n%s", d.Path, d.Body))
+			}
+		}
 	}
 	if len(add) > 0 {
 		resp.Content = resp.Content + "\n\n" + strings.Join(add, "\n\n")

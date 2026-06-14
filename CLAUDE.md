@@ -841,3 +841,27 @@ agent_tools_bridge.go) and the question modal is driven by
 - Scrollbar column is drawn over `m.width-1`. If any text-rendering style grows a margin or a user-bar width past `m.width-1`, the scrollbar will be overwritten or vice-versa.
 - `askToolRequestMsg` is rejected if the modal is already open — only one MCP ask at a time. Double-calls from Claude return `cancelled: true` for the second one.
 - `contentFingerprint` must mix in `len(m.history[m.shellOutIdx].text)` whenever a shell output entry is active. The frame cache is keyed on `len(m.history) | m.width`, and shell mode appends streamed lines in place to a single history entry, so without that extra term the cache returns a stale (first-line-only) view until something else (spinner row, window resize) perturbs the key.
+
+## @-link references
+
+Markdown files that are part of the system prompt (CLAUDE.md, AGENTS.md, eager rules, skill bodies, subagent bodies) may reference other markdown files using `@path/to/file.md` syntax. These references are resolved at prompt-assembly time and the referenced files' bodies are inlined.
+
+Syntax: `@path/to/file.md` — exactly the @-prefixed relative path to a `.md` file.
+
+Do not place `@`-links inside fenced code blocks — they are stripped before extraction and are never followed.
+
+Resolution rules:
+- The path is relative to the repository root (or the working directory when there is no `.git` ancestor).
+- The path must not start with `/`, `./`, or `../`, and must not contain a `..` segment anywhere.
+- The path must end in `.md` (case-insensitive — `.MD`, `.Md` etc. are accepted).
+- The resolved absolute path must lie inside the repository root (checked via `filepath.Rel`).
+- The file must exist as a regular file and not be empty.
+
+Loading:
+- `@`-references are extracted from the bodies of context files (CLAUDE.md, etc.) and eager rules.
+- The loader walks the reference graph breadth-first, with deduplication by absolute path (cycle-safe).
+- Each loaded file is capped at 48 000 characters (same cap as context files); whitespace-only files are skipped.
+- The resulting documents are rendered into a single `<included_docs>` block in the system prompt, sorted by path, placed between `<project_rules>` and `<project_memory>`.
+
+Lazy surfaces (JIT path-scoped rules, `/skill-name` invocations, subagent definitions) resolve their own `@`-links at injection time: rule-linked docs appear as `### Included from <path>` under the rule body; skill-linked docs appear as `<file path="...">` blocks after `<loaded_skill>`; subagent-linked docs appear under `## @-linked docs` in the subagent's `Prompt`.
+

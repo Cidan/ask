@@ -176,6 +176,16 @@ func expandSkillInvocation(cwd, text string) (string, bool) {
 		}
 		var b strings.Builder
 		fmt.Fprintf(&b, "<loaded_skill name=%q path=%q>\n%s\n</loaded_skill>\n\n", s.Name, s.Path, strings.TrimSpace(body))
+		repoRoot := projectRoot(cwd)
+		if repoRoot == "" {
+			repoRoot = cwd
+		}
+		if linked := ruleLinkedDocs(repoRoot, body); len(linked) > 0 {
+			for _, d := range linked {
+				fmt.Fprintf(&b, "<file path=%q>\n%s\n</file>\n", d.Path, d.Body)
+			}
+		}
+		b.WriteString("\n")
 		if strings.TrimSpace(args) != "" {
 			fmt.Fprintf(&b, "The user invoked this skill with arguments: %s", strings.TrimSpace(args))
 		} else {

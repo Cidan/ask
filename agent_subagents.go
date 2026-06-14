@@ -63,6 +63,10 @@ func subagentSearchDirs(cwd string) []string {
 // or description are skipped with a debug note.
 func discoverSubagents(cwd string) []subagentDef {
 	byName := map[string]subagentDef{}
+	repoRoot := projectRoot(cwd)
+	if repoRoot == "" {
+		repoRoot = cwd
+	}
 	for _, dir := range subagentSearchDirs(cwd) {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -91,13 +95,23 @@ func discoverSubagents(cwd string) []subagentDef {
 					tools = append(tools, t)
 				}
 			}
+			prompt := strings.TrimSpace(body)
+			if linked := ruleLinkedDocs(repoRoot, prompt); len(linked) > 0 {
+				var lb strings.Builder
+				lb.WriteString(prompt)
+				lb.WriteString("\n\n## @-linked docs\n\n")
+				for _, d := range linked {
+					fmt.Fprintf(&lb, "<file path=%q>\n%s\n</file>\n", d.Path, d.Body)
+				}
+				prompt = lb.String()
+			}
 			byName[name] = subagentDef{
 				Name:        name,
 				Description: fields["description"],
 				Provider:    strings.TrimSpace(fields["provider"]),
 				Model:       strings.TrimSpace(fields["model"]),
 				Tools:       tools,
-				Prompt:      strings.TrimSpace(body),
+				Prompt:      prompt,
 				Source:      path,
 			}
 		}

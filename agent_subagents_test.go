@@ -273,3 +273,34 @@ func TestRunTurn_SkillExpansionReachesWire(t *testing.T) {
 		t.Errorf("skill must expand on the wire: %q", userText)
 	}
 }
+
+func TestDiscoverSubagents_LinkedDocs(t *testing.T) {
+	home := isolateHome(t)
+	cwd := t.TempDir()
+
+	// Create a linked doc in the project.
+	writeTestFile(t, cwd, "docs/protocol.md", "# Protocol\nUse HTTPS for all calls.\n")
+
+	// Create a subagent that references the linked doc.
+	writeSubagent(t, filepath.Join(home, ".claude", "agents"), "reviewer", "",
+		"Review code carefully.\nSee @docs/protocol.md for protocol rules.\n")
+
+	defs := discoverSubagents(cwd)
+	if len(defs) != 1 {
+		t.Fatalf("want 1 subagent, got %d", len(defs))
+	}
+	prompt := defs[0].Prompt
+	if !strings.Contains(prompt, "Review code carefully.") {
+		t.Errorf("original body missing: %q", prompt)
+	}
+	if !strings.Contains(prompt, "## @-linked docs") {
+		t.Errorf("linked docs section missing: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Use HTTPS for all calls.") {
+		t.Errorf("linked doc body must be included in Prompt: %q", prompt)
+	}
+	expectedPath := filepath.Join(cwd, "docs", "protocol.md")
+	if !strings.Contains(prompt, `<file path="`+expectedPath+`"`) {
+		t.Errorf("linked doc must use <file path=...> format: %q", prompt)
+	}
+}

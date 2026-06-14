@@ -231,3 +231,38 @@ func TestRuleAwareTool_RelPathRejectsOutsideRoot(t *testing.T) {
 		t.Errorf("relPath outside root must be empty, got %q", got)
 	}
 }
+
+func TestRuleAwareTool_LinkedDocs(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	writeTestFile(t, env.cwd, "src/api/handler.go", "package api\n")
+	writeTestFile(t, env.cwd, "docs/ref.md", "# Reference\nLinked body here.\n")
+
+	rules := []askRule{
+		{Path: filepath.Join(env.cwd, ".claude", "rules", "api.md"),
+			Rel:  "api.md",
+			Paths: []string{"src/api/**/*.go"},
+			Body: "API rule body. See @docs/ref.md for details.\n",
+		},
+	}
+	tools := wrapReadToolWithRules([]fantasy.AgentTool{agentReadTool(env)}, env.cwd, rules)
+	read := tools[0]
+
+	resp := runTool(t, read, agentReadParams{FilePath: "src/api/handler.go"})
+	if !strings.Contains(resp.Content, "API rule body.") {
+		t.Errorf("rule body missing: %q", resp.Content)
+	}
+	// The @-linked doc must appear after the rule.
+	if !strings.Contains(resp.Content, "Linked body here.") {
+		t.Errorf("linked doc body must be injected: %q", resp.Content)
+	}
+	if !strings.Contains(resp.Content, "### Included from "+filepath.Join(env.cwd, "docs", "ref.md")) {
+		t.Errorf("linked doc header missing: %q", resp.Content)
+	}
+
+	// Second read of the same file: rule must not re-fire, and linked
+	// docs must not re-appear.
+	resp = runTool(t, read, agentReadParams{FilePath: "src/api/handler.go"})
+	if strings.Contains(resp.Content, "API rule body.") || strings.Contains(resp.Content, "Linked body here.") {
+		t.Error("rule and linked docs must inject at most once per session")
+	}
+}

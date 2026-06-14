@@ -92,11 +92,15 @@ var agentGitStatus = func(cwd string) string {
 }
 
 // buildAgentSystemPrompt assembles the full system prompt for one
-// agent session: static coder head, env snapshot, project context
-// files, then the shared ask steering prompt (with its worktree
-// pinning clause when args.Cwd is an ask-managed worktree). Called
-// once per session — the result must be reused verbatim on every
-// request so DeepSeek's automatic prefix caching can hit.
+// agent session: static coder head, env snapshot, <project_instructions>
+// (CLAUDE.md/AGENTS.md context files), <project_rules> (eager rules),
+// <included_docs> (markdown files @-linked from context files, rules,
+// skills, or subagents — loaded transitively via BFS with cycle-safe
+// dedup), <project_memory>, <available_skills>, <available_agents>,
+// then the shared ask steering prompt (with its worktree pinning clause
+// when args.Cwd is an ask-managed worktree). Called once per session —
+// the result must be reused verbatim on every request so DeepSeek's
+// automatic prefix caching can hit.
 func buildAgentSystemPrompt(args ProviderSessionArgs) string {
 	cwd := args.Cwd
 	var b strings.Builder
@@ -120,15 +124,39 @@ func buildAgentSystemPrompt(args ProviderSessionArgs) string {
 	}
 	b.WriteString("</env>")
 
-	if ctxFiles := agentContextFiles(cwd); ctxFiles != "" {
+	ctxDocs := agentContextFiles(cwd)
+	if len(ctxDocs) > 0 {
 		b.WriteString("\n\n<project_instructions>\nThe project provides these instruction files. Follow them.\n")
-		b.WriteString(ctxFiles)
+		for _, d := range ctxDocs {
+			fmt.Fprintf(&b, "<file path=%q>\n%s\n</file>\n", d.Path, d.Body)
+		}
 		b.WriteString("</project_instructions>")
 	}
 
-	if block := rulesPromptBlock(discoverRules(cwd)); block != "" {
+	rules := discoverRules(cwd)
+	if block := rulesPromptBlock(rules); block != "" {
 		b.WriteString("\n\n")
 		b.WriteString(block)
+	}
+
+	repoRoot := projectRoot(cwd)
+	if repoRoot == "" {
+		repoRoot = cwd
+	}
+	var sourceBodies []string
+	for _, d := range ctxDocs {
+		sourceBodies = append(sourceBodies, d.Body)
+	}
+	for _, r := range rules {
+		if r.eager() {
+			sourceBodies = append(sourceBodies, r.Body)
+		}
+	}
+	if linkedDocs := loadContextLinks(repoRoot, sourceBodies); len(linkedDocs) > 0 {
+		if block := contextLinksPromptBlock(linkedDocs); block != "" {
+			b.WriteString("\n\n")
+			b.WriteString(block)
+		}
 	}
 
 	if mem := agentMemorySystemBlock(cwd); mem != "" {
@@ -151,10 +179,13 @@ func buildAgentSystemPrompt(args ProviderSessionArgs) string {
 	return b.String()
 }
 
-// agentContextFiles inlines the project's instruction files as
-// <file path="..."> blocks.
-func agentContextFiles(cwd string) string {
-	var b strings.Builder
+// agentContextFiles loads the project's instruction files
+// (CLAUDE.md, AGENTS.md) directly from cwd. @-link references within
+// these files are resolved separately by loadContextLinks during
+// buildAgentSystemPrompt and placed in a dedicated <included_docs>
+// block — they are not part of this function's return.
+func agentContextFiles(cwd string) []loadedContextDoc {
+	var docs []loadedContextDoc
 	seen := map[string]bool{}
 	for _, name := range agentContextFileNames {
 		key := strings.ToLower(name)
@@ -171,7 +202,10 @@ func agentContextFiles(cwd string) string {
 		if len(content) > agentContextFileCap {
 			content = content[:agentContextFileCap] + "\n… (truncated)"
 		}
-		fmt.Fprintf(&b, "<file path=%q>\n%s\n</file>\n", path, strings.TrimRight(content, "\n"))
+		docs = append(docs, loadedContextDoc{
+			Path: path,
+			Body: strings.TrimRight(content, "\n"),
+		})
 	}
-	return b.String()
+	return docs
 }
