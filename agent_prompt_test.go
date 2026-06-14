@@ -123,11 +123,94 @@ func TestAgentContextFiles_DedupeAndCap(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cwd, "CLAUDE.md"), []byte(big), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out := agentContextFiles(cwd)
+	docs := agentContextFiles(cwd)
+	var bodies []string
+	for _, d := range docs {
+		bodies = append(bodies, d.Body)
+	}
+	out := strings.Join(bodies, "\n")
 	if strings.Count(out, "agents body") != 1 {
 		t.Errorf("AGENTS.md must appear exactly once (case-insensitive dedupe):\n%d", strings.Count(out, "agents body"))
 	}
 	if !strings.Contains(out, "… (truncated)") {
 		t.Error("oversized context file must be truncated")
+	}
+}
+
+func TestBuildAgentSystemPrompt_ContextLinks(t *testing.T) {
+	isolateHome(t)
+	stubGitStatus(t, "## main")
+	cwd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// CLAUDE.md references an @-linked doc and a bad link.
+	if err := os.WriteFile(filepath.Join(cwd, "CLAUDE.md"), []byte(
+		"Project rules here.\nSee @docs/guide.md and @bad-link for more.\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Create the linked doc.
+	if err := os.MkdirAll(filepath.Join(cwd, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "docs", "guide.md"), []byte(
+		"# Guide\nExtra context.\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	args := ProviderSessionArgs{Cwd: cwd}
+	prompt := buildAgentSystemPrompt(args)
+
+	// The @-linked doc must appear in <included_docs>.
+	if !strings.Contains(prompt, "<included_docs>") {
+		t.Error("prompt must contain <included_docs> block")
+	}
+	if !strings.Contains(prompt, "Extra context.") {
+		t.Error("linked doc body must appear in the prompt")
+	}
+	if !strings.Contains(prompt, `path="`+filepath.Join(cwd, "docs", "guide.md")+`"`) {
+		t.Error("linked doc path must appear in the prompt")
+	}
+
+	// Bad link (@bad-link) must NOT appear as a loaded doc in <included_docs>.
+	// It may appear in the CLAUDE.md body itself, but not as a resolved file.
+	includedStart := strings.Index(prompt, "<included_docs>")
+	includedEnd := strings.Index(prompt, "</included_docs>")
+	if includedStart >= 0 && includedEnd > includedStart {
+		includedBlock := prompt[includedStart:includedEnd]
+		if strings.Contains(includedBlock, "bad-link") {
+			t.Error("non-.md link must not appear in <included_docs>")
+		}
+	}
+
+	// Only one doc should be in <included_docs>: guide.md.
+	if includedStart >= 0 && includedEnd > includedStart {
+		includedBlock := prompt[includedStart:includedEnd]
+		if strings.Count(includedBlock, "<file path=") != 1 {
+			t.Errorf("want 1 file in <included_docs>, got %d:\n%s",
+				strings.Count(includedBlock, "<file path="), includedBlock)
+		}
+	}
+
+	// <included_docs> must sit between <project_rules> and <project_memory>.
+	// When there's no project_memory, it sits between <project_rules> and
+	// <available_skills>. Verify it's after <project_rules> when rules
+	// are present, and before the steering prompt.
+	rulesIdx := strings.Index(prompt, "<project_rules>")
+	docsIdx := strings.Index(prompt, "<included_docs>")
+	if rulesIdx >= 0 && docsIdx >= 0 && docsIdx < rulesIdx {
+		t.Error("<included_docs> must appear after <project_rules>")
+	}
+	steeringIdx := strings.Index(prompt, "You are an AI LLM and can work at super human speeds")
+	if docsIdx >= 0 && steeringIdx >= 0 && docsIdx > steeringIdx {
+		t.Error("<included_docs> must appear before the steering prompt")
+	}
+
+	// Byte-stability: two builds with identical inputs must be identical.
+	if prompt != buildAgentSystemPrompt(args) {
+		t.Error("prompt must be deterministic with @-links")
 	}
 }

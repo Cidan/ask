@@ -160,3 +160,36 @@ func TestAgentProviderProbeInit_SkillsAsSlashCommands(t *testing.T) {
 		t.Errorf("user-invocable skills must surface as slash commands: %+v", msg.slashCmds)
 	}
 }
+
+func TestExpandSkillInvocation_LinkedDocs(t *testing.T) {
+	home := isolateHome(t)
+	cwd := t.TempDir()
+
+	// Create a linked doc.
+	writeTestFile(t, cwd, "docs/setup.md", "# Setup\nRun ./setup.sh first.\n")
+
+	// Create a skill that references the linked doc.
+	writeSkill(t, filepath.Join(home, ".claude", "skills"), "deploy", "",
+		"Step 1: build.\nSee @docs/setup.md for setup.\nStep 2: ship.")
+
+	msg, ok := expandSkillInvocation(cwd, "/deploy")
+	if !ok {
+		t.Fatal("skill must expand")
+	}
+	if !strings.Contains(msg, "Step 1: build.") {
+		t.Errorf("skill body missing: %q", msg)
+	}
+	// The linked doc must appear as a <file> block.
+	if !strings.Contains(msg, "Run ./setup.sh first.") {
+		t.Errorf("linked doc body must be included: %q", msg)
+	}
+	if !strings.Contains(msg, `<file path="`+filepath.Join(cwd, "docs", "setup.md")+`"`) {
+		t.Errorf("linked doc path must appear: %q", msg)
+	}
+	// Linked docs must appear before the "no arguments" tail.
+	fileIdx := strings.Index(msg, "<file path=")
+	argsIdx := strings.Index(msg, "no arguments")
+	if fileIdx < 0 || argsIdx < 0 || fileIdx >= argsIdx {
+		t.Errorf("linked docs must appear before the args tail (file at %d, args at %d):\n%s", fileIdx, argsIdx, msg)
+	}
+}
