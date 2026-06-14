@@ -101,22 +101,26 @@ func sanitizeStepName(name string) string {
 	return stem
 }
 
-// ensureStartPlanExists verifies that ask/plans/start/ exists and
-// contains at least one non-directory entry before the workflow begins.
+const startPlanDirInstruction = "ask/plans/start/ must be a DIRECTORY (not a file) and must contain at least one file. Create the directory, then write one or more files inside it — for example ask/plans/start/plan.md. Do not write a single file named start."
+
+// ensureStartPlanExists verifies that ask/plans/start/ exists as a
+// directory and contains at least one non-directory entry before the
+// workflow begins. The error text is LLM-facing, so it repeats the
+// exact shape the path must have.
 func ensureStartPlanExists(cwd string) error {
 	dir := startPlanDir(cwd)
 	if dir == "" {
-		return errors.New("start plan is missing: create files in ask/plans/start/ before running the workflow")
+		return errors.New("start plan is missing: " + startPlanDirInstruction)
 	}
 	info, err := os.Stat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return errors.New("start plan is missing: create files in ask/plans/start/ before running the workflow")
+			return errors.New("start plan is missing: " + startPlanDirInstruction)
 		}
 		return fmt.Errorf("cannot read start plan dir: %w", err)
 	}
 	if !info.IsDir() {
-		return errors.New("ask/plans/start/ exists but is not a directory")
+		return errors.New("ask/plans/start/ exists but is a FILE, not a directory. Remove it, " + startPlanDirInstruction)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -130,7 +134,7 @@ func ensureStartPlanExists(cwd string) error {
 		}
 	}
 	if !hasFile {
-		return errors.New("start plan is empty: add at least one file to ask/plans/start/ before running the workflow")
+		return errors.New("start plan is empty: " + startPlanDirInstruction)
 	}
 	return nil
 }
@@ -182,6 +186,8 @@ func removeAllWorkflowPlans(cwd string) error {
 const clearPlansToolDescription = `Clear the workflow plans directory (ask/plans/).
 
 This removes all files and subdirectories under ask/plans/ but leaves the directory itself. Call this before submitting a new workflow_run to ensure no stale plan data from a previous run interferes with the next workflow.
+
+After clearing, create the directory ask/plans/start/ and write the starting plan into one or more files inside that directory (for example ask/plans/start/plan.md). ask/plans/start/ must be a directory, not a file.
 
 This tool is safe to call repeatedly; it is a no-op when ask/plans/ does not exist.`
 
