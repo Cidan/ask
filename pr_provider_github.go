@@ -466,7 +466,7 @@ func (p *githubPRProvider) connect(ctx context.Context, cfg githubMCPConfig) (*m
 		_ = p.session.Close()
 		p.session = nil
 	}
-	cs, err := dialGitHubMCP(ctx, endpoint, cfg.Token, githubMCPInitTimeout)
+	cs, err := dialGitHubMCPSessionFn(ctx, endpoint, cfg.Token, githubMCPInitTimeout)
 	if err != nil {
 		return nil, err
 	}

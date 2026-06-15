@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1347,5 +1348,81 @@ func TestGateTodosBeforeMutate_EnvDefaultFalse(t *testing.T) {
 	}
 	if notice := env.requireTodosNotice(); notice != "" {
 		t.Errorf("requireTodosNotice should be empty when gate is off; got %q", notice)
+	}
+}
+
+// TestBashResponse: the pure response-shaping function. Five
+// branches: normal, truncated, shell error, non-zero exit, and
+// empty output. No tool runtime needed.
+func TestBashResponse(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		trunc    bool
+		res      shellResult
+		wantSub  string
+		isErr    bool
+	}{
+		{"normal output", "hello\nworld\n", false, shellResult{exitCode: 0}, "hello\nworld", false},
+		{"truncation notice", "first\n", true, shellResult{exitCode: 0}, "in-memory cap", false},
+		{"shell error", "partial\n", false, shellResult{err: errors.New("boom")}, "shell error: boom", true},
+		{"nonzero exit", "stuff\n", false, shellResult{exitCode: 7}, "Exit code 7", true},
+		{"empty output", "", false, shellResult{exitCode: 0}, "(no output)", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := bashResponse(tc.body, tc.trunc, tc.res)
+			if resp.IsError != tc.isErr {
+				t.Errorf("IsError=%v want %v", resp.IsError, tc.isErr)
+			}
+			if !strings.Contains(resp.Content, tc.wantSub) {
+				t.Errorf("content=%q missing substring %q", resp.Content, tc.wantSub)
+			}
+		})
+	}
+}
+
+// TestDrainShellOutput: pulls every chunk off the channel and
+// feeds it to the collector. The drain is the safety net after
+// kill so the scanner goroutines can exit.
+func TestDrainShellOutput(t *testing.T) {
+	ch := make(chan string, 3)
+	ch <- "a"
+	ch <- "b"
+	ch <- "c"
+	close(ch)
+	var got []string
+	drainShellOutput(ch, func(s string) { got = append(got, s) })
+	want := []string{"a", "b", "c"}
+	if len(got) != len(want) {
+		t.Fatalf("len=%d want %d; got %v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("[%d]=%q want %q", i, got[i], w)
+		}
+	}
+}
+
+// TestAgentJobAppendOutput: respects the in-memory cap, marks
+// truncated on overflow, and accumulates otherwise.
+func TestAgentJobAppendOutput(t *testing.T) {
+	j := &agentJob{}
+	// First chunk fits.
+	j.appendOutput("a")
+	out, trunc, done, _ := j.snapshot()
+	if out != "a" || trunc || done {
+		t.Errorf("first chunk: out=%q trunc=%v done=%v", out, trunc, done)
+	}
+	// Force the cap.
+	j2 := &agentJob{}
+	j2.buf.WriteString(strings.Repeat("x", agentBashRawCap))
+	j2.appendOutput("more")
+	out, trunc, _, _ = j2.snapshot()
+	if !trunc {
+		t.Errorf("post-cap append should mark truncated; out len=%d", len(out))
+	}
+	if strings.HasSuffix(out, "more") {
+		t.Error("post-cap append must not write to the buffer")
 	}
 }

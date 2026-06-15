@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -159,6 +160,56 @@ func TestAskMCPOAuthHandler_ServesStoredToken(t *testing.T) {
 	tok, err := src.Token()
 	if err != nil || tok.AccessToken != "stored-token" {
 		t.Fatalf("stored token must be served without a browser flow: %+v %v", tok, err)
+	}
+}
+
+// TestMCPOAuthTokenPath_BadURLFallsBackToServer: an unparseable
+// server URL → host defaults to "server" (rather than panicking
+// or producing an empty host). Same-shape URL hash so the file
+// is still namespaced under .config/ask/mcp-oauth/.
+func TestMCPOAuthTokenPath_BadURLFallsBackToServer(t *testing.T) {
+	isolateHome(t)
+	path, err := mcpOAuthTokenPath("://not a url")
+	if err != nil {
+		t.Fatalf("mcpOAuthTokenPath: %v", err)
+	}
+	if !strings.Contains(path, "server-") {
+		t.Errorf("path should fall back to 'server-' prefix; got %q", path)
+	}
+	if !strings.HasSuffix(path, ".json") {
+		t.Errorf("path should end in .json; got %q", path)
+	}
+}
+
+// TestMCPOAuthTokenPath_SameURLSameHash: deterministic — two
+// calls with the same URL produce the same path. Important
+// because loadMCPOAuthToken is keyed off this path.
+func TestMCPOAuthTokenPath_SameURLSameHash(t *testing.T) {
+	isolateHome(t)
+	a, _ := mcpOAuthTokenPath("https://api.example.com/mcp")
+	b, _ := mcpOAuthTokenPath("https://api.example.com/mcp")
+	if a != b {
+		t.Errorf("same URL should produce same path; got %q vs %q", a, b)
+	}
+	c, _ := mcpOAuthTokenPath("https://other.example.com/mcp")
+	if a == c {
+		t.Errorf("different URLs should produce different paths; got %q == %q", a, c)
+	}
+}
+
+// TestSaveMCPOAuthToken_NilIsNoOp: a nil token must be silently
+// dropped — no file created, no error returned. Defends against
+// a torn-down token round-trip where the inner Token() races to
+// nil before save runs.
+func TestSaveMCPOAuthToken_NilIsNoOp(t *testing.T) {
+	isolateHome(t)
+	dir := filepath.Join(t.TempDir(), "sub", "deep")
+	path := filepath.Join(dir, "tok.json")
+	if err := saveMCPOAuthToken(path, nil); err != nil {
+		t.Errorf("save nil: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("no file should be created for nil token; stat err=%v", err)
 	}
 }
 

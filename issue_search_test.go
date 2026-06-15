@@ -198,6 +198,26 @@ func TestIssueSearchBox_TypingForwardsToInput(t *testing.T) {
 	}
 }
 
+// TestIssueSearchBox_Resize: width sets the box and the input's
+// visible slice; tiny widths clamp to 16 cols (the minimum that
+// keeps the chip + caret readable).
+func TestIssueSearchBox_Resize(t *testing.T) {
+	box := newIssueSearchBox("help")
+	box.resize(80)
+	if box.width != 80 {
+		t.Errorf("width=%d want 80", box.width)
+	}
+	if w := box.input.Width(); w != 72 {
+		t.Errorf("input width=%d want 72 (80 - 8 chrome)", w)
+	}
+	// Tiny width clamps to the 16-col minimum.
+	box2 := newIssueSearchBox("help")
+	box2.resize(4)
+	if w := box2.input.Width(); w != 16 {
+		t.Errorf("clamped width=%d want 16", w)
+	}
+}
+
 func TestIssueSearchBox_SubmitWithCachedQueryReusesCache(t *testing.T) {
 	// Design contract: re-submitting the same query (same
 	// fingerprint) when chunks are already cached must NOT

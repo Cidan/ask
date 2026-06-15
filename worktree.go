@@ -681,9 +681,9 @@ func releaseWorktreeName(parent, name string) {
 // randomWhimsy picks one adjective, one verb, one noun from the curated lists
 // and joins them with dashes.
 func randomWhimsy() string {
-	return pickWord(worktreeAdjectives) + "-" +
-		pickWord(worktreeVerbs) + "-" +
-		pickWord(worktreeNouns)
+	return pickWordFn(worktreeAdjectives) + "-" +
+		pickWordFn(worktreeVerbs) + "-" +
+		pickWordFn(worktreeNouns)
 }
 
 // pickWord returns a uniformly-random entry from list using crypto/rand.Int so
@@ -696,6 +696,10 @@ func pickWord(list []string) string {
 	}
 	return list[n.Int64()]
 }
+
+// pickWordFn is a seam: tests swap it to inject a deterministic
+// (or erroring) implementation without touching crypto/rand.
+var pickWordFn = pickWord
 
 // randomAlphanum returns n lowercase alphanumeric characters drawn from
 // crypto/rand. 36^12 ≈ 4.7e18 keyspace is wide enough that we don't track used
