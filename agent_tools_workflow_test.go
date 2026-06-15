@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/fantasy"
+	"charm.land/fantasy/schema"
 )
 
 // workflowToolByName looks up a tool by name in the workflow core tool
@@ -336,5 +339,252 @@ func TestAgentWorkflowTools_DisarmHooksFire(t *testing.T) {
 	}
 	if !env.workflowRunDispatched {
 		t.Error("calling workflow_run core must mark workflowRunDispatched")
+	}
+}
+
+// TestNativeBridgeTool_FlattensNullableTypeArrays pins the wire shape
+// the bridge adapter emits. jsonschema-go tags *string and `omitempty`
+// slices as `type: ["null", "X"]`; the strict Moonshot / OpenAI
+// schema validators reject the `anyOf` rewrite fantasy's downstream
+// schema.Normalize would otherwise produce (its array branch carries
+// its own `items: {}` while the parent keeps its real `items` — the
+// "conflicting keywords" error that surfaced on every workflow_create
+// / workflow_edit call against kimi). The adapter flattens the
+// nullable type down to a single non-null type, so the normalize
+// rewrite has nothing to do.
+func TestNativeBridgeTool_FlattensNullableTypeArrays(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	tools := map[string]fantasy.AgentTool{}
+	for _, tool := range agentWorkflowTools(env) {
+		tools[tool.Info().Name] = tool
+	}
+	cases := []struct {
+		name string
+		// fields to inspect on Parameters
+		fields map[string]struct {
+			wantType string // expected single type
+		}
+	}{
+		{
+			name: "workflow_create",
+			fields: map[string]struct{ wantType string }{
+				"steps": {"array"},
+			},
+		},
+		{
+			name: "workflow_edit",
+			fields: map[string]struct{ wantType string }{
+				"steps":       {"array"},
+				"description": {"string"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tool, ok := tools[tc.name]
+			if !ok {
+				t.Fatalf("tool %q missing from workflow core set", tc.name)
+			}
+			params := tool.Info().Parameters
+			for fname, want := range tc.fields {
+				prop, ok := params[fname].(map[string]any)
+				if !ok {
+					t.Fatalf("%s: property %q missing or not a map: %+v", tc.name, fname, params[fname])
+				}
+				typ, ok := prop["type"].(string)
+				if !ok {
+					t.Errorf("%s.%s: type must be a single string, got %T %v", tc.name, fname, prop["type"], prop["type"])
+					continue
+				}
+				if typ != want.wantType {
+					t.Errorf("%s.%s: type = %q, want %q", tc.name, fname, typ, want.wantType)
+				}
+				if prop["anyOf"] != nil {
+					t.Errorf("%s.%s: must not carry an anyOf (Normalize only adds anyOf from type-arrays, which we've eliminated)", tc.name, fname)
+				}
+			}
+		})
+	}
+}
+
+// TestNativeBridgeTool_WireSchemaNoConflictingItems walks the wire
+// shape fantasy ships — i.e. the bridge adapter's output, wrapped
+// like agent.prepareTools does, then run through schema.Normalize —
+// and asserts that no node carries both a parent `items` and an
+// `anyOf` whose array branch also defines `items`. That's the exact
+// pattern Moonshot's strict validator rejects with "conflicting
+// keywords found in anyOf with parent: keywords (items) are defined
+// on the parent schema and inside anyOf".
+func TestNativeBridgeTool_WireSchemaNoConflictingItems(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	for _, tool := range agentWorkflowTools(env) {
+		info := tool.Info()
+		wire := map[string]any{
+			"type":       "object",
+			"properties": info.Parameters,
+			"required":   info.Required,
+		}
+		schema.Normalize(wire)
+		walkForItemsAnyOfConflict(t, info.Name, wire)
+	}
+}
+
+// walkForAnyOfItemsConflict recursively scans a JSON-Schema-shaped
+// tree and fails the test the moment it sees a node that has both
+// `items` at its own level AND an `anyOf` array whose branches also
+// define `items`. That node is what strict validators (Moonshot,
+// OpenAI strict) reject as "conflicting keywords found in anyOf with
+// parent".
+func walkForItemsAnyOfConflict(t *testing.T, toolName string, node any) {
+	t.Helper()
+	var walk func(path string, n any)
+	walk = func(path string, n any) {
+		switch v := n.(type) {
+		case map[string]any:
+			if _, hasItems := v["items"]; hasItems {
+				if ao, ok := v["anyOf"].([]any); ok {
+					for _, b := range ao {
+						bm, ok := b.(map[string]any)
+						if !ok {
+							continue
+						}
+						if _, hasBranchItems := bm["items"]; hasBranchItems {
+							raw, _ := json.MarshalIndent(v, "", "  ")
+							t.Errorf("%s at %s: parent has items AND anyOf branch has items (conflicting keywords):\n%s", toolName, path, string(raw))
+							return
+						}
+					}
+				}
+			}
+			for k, child := range v {
+				walk(path+"."+k, child)
+			}
+		case []any:
+			for i, item := range v {
+				walk(path+fmt.Sprintf("[%d]", i), item)
+			}
+		}
+	}
+	walk("$", node)
+}
+
+// TestFlattenNullableTypes pins the nullable-type-array rewriter used
+// by nativeBridgeTool. It must:
+//   - drop "null" from type arrays of any length, reducing
+//     ["null","array"] → "array" and ["null","string"] → "string"
+//   - leave non-null multi-type arrays alone (we don't generate them
+//     today, but the helper mustn't break if a future schema does)
+//   - recurse into nested maps and arrays
+//   - remove the type key entirely when the array contained only
+//     "null" (defensive — should not happen for ask's schemas)
+//   - leave single-string type fields untouched
+//   - leave maps with no type key untouched
+func TestFlattenNullableTypes(t *testing.T) {
+	cases := []struct {
+		name string
+		in   any
+		want any
+	}{
+		{
+			name: "nullable array with items",
+			in: map[string]any{
+				"type":  []any{"null", "array"},
+				"items": map[string]any{"type": "object"},
+			},
+			want: map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "object"},
+			},
+		},
+		{
+			name: "nullable string",
+			in: map[string]any{
+				"type":        []any{"null", "string"},
+				"description": "x",
+			},
+			want: map[string]any{
+				"type":        "string",
+				"description": "x",
+			},
+		},
+		{
+			name: "null first in type array",
+			in:   map[string]any{"type": []any{"null", "string"}},
+			want: map[string]any{"type": "string"},
+		},
+		{
+			name: "no type key",
+			in:   map[string]any{"description": "x"},
+			want: map[string]any{"description": "x"},
+		},
+		{
+			name: "non-null single type untouched",
+			in:   map[string]any{"type": "string"},
+			want: map[string]any{"type": "string"},
+		},
+		{
+			name: "multi-type non-null array unchanged",
+			in:   map[string]any{"type": []any{"string", "integer"}},
+			want: map[string]any{"type": []any{"string", "integer"}},
+		},
+		{
+			name: "all-null type array drops the key",
+			in:   map[string]any{"type": []any{"null"}, "description": "x"},
+			want: map[string]any{"description": "x"},
+		},
+		{
+			name: "recurses into nested maps",
+			in: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"a": map[string]any{"type": []any{"null", "string"}},
+					"b": map[string]any{"type": "integer"},
+				},
+			},
+			want: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"a": map[string]any{"type": "string"},
+					"b": map[string]any{"type": "integer"},
+				},
+			},
+		},
+		{
+			name: "recurses into arrays of schemas",
+			in: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"x": map[string]any{
+						"type": "array",
+						"items": []any{
+							map[string]any{"type": []any{"null", "string"}},
+							map[string]any{"type": "integer"},
+						},
+					},
+				},
+			},
+			want: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"x": map[string]any{
+						"type": "array",
+						"items": []any{
+							map[string]any{"type": "string"},
+							map[string]any{"type": "integer"},
+						},
+					},
+				},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			flattenNullableTypes(tc.in)
+			got, _ := json.Marshal(tc.in)
+			want, _ := json.Marshal(tc.want)
+			if string(got) != string(want) {
+				t.Errorf("flattenNullableTypes(%s):\n got  %s\n want %s", tc.name, got, want)
+			}
+		})
 	}
 }

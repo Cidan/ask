@@ -35,6 +35,27 @@ import (
 // handler's summary line plus the structured output JSON (when the
 // two differ), mirroring what an MCP client sees as text + structured
 // content.
+//
+// jsonschema-go emits nullable fields as `type: ["null", X]` for both
+// `*T` pointers and `omitempty` slices — its JSON-Schema 2020-12
+// dialect. The OpenAI tool format (and the strict Moonshot / OpenAI
+// schema validators) treats optional tool inputs as absent-or-present,
+// never JSON null, and they reject schemas that mix null with another
+// type. Compounding the issue, fantasy's downstream `schema.Normalize`
+// rewrites those type-arrays into `anyOf` whose array branch carries
+// its own `items: {}` while the parent keeps its real `items` —
+// "conflicting keywords found in anyOf with parent", the error this
+// adapter used to surface to the model on every workflow_create /
+// workflow_edit call.
+//
+// `flattenNullableTypes` walks the schema and drops `"null"` from any
+// `type` array, reducing `["null", "array"]` to `"array"` and
+// `["null", "string"]` to `"string"`. Optionality is already expressed
+// by the field's absence from `required` (jsonschema-go's omitempty
+// mapping), so the runtime contract is unchanged: a missing field
+// decodes to the Go zero value, a present field decodes to its value.
+// The fantasy Normalize pass then has nothing to rewrite, and the wire
+// schema is accepted by every strict validator we ship to.
 func nativeBridgeTool[In, Out any](name, description string,
 	run func(ctx context.Context, in In) (*mcp.CallToolResult, Out, error),
 ) fantasy.AgentTool {
@@ -59,6 +80,7 @@ func nativeBridgeTool[In, Out any](name, description string,
 	} else {
 		debugLog("bridge tool %s: schema: %v", name, err)
 	}
+	flattenNullableTypes(properties)
 	// Every native tool carries the user-facing phrase param so the
 	// transcript line reads "what is this call doing" instead of raw
 	// params. Tools whose input already defines "description" as real
@@ -77,6 +99,42 @@ func nativeBridgeTool[In, Out any](name, description string,
 		properties:  properties,
 		required:    required,
 		run:         run,
+	}
+}
+
+// flattenNullableTypes walks a JSON-Schema-shaped map and rewrites any
+// `type: [..., "null", ...]` array into a single non-null type
+// (string, array, object, …). A type array containing only "null"
+// drops the `type` key entirely; an array with multiple non-null
+// members is collapsed back to a JSON array (unreachable for our
+// generated schemas today, kept defensive). See nativeBridgeTool's
+// doc comment for why this exists.
+func flattenNullableTypes(v any) {
+	switch n := v.(type) {
+	case map[string]any:
+		if t, ok := n["type"].([]any); ok {
+			nonNull := make([]any, 0, len(t))
+			for _, x := range t {
+				if s, ok := x.(string); !ok || s != "null" {
+					nonNull = append(nonNull, x)
+				}
+			}
+			switch len(nonNull) {
+			case 0:
+				delete(n, "type")
+			case 1:
+				n["type"] = nonNull[0]
+			default:
+				n["type"] = nonNull
+			}
+		}
+		for _, child := range n {
+			flattenNullableTypes(child)
+		}
+	case []any:
+		for _, item := range n {
+			flattenNullableTypes(item)
+		}
 	}
 }
 

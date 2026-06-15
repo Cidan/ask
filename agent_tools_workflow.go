@@ -34,6 +34,16 @@ import (
 // tools whose input declares a real "description" payload (workflow_
 // create / workflow_edit) keep their own schema and do NOT get the
 // injected phrase field.
+//
+// Note: nativeBridgeTool runs every input schema through
+// flattenNullableTypes before handing it back. That step is what
+// keeps the workflow_create / workflow_edit "steps" array (a
+// []workflowStepView with omitempty) and the *string "description"
+// payload from emitting `type: ["null", X]` — the strict Moonshot
+// schema validator rejects the downstream anyOf rewrite as
+// "conflicting keywords found in anyOf with parent". Don't
+// re-introduce a hand-rolled workflow tool that bypasses the bridge
+// adapter; you'll re-introduce the bug.
 func agentWorkflowTools(env *agentToolEnv) []fantasy.AgentTool {
 	cwd := func() string { return env.cwd }
 	return []fantasy.AgentTool{

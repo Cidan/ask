@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"charm.land/fantasy/schema"
 )
 
 func bridgeToolByName(t *testing.T, env *agentToolEnv, name string) fantasy.AgentTool {
@@ -160,5 +161,24 @@ func TestClearPlans_NotInLinearTools(t *testing.T) {
 		if tool.Info().Name == "clear_plans" {
 			t.Fatal("clear_plans must not live in agentLinearTools")
 		}
+	}
+}
+
+// TestNativeBridgeTool_AllWireSchemasClean runs the same
+// Normalize-then-walk check the workflow suite uses, but across every
+// linear_* native twin. Catches a future nullable field introduced
+// into a linear input type, so the strict-validator bug can't sneak
+// back in via a different tool family.
+func TestNativeBridgeTool_AllWireSchemasClean(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	for _, tool := range agentLinearTools(env) {
+		info := tool.Info()
+		wire := map[string]any{
+			"type":       "object",
+			"properties": info.Parameters,
+			"required":   info.Required,
+		}
+		schema.Normalize(wire)
+		walkForItemsAnyOfConflict(t, info.Name, wire)
 	}
 }
