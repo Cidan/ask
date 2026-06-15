@@ -20,19 +20,19 @@ Send the FULL list every time (it replaces the previous one). Keep exactly one i
 // the first time the model calls todos in a project that has workflows
 // without having consulted them. It does not apply the list — the model
 // must check workflows and then resend. The text deliberately names the
-// mechanic (invoke_tool workflow_run) and forces an explicit fit verdict,
+// mechanic (the workflow_run tool) and forces an explicit fit verdict,
 // because a weaker model otherwise conflates "user approved the work"
 // with "do it inline" and never connects approval to the workflow_run
 // tool.
 const workflowGuardTodosNotice = `Your task list was NOT applied. You are about to start multi-step work but you haven't checked this project's workflows yet — that check is a precondition, not a suggestion.
 
 Do this now, in order:
-  1. Call search_tools with query "workflow_*", then invoke workflow_list to see the defined workflows.
+  1. Call the workflow_list tool to see the defined workflows.
   2. Read each workflow's "description" — it states, in the author's words, what the workflow is FOR and when to use it. Judge fit against THAT description, not against the step names. (Step names like "open PR" or "validate" describe HOW a workflow runs, not WHICH tasks it covers — inferring scope from them is how a fitting workflow gets wrongly declined.) If a workflow has no description, read its steps with workflow_get before deciding.
   3. State a one-line verdict, out loud, before doing anything else. Either:
        - "Workflow <name> fits." — then STOP. Do NOT start the task with read/edit/bash. Tell the user the workflow's name and ask exactly: "Run workflow <name>, or should I handle this directly?" An established workflow is ALWAYS preferred over ad-hoc execution.
        - "No workflow fits because <reason>." — then you may proceed inline. When in doubt about fit, surface the workflow to the user rather than declining it yourself.
-  4. If the user approves running the workflow, your VERY NEXT action MUST be to invoke the workflow_run tool (search_tools "workflow_*" → invoke_tool workflow_run with the workflow name). Running the workflow means CALLING workflow_run — it does NOT mean doing the task yourself with your normal tools. Doing the task yourself is only correct when the user explicitly chose "handle this directly" or when no workflow fit.
+  4. If the user approves running the workflow, your VERY NEXT action MUST be to call the workflow_run tool with the workflow's name. Running the workflow means CALLING workflow_run — it does NOT mean doing the task yourself with your normal tools. Doing the task yourself is only correct when the user explicitly chose "handle this directly" or when no workflow fit.
 
 Then resend this exact todos call — it will go through. This guard fires only once per session.`
 
@@ -45,7 +45,7 @@ Then resend this exact todos call — it will go through. This guard fires only 
 const workflowDecisionGuardNotice = `Your task list was NOT applied. You consulted the workflows but you are now about to do this work inline, and you never invoked workflow_run.
 
 Reconcile this before continuing:
-  - If a workflow fits and the user approved it: STOP. Do not start the task. Your next action MUST be to invoke the workflow_run tool with that workflow's name. Inline tools (read/edit/bash) are the wrong move here.
+  - If a workflow fits and the user approved it: STOP. Do not start the task. Your next action MUST be to call the workflow_run tool with that workflow's name. Inline tools (read/edit/bash) are the wrong move here.
   - If you are proceeding inline on purpose: confirm with the user that they want it handled directly INSTEAD of the workflow, and state which workflow you are declining and why. Base that decision on the workflow's description (what it is FOR), not on its step names — a workflow whose steps mention "PR" or "validate" can still be the right fit for a refactor, deletion, or fix. If your only reason for declining is the step structure, you are probably declining wrongly: surface it to the user instead.
 
 Then resend this exact todos call — it will go through. This decision guard fires only once per session.`

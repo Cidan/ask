@@ -71,14 +71,15 @@ One `package main`, one file per concern.
 | `agent_tools_search.go`| glob (doublestar + `{a,b}`), grep (rg with pure-Go fallback), ls (capped tree). |
 | `agent_tools_bash.go`  | bash (+`run_in_background`), job manager, job_output / job_kill, safe read-only command list. Exec layer behind `agentRunShell` for tests. |
 | `agent_tools_web.go`   | fetch — HTTP GET with 100KB cap, HTML→text extraction via x/net/html. ALSO the Brave-backed `web_search` core tool (the second documented core exception alongside fetch): `https://api.search.brave.com/res/v1/web/search` with `X-Subscription-Token` (`braveSearchClient` swappable), formats `web.results[]`, and on a missing Brave key returns a NON-error notice telling the model to finish its turn and tell the user to add a key in `/config → Web Search`. Only attached for providers WITHOUT first-party search (DeepSeek/Kimi) — anthropic/openai run native search via the spec's `nativeWebSearch`. |
-| `agent_tools_todos.go` | todos tool — full-list replace emitting `todoUpdatedMsg` into the existing todo surface. The description carries an explicit cadence contract (one call per status transition) and every ack appends a state-keyed nudge ("call again the moment the in_progress item is done" / "no item is in_progress") so models keep the list live instead of planning once and closing everything at the end. ALSO the two-stage **workflow guard**: in a project that defines workflows (`env.workflowsAvailable`, set once at session start) the todos tool gates multi-step work in two checkpoints, each firing at most once per session, but only when the opt-in `Gate Todos Before Mutate` config flag is on (default off). STAGE 1 (`workflowGuardShouldFire`): the first todos call before the model has looked at the workflows is REJECTED without applying the list — `workflowGuardTodosNotice` steers it to `search_tools "workflow_*"` + `workflow_list`, forces a one-line fit verdict judged against each workflow's **Description** (its stated purpose — NOT the step names, since inferring scope from step structure is how a fitting workflow gets wrongly declined), and names the exact mechanic (a fitting workflow + user approval ⇒ the next action MUST be `invoke_tool workflow_run`, not inline tools). STAGE 2 (`workflowDecisionGuardShouldFire`): once the model has looked (`workflowsChecked`) but is now re-sending a list to start inline work WITHOUT ever dispatching `workflow_run`, it is rejected once more — `workflowDecisionGuardNotice` makes it reconcile that decision (run the workflow, or confirm with the user it's declining the workflow). This catches the real DeepSeek failure where the model asks, gets a yes, then proceeds inline anyway. Stage 1 disarms when `workflow_list` is invoked (`env.markWorkflowsChecked`); stage 2 disarms when `workflow_run` is invoked (`env.markWorkflowRunDispatched`) — both hooked in `agentInvokeTool.Run`. Each stage latches after one fire so a model legitimately proceeding inline is never blocked past these two checkpoints. Inert when the project has no workflows, the gate is false, or the two-stage check lives in `env.workflowGuardNotice()` (agent_tools.go). A successful todos call sets `env.todosApplied` (`markTodosApplied`). When the gate is on, `write`/`edit` refuse to mutate until that flag is set (`requireTodosNotice` → `requireTodosBeforeMutateNotice`, agent_tools_file.go), making the todos call a mandatory chokepoint before any code change. When the gate is off (default), the workflow guard and require-todos gate are both inert. |
+| `agent_tools_todos.go` | todos tool — full-list replace emitting `todoUpdatedMsg` into the existing todo surface. The description carries an explicit cadence contract (one call per status transition) and every ack appends a state-keyed nudge ("call again the moment the in_progress item is done" / "no item is in_progress") so models keep the list live instead of planning once and closing everything at the end. ALSO the two-stage **workflow guard**: in a project that defines workflows (`env.workflowsAvailable`, set once at session start) the todos tool gates multi-step work in two checkpoints, each firing at most once per session, but only when the opt-in `Gate Todos Before Mutate` config flag is on (default off). STAGE 1 (`workflowGuardShouldFire`): the first todos call before the model has looked at the workflows is REJECTED without applying the list — `workflowGuardTodosNotice` steers it to call the `workflow_list` core tool directly (agent_tools_workflow.go), forces a one-line fit verdict judged against each workflow's **Description** (its stated purpose — NOT the step names, since inferring scope from step structure is how a fitting workflow gets wrongly declined), and names the exact mechanic (a fitting workflow + user approval ⇒ the next action MUST be calling the `workflow_run` core tool, not inline tools). STAGE 2 (`workflowDecisionGuardShouldFire`): once the model has looked (`workflowsChecked`) but is now re-sending a list to start inline work WITHOUT ever dispatching `workflow_run`, it is rejected once more — `workflowDecisionGuardNotice` makes it reconcile that decision (run the workflow, or confirm with the user it's declining the workflow). This catches the real DeepSeek failure where the model asks, gets a yes, then proceeds inline anyway. Stage 1 disarms when `workflow_list` is invoked (`env.markWorkflowsChecked`); stage 2 disarms when `workflow_run` is invoked (`env.markWorkflowRunDispatched`) — both hooks live in the tool closures themselves, agent_tools_workflow.go. Each stage latches after one fire so a model legitimately proceeding inline is never blocked past these two checkpoints. Inert when the project has no workflows, the gate is false, or the two-stage check lives in `env.workflowGuardNotice()` (agent_tools.go). A successful todos call sets `env.todosApplied` (`markTodosApplied`). When the gate is on, `write`/`edit` refuse to mutate until that flag is set (`requireTodosNotice` → `requireTodosBeforeMutateNotice`, agent_tools_file.go), making the todos call a mandatory chokepoint before any code change. When the gate is off (default), the workflow guard and require-todos gate are both inert. |
 | `agent_tools_task.go`  | task tool v2: default read-only researcher on the parent model, OR a named subagent definition (`agent:` param) with its own instructions/tools/model — including a DIFFERENT in-process provider (cross-provider delegation). `run_in_background` rides the bash job manager (job_output/job_kill + bgTask UI signals). |
 | `agent_subagents.go`   | Named subagent defs: `.claude/agents/*.md` + `~/.config/ask/agents` (frontmatter name/description/tools/model + ask's `provider` extension; body = system prompt), `<available_agents>` prompt block, tool grant sets (default read-only, `*` = coding core, never task/modal tools), claude model-alias mapping, cross-provider model resolution via `agentSpecByID`. |
 | `skills.go`            | Agent Skills standard (agentskills.io): SKILL.md discovery (~/.config/ask/skills, ~/.agents/skills, ~/.claude/skills + project .agents/.claude/.ask skills dirs at cwd AND git root, project wins), name/description validation, `<available_skills>` trigger block (progressive disclosure — body loads via the read tool), `/skill-name` slash expansion (`expandSkillInvocation` in runTurn), user-invocable skills surfaced through `ProbeInit`. Generic `parseMarkdownFrontmatter` shared with subagent defs. |
 | `rules.go`             | Claude Code `.claude/rules/` standard: `*.md` rule files discovered recursively (symlink-following, cycle-guarded) under project `.claude/rules/` (git root) and user `~/.claude/rules/` (user loads first, project wins on same relative label). YAML `paths` frontmatter (block + inline list forms, brace patterns survive verbatim) splits rules two ways — no `paths` ⇒ EAGER (`rulesPromptBlock` → `<project_rules>` system-prompt block, byte-stable for prefix caching), with `paths` ⇒ JIT (`ruleAwareTool` decorates the read tool; reading a file whose project-root-relative path matches a glob appends the rule body to that tool result, once per rule per session, project-scope only). Globs reuse `agentGlobMatch` (doublestar + `{a,b}`). |
 | `agent_tools_ask.go`   | In-process twins of the bridge's `ask_user_question` / `end_turn` — same modal/workflow machinery, no HTTP loopback. |
-| `agent_tools_bridge.go`| Native twins of every other bridge tool (12 `linear_*`, 7 `workflow_*` incl. `workflow_copy`): a generic `nativeBridgeTool` adapter generates fantasy schemas via the same jsonschema machinery the MCP SDK uses (field docs survive verbatim) and wraps the shared cwd-parameterized cores in mcp_linear.go/mcp_workflows.go. In-process sessions never attach the loopback bridge. These tools live in the deferred registry, never on the wire. |
-| `agent_tools_registry.go`| The deferred tool registry surface: `search_tools` (query the registry — `*` / prefix-`*` / substring — returning name + description + full input_schema per match) and `invoke_tool` (dispatch a registry tool by name via its `.Run`, with replicated required-field validation, phrase injection for natives, and verbatim response pass-through). `unwrapInvokeToolCall` maps invoke calls back to the inner tool for display. See "Tool registry vs core tools" below — **new tools go here, never into the core list**. |
+| `agent_tools_bridge.go`| Native twins of the `linear_*` bridge tools: a generic `nativeBridgeTool` adapter generates fantasy schemas via the same jsonschema machinery the MCP SDK uses (field docs survive verbatim) and wraps the shared cwd-parameterized cores in mcp_linear.go. In-process sessions never attach the loopback bridge. These tools live in the deferred registry, never on the wire. |
+| `agent_tools_workflow.go`| The ask-built-in workflow tools on the CORE wire toolset: `workflow_list`, `workflow_get`, `workflow_create`, `workflow_edit`, `workflow_delete`, `workflow_copy`, `workflow_run`, and `clear_plans`. Built with the same `nativeBridgeTool` adapter (so wire schemas are byte-identical to the prior registry shape) and the shared cwd-parameterized cores in mcp_workflows.go. Deliberate, documented core exception: the two-stage workflow guard (agent_tools_todos.go) forces the model to call `workflow_list` and `workflow_run` as a precondition for any multi-step work, and an extra `search_tools` round-trip on every guard interaction is pure overhead. The disarm hooks (`env.markWorkflowsChecked`, `env.markWorkflowRunDispatched`) live in the `workflow_list` and `workflow_run` closures themselves so the guard clears on the direct call — they are NOT in `invoke_tool` anymore. |
+| `agent_tools_registry.go`| The deferred tool registry surface: `search_tools` (query the registry — `*` / prefix-`*` / substring — returning name + description + full input_schema per match) and `invoke_tool` (dispatch a registry tool by name via its `.Run`, with replicated required-field validation, phrase injection for natives, and verbatim response pass-through). `unwrapInvokeToolCall` maps invoke calls back to the inner tool for display. See "Tool registry vs core tools" below — **new tools go here, never into the core list**, unless a deliberate, documented exception is in play (the two today are `web_search` and the workflow_* tools). |
 | `agent_memory.go`      | Memory recall injection: session-start recall appended to the system prompt (once, byte-stable), per-prompt recall appended to the wire prompt, and `memoryAwareTool` wrapping read/edit/write with a per-file recall footer. All no-op when the memory service is closed. |
 | `agent_tools_mcp.go`   | MCP client v2 (`mcpManager`/`mcpServerConn`): per-session manager over stdio/http/sse transports (official go-sdk v1.6.1), lazy ping-and-rebuild before every call + one renew-and-retry, `tools/list_changed` → live deferred-registry refresh (the wire toolset never changes mid-session), MCP elicitation → ask's question modal (form mode: enum/boolean/free-form, typed answers; URL mode + headless decline), image tool-results as real media when the model has vision. Tools are `mcp__<server>__<tool>`. |
 | `mcp_servers.go`       | User-facing MCP server config: `mcpServers` maps (user-global + per-project) merged over project-root `.mcp.json` (claude-code convention), `${VAR}`/`${VAR:-default}` expansion, per-server type inference, timeout, enabled/disabled tool filters, Disabled tombstones. |
@@ -152,8 +153,9 @@ exercised by the user; code alone won't catch layout regressions.
 | `agent_tools_mcp_test.go`  | MCP manager against in-process `mcp.Server`s over httptest — attach/skip/schema/IsError, image results (placeholder vs media by vision), unreachable-server skip, `tools/list_changed` live refresh, dead-server graceful error, elicitation schema mapping + accept/cancel/headless/url flows. |
 | `mcp_servers_test.go`      | Server-config resolution — effectiveType inference, `${VAR}`/`${VAR:-default}` expansion (copy semantics), 3-layer merge (.mcp.json ← global ← project) incl. Disabled tombstones + junk drops + stable order, tool allow/deny filters. |
 | `mcp_oauth_test.go`        | OAuth plumbing — token path/0600 round-trip, persisting token source saves on change, callback listener captures code/state via swapped browser opener, stored-valid-token served without a flow, fresh handler yields nil source (transport 401s into Authorize). |
-| `agent_tools_bridge_test.go`| Native bridge twins — full 19-tool coverage check, jsonschema field-doc fidelity, description-phrase injection (+ payload-description non-clobber), linear gate error, malformed input, workflow CRUD round-trip against project config, workflow Description round-trip (create sets it, list/get surface it, edit replaces it, omitted leaves it unchanged across a rename), workflow_run dispatch via swapped `mcpSpawnWorkflowTab`, loopback never in `agentSessionMCPServers`. |
-| `agent_tools_registry_test.go`| Tool registry — search query forms (`*`/prefix/substring, schema fidelity, sorted, no-match name list, empty registry), invoke dispatch (identity + params JSON), replicated required-field check, phrase injection (natives yes, MCP no), unknown/core-name errors, response pass-through (IsError/StopTurn/image/hard error), `unwrapInvokeToolCall`, `refreshToolset` wire/registry split (decorateTools sees core only), session surface (bridge tools off the wire, in the registry), `web_search` backend selection (no native spec → Brave on the wire + nil `providerWebSearch`; native spec → off the wire + `providerWebSearch` set), end-to-end fakeLM unwrap (toolCallMsg/toolResultMsg/status), loadHistory replay unwrap. |
+| `agent_tools_bridge_test.go`| Native linear twins — 12-tool coverage check, jsonschema field-doc fidelity, description-phrase injection (+ payload-description non-clobber), linear gate error, malformed input, loopback never in `agentSessionMCPServers`, `clear_plans` NOT in the linear set. |
+| `agent_tools_workflow_test.go`| Native workflow core tools — 8-tool coverage check, workflow CRUD round-trip against project config, workflow Description round-trip (create sets it, list/get surface it, edit replaces it, omitted leaves it unchanged across a rename), `workflow_run` dispatch via swapped `mcpSpawnWorkflowTab`, `append` required in the `workflow_run` schema, `clear_plans` idempotency, and the workflow-guard disarm hooks (calling `workflow_list` sets `workflowsChecked`, calling `workflow_run` sets `workflowRunDispatched`) so the two-stage todos guard clears on the direct path. |
+| `agent_tools_registry_test.go`| Tool registry — search query forms (`*`/prefix/substring, schema fidelity, sorted, no-match name list, empty registry), invoke dispatch (identity + params JSON), replicated required-field check, phrase injection (natives yes, MCP no), unknown/core-name errors, response pass-through (IsError/StopTurn/image/hard error), `unwrapInvokeToolCall`, `refreshToolset` wire/registry split (decorateTools sees core only), session surface (linear_* in the registry, `workflow_*` + `clear_plans` on the wire), `web_search` backend selection (no native spec → Brave on the wire + nil `providerWebSearch`; native spec → off the wire + `providerWebSearch` set), end-to-end fakeLM unwrap (toolCallMsg/toolResultMsg/status), loadHistory replay unwrap. |
 | `skills_test.go`           | Skills — discovery validation (bad name / dir mismatch / no description skipped) + project-over-global precedence, trigger block (progressive disclosure, hidden skills), `/name args` expansion incl. user-invocable gating, frontmatter parser, ProbeInit → slash entries. |
 | `rules_test.go`            | `.claude/rules/` — `paths` frontmatter parsing (no-frontmatter/no-paths eager, block + inline list, brace verbatim, key-terminated list), eager/match split, recursive discovery + project-over-user precedence + non-md/empty-body skip, `rulesPromptBlock` (eager only, path attr), `ruleAwareTool` JIT injection + once-per-session dedup + non-match miss + eager exclusion, no-scoped-rules passthrough, `relPath` outside-root rejection. End-to-end eager block in `agent_prompt_test.go`. |
 | `agent_subagents_test.go`  | Subagents — def discovery/precedence/field parsing, tool grant sets, spec registry, claude model aliases, cross-provider model resolution (swapped LM var), task tool: named agent runs on the pinned provider w/ def prompt + report tail, background job lifecycle (bgTask signals, job_output), default researcher unchanged, `/skill` expansion reaches the wire. |
@@ -697,21 +699,26 @@ volatile env (git status) is a labeled session-start snapshot.
 The surface is two-tier (`setupAgentSessionTools`,
 agent_provider.go):
 
-- **Core (wire)** — the 16 tools sent in the API tool definitions
+- **Core (wire)** — the tools sent in the API tool definitions
   every turn: read/write/edit/glob/grep/ls/bash+jobs/fetch/todos/
   task, the modal pair `ask_user_question`/`end_turn`
-  (agent_tools_ask.go), and the registry pair
-  `search_tools`/`invoke_tool` (agent_tools_registry.go).
-- **Deferred registry** — everything else: the native bridge twins
-  (the full `linear_*`/`workflow_*` set, agent_tools_bridge.go, same
-  cores as the bridge handlers) and every MCP tool (the project
-  GitHub MCP plus user-configured servers, mcp_servers.go, as
-  `mcp__<server>__<tool>`). Registry tools are registered and
-  callable but never part of the wire tool definitions: the model
-  discovers them via `search_tools` (name + description + full
-  input_schema) and calls them via `invoke_tool`, which dispatches
-  straight to the inner tool's `.Run` and returns its response
-  verbatim (IsError/StopTurn/image all pass through).
+  (agent_tools_ask.go), the ask-built-in workflow tools
+  (`workflow_list`/`workflow_get`/`workflow_create`/`workflow_edit`/
+  `workflow_delete`/`workflow_copy`/`workflow_run` + `clear_plans`
+  in agent_tools_workflow.go), and the registry pair
+  `search_tools`/`invoke_tool` (agent_tools_registry.go). The
+  workflow tools are a deliberate, documented core exception — see
+  "Tool registry vs core tools" below.
+- **Deferred registry** — everything else: the linear_* native
+  twins (agent_tools_bridge.go, same cores as the bridge handlers)
+  and every MCP tool (the project GitHub MCP plus user-configured
+  servers, mcp_servers.go, as `mcp__<server>__<tool>`). Registry
+  tools are registered and callable but never part of the wire
+  tool definitions: the model discovers them via `search_tools`
+  (name + description + full input_schema) and calls them via
+  `invoke_tool`, which dispatches straight to the inner tool's
+  `.Run` and returns its response verbatim (IsError/StopTurn/image
+  all pass through).
 
 The loopback bridge is never attached in-process. Memory recall is
 injected natively (agent_memory.go) at three points: the system
@@ -735,9 +742,11 @@ the wire set byte-stable for the whole session precisely because MCP
 a core slot only by deliberate, documented exception, and the bar is
 "the agent cannot function without seeing it unprompted" — the
 registry pair itself, `end_turn` (the workflow runner's per-step
-contract), `fetch`, and `web_search` are the canonical examples. The
-last two are the *content* exceptions: an agent cannot reach for
-current information unless it sees them unprompted. `web_search` has
+contract), `fetch`, `web_search`, and the ask-built-in `workflow_*`
+tools (plus `clear_plans`) are the canonical examples. The
+exceptions split into two flavours: `web_search` and the
+ask-built-in workflow tools are the *content* exceptions — an agent
+cannot function without seeing them unprompted. `web_search` has
 two backends behind one name: providers with first-party search
 (anthropic, openai) register a provider-executed tool via the spec's
 `nativeWebSearch` + `WithProviderDefinedTools` (it streams through
@@ -745,9 +754,20 @@ two backends behind one name: providers with first-party search
 renders it like any other tool, and it is NOT in `coreTools`);
 everyone else (DeepSeek, Kimi, any openaicompat backend) gets the
 Brave-backed native core tool, which degrades to a graceful "not
-configured" notice without a `BRAVE_API_KEY`. To add a registry tool,
-append it to `s.deferredBase` (native) or expose it from an MCP
-server; it becomes searchable and invokable with zero wire cost.
+configured" notice without a `BRAVE_API_KEY`. The ask-built-in
+workflow tools (agent_tools_workflow.go) are promoted because the
+two-stage workflow guard in agent_tools_todos.go forces the model
+to call `workflow_list` and `workflow_run` as a precondition for
+multi-step work, and an extra `search_tools` round-trip on every
+guard interaction is pure overhead. The workflow-guard disarm hooks
+(`env.markWorkflowsChecked`, `env.markWorkflowRunDispatched`) live
+in the `workflow_list` and `workflow_run` tool closures themselves
+so the guard clears on the direct call — they are NOT in
+`invoke_tool` anymore (and a model that still routes them through
+`invoke_tool` gets the existing "core tool — call it directly"
+error). To add a registry tool, append it to `s.deferredBase`
+(native) or expose it from an MCP server; it becomes searchable and
+invokable with zero wire cost.
 
 Plumbing invariants worth knowing before touching this area:
 
@@ -824,8 +844,10 @@ v1.6.1, lazy ping-and-rebuild, tools/list_changed refresh, elicitation
 → question modal, OAuth via mcp_oauth.go). Servers come from
 `mcpServers` maps (user-global + per-project) merged over the
 project-root `.mcp.json` (mcp_servers.go). The old loopback bridge is
-gone — its tools are native fantasy tools (agent_tools_ask.go,
-agent_tools_bridge.go) and the question modal is driven by
+gone — its tools are native fantasy tools (agent_tools_ask.go for
+the modal pair, agent_tools_bridge.go for the linear_* twins, and
+agent_tools_workflow.go for the ask-built-in workflow_* tools on
+the core wire toolset) and the question modal is driven by
 `askToolRequestMsg` (ask_wire.go) directly.
 
 ## Conventions

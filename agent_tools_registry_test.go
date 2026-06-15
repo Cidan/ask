@@ -50,7 +50,10 @@ func TestSearchTools_QueryForms(t *testing.T) {
 	reg := staticRegistry(
 		registryTool("linear_get_issue", "Get one Linear issue by number.", []string{"number", "description"}),
 		registryTool("linear_list_issues", "List Linear issues.", nil),
-		registryTool("workflow_run", "Dispatch a workflow run.", nil),
+		// linear_create_issue stays a registry-only fixture after the
+		// workflow tools were promoted to the core wire toolset
+		// (agent_tools_workflow.go).
+		registryTool("linear_create_issue", "Create a Linear issue.", []string{"title", "description"}),
 		registryTool("mcp__github__get_me", "Get the authenticated GitHub user.", nil),
 	)
 	tool := agentSearchToolsTool(reg)
@@ -72,7 +75,7 @@ func TestSearchTools_QueryForms(t *testing.T) {
 	}
 
 	got := parse(runTool(t, tool, agentSearchToolsParams{Query: "linear_*", Description: "find linear tools"}))
-	if len(got) != 2 || got[0].Name != "linear_get_issue" || got[1].Name != "linear_list_issues" {
+	if len(got) != 3 || got[0].Name != "linear_create_issue" || got[1].Name != "linear_get_issue" || got[2].Name != "linear_list_issues" {
 		t.Errorf("prefix query wrong (must also sort by name): %+v", got)
 	}
 	schema := got[0].InputSchema
@@ -80,7 +83,7 @@ func TestSearchTools_QueryForms(t *testing.T) {
 		t.Errorf("input_schema must be an object schema: %+v", schema)
 	}
 	props, _ := schema["properties"].(map[string]any)
-	if _, ok := props["number"]; !ok {
+	if _, ok := props["title"]; !ok {
 		t.Errorf("input_schema must carry the tool's properties: %+v", schema)
 	}
 	req, _ := schema["required"].([]any)
@@ -97,7 +100,7 @@ func TestSearchTools_QueryForms(t *testing.T) {
 	if resp.IsError {
 		t.Errorf("a no-match must not be an error: %s", resp.Content)
 	}
-	if !strings.Contains(resp.Content, "workflow_run") || !strings.Contains(resp.Content, "linear_get_issue") {
+	if !strings.Contains(resp.Content, "linear_create_issue") || !strings.Contains(resp.Content, "linear_get_issue") {
 		t.Errorf("a no-match must list available names: %s", resp.Content)
 	}
 
@@ -153,24 +156,27 @@ func TestInvokeTool_RequiredFieldCheck(t *testing.T) {
 
 func TestInvokeTool_PhraseInjection(t *testing.T) {
 	// Native registry tools require the phrase param; the invoke-level
-	// phrase satisfies it so the model doesn't author it twice.
+	// phrase satisfies it so the model doesn't author it twice. The
+	// fixture uses linear_list_issues because workflow_list is no
+	// longer a registry tool (it was promoted to the core wire toolset
+	// in agent_tools_workflow.go).
 	var captured string
-	inner := registryTool("workflow_list", "list workflows", []string{"description"})
+	inner := registryTool("linear_list_issues", "list issues", []string{"description"})
 	inner.fn = func(_ context.Context, c fantasy.ToolCall) (fantasy.ToolResponse, error) {
 		captured = c.Input
 		return fantasy.NewTextResponse("ok"), nil
 	}
 	tool := agentInvokeToolTool(staticRegistry(inner), nil, nil)
 	resp := runTool(t, tool, map[string]any{
-		"tool_name":   "workflow_list",
-		"description": "listing workflows",
+		"tool_name":   "linear_list_issues",
+		"description": "listing issues",
 	})
 	if resp.IsError {
 		t.Fatalf("phrase injection must satisfy the required description: %+v", resp)
 	}
 	var in map[string]any
 	_ = json.Unmarshal([]byte(captured), &in)
-	if in["description"] != "listing workflows" {
+	if in["description"] != "listing issues" {
 		t.Errorf("invoke-level phrase must be injected: %q", captured)
 	}
 
@@ -333,9 +339,21 @@ func TestSetupAgentSessionTools_RegistrySurface(t *testing.T) {
 			t.Errorf("core tool %s missing from the wire set: %v", name, wire)
 		}
 	}
+	// The ask-built-in workflow tools are documented core exceptions
+	// (agent_tools_workflow.go) — they live on the wire, not in the
+	// registry, so the model can call them directly. The linear_*
+	// tools are still registry-only.
+	wfCore := []string{"workflow_list", "workflow_get", "workflow_create",
+		"workflow_edit", "workflow_delete", "workflow_copy", "workflow_run",
+		"clear_plans"}
+	for _, name := range wfCore {
+		if !wire[name] {
+			t.Errorf("workflow core tool %s missing from the wire set: %v", name, wire)
+		}
+	}
 	for name := range wire {
-		if strings.HasPrefix(name, "linear_") || strings.HasPrefix(name, "workflow_") {
-			t.Errorf("bridge tool %s must not be on the wire — registry only", name)
+		if strings.HasPrefix(name, "linear_") {
+			t.Errorf("linear_* tool %s must NOT be on the wire — registry only", name)
 		}
 	}
 
@@ -343,9 +361,17 @@ func TestSetupAgentSessionTools_RegistrySurface(t *testing.T) {
 	for _, name := range toolNames(s.deferredTools()) {
 		deferred[name] = true
 	}
-	for _, bt := range agentBridgeTools(s.env) {
+	for _, bt := range agentLinearTools(s.env) {
 		if !deferred[bt.Info().Name] {
-			t.Errorf("bridge tool %s missing from the registry", bt.Info().Name)
+			t.Errorf("linear tool %s missing from the registry", bt.Info().Name)
+		}
+	}
+	// Belt-and-suspenders: the workflow tools must not leak into the
+	// registry — they're core tools, and a duplicate there would
+	// confuse the search_tools description.
+	for name := range deferred {
+		if strings.HasPrefix(name, "workflow_") || name == "clear_plans" {
+			t.Errorf("workflow tool %s must NOT be in the registry", name)
 		}
 	}
 }

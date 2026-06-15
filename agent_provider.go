@@ -192,7 +192,7 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 // setupAgentSessionTools assembles the session's tool surface in two
 // tiers. The CORE tools below are the only tools sent to the model's
 // API tool definitions — every turn, every session. Everything else
-// (the native bridge twins, every MCP server tool) goes into the
+// (the linear_* bridge twins, every MCP server tool) goes into the
 // DEFERRED REGISTRY: registered and callable, but discovered through
 // search_tools and dispatched through invoke_tool instead of riding
 // the wire (agent_tools_registry.go). MCP failures are logged and
@@ -204,7 +204,12 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 // churns anthropic's cached tool block. A tool earns a core slot only
 // by deliberate, documented exception — the bar is "the agent cannot
 // function without seeing it unprompted" (see "Tool registry vs core
-// tools" in CLAUDE.md).
+// tools" in CLAUDE.md). The two documented exceptions today are
+// `web_search` (current information) and the ask-built-in workflow_*
+// tools (the two-stage workflow guard forces the model to call
+// workflow_list and workflow_run as a precondition for multi-step
+// work, and an extra search_tools round-trip per guard interaction
+// would be pure overhead — see agent_tools_workflow.go).
 func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	env := s.env
 	s.coreTools = []fantasy.AgentTool{
@@ -227,6 +232,17 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		agentSearchToolsTool(s.deferredTools),
 		agentInvokeToolTool(s.deferredTools, s.isCoreToolName, env),
 	}
+	// The ask-built-in workflow tools (workflow_list/get/create/edit/
+	// delete/copy/run + clear_plans) are deliberate core exceptions —
+	// the two-stage workflow guard forces the model to call
+	// workflow_list and workflow_run as a precondition for multi-step
+	// work. Keeping them in the deferred registry would cost an extra
+	// search_tools round-trip on every guard interaction. The disarm
+	// hooks (env.markWorkflowsChecked, env.markWorkflowRunDispatched)
+	// live in the tool closures themselves so the guard clears whether
+	// the model uses the direct or invoke path. See
+	// agent_tools_workflow.go.
+	s.coreTools = append(s.coreTools, agentWorkflowTools(env)...)
 	// web_search is the rare second deliberate core exception (alongside
 	// fetch): an agent cannot reach for current information unless it sees
 	// the tool unprompted. Providers with first-party search (anthropic,
@@ -241,7 +257,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	}
 	s.coreTools = wrapFileToolsWithMemory(s.coreTools, s.args.Cwd)
 	s.coreTools = wrapReadToolWithRules(s.coreTools, s.args.Cwd, discoverRules(s.args.Cwd))
-	s.deferredBase = agentBridgeTools(env)
+	s.deferredBase = agentLinearTools(env)
 	s.mcp = newMCPManager(s.args.TabID,
 		func() bool {
 			return s.spec != nil && s.spec.supportsImages != nil && s.spec.supportsImages(s.modelID)

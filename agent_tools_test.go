@@ -873,20 +873,17 @@ func TestAgentTodosWorkflowGuard_DisarmedByCheck(t *testing.T) {
 	var msgs []tea.Msg
 	env := newAgentToolEnv(cwd, 1, true, true, func(m tea.Msg) { msgs = append(msgs, m) })
 
-	// Invoking workflow_list through the registry disarms the guard.
-	inner := registryTool("workflow_list", "list workflows", []string{"description"})
-	inner.fn = func(_ context.Context, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-		return fantasy.NewTextResponse("[]"), nil
-	}
-	invoke := agentInvokeToolTool(staticRegistry(inner), nil, env)
-	if r := runTool(t, invoke, map[string]any{
-		"tool_name":   "workflow_list",
-		"description": "listing workflows",
-	}); r.IsError {
-		t.Fatalf("workflow_list invoke failed: %q", r.Content)
+	// Calling the workflow_list core tool disarms the first-stage
+	// guard. After the workflow tools were promoted to the core wire
+	// toolset, the disarm hooks live in the tool closures themselves
+	// (agent_tools_workflow.go) — a direct call clears the guard
+	// without going through invoke_tool.
+	list := workflowToolByName(t, env, "workflow_list")
+	if r, _ := list.Run(context.Background(), fantasy.ToolCall{ID: "1", Name: "workflow_list", Input: `{}`}); r.IsError {
+		t.Fatalf("workflow_list: %q", r.Content)
 	}
 	if !env.workflowsChecked {
-		t.Fatal("invoking workflow_list should set workflowsChecked")
+		t.Fatal("calling workflow_list core should set workflowsChecked")
 	}
 
 	// First guard is disarmed, but the model looked at the workflows and
@@ -942,29 +939,28 @@ func TestAgentTodosWorkflowGuard_DisarmedByRun(t *testing.T) {
 	var msgs []tea.Msg
 	env := newAgentToolEnv(cwd, 1, true, true, func(m tea.Msg) { msgs = append(msgs, m) })
 
-	// The model looked AND ran a workflow.
-	listInner := registryTool("workflow_list", "list workflows", []string{"description"})
-	listInner.fn = func(_ context.Context, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-		return fantasy.NewTextResponse("[]"), nil
+	// workflow_run dispatches into a fresh tab via the swap, so the
+	// test runs without a real tea.Program wired.
+	prev := mcpSpawnWorkflowTab
+	mcpSpawnWorkflowTab = func(spawnWorkflowTabMsg) error { return nil }
+	t.Cleanup(func() { mcpSpawnWorkflowTab = prev })
+
+	// The model looked AND ran a workflow — both are direct core
+	// tool calls now (agent_tools_workflow.go) and their closures
+	// fire the workflow-guard disarm hooks.
+	list := workflowToolByName(t, env, "workflow_list")
+	if r, _ := list.Run(context.Background(), fantasy.ToolCall{ID: "1", Name: "workflow_list", Input: `{}`}); r.IsError {
+		t.Fatalf("workflow_list: %q", r.Content)
 	}
-	runInner := registryTool("workflow_run", "run a workflow", []string{"name", "description"})
-	runInner.fn = func(_ context.Context, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-		return fantasy.NewTextResponse("dispatched"), nil
-	}
-	invoke := agentInvokeToolTool(staticRegistry(listInner, runInner), nil, env)
-	if r := runTool(t, invoke, map[string]any{
-		"tool_name": "workflow_list", "description": "listing workflows",
+	run := workflowToolByName(t, env, "workflow_run")
+	if r, _ := run.Run(context.Background(), fantasy.ToolCall{
+		ID: "2", Name: "workflow_run",
+		Input: `{"name":"ship-it","append":"plan"}`,
 	}); r.IsError {
-		t.Fatalf("workflow_list invoke failed: %q", r.Content)
-	}
-	if r := runTool(t, invoke, map[string]any{
-		"tool_name": "workflow_run", "description": "running workflow",
-		"params": map[string]any{"name": "ship-it"},
-	}); r.IsError {
-		t.Fatalf("workflow_run invoke failed: %q", r.Content)
+		t.Fatalf("workflow_run: %q", r.Content)
 	}
 	if !env.workflowRunDispatched {
-		t.Fatal("invoking workflow_run should set workflowRunDispatched")
+		t.Fatal("calling workflow_run core should set workflowRunDispatched")
 	}
 
 	// Both stages satisfied → the first todos call applies.
@@ -1182,6 +1178,19 @@ func TestCoreTools_RequireDescriptionPhrase(t *testing.T) {
 		agentSearchToolsTool(func() []fantasy.AgentTool { return nil }),
 		agentInvokeToolTool(func() []fantasy.AgentTool { return nil }, nil, nil),
 	}
+	// The workflow tools are now core too (agent_tools_workflow.go).
+	// Most of them pick up the standard injected description phrase —
+	// the nativeBridgeTool adapter adds it whenever the input struct
+	// doesn't already declare a "description" field. workflow_create
+	// and workflow_edit DO declare a real "description" payload (the
+	// workflow's purpose statement, surfaced in workflow_list), so
+	// they keep their own schema and must NOT receive the injected
+	// phrase. The exception set below pinpoints them.
+	tools = append(tools, agentWorkflowTools(env)...)
+	descriptionIsPayload := map[string]bool{
+		"workflow_create": true,
+		"workflow_edit":   true,
+	}
 	for _, tool := range tools {
 		info := tool.Info()
 		prop, ok := info.Parameters["description"].(map[string]any)
@@ -1189,7 +1198,22 @@ func TestCoreTools_RequireDescriptionPhrase(t *testing.T) {
 			t.Errorf("%s: missing description param: %+v", info.Name, info.Parameters)
 			continue
 		}
-		if doc, _ := prop["description"].(string); !strings.Contains(doc, "phrase") {
+		doc, _ := prop["description"].(string)
+		if descriptionIsPayload[info.Name] {
+			// Payload description: must not be the injected phrase doc,
+			// and must not be required (it's omitempty in the input
+			// struct — the user/agent can omit it).
+			if strings.Contains(doc, "phrase") {
+				t.Errorf("%s: payload description doc was clobbered by the injected phrase: %q", info.Name, doc)
+			}
+			for _, r := range info.Required {
+				if r == "description" {
+					t.Errorf("%s: payload description must not be required: %v", info.Name, info.Required)
+				}
+			}
+			continue
+		}
+		if !strings.Contains(doc, "phrase") {
 			t.Errorf("%s: description doc must explain the phrase contract; got %q", info.Name, doc)
 		}
 		var required bool
