@@ -141,12 +141,12 @@ const memoryHookCtxTimeout = 8 * time.Second
 // Empty hits → empty string (claude sees no injection at all rather
 // than a header with no content underneath).
 func formatRecallContext(hits []memmy.RecallHit, heading string) string {
-	if len(hits) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "## %s\n\n", heading)
-	for i, h := range hits {
+	// First pass: collect the text of every hit that would render,
+	// dropping entries whose Text and SourceText are both blank. We
+	// renumber from 1 in the second pass so a skipped hit doesn't
+	// leave a gap in the rank the user sees.
+	lines := make([]string, 0, len(hits))
+	for _, h := range hits {
 		text := strings.TrimSpace(h.Text)
 		if text == "" {
 			text = strings.TrimSpace(h.SourceText)
@@ -154,6 +154,19 @@ func formatRecallContext(hits []memmy.RecallHit, heading string) string {
 		if text == "" {
 			continue
 		}
+		lines = append(lines, text)
+	}
+	if len(lines) == 0 {
+		// Doc: "Empty hits → empty string (claude sees no injection
+		// at all rather than a header with no content underneath)."
+		// We treat "no hits that would render text" the same as
+		// "no hits at all" — both paths produce no additionalContext
+		// block, no bare heading.
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "## %s\n\n", heading)
+	for i, text := range lines {
 		fmt.Fprintf(&b, "%d. %s\n", i+1, text)
 	}
 	return strings.TrimRight(b.String(), "\n")
