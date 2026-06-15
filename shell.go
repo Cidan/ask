@@ -43,6 +43,14 @@ type shellStreamState struct {
 	marked atomic.Bool
 }
 
+// syscallGetpgid is a seam: tests swap it to inject a "Getpgid
+// error" without using a real process.
+var syscallGetpgid = syscall.Getpgid
+
+// syscallKill is a seam: tests swap it to capture the kill target
+// and signal without actually signalling.
+var syscallKill = syscall.Kill
+
 func userShell() string {
 	if sh := os.Getenv("SHELL"); sh != "" {
 		return sh
@@ -186,9 +194,9 @@ func (m *model) killShellProc() {
 	if m.shellProc == nil || m.shellProc.Process == nil {
 		return
 	}
-	pgid, err := syscall.Getpgid(m.shellProc.Process.Pid)
+	pgid, err := syscallGetpgid(m.shellProc.Process.Pid)
 	if err == nil {
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		_ = syscallKill(-pgid, syscall.SIGKILL)
 	} else {
 		_ = m.shellProc.Process.Kill()
 	}

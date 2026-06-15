@@ -14,12 +14,24 @@ var (
 	debugOn   = os.Getenv("ASK_DEBUG") != ""
 )
 
+// debugFileFactory is a seam: tests swap it to redirect debug
+// output to a t.TempDir-backed file so they can read the bytes
+// back. The default opens /tmp/ask.log like production.
+var debugFileFactory = func() (*os.File, error) {
+	return os.OpenFile("/tmp/ask.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+}
+
+// debugOnEnv is a seam: tests swap it to flip the debug-on flag
+// without touching os.Setenv (which is process-global and would
+// race the parallel test suite).
+var debugOnEnv = func() bool { return os.Getenv("ASK_DEBUG") != "" }
+
 func debugLog(format string, args ...any) {
-	if !debugOn {
+	if !debugOnEnv() {
 		return
 	}
 	debugInit.Do(func() {
-		f, err := os.OpenFile("/tmp/ask.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		f, err := debugFileFactory()
 		if err == nil {
 			debugFile = f
 		}
@@ -33,7 +45,7 @@ func debugLog(format string, args ...any) {
 }
 
 func debugTrace(label string, start time.Time) {
-	if !debugOn {
+	if !debugOnEnv() {
 		return
 	}
 	debugLog("%s %dµs", label, time.Since(start).Microseconds())

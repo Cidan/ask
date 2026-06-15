@@ -1,13 +1,180 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// TestGitHubIssueProvider_ListIssues_ViaSeam: end-to-end check
+// that the dialGitHubMCPSessionFn seam (shared with the PR
+// provider) routes the issue provider's ListIssues call through
+// an in-process MCP server. The fake returns one issue; the test
+// asserts the parsed result.
+func TestGitHubIssueProvider_ListIssues_ViaSeam(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	withFakeGitHubIssueMCPEndpoint(t)
+	dir := initGitRepo(t)
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/Cidan/ask")
+
+	p := &githubIssueProvider{}
+	t.Cleanup(func() {
+		if p.session != nil {
+			_ = p.session.Close()
+		}
+	})
+	cfg := projectConfig{MCP: projectMCPConfig{GitHub: githubMCPConfig{Token: "tkn"}}}
+	page, err := p.ListIssues(context.Background(), cfg, dir, nil, IssuePagination{PerPage: 10})
+	if err != nil {
+		t.Fatalf("ListIssues: %v", err)
+	}
+	if len(page.Issues) != 1 {
+		t.Fatalf("want 1 issue, got %d", len(page.Issues))
+	}
+	if page.Issues[0].number != 7 || page.Issues[0].title != "hello" {
+		t.Errorf("issue mismatch: %+v", page.Issues[0])
+	}
+}
+
+// withFakeGitHubIssueMCPEndpoint starts an in-process MCP server
+// shaped like the GitHub Copilot issue tools and points the
+// dialGitHubMCPSessionFn seam at it.
+func withFakeGitHubIssueMCPEndpoint(t *testing.T) {
+	t.Helper()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "gh-issue-test", Version: "0.1"}, nil)
+	mcp.AddTool(srv, &mcp.Tool{Name: githubToolListIssues},
+		func(ctx context.Context, req *mcp.CallToolRequest, in map[string]any) (*mcp.CallToolResult, any, error) {
+			body := `[{"number":7,"title":"hello","state":"open","created_at":"2026-01-01T00:00:00Z"}]`
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: body}}}, nil, nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: githubToolSearchIssues},
+		func(ctx context.Context, req *mcp.CallToolRequest, in map[string]any) (*mcp.CallToolResult, any, error) {
+			body := `[{"number":7,"title":"hello","state":"open","created_at":"2026-01-01T00:00:00Z"}]`
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: body}}}, nil, nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: githubToolIssueRead},
+		func(ctx context.Context, req *mcp.CallToolRequest, in map[string]any) (*mcp.CallToolResult, any, error) {
+			method, _ := in["method"].(string)
+			var body string
+			switch method {
+			case "get_comments":
+				body = `[]`
+			default:
+				body = `{"number":7,"title":"hello","body":"body","state":"open","created_at":"2026-01-01T00:00:00Z"}`
+			}
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: body}}}, nil, nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: githubToolIssueWrite},
+		func(ctx context.Context, req *mcp.CallToolRequest, in map[string]any) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{}, nil, nil
+		})
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	prev := dialGitHubMCPSessionFn
+	t.Cleanup(func() { dialGitHubMCPSessionFn = prev })
+	dialGitHubMCPSessionFn = func(ctx context.Context, endpoint, token string, timeout time.Duration) (*mcp.ClientSession, error) {
+		return prev(ctx, ts.URL, token, timeout)
+	}
+}
+
+// TestFlattenContent: concatenate the TextContent blocks, one
+// per line. Non-text content (images, audio) is dropped. Empty
+// input yields empty string.
+func TestFlattenContent(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []mcp.Content
+		want string
+	}{
+		{"empty", nil, ""},
+		{"single text", []mcp.Content{&mcp.TextContent{Text: "hello"}}, "hello"},
+		{"multiple texts", []mcp.Content{
+			&mcp.TextContent{Text: "first"},
+			&mcp.TextContent{Text: "second"},
+		}, "first\nsecond"},
+		{"non-text dropped", []mcp.Content{
+			&mcp.TextContent{Text: "keep"},
+			&mcp.ImageContent{Data: []byte{1, 2, 3}, MIMEType: "image/png"},
+		}, "keep"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := flattenContent(tc.in); got != tc.want {
+				t.Errorf("flattenContent=%q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestGitHubIssueProvider_KanbanIssueStatus: maps column query's
+// `state` field to the kanban card's status. Non-github queries
+// (or nil) → empty.
+func TestGitHubIssueProvider_KanbanIssueStatus(t *testing.T) {
+	p := &githubIssueProvider{}
+	open := KanbanColumnSpec{Query: &githubQuery{state: "open"}}
+	if got := p.KanbanIssueStatus(open); got != "open" {
+		t.Errorf("open column status=%q want open", got)
+	}
+	closed := KanbanColumnSpec{Query: &githubQuery{state: "closed", closedReason: "completed"}}
+	if got := p.KanbanIssueStatus(closed); got != "closed" {
+		t.Errorf("closed column status=%q want closed", got)
+	}
+	bad := KanbanColumnSpec{Query: IssueQuery("not-a-github-query")}
+	if got := p.KanbanIssueStatus(bad); got != "" {
+		t.Errorf("non-github query status=%q want empty", got)
+	}
+	empty := KanbanColumnSpec{Query: nil}
+	if got := p.KanbanIssueStatus(empty); got != "" {
+		t.Errorf("nil query status=%q want empty", got)
+	}
+}
+
+// TestGitHubIssueProvider_SupportsCarry_True: github issues DO
+// support carry-and-drop (the kanban view's `Space` keybind on a
+// card); unlike the PR provider which never supports carry.
+func TestGitHubIssueProvider_SupportsCarry_True(t *testing.T) {
+	p := &githubIssueProvider{}
+	if !p.SupportsCarry() {
+		t.Error("github issues should support carry-and-drop")
+	}
+}
+
+// TestGitHubIssueProvider_MoveIssue_RejectsBlankToken: fail-fast
+// path — no token → MoveIssue returns the not-configured error
+// before any MCP call.
+func TestGitHubIssueProvider_MoveIssue_RejectsBlankToken(t *testing.T) {
+	p := &githubIssueProvider{}
+	err := p.MoveIssue(context.Background(), projectConfig{}, "/tmp", issue{}, KanbanColumnSpec{Query: &githubQuery{state: "open"}})
+	if err == nil {
+		t.Fatal("MoveIssue should error on blank token")
+	}
+	if !strings.Contains(err.Error(), "not configured") {
+		t.Errorf("err=%v should mention 'not configured'", err)
+	}
+}
+
+// TestGitHubIssueProvider_GetIssue_RejectsBlankToken: fail-fast
+// path — no token → GetIssue returns the not-configured error
+// before any MCP call.
+func TestGitHubIssueProvider_GetIssue_RejectsBlankToken(t *testing.T) {
+	p := &githubIssueProvider{}
+	_, err := p.GetIssue(context.Background(), projectConfig{}, "/tmp", 1)
+	if err == nil {
+		t.Fatal("GetIssue should error on blank token")
+	}
+	if !strings.Contains(err.Error(), "not configured") {
+		t.Errorf("err=%v should mention 'not configured'", err)
+	}
+}
 
 func TestParseGitHubRemoteURL_HTTPS(t *testing.T) {
 	cases := []struct {

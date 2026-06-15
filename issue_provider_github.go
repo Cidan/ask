@@ -493,7 +493,7 @@ func (p *githubIssueProvider) connect(ctx context.Context, cfg githubMCPConfig) 
 		_ = p.session.Close()
 		p.session = nil
 	}
-	cs, err := dialGitHubMCP(ctx, endpoint, cfg.Token, githubMCPInitTimeout)
+	cs, err := dialGitHubMCPSessionFn(ctx, endpoint, cfg.Token, githubMCPInitTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -502,6 +502,12 @@ func (p *githubIssueProvider) connect(ctx context.Context, cfg githubMCPConfig) 
 	p.cachedToken = cfg.Token
 	return cs, nil
 }
+
+// dialGitHubMCPSessionFn is a seam: tests swap it to inject a
+// pre-built *mcp.ClientSession (typically from an in-process MCP
+// server behind httptest) so provider behavior can be exercised
+// without dialing the real GitHub Copilot endpoint.
+var dialGitHubMCPSessionFn = dialGitHubMCP
 
 // dialGitHubMCP performs the bearer-auth Streamable HTTP handshake
 // shared by every GitHub-backed provider (issues, PRs, future). The

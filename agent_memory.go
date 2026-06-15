@@ -17,17 +17,26 @@ import (
 // agent sessions get the same three injections natively. All paths
 // no-op instantly when the memory service is closed.
 
+// memoryServiceOpened is a seam: tests swap it to a stub that
+// pretends the memory service is open/closed without touching the
+// real memmy singleton.
+var memoryServiceOpened = memoryServiceOpen
+
+// memoryRecallFn is a seam: tests swap it to inject canned hits
+// (or errors) without spinning a real embedder.
+var memoryRecallFn = memoryRecall
+
 // agentMemorySystemBlock is the SessionStart twin: a coarse
 // project-level recall computed once per session and appended to the
 // system prompt. Computing it once keeps the prompt byte-stable for
 // the session, which prefix caching depends on.
 func agentMemorySystemBlock(cwd string) string {
-	if !memoryServiceOpen() {
+	if !memoryServiceOpened() {
 		return ""
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), memoryHookCtxTimeout)
 	defer cancel()
-	hits, err := memoryRecall(ctx, cwd, "current project context", memoryRecallK)
+	hits, err := memoryRecallFn(ctx, cwd, "current project context", memoryRecallK)
 	if err != nil {
 		debugLog("agent memory (session start): %v", err)
 		return ""
@@ -40,12 +49,12 @@ func agentMemorySystemBlock(cwd string) string {
 // prompt (and persisted with it, wire-true — same as claude's JSONL
 // recording hook-injected context).
 func agentMemoryPromptContext(cwd, prompt string) string {
-	if !memoryServiceOpen() || strings.TrimSpace(prompt) == "" {
+	if !memoryServiceOpened() || strings.TrimSpace(prompt) == "" {
 		return ""
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), memoryHookCtxTimeout)
 	defer cancel()
-	hits, err := memoryRecall(ctx, cwd, prompt, memoryRecallK)
+	hits, err := memoryRecallFn(ctx, cwd, prompt, memoryRecallK)
 	if err != nil {
 		debugLog("agent memory (prompt): %v", err)
 		return ""
@@ -79,7 +88,7 @@ func wrapFileToolsWithMemory(tools []fantasy.AgentTool, cwd string) []fantasy.Ag
 
 func (m *memoryAwareTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 	resp, err := m.AgentTool.Run(ctx, call)
-	if err != nil || resp.IsError || resp.Type != "text" || !memoryServiceOpen() {
+	if err != nil || resp.IsError || resp.Type != "text" || !memoryServiceOpened() {
 		return resp, err
 	}
 	path := fileToolPath(call.Input)
@@ -88,7 +97,7 @@ func (m *memoryAwareTool) Run(ctx context.Context, call fantasy.ToolCall) (fanta
 	}
 	recallCtx, cancel := context.WithTimeout(ctx, memoryHookCtxTimeout)
 	defer cancel()
-	hits, rerr := memoryRecall(recallCtx, m.cwd, path, memoryRecallK)
+	hits, rerr := memoryRecallFn(recallCtx, m.cwd, path, memoryRecallK)
 	if rerr != nil {
 		debugLog("agent memory (file %s): %v", path, rerr)
 		return resp, err
