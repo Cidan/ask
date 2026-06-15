@@ -981,13 +981,13 @@ func TestWorkflowNative_EditDecodesStepsJSON(t *testing.T) {
 	}})
 	env := newAgentToolEnv(cwd, 1, true, true, nil)
 	var tool fantasy.AgentTool
-	for _, bt := range agentBridgeTools(env) {
+	for _, bt := range agentWorkflowTools(env) {
 		if bt.Info().Name == "workflow_edit" {
 			tool = bt
 		}
 	}
 	if tool == nil {
-		t.Fatal("workflow_edit native tool missing")
+		t.Fatal("workflow_edit core tool missing")
 	}
 	resp, err := tool.Run(context.Background(), fantasy.ToolCall{
 		ID: "1", Name: "workflow_edit",

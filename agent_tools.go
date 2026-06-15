@@ -42,13 +42,17 @@ type agentToolEnv struct {
 	// multi-step work, AND to reconcile the workflow decision with the
 	// user instead of silently proceeding inline. workflowsAvailable is
 	// computed once at session start (true only when the project or user
-	// scope actually defines a workflow). workflowsChecked flips when the
-	// model invokes workflow_list; workflowRunDispatched flips when it
-	// invokes workflow_run. workflowGuardFired and decisionGuardFired
+	// scope actually defines a workflow). workflowsChecked flips when
+	// the model invokes workflow_list; workflowRunDispatched flips when
+	// it invokes workflow_run. workflowGuardFired and decisionGuardFired
 	// ensure the todos tool punts the model back at most once per stage,
 	// so a model that legitimately proceeds inline is never blocked more
-	// than these two checkpoints. See the guards in agentTodosTool and
-	// the disarms in agentInvokeTool.Run.
+	// than these two checkpoints. The disarms now live in the
+	// workflow_list / workflow_run core tool closures
+	// (agent_tools_workflow.go) — when those tools were in the deferred
+	// registry the disarms fired inside agentInvokeTool.Run, but
+	// promoting them to the core wire toolset moved the hooks next to
+	// the calls they guard. See the guards in agentTodosTool.
 	wfMu                  sync.Mutex
 	workflowsAvailable    bool
 	workflowsChecked      bool
@@ -84,7 +88,8 @@ func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, gateTodosBefor
 
 // markWorkflowsChecked disarms the workflow guard: once the model has
 // invoked workflow_list, the todos tool stops punting it back. Called
-// from the registry invoke path.
+// from the workflow_list core tool closure
+// (agent_tools_workflow.go).
 func (env *agentToolEnv) markWorkflowsChecked() {
 	env.wfMu.Lock()
 	env.workflowsChecked = true
@@ -94,7 +99,8 @@ func (env *agentToolEnv) markWorkflowsChecked() {
 // markWorkflowRunDispatched records that the model actually launched a
 // workflow via workflow_run. This permanently satisfies the decision
 // guard: a model that ran a workflow is never punted back to reconcile
-// an inline decision. Called from the registry invoke path.
+// an inline decision. Called from the workflow_run core tool closure
+// (agent_tools_workflow.go).
 func (env *agentToolEnv) markWorkflowRunDispatched() {
 	env.wfMu.Lock()
 	env.workflowRunDispatched = true

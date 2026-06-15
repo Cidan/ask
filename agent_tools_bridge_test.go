@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,33 +10,30 @@ import (
 
 func bridgeToolByName(t *testing.T, env *agentToolEnv, name string) fantasy.AgentTool {
 	t.Helper()
-	for _, tool := range agentBridgeTools(env) {
+	for _, tool := range agentLinearTools(env) {
 		if tool.Info().Name == name {
 			return tool
 		}
 	}
-	t.Fatalf("native bridge tool %q missing", name)
+	t.Fatalf("native linear tool %q missing", name)
 	return nil
 }
 
-func TestAgentBridgeTools_CoversEveryBridgeTool(t *testing.T) {
+func TestAgentLinearTools_CoversEveryLinearTool(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 	want := []string{
 		"linear_list_issues", "linear_get_issue", "linear_update_issue",
 		"linear_create_comment", "linear_create_issue", "linear_delete_issue",
 		"linear_list_teams", "linear_list_users", "linear_list_labels",
 		"linear_list_states", "linear_list_projects", "linear_list_cycles",
-		"workflow_list", "workflow_get", "workflow_create",
-		"workflow_edit", "workflow_delete", "workflow_copy", "workflow_run",
-		"clear_plans",
 	}
 	got := map[string]bool{}
-	for _, tool := range agentBridgeTools(env) {
+	for _, tool := range agentLinearTools(env) {
 		got[tool.Info().Name] = true
 	}
 	for _, name := range want {
 		if !got[name] {
-			t.Errorf("missing native twin for %s", name)
+			t.Errorf("missing native linear twin for %s", name)
 		}
 	}
 	if len(got) != len(want) {
@@ -135,257 +130,35 @@ func TestNativeBridgeTool_InvalidInputErrors(t *testing.T) {
 	}
 }
 
-func TestNativeBridgeTool_WorkflowCRUDRoundTrip(t *testing.T) {
-	isolateHome(t)
-	env, _ := newTestToolEnv(t)
-
-	// Empty project: list is a summary + structured JSON.
-	list := bridgeToolByName(t, env, "workflow_list")
-	resp, err := list.Run(context.Background(), fantasy.ToolCall{ID: "1", Name: "workflow_list", Input: `{}`})
-	if err != nil || resp.IsError {
-		t.Fatalf("list: %+v %v", resp, err)
-	}
-	if !strings.Contains(resp.Content, "0 workflow(s) defined") {
-		t.Errorf("list summary missing: %q", resp.Content)
-	}
-
-	create := bridgeToolByName(t, env, "workflow_create")
-	resp, err = create.Run(context.Background(), fantasy.ToolCall{
-		ID: "2", Name: "workflow_create",
-		Input: `{"name":"review","steps":[{"name":"step1","provider":"deepseek","prompt":"review the issue"}]}`,
-	})
-	if err != nil || resp.IsError {
-		t.Fatalf("create: %+v %v", resp, err)
-	}
-	if !strings.Contains(resp.Content, `workflow "review" created`) ||
-		!strings.Contains(resp.Content, `"review the issue"`) {
-		t.Errorf("create must return summary + structured JSON: %q", resp.Content)
-	}
-
-	// The definition persisted to the project config.
-	items, err := workflowItemsForCwd(env.cwd)
-	if err != nil || len(items) != 1 || items[0].Name != "review" {
-		t.Fatalf("workflow must persist: %+v %v", items, err)
-	}
-
-	// Duplicate create gates.
-	resp, _ = create.Run(context.Background(), fantasy.ToolCall{
-		ID: "3", Name: "workflow_create",
-		Input: `{"name":"review","steps":[{"name":"s","provider":"deepseek","prompt":"p"}]}`,
-	})
-	if !resp.IsError || !strings.Contains(resp.Content, "already exists") {
-		t.Errorf("duplicate create must error: %+v", resp)
-	}
-
-	del := bridgeToolByName(t, env, "workflow_delete")
-	resp, err = del.Run(context.Background(), fantasy.ToolCall{ID: "4", Name: "workflow_delete", Input: `{"name":"review"}`})
-	if err != nil || resp.IsError {
-		t.Fatalf("delete: %+v %v", resp, err)
-	}
-	items, _ = workflowItemsForCwd(env.cwd)
-	if len(items) != 0 {
-		t.Errorf("delete must persist: %+v", items)
-	}
-}
-
-func TestNativeBridgeTool_WorkflowDescriptionRoundTrip(t *testing.T) {
-	isolateHome(t)
-	env, _ := newTestToolEnv(t)
-
-	create := bridgeToolByName(t, env, "workflow_create")
-	resp, err := create.Run(context.Background(), fantasy.ToolCall{
-		ID: "1", Name: "workflow_create",
-		Input: `{"name":"ship","description":"Use for any code change you ship.","steps":[{"name":"s","provider":"deepseek","prompt":"p"}]}`,
-	})
-	if err != nil || resp.IsError {
-		t.Fatalf("create: %+v %v", resp, err)
-	}
-
-	// list surfaces the description so the agent can judge fit.
-	list := bridgeToolByName(t, env, "workflow_list")
-	resp, err = list.Run(context.Background(), fantasy.ToolCall{ID: "2", Name: "workflow_list", Input: `{}`})
-	if err != nil || resp.IsError {
-		t.Fatalf("list: %+v %v", resp, err)
-	}
-	if !strings.Contains(resp.Content, "Use for any code change you ship.") {
-		t.Errorf("workflow_list must surface the description: %q", resp.Content)
-	}
-
-	// edit replaces the description; omitting it would leave it unchanged.
-	edit := bridgeToolByName(t, env, "workflow_edit")
-	resp, err = edit.Run(context.Background(), fantasy.ToolCall{
-		ID: "3", Name: "workflow_edit",
-		Input: `{"name":"ship","description":"Updated purpose statement."}`,
-	})
-	if err != nil || resp.IsError {
-		t.Fatalf("edit: %+v %v", resp, err)
-	}
-	items, err := workflowItemsForCwd(env.cwd)
-	if err != nil || len(items) != 1 || items[0].Description != "Updated purpose statement." {
-		t.Fatalf("edit must persist new description: %+v %v", items, err)
-	}
-
-	// Omitting description on a later edit leaves it intact (rename only).
-	resp, err = edit.Run(context.Background(), fantasy.ToolCall{
-		ID: "4", Name: "workflow_edit",
-		Input: `{"name":"ship","new_name":"deploy"}`,
-	})
-	if err != nil || resp.IsError {
-		t.Fatalf("rename edit: %+v %v", resp, err)
-	}
-	items, _ = workflowItemsForCwd(env.cwd)
-	if len(items) != 1 || items[0].Name != "deploy" || items[0].Description != "Updated purpose statement." {
-		t.Errorf("omitted description must stay unchanged across a rename: %+v", items)
-	}
-
-	// get returns the description.
-	get := bridgeToolByName(t, env, "workflow_get")
-	resp, err = get.Run(context.Background(), fantasy.ToolCall{ID: "5", Name: "workflow_get", Input: `{"name":"deploy"}`})
-	if err != nil || resp.IsError {
-		t.Fatalf("get: %+v %v", resp, err)
-	}
-	if !strings.Contains(resp.Content, "Updated purpose statement.") {
-		t.Errorf("workflow_get must return the description: %q", resp.Content)
-	}
-}
-
-func TestNativeBridgeTool_WorkflowRunDispatches(t *testing.T) {
-	isolateHome(t)
-	env, _ := newTestToolEnv(t)
-	env.tabID = 9
-
-	create := bridgeToolByName(t, env, "workflow_create")
-	if resp, err := create.Run(context.Background(), fantasy.ToolCall{
-		ID: "1", Name: "workflow_create",
-		Input: `{"name":"go","steps":[{"name":"s1","provider":"deepseek","prompt":"do it"}]}`,
-	}); err != nil || resp.IsError {
-		t.Fatalf("create: %+v %v", resp, err)
-	}
-
-	var spawned []spawnWorkflowTabMsg
-	prev := mcpSpawnWorkflowTab
-	mcpSpawnWorkflowTab = func(msg spawnWorkflowTabMsg) error {
-		spawned = append(spawned, msg)
-		return nil
-	}
-	t.Cleanup(func() { mcpSpawnWorkflowTab = prev })
-
-	run := bridgeToolByName(t, env, "workflow_run")
-	resp, err := run.Run(context.Background(), fantasy.ToolCall{ID: "2", Name: "workflow_run", Input: `{"name":"go","append":"full plan and context"}`})
-	if err != nil || resp.IsError {
-		t.Fatalf("run: %+v %v", resp, err)
-	}
-	if len(spawned) != 1 || spawned[0].Workflow.Name != "go" ||
-		spawned[0].OriginTabID != 9 || spawned[0].Cwd != env.cwd {
-		t.Errorf("spawn msg wrong: %+v", spawned)
-	}
-	if !strings.Contains(resp.Content, "dispatched") {
-		t.Errorf("run output: %q", resp.Content)
-	}
-}
-
 func TestSetupAgentSessionTools_NoLoopbackAttachAndNativesPresent(t *testing.T) {
 	if servers := agentSessionMCPServers(ProviderSessionArgs{MCPPort: 4242, Cwd: "/tmp"}, askConfig{}); len(servers) != 0 {
 		t.Errorf("in-process sessions must not attach the loopback bridge: %+v", servers)
 	}
 	env, _ := newTestToolEnv(t)
 	names := map[string]bool{}
-	for _, tool := range agentBridgeTools(env) {
+	for _, tool := range agentLinearTools(env) {
 		names[tool.Info().Name] = true
 	}
-	if !names["workflow_run"] || !names["linear_list_issues"] {
-		t.Error("native bridge twins must be present")
+	// The linear_* tools are the registry-resident bridge twins. The
+	// workflow tools now live on the wire as core exceptions
+	// (agent_tools_workflow.go); their presence in the registry would
+	// mean a regression. Both are still assembled in the session — the
+	// point of this test is the loopback bridge isn't attached.
+	if !names["linear_list_issues"] {
+		t.Error("linear_* native bridge twins must be present in the deferred registry")
 	}
 }
 
-// TestWorkflowRun_AppendIsRequiredInSchema pins that the generated
-// workflow_run schema marks `append` required — dropping omitempty from
-// the field is what forces the model to supply the full plan, and the
-// jsonschema generator infers "required" from the absence of omitempty.
-// A future edit that re-adds omitempty would silently make it optional;
-// this guards against that.
-func TestWorkflowRun_AppendIsRequiredInSchema(t *testing.T) {
+// TestClearPlans_NotInLinearTools sanity-checks that the clear_plans
+// tool is NOT in agentLinearTools (it lives in the workflow core set
+// now, not the linear twins). The full clear_plans behavior is
+// covered by TestClearPlans_WorkflowCoreToolIdempotent in
+// agent_tools_workflow_test.go.
+func TestClearPlans_NotInLinearTools(t *testing.T) {
 	env, _ := newTestToolEnv(t)
-	var run fantasy.AgentTool
-	for _, tool := range agentBridgeTools(env) {
-		if tool.Info().Name == "workflow_run" {
-			run = tool
-			break
+	for _, tool := range agentLinearTools(env) {
+		if tool.Info().Name == "clear_plans" {
+			t.Fatal("clear_plans must not live in agentLinearTools")
 		}
-	}
-	if run == nil {
-		t.Fatal("workflow_run tool not found")
-	}
-	required := map[string]bool{}
-	for _, r := range run.Info().Required {
-		required[r] = true
-	}
-	if !required["name"] {
-		t.Error("name must be required")
-	}
-	if !required["append"] {
-		t.Errorf("append must be required; got required=%v", run.Info().Required)
-	}
-}
-
-// TestClearPlans_BridgeToolIdempotent: the clear_plans registry tool is
-// wired, clears ask/plans/ children (leaving the dir itself), and is
-// idempotent over empty or missing directories.
-func TestClearPlans_BridgeToolIdempotent(t *testing.T) {
-	isolateHome(t)
-	env, _ := newTestToolEnv(t)
-
-	tool := bridgeToolByName(t, env, "clear_plans")
-	if tool == nil {
-		t.Fatal("clear_plans tool not found in agentBridgeTools")
-	}
-	info := tool.Info()
-	if info.Name != "clear_plans" {
-		t.Fatalf("name: %s", info.Name)
-	}
-	if !strings.Contains(info.Description, "Clear the workflow plans directory") {
-		t.Errorf("description missing expected text: %s", info.Description)
-	}
-
-	// Clear when ask/plans/ does not exist: succeeds (no-op).
-	resp, err := tool.Run(context.Background(), fantasy.ToolCall{
-		ID: "1", Name: "clear_plans", Input: `{}`,
-	})
-	if err != nil || resp.IsError {
-		t.Fatalf("clear_plans on absent dir: %v %+v", err, resp)
-	}
-	if !strings.Contains(resp.Content, "cleared") {
-		t.Errorf("response should confirm cleared; got %q", resp.Content)
-	}
-
-	// Create some plan files.
-	base := filepath.Join(env.cwd, "ask", "plans")
-	if err := os.MkdirAll(filepath.Join(base, "start"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(base, "start", "plan.md"), []byte("plan"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Clear: removes start/ but leaves ask/plans/.
-	resp, err = tool.Run(context.Background(), fantasy.ToolCall{
-		ID: "2", Name: "clear_plans", Input: `{}`,
-	})
-	if err != nil || resp.IsError {
-		t.Fatalf("clear_plans with contents: %v %+v", err, resp)
-	}
-	if _, e := os.Stat(filepath.Join(base, "start")); !os.IsNotExist(e) {
-		t.Error("start/ should be removed after clear")
-	}
-	if _, e := os.Stat(base); os.IsNotExist(e) {
-		t.Error("ask/plans/ itself should survive clear")
-	}
-
-	// Clear again on empty dir: still succeeds.
-	resp, err = tool.Run(context.Background(), fantasy.ToolCall{
-		ID: "3", Name: "clear_plans", Input: `{}`,
-	})
-	if err != nil || resp.IsError {
-		t.Fatalf("clear_plans second time: %v %+v", err, resp)
 	}
 }

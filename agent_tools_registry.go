@@ -13,11 +13,20 @@ import (
 // agent_tools_registry.go is the deferred tool registry surface:
 // search_tools + invoke_tool. The wire tool definitions sent to the
 // model every turn are the core tools ONLY — everything else (the
-// native bridge twins, every MCP server tool) lives in the deferred
+// linear_* bridge twins, every MCP server tool) lives in the deferred
 // registry, discoverable through search_tools and callable through
 // invoke_tool. This keeps the per-turn context cost flat no matter
 // how many MCP servers the user wires in, and keeps the wire toolset
 // byte-stable for anthropic's cached tool block.
+//
+// The ask-built-in workflow tools (workflow_list/get/create/edit/
+// delete/copy/run + clear_plans) are NOT here — they are core
+// exceptions that live on the wire (agent_tools_workflow.go). The
+// two-stage workflow guard forces the model to call workflow_list
+// and workflow_run as a precondition for multi-step work, and the
+// disarm hooks live in the workflow tool closures themselves, so the
+// direct-call path clears the guard without going through
+// invoke_tool.
 //
 // ⚠ New tools go into the registry, NEVER into the core list in
 // setupAgentSessionTools, unless there is a deliberate, documented
@@ -25,7 +34,7 @@ import (
 
 const agentSearchToolsDescription = `Search the tool registry for tools that are not listed in your tool definitions.
 
-Beyond your core tools, ask keeps a registry of additional tools — issue tracking (linear_*), workflow management (workflow_*), and external MCP integrations (mcp__<server>__<tool>). They are real, callable tools; they are just not included in your tool definitions to keep your context small.
+Beyond your core tools, ask keeps a registry of additional tools — issue tracking (linear_*) and external MCP integrations (mcp__<server>__<tool>). They are real, callable tools; they are just not included in your tool definitions to keep your context small. (The ask-built-in workflow_* tools and clear_plans are core exceptions — they live on the wire, not in the registry, because the two-stage workflow guard forces the model to call them directly.)
 
 Query syntax: "*" lists every registry tool; a trailing * does prefix matching (e.g. "linear_*"); anything else is a case-insensitive substring match against tool names and descriptions. Each result carries the tool's name, description, and full input_schema — everything needed to call it through invoke_tool.`
 
@@ -125,15 +134,22 @@ type agentInvokeToolParams struct {
 type agentInvokeTool struct {
 	registry func() []fantasy.AgentTool
 	isCore   func(name string) bool
-	env      *agentToolEnv
-	opts     fantasy.ProviderOptions
+	// env is kept on the struct for the existing constructor signature
+	// but is no longer used in Run — the workflow-guard disarm hooks
+	// moved to the workflow tool closures when those tools were
+	// promoted to the core wire toolset (agent_tools_workflow.go).
+	env  *agentToolEnv
+	opts fantasy.ProviderOptions
 }
 
 // agentInvokeToolTool builds the invoke_tool core tool. registry
 // returns the current deferred tool set; isCore reports whether a
 // name belongs to the core tools so the error message can steer the
-// model back to a direct call. env (optional) lets the invoke path
-// disarm the todos workflow guard when workflow_list is called.
+// model back to a direct call. env is unused by invoke_tool itself
+// (the workflow-guard disarm hooks live in the workflow tool
+// closures, agent_tools_workflow.go, now that those tools are core
+// exceptions) but the parameter is kept for the existing call
+// signature.
 func agentInvokeToolTool(registry func() []fantasy.AgentTool, isCore func(string) bool, env *agentToolEnv) fantasy.AgentTool {
 	return &agentInvokeTool{registry: registry, isCore: isCore, env: env}
 }
@@ -211,18 +227,15 @@ func (t *agentInvokeTool) Run(ctx context.Context, call fantasy.ToolCall) (fanta
 	if err != nil {
 		return fantasy.NewTextErrorResponse("invalid params: " + err.Error()), nil
 	}
-	// Looking at the project's workflows disarms the first-stage todos
-	// workflow guard; actually running one disarms the second-stage
-	// decision guard. The model has done what each guard asks, so its
-	// task list goes through unimpeded from here on.
-	if t.env != nil {
-		switch name {
-		case "workflow_list":
-			t.env.markWorkflowsChecked()
-		case "workflow_run":
-			t.env.markWorkflowRunDispatched()
-		}
-	}
+	// The workflow-guard disarm hooks used to live here so the registry
+	// path (search_tools → invoke_tool) cleared the todos workflow
+	// guard. workflow_list and workflow_run were promoted to the core
+	// wire toolset (agent_tools_workflow.go) and the disarm hooks now
+	// live in their own closures, so a model that follows the direct-
+	// call pattern clears the guard without going through invoke_tool.
+	// If a model still routes workflow_list / workflow_run through
+	// invoke_tool, the runtime will reject it as a core-tool name and
+	// steer it back to a direct call.
 	return inner.Run(ctx, fantasy.ToolCall{
 		ID:    call.ID,
 		Name:  name,
