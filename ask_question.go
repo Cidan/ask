@@ -715,6 +715,13 @@ func normalizeDiagrams(diagrams []string) []string {
 	return out
 }
 
+// diagramExtent returns the bounding box of the diagrams: the
+// maximum line width across all non-empty diagrams as the width, and
+// the maximum per-diagram line count as the height (NOT the sum —
+// only one diagram is shown at a time, so a single row reserves the
+// preview space). Empty entries are skipped, and an all-empty input
+// falls back to the minimum preview box (16 wide × 4 tall) so a
+// no-diagram prompt still reserves the same preview area.
 func diagramExtent(diagrams []string) (w, h int) {
 	for _, d := range diagrams {
 		if d == "" {
