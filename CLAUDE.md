@@ -96,7 +96,7 @@ One `package main`, one file per concern.
 | `kitty_diacritics.go`  | The canonical 297-entry Kitty row/column diacritic table.               |
 | `ask_question.go`      | Question modal state, rendering, navigation, submit/cancel flow.        |
 | `workflows.go`         | Workflow runtime tracker singleton + persistence helpers + status broadcast. |
-| `workflow_store.go`    | Two-scope workflow persistence: user (ask.json) + repo (`<root>/.ask/workflows/*.json`, committed), merged repo-first listing, ambiguity-strict name resolution, dir sync on save, cross-scope copy. |
+| `workflow_store.go`    | Three-scope workflow persistence: user (ask.json) + repo (`<root>/.ask/workflows/*.json`, committed) + global (`~/.config/ask/workflows/*.json`, machine-local, visible from every project); merged global-first listing (personal-wins), ambiguity-strict name resolution, dir sync on save, cross-scope copy. |
 | `workflows_screen.go`  | Workflows builder screen — list/steps/step editor levels with multi-line prompt textarea. `e` on a selected workflow opens that same textarea (workflow-scoped `promptTarget=="description"`) to edit the workflow's free-text Description; it commits to `workflowDef.Description` and shows as the steps-pane subtitle. |
 | `workflows_picker.go`  | Small centred modal popped on `f` (issues) / `Ctrl+F` (chat) to pick which workflow to run. |
 | `workflows_run.go`     | Step runner: prompt assembly, advance-on-turn-complete, finalise on done/failed. |
@@ -136,7 +136,7 @@ exercised by the user; code alone won't catch layout regressions.
 | `tool_output_test.go`      | Tool-call rendering — phrase headline (short mode = phrase only, full = phrase + param rows, no duplicate description row), payload-description rejection heuristics (`toolCallPhrase`), `shortToolFields` native-lowercase-name coverage, tri-state cycling, result clamping. |
 | `workflows_test.go`        | Workflow tracker (markWorking/markFinal/lookup/clear), schema round-trip (incl. loop steps), prompt assembly, glyph table, `effectiveMaxIterations`. |
 | `workflows_screen_test.go` | Workflows builder state machine — add/rename/delete persistence + edit-while-running guard + description edit (`e` → prompt textarea → Ctrl+S persists `Description`) + loop tree (`stepRows`, add loop/inner, edit max-iters, delete loop/child) + scope copy/move (`c`/`s`, conflict auto-suffix, running guard, per-scope rename). |
-| `workflow_store_test.go`   | Two-scope store — filename sanitization, user/repo round-trip (Scope never persisted), Description round-trip (persisted under `json:description`, absent ⇒ key omitted), dir sync rename/delete, junk-file skip, repo-first resolution + ambiguity errors, cross-scope copy (conflict → new_name, deep clone), projectRoot anchoring. |
+| `workflow_store_test.go`   | Three-scope store — filename sanitization, user/repo/global round-trip (Scope never persisted), Description round-trip (persisted under `json:description`, absent ⇒ key omitted), dir sync rename/delete (both repo and global dirs tidy on empty), junk-file skip, global-first resolution + ambiguity errors, cross-scope copy (conflict → new_name, deep clone), `workflowsGlobalDir_NonHome` for empty-home fallback. |
 | `workflows_picker_test.go` | Picker open/navigate/Enter dispatches `spawnWorkflowTabMsg`. |
 | `workflows_run_test.go`    | Step runner — advance (incl. linear no-`end_turn` re-prompt), finalise, fail, idempotent finalise, unknown-provider rejection; loop decision table (iterate / tail break / non-tail break / non-tail proceed / non-tail + tail no-`end_turn` re-prompt / tail no-decision re-prompt / max-iter soft-exit), enter-loop, bounded context, `stepSummaryLine`, `end_turn` signal handling. |
 | `issues_workflow_test.go`  | `f` keybind dispatch on the issues screen — toast / picker / focus-existing-tab. |
@@ -313,7 +313,7 @@ is one new constant + a switch arm per accessor.
 
 ### Schema & scopes
 
-A workflow lives in one of two scopes (`workflow_store.go`):
+A workflow lives in one of three scopes (`workflow_store.go`):
 
 - **user** — `projectConfig.Workflows` alongside `projectConfig.Issues`
   in `~/.config/ask/ask.json` (machine-local, the pre-scope default).
@@ -321,18 +321,22 @@ A workflow lives in one of two scopes (`workflow_store.go`):
   `<projectRoot>/.ask/workflows/` (committed, shared with the team).
   `projectRoot` walks to the main checkout, so every worktree/subdir
   sees the same files — consistent with projectConfig tenancy.
+- **global** — one JSON file per workflow under
+  `~/.config/ask/workflows/` (machine-local, visible from every
+  project — a personal toolbox that follows the user between
+  checkout roots).
 
 `workflowDef.Scope` is runtime-only (`json:"-"`) — the storage
-location IS the scope, so both on-disk shapes are byte-identical to
-pre-scope workflows. Every read merges repo-first (`listAllWorkflows`;
-name-only lookup prefers repo, the same project-wins convention as
-skills/subagents). Names are unique *within* a scope; the same name in
-both scopes is legal — UI surfaces show a scope tag, and the mutating
-tools refuse to guess (`resolveWorkflowByName` errors on ambiguity
-without an explicit scope). All mutations funnel through
-`mutateWorkflows`/`saveAllWorkflows`, which split the merged list by
-scope and sync the repo dir (write changed files, remove stale ones —
-rename = delete+add, VCS-friendly) under the config lock.
+location IS the scope, so every on-disk shape is byte-identical to
+pre-scope workflows. Every read merges in the order global → repo →
+user (`listAllWorkflows`; name-only lookup prefers global, the
+personal-wins convention). Names are unique *within* a scope; the
+same name across multiple scopes is legal — UI surfaces show a scope
+tag, and the mutating tools refuse to guess (`resolveWorkflowByName`
+errors on ambiguity without an explicit scope). All mutations funnel
+through `mutateWorkflows`/`saveAllWorkflows`, which split the merged
+list by scope and sync both dirs (write changed files, remove stale
+ones — rename = delete+add, VCS-friendly) under the config lock.
 `copyWorkflowDef` copies across scopes (or duplicates within one);
 target-name conflicts error and demand a `new_name` (the builder
 auto-suffixes `-2`, `-3`… instead). Malformed/duplicate committed
@@ -552,7 +556,7 @@ with `/config`. Three navigation levels:
 
 | Level | Cursor over | Keys |
 |-------|------------|------|
-| List (left pane) | workflows (with repo/user scope tags) + "+ New" | enter open / r rename / c copy to other scope / s move scope / d delete / esc back to ask |
+| List (left pane) | workflows (with user/repo/global scope tags) + "+ New" | enter open / r rename / c copy / s move (rotates user→repo→global→user) / d delete / esc back to ask |
 | Steps (right pane) | the step tree + affordances | enter edit/create / d delete / tab focus left / esc list |
 | Step (right pane) | agent: Name/Provider/Model/Prompt · loop: Name/Max iters/Exit | enter edits the field / esc back to steps |
 

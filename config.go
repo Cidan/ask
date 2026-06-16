@@ -180,11 +180,13 @@ type workflowsConfig struct {
 // prior step (forwarded as a `Previous step output:` block in the
 // next step's user prompt).
 //
-// A workflow lives in one of two scopes (see workflow_store.go):
+// A workflow lives in one of three scopes (see workflow_store.go):
 // "user" defs persist under projectConfig.Workflows.Items in
 // ~/.config/ask/ask.json; "repo" defs are one-file-per-workflow JSON
 // under <projectRoot>/.ask/workflows/ so they can be committed and
-// shared. Scope is runtime-only (json:"-") — the storage location IS
+// shared; "global" defs are one-file-per-workflow JSON under
+// ~/.config/ask/workflows/ — machine-local but visible from every
+// project. Scope is runtime-only (json:"-") — the storage location IS
 // the scope, so the on-disk shapes stay byte-identical to pre-scope
 // workflows.
 type workflowDef struct {
@@ -214,6 +216,11 @@ const (
 	// workflowScopeRepo marks a workflow stored under
 	// <projectRoot>/.ask/workflows/ (committed, shared with the team).
 	workflowScopeRepo = "repo"
+	// workflowScopeGlobal marks a workflow stored under
+	// ~/.config/ask/workflows/ (machine-local, visible from every
+	// project — a personal toolbox that follows the user between
+	// checkout roots).
+	workflowScopeGlobal = "global"
 )
 
 // workflowStep is one stage of a workflow. A step is one of two kinds,

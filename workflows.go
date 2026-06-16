@@ -294,9 +294,9 @@ func broadcastWorkflowStatus(key, status string) {
 }
 
 // workflowDefByName looks up the named workflow under cwd's project,
-// searching repo scope first, then user (project-wins resolution).
-// Returns false when no match. Shared between the picker and the
-// runtime so the two can't drift on naming rules.
+// searching global first, then repo, then user (personal-wins
+// resolution). Returns false when no match. Shared between the picker
+// and the runtime so the two can't drift on naming rules.
 func workflowDefByName(cwd, name string) (workflowDef, bool) {
 	return findWorkflow(cwd, name, "")
 }
