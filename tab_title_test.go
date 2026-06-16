@@ -210,3 +210,30 @@ func TestResumeRehydratesTitle(t *testing.T) {
 		t.Fatalf("preview fallback title = %q", got)
 	}
 }
+
+// TestGenerateTabTitle_RetriesOn5xx verifies the title call's
+// AgentStreamCall carries MaxRetries, so a 5xx on the first attempt
+// gets retried and a non-empty title still lands. Drives the real
+// generateTabTitleText (not the swap) by swapping the deepseek model
+// factory to return a fakeLM that fails once with a 5xx.
+func TestGenerateTabTitle_RetriesOn5xx(t *testing.T) {
+	lm := &fakeLM{turns: [][]fantasy.StreamPart{
+		{providerErrPart(500, "internal server error", "boom")},
+		textTurn("Recovered Title", fantasy.Usage{InputTokens: 5, OutputTokens: 3}),
+	}}
+	swapDeepseekLM(t, lm)
+
+	title, usage, err := generateTabTitleText("deepseek", "deepseek-v4-pro", "fix the flaky test")
+	if err != nil {
+		t.Fatalf("expected success after retry, got error: %v", err)
+	}
+	if title != "Recovered Title" {
+		t.Errorf("title = %q want %q", title, "Recovered Title")
+	}
+	if usage.OutputTokens != 3 {
+		t.Errorf("usage.OutputTokens = %d want 3 (from the successful retry)", usage.OutputTokens)
+	}
+	if n := len(lm.streamCalls()); n != 2 {
+		t.Errorf("stream calls = %d want 2 (1 fail + 1 success)", n)
+	}
+}

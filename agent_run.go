@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/fantasy"
@@ -84,6 +86,16 @@ type agentSession struct {
 	sessionID string
 	store     *agentSessionStore
 	messages  []fantasy.Message
+
+	// retryMaxRetries / retryInitialDelay / retryBackoffFactor are the
+	// per-session policy handed to fantasy's retry middleware. Set at
+	// session start from cfg.UI.Retry (with package defaults), so tests
+	// can override them directly when constructing a session via
+	// newTestAgentSession. Read on the run goroutine, written once at
+	// StartSession time — no lock needed.
+	retryMaxRetries    int
+	retryInitialDelay  time.Duration
+	retryBackoffFactor float64
 }
 
 // refreshToolset rebuilds the wire tool set (core only) and the
@@ -348,6 +360,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	}
 
 	history := append([]fantasy.Message(nil), s.messages...)
+	retryMaxRetries, onRetry := s.agentRetryCallOptions()
 	result, err := agent.Stream(ctx, fantasy.AgentStreamCall{
 		Prompt:          turn.text,
 		Files:           turn.files,
@@ -356,6 +369,8 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		MaxOutputTokens: maxOutputTokensPtr(s.maxOutputTokens),
 		ProviderOptions: s.providerOpts,
 		PrepareStep:     prepareStep,
+		MaxRetries:      retryMaxRetriesPtr(retryMaxRetries),
+		OnRetry:         onRetry,
 		OnReasoningStart: func(string, fantasy.ReasoningContent) error {
 			s.emit(streamStatusMsg{status: "thinking…"})
 			return nil
@@ -493,6 +508,53 @@ func maxOutputTokensPtr(budget int64) *int64 {
 	return nil
 }
 
+// retryMaxRetriesPtr wraps the per-session retry count for the
+// fantasy call options. Nil means "use fantasy's DefaultRetryOptions";
+// this preserves the existing behavior for tests that don't set the
+// retry fields (newTestAgentSession leaves them at their zero value).
+func retryMaxRetriesPtr(n int) *int {
+	if n <= 0 {
+		return nil
+	}
+	return &n
+}
+
+// agentRetryCallOptions packages the per-call retry knobs fantasy
+// wants on AgentStreamCall (MaxRetries + OnRetry). The OnRetry
+// closure emits a streamStatusMsg into the session's emit channel so
+// the user sees the retry happening in the bottom status chip.
+// Network errors come through with err == nil; HTTP errors carry
+// err.StatusCode + err.Title.
+func (s *agentSession) agentRetryCallOptions() (maxRetries int, onRetry fantasy.OnRetryCallback) {
+	maxRetries = s.retryMaxRetries
+	if maxRetries <= 0 {
+		return 0, nil
+	}
+	onRetry = func(err *fantasy.ProviderError, delay time.Duration) {
+		s.emit(streamStatusMsg{status: agentRetryStatusMessage(err, delay)})
+	}
+	return maxRetries, onRetry
+}
+
+// agentRetryStatusMessage formats a single retry attempt for the
+// status chip. Pure helper (no env access) so tests can assert on the
+// string directly.
+func agentRetryStatusMessage(err *fantasy.ProviderError, delay time.Duration) string {
+	wait := delay.Round(time.Millisecond)
+	switch {
+	case err == nil:
+		return "retrying after connection error in " + wait.String() + "…"
+	case err.StatusCode > 0:
+		return fmt.Sprintf("retrying after HTTP %d in %s…", err.StatusCode, wait)
+	default:
+		title := strings.ToLower(strings.TrimSpace(err.Title))
+		if title == "" {
+			title = "error"
+		}
+		return "retrying after " + title + " in " + wait.String() + "…"
+	}
+}
+
 // agentAbnormalFinishNotice maps turn-ending finish reasons the model
 // did not choose onto a user-visible error line. Stop and ToolCalls
 // (incl. loop-detection / compaction stops and StopTurn) are normal.
@@ -546,10 +608,13 @@ func (s *agentSession) compact(ctx context.Context, turn agentTurn, result *fant
 		summaryBudget = s.maxOutputTokens
 	}
 	summarizer := fantasy.NewAgent(s.model, fantasy.WithSystemPrompt(agentSummaryPrompt))
+	retryMaxRetries, onRetry := s.agentRetryCallOptions()
 	sum, err := summarizer.Generate(ctx, fantasy.AgentCall{
 		Messages:        s.messages,
 		Prompt:          "Produce the continuation summary now.",
 		MaxOutputTokens: &summaryBudget,
+		MaxRetries:      retryMaxRetriesPtr(retryMaxRetries),
+		OnRetry:         onRetry,
 	})
 	if err != nil {
 		debugLog("agent compact failed: %v", err)
