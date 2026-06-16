@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestLoadConfig_MissingReturnsZero(t *testing.T) {
@@ -30,6 +31,9 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	worktreeTrue := true
 	gateTodosTrue := true
 	memOn := true
+	retryMax := 3
+	retryDelay := 500
+	retryFactor := 1.5
 	want := askConfig{
 		Provider: "anthropic",
 		Anthropic: apiProviderConfig{
@@ -46,6 +50,11 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 			Worktree:              &worktreeTrue,
 			GateTodosBeforeMutate: &gateTodosTrue,
 			Theme:                 "catppuccin-mocha",
+			Retry: &retryUIConfig{
+				MaxRetries:     &retryMax,
+				InitialDelayMs: &retryDelay,
+				BackoffFactor:  &retryFactor,
+			},
 		},
 		Memory: memoryConfig{Enabled: &memOn},
 		DeepSeek: apiProviderConfig{
@@ -86,6 +95,18 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	if got.Memory.Enabled == nil || *got.Memory.Enabled != true {
 		t.Errorf("memory.enabled lost in roundtrip: %+v", got.Memory.Enabled)
 	}
+	if got.UI.Retry == nil {
+		t.Fatalf("ui.retry block lost in roundtrip")
+	}
+	if got.UI.Retry.MaxRetries == nil || *got.UI.Retry.MaxRetries != 3 {
+		t.Errorf("ui.retry.maxRetries = %+v want 3", got.UI.Retry.MaxRetries)
+	}
+	if got.UI.Retry.InitialDelayMs == nil || *got.UI.Retry.InitialDelayMs != 500 {
+		t.Errorf("ui.retry.initialDelayMs = %+v want 500", got.UI.Retry.InitialDelayMs)
+	}
+	if got.UI.Retry.BackoffFactor == nil || *got.UI.Retry.BackoffFactor != 1.5 {
+		t.Errorf("ui.retry.backoffFactor = %+v want 1.5", got.UI.Retry.BackoffFactor)
+	}
 	if got.DeepSeek.Model != want.DeepSeek.Model || got.DeepSeek.Effort != want.DeepSeek.Effort ||
 		got.DeepSeek.APIKey != want.DeepSeek.APIKey || got.DeepSeek.BaseURL != want.DeepSeek.BaseURL {
 		t.Errorf("deepseek lost in roundtrip: %+v", got.DeepSeek)
@@ -125,6 +146,38 @@ func TestSaveConfig_FormatsJSONIndented(t *testing.T) {
 	var back askConfig
 	if err := json.Unmarshal(data, &back); err != nil {
 		t.Errorf("config not parseable JSON: %v; data=%s", err, data)
+	}
+}
+
+// TestSaveConfig_RetryOmittedByDefault pins the on-disk shape: a
+// config without a ui.retry block must not write a "retry" key, so
+// existing ask.json files stay byte-identical after an upgrade. A
+// loaded config without the block has nil Retry, and
+// agentRetryOptions falls back to the package defaults.
+func TestSaveConfig_RetryOmittedByDefault(t *testing.T) {
+	home := isolateHome(t)
+	if err := saveConfig(askConfig{}); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	path := filepath.Join(home, ".config", "ask", "ask.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(data), `"retry"`) {
+		t.Errorf("empty config must not write a \"retry\" key: %s", data)
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.UI.Retry != nil {
+		t.Errorf("loaded config has Retry = %+v, want nil", cfg.UI.Retry)
+	}
+	mr, id, bf := agentRetryOptions(cfg)
+	if mr != agentDefaultMaxRetries || id != time.Duration(agentDefaultInitialDelayMs)*time.Millisecond || bf != agentDefaultBackoffFactor {
+		t.Errorf("default retry policy: got (%d, %s, %f) want (%d, %s, %f)",
+			mr, id, bf, agentDefaultMaxRetries, time.Duration(agentDefaultInitialDelayMs)*time.Millisecond, agentDefaultBackoffFactor)
 	}
 }
 

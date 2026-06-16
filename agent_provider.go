@@ -161,6 +161,7 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 	if p.spec.maxOutputTokens != nil {
 		session.maxOutputTokens = p.spec.maxOutputTokens(modelID)
 	}
+	session.retryMaxRetries, session.retryInitialDelay, session.retryBackoffFactor = agentRetryOptions(cfg)
 
 	switch {
 	case args.SessionID != "":

@@ -729,11 +729,63 @@ type uiConfig struct {
 	// ToolOutput is the tri-state for tool-call rendering:
 	// "full" | "short" | "off". Empty string defers to
 	// defaultToolOutputMode.
-	ToolOutput            string `json:"toolOutput,omitempty"`
-	SkipAllPermissions    *bool  `json:"skipAllPermissions,omitempty"`
-	Worktree              *bool  `json:"worktree,omitempty"`
-	GateTodosBeforeMutate *bool  `json:"gateTodosBeforeMutate,omitempty"`
-	Theme                 string `json:"theme,omitempty"`
+	ToolOutput            string          `json:"toolOutput,omitempty"`
+	SkipAllPermissions    *bool           `json:"skipAllPermissions,omitempty"`
+	Worktree              *bool           `json:"worktree,omitempty"`
+	GateTodosBeforeMutate *bool           `json:"gateTodosBeforeMutate,omitempty"`
+	Theme                 string          `json:"theme,omitempty"`
+	Retry                 *retryUIConfig  `json:"retry,omitempty"`
+}
+
+// retryUIConfig tunes the fantasy retry middleware (5xx / 408 / 409 /
+// 429 / network errors). Nil fields fall back to the package defaults
+// baked into agentRetryOptions — a freshly-loaded config (or an
+// in-process test that skips loadConfig) still gets sensible numbers.
+// All fields are omitempty so existing on-disk configs stay
+// byte-identical.
+type retryUIConfig struct {
+	// MaxRetries is the number of retries AFTER the first attempt.
+	// Default 4 → 5 total attempts.
+	MaxRetries *int `json:"maxRetries,omitempty"`
+	// InitialDelayMs is the wait before the first retry, in
+	// milliseconds. Default 2000. Fantasy multiplies this by
+	// BackoffFactor between attempts.
+	InitialDelayMs *int `json:"initialDelayMs,omitempty"`
+	// BackoffFactor is the multiplier applied to the delay between
+	// attempts. Default 2.0. Provider-supplied retry-after / retry-after-ms
+	// headers can still override the computed delay when reasonable
+	// (see fantasy.RetryWithExponentialBackoffRespectingRetryHeaders).
+	BackoffFactor *float64 `json:"backoffFactor,omitempty"`
+}
+
+// retry defaults: 4 retries × 2s/4s/8s/16s ≈ 30s of total backoff —
+// long enough to ride out a brief provider outage without making the
+// user wait forever.
+const (
+	agentDefaultMaxRetries     = 4
+	agentDefaultInitialDelayMs = 2000
+	agentDefaultBackoffFactor  = 2.0
+)
+
+// agentRetryOptions reads the user-tunable retry knobs off cfg and
+// applies package defaults for any field the user left unset. Tests
+// pass an empty askConfig to read the same defaults.
+func agentRetryOptions(cfg askConfig) (maxRetries int, initialDelay time.Duration, backoffFactor float64) {
+	maxRetries = agentDefaultMaxRetries
+	initialDelay = time.Duration(agentDefaultInitialDelayMs) * time.Millisecond
+	backoffFactor = agentDefaultBackoffFactor
+	if cfg.UI.Retry != nil {
+		if v := cfg.UI.Retry.MaxRetries; v != nil {
+			maxRetries = *v
+		}
+		if v := cfg.UI.Retry.InitialDelayMs; v != nil {
+			initialDelay = time.Duration(*v) * time.Millisecond
+		}
+		if v := cfg.UI.Retry.BackoffFactor; v != nil {
+			backoffFactor = *v
+		}
+	}
+	return
 }
 
 func configPath() (string, error) {

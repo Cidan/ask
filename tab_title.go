@@ -58,9 +58,11 @@ var generateTabTitleText = func(providerID, modelID, prompt string) (string, fan
 	agent := fantasy.NewAgent(lm, fantasy.WithSystemPrompt(tabTitleSystemPrompt))
 	ctx, cancel := context.WithTimeout(context.Background(), tabTitleTimeout)
 	defer cancel()
+	retryMaxRetries, _, _ := agentRetryOptions(cfg)
 	res, err := agent.Stream(ctx, fantasy.AgentStreamCall{
 		Prompt:          "Generate a concise title for the following session-opening message:\n\n" + prompt,
 		MaxOutputTokens: maxOutputTokensPtr(tabTitleMaxOutputTokens),
+		MaxRetries:      retryMaxRetriesPtr(retryMaxRetries),
 	})
 	if err != nil {
 		return "", fantasy.Usage{}, err

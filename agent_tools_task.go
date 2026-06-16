@@ -99,6 +99,8 @@ func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel, maxTok
 			}
 
 			run := func(runCtx context.Context) (string, error) {
+				taskCfg, _ := loadConfig()
+				taskMaxRetries, _, _ := agentRetryOptions(taskCfg)
 				sub := fantasy.NewAgent(lm,
 					fantasy.WithSystemPrompt(system),
 					fantasy.WithTools(tools...),
@@ -113,6 +115,7 @@ func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel, maxTok
 				result, err := sub.Stream(runCtx, fantasy.AgentStreamCall{
 					Prompt:          prompt,
 					MaxOutputTokens: maxOutputTokensPtr(budget),
+					MaxRetries:      retryMaxRetriesPtr(taskMaxRetries),
 				})
 				if err != nil {
 					return "", err

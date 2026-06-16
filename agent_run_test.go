@@ -135,9 +135,18 @@ func newTestAgentSession(t *testing.T, lm *fakeLM, store *agentSessionStore) *ag
 // readSessionMsgs drains the session channel until pred returns true,
 // returning everything read (pred message included).
 func readSessionMsgs(t *testing.T, ch chan tea.Msg, pred func(tea.Msg) bool) []tea.Msg {
+	return readSessionMsgsTimeout(t, ch, pred, 5*time.Second)
+}
+
+// readSessionMsgsTimeout is readSessionMsgs with a custom timeout.
+// Retry tests need 15s+ because fantasy's DefaultRetryOptions sleep
+// for 2s, 4s, 8s… of real wall time per failed attempt — the
+// MaxRetries/OnRetry knobs are per-call, but InitialDelayIn/BackoffFactor
+// are hardcoded inside the library.
+func readSessionMsgsTimeout(t *testing.T, ch chan tea.Msg, pred func(tea.Msg) bool, timeout time.Duration) []tea.Msg {
 	t.Helper()
 	var msgs []tea.Msg
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(timeout)
 	for {
 		select {
 		case m, ok := <-ch:
@@ -149,7 +158,7 @@ func readSessionMsgs(t *testing.T, ch chan tea.Msg, pred func(tea.Msg) bool) []t
 				return msgs
 			}
 		case <-deadline:
-			t.Fatalf("timeout waiting for condition; got %d msgs: %#v", len(msgs), msgs)
+			t.Fatalf("timeout after %s waiting for condition; got %d msgs: %#v", timeout, len(msgs), msgs)
 		}
 	}
 }
@@ -577,5 +586,305 @@ func TestAgentTaskTool(t *testing.T) {
 	nilTool := agentTaskTool(env, func() fantasy.LanguageModel { return nil }, func() int64 { return 0 })
 	if resp := runTool(t, nilTool, agentTaskParams{Prompt: "x"}); !resp.IsError {
 		t.Error("nil model must error")
+	}
+}
+
+// TestAgentTaskTool_RetriesOn5xx verifies the sub-agent's stream
+// call carries MaxRetries — a 5xx on the first attempt gets retried
+// and the report still lands. The task tool calls loadConfig() inside
+// the run closure, so isolateHome keeps the test from touching the
+// real ~/.config/ask.
+func TestAgentTaskTool_RetriesOn5xx(t *testing.T) {
+	isolateHome(t)
+	env, _ := newTestToolEnv(t)
+	lm := &fakeLM{turns: [][]fantasy.StreamPart{
+		{providerErrPart(500, "internal server error", "boom")},
+		textTurn("recovered report", fantasy.Usage{InputTokens: 5, OutputTokens: 3}),
+	}}
+	tool := agentTaskTool(env,
+		func() fantasy.LanguageModel { return lm },
+		func() int64 { return 333 })
+
+	resp := runTool(t, tool, agentTaskParams{Prompt: "find the parser"})
+	if resp.IsError {
+		t.Fatalf("expected success after retry, got error: %+v", resp)
+	}
+	if resp.Content != "recovered report" {
+		t.Errorf("Content = %q want %q", resp.Content, "recovered report")
+	}
+	if n := len(lm.streamCalls()); n != 2 {
+		t.Errorf("stream calls = %d want 2 (1 fail + 1 success)", n)
+	}
+}
+
+// --- retry-on-5xx tests ---
+
+// fakeNetError satisfies net.Error so fantasy's isRetryableError
+// classifies it as retryable without going through the ProviderError
+// branch. Used by the network-error retry test.
+type fakeNetError struct{ msg string }
+
+func (e *fakeNetError) Error() string   { return e.msg }
+func (e *fakeNetError) Timeout() bool   { return false }
+func (e *fakeNetError) Temporary() bool { return true }
+
+// providerErrPart builds a StreamPart that, when yielded, makes
+// processStepStream return a *fantasy.ProviderError — fantasy's
+// retry middleware recognizes it as a retryable 5xx and the OnRetry
+// callback receives a non-nil error.
+func providerErrPart(status int, title, msg string) fantasy.StreamPart {
+	return fantasy.StreamPart{
+		Type: fantasy.StreamPartTypeError,
+		Error: &fantasy.ProviderError{
+			StatusCode: status,
+			Title:      title,
+			Message:    msg,
+		},
+	}
+}
+
+func TestAgentRetryStatusMessage(t *testing.T) {
+	cases := []struct {
+		name  string
+		err   *fantasy.ProviderError
+		delay time.Duration
+		want  string
+	}{
+		{"nil err", nil, 2 * time.Second, "retrying after connection error in 2s…"},
+		{"http 500", &fantasy.ProviderError{StatusCode: 500}, 4 * time.Second, "retrying after HTTP 500 in 4s…"},
+		{"http 429", &fantasy.ProviderError{StatusCode: 429}, 100 * time.Millisecond, "retrying after HTTP 429 in 100ms…"},
+		{"title only", &fantasy.ProviderError{Title: "rate limit"}, 2 * time.Second, "retrying after rate limit in 2s…"},
+		{"empty title", &fantasy.ProviderError{}, 1 * time.Second, "retrying after error in 1s…"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := agentRetryStatusMessage(tc.err, tc.delay)
+			if got != tc.want {
+				t.Errorf("got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAgentRetryOptions(t *testing.T) {
+	mkInt := func(n int) *int       { return &n }
+	mkFloat := func(f float64) *float64 { return &f }
+	defaults := func() (int, time.Duration, float64) {
+		return agentDefaultMaxRetries, time.Duration(agentDefaultInitialDelayMs) * time.Millisecond, agentDefaultBackoffFactor
+	}
+	mr, id, bf := defaults()
+	cases := []struct {
+		name string
+		cfg  askConfig
+		want struct {
+			mr  int
+			id  time.Duration
+			bf  float64
+		}
+	}{
+		{"empty", askConfig{}, struct{ mr int; id time.Duration; bf float64 }{mr, id, bf}},
+		{"max retries only", askConfig{UI: uiConfig{Retry: &retryUIConfig{MaxRetries: mkInt(7)}}}, struct{ mr int; id time.Duration; bf float64 }{7, id, bf}},
+		{"all overridden", askConfig{UI: uiConfig{Retry: &retryUIConfig{MaxRetries: mkInt(2), InitialDelayMs: mkInt(100), BackoffFactor: mkFloat(1.5)}}}, struct{ mr int; id time.Duration; bf float64 }{2, 100 * time.Millisecond, 1.5}},
+		{"empty retry block", askConfig{UI: uiConfig{Retry: &retryUIConfig{}}}, struct{ mr int; id time.Duration; bf float64 }{mr, id, bf}},
+		{"zero is honored", askConfig{UI: uiConfig{Retry: &retryUIConfig{MaxRetries: mkInt(0)}}}, struct{ mr int; id time.Duration; bf float64 }{0, id, bf}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mr, id, bf := agentRetryOptions(tc.cfg)
+			if mr != tc.want.mr || id != tc.want.id || bf != tc.want.bf {
+				t.Errorf("got (%d, %s, %f) want (%d, %s, %f)", mr, id, bf, tc.want.mr, tc.want.id, tc.want.bf)
+			}
+		})
+	}
+}
+
+func TestAgentSession_Retry5xxThenSucceeds(t *testing.T) {
+	lm := &fakeLM{turns: [][]fantasy.StreamPart{
+		{providerErrPart(500, "internal server error", "boom 1")},
+		{providerErrPart(500, "internal server error", "boom 2")},
+		textTurn("recovered", fantasy.Usage{InputTokens: 10, OutputTokens: 3}),
+	}}
+	s := newTestAgentSession(t, lm, nil)
+	// Keep tests fast: 0 initial delay, 1.0× backoff. The 2s/2.0× defaults
+	// are exercised in production only.
+	s.retryMaxRetries = 2
+	s.retryInitialDelay = 0
+	s.retryBackoffFactor = 1.0
+
+	if err := s.queueTurn("do the thing"); err != nil {
+		t.Fatal(err)
+	}
+	msgs := readSessionMsgsTimeout(t, s.ch, isTurnComplete, 15*time.Second)
+
+	var statuses []string
+	var done providerDoneMsg
+	for _, m := range msgs {
+		if ss, ok := m.(streamStatusMsg); ok {
+			statuses = append(statuses, ss.status)
+		}
+		if d, ok := m.(providerDoneMsg); ok {
+			done = d
+		}
+	}
+	if done.err != nil || done.res.IsError {
+		t.Errorf("expected success after retries, got error: %+v", done)
+	}
+	if done.res.Result != "recovered" {
+		t.Errorf("Result = %q want %q", done.res.Result, "recovered")
+	}
+	if n := len(lm.streamCalls()); n != 3 {
+		t.Errorf("stream calls = %d want 3 (2 retries + 1 success)", n)
+	}
+	retryCount := 0
+	for _, st := range statuses {
+		if strings.Contains(st, "retrying after HTTP 500") {
+			retryCount++
+		}
+	}
+	if retryCount != 2 {
+		t.Errorf("retry status emissions = %d want 2 (got %v)", retryCount, statuses)
+	}
+}
+
+func TestAgentSession_Retry5xxExhausted(t *testing.T) {
+	// 5 identical 5xx error turns — with MaxRetries=2 the retry
+	// middleware runs 3 attempts, then gives up. The agent returns
+	// a *fantasy.RetryError which runTurn surfaces as a hard error.
+	lm := &fakeLM{turns: [][]fantasy.StreamPart{
+		{providerErrPart(500, "internal server error", "boom 1")},
+		{providerErrPart(500, "internal server error", "boom 2")},
+		{providerErrPart(500, "internal server error", "boom 3")},
+	}}
+	s := newTestAgentSession(t, lm, nil)
+	s.retryMaxRetries = 2
+	s.retryInitialDelay = 0
+	s.retryBackoffFactor = 1.0
+
+	if err := s.queueTurn("do the thing"); err != nil {
+		t.Fatal(err)
+	}
+	msgs := readSessionMsgsTimeout(t, s.ch, isTurnComplete, 15*time.Second)
+
+	var done providerDoneMsg
+	var retryCount int
+	for _, m := range msgs {
+		if d, ok := m.(providerDoneMsg); ok {
+			done = d
+		}
+		if ss, ok := m.(streamStatusMsg); ok && strings.Contains(ss.status, "retrying") {
+			retryCount++
+		}
+	}
+	if !done.res.IsError || done.err == nil {
+		t.Errorf("expected hard error after retries exhausted: %+v", done)
+	}
+	if !strings.Contains(done.res.Result, "internal server error") {
+		t.Errorf("Result should surface the underlying *ProviderError title: %q", done.res.Result)
+	}
+	if n := len(lm.streamCalls()); n != 3 {
+		t.Errorf("stream calls = %d want 3 (initial + 2 retries)", n)
+	}
+	if retryCount != 2 {
+		t.Errorf("retry status emissions = %d want 2 (got %d)", retryCount, retryCount)
+	}
+}
+
+func TestAgentSession_RetryNetworkError(t *testing.T) {
+	// First stream is a non-ProviderError net.Error — still
+	// retryable per fantasy's isRetryableError (the net.Error
+	// branch). The OnRetry callback receives a nil *ProviderError,
+	// so agentRetryStatusMessage formats the "connection error"
+	// fallback. Second stream succeeds.
+	netErr := &fakeNetError{msg: "connection refused"}
+	lm := &fakeLM{turns: [][]fantasy.StreamPart{
+		{{Type: fantasy.StreamPartTypeError, Error: netErr}},
+		textTurn("online again", fantasy.Usage{InputTokens: 5, OutputTokens: 2}),
+	}}
+	s := newTestAgentSession(t, lm, nil)
+	s.retryMaxRetries = 2
+	s.retryInitialDelay = 0
+	s.retryBackoffFactor = 1.0
+
+	if err := s.queueTurn("ping"); err != nil {
+		t.Fatal(err)
+	}
+	msgs := readSessionMsgs(t, s.ch, isTurnComplete)
+
+	var statuses []string
+	var done providerDoneMsg
+	for _, m := range msgs {
+		if ss, ok := m.(streamStatusMsg); ok {
+			statuses = append(statuses, ss.status)
+		}
+		if d, ok := m.(providerDoneMsg); ok {
+			done = d
+		}
+	}
+	if done.err != nil || done.res.IsError {
+		t.Errorf("expected success after net-error retry, got error: %+v", done)
+	}
+	if n := len(lm.streamCalls()); n != 2 {
+		t.Errorf("stream calls = %d want 2 (1 retry + 1 success)", n)
+	}
+	retryCount := 0
+	for _, st := range statuses {
+		if strings.Contains(st, "retrying after connection error") {
+			retryCount++
+		}
+	}
+	if retryCount != 1 {
+		t.Errorf("connection-error retry status = %d want 1 (got %v)", retryCount, statuses)
+	}
+}
+
+func TestAgentSession_CompactRetries(t *testing.T) {
+	// The compact summarizer's Generate is wrapped by the same retry
+	// middleware; verify the session retries a 5xx and still produces
+	// a summary. genFn counts Generate calls and fails the first with
+	// a *ProviderError, then succeeds. The main turn uses a
+	// tool-call step whose usage trips compaction; a continuation
+	// turn runs after the compact lands.
+	genCalls := 0
+	lm := &fakeLM{
+		turns: [][]fantasy.StreamPart{
+			toolCallTurn("c1", "ping", `{"v":"x"}`, fantasy.Usage{InputTokens: 15_000}),
+			textTurn("resumed", fantasy.Usage{InputTokens: 200}),
+		},
+		genFn: func(call fantasy.Call) (*fantasy.Response, error) {
+			genCalls++
+			if genCalls == 1 {
+				return nil, &fantasy.ProviderError{StatusCode: 500, Title: "internal server error", Message: "boom"}
+			}
+			return &fantasy.Response{
+				Content: fantasy.ResponseContent{fantasy.TextContent{Text: "SUMMARY OF WORK"}},
+			}, nil
+		},
+	}
+	s := newTestAgentSession(t, lm, nil)
+	s.contextWindow = 30_000
+	s.retryMaxRetries = 2
+	s.retryInitialDelay = 0
+	s.retryBackoffFactor = 1.0
+
+	if err := s.queueTurn("big job"); err != nil {
+		t.Fatal(err)
+	}
+	firstTurn := readSessionMsgsTimeout(t, s.ch, isTurnComplete, 15*time.Second)
+	readSessionMsgsTimeout(t, s.ch, isTurnComplete, 15*time.Second)
+
+	if genCalls != 2 {
+		t.Errorf("Generate calls = %d want 2 (1 fail + 1 success)", genCalls)
+	}
+	retryCount := 0
+	for _, m := range firstTurn {
+		if ss, ok := m.(streamStatusMsg); ok && strings.Contains(ss.status, "retrying after HTTP 500") {
+			retryCount++
+		}
+	}
+	if retryCount != 1 {
+		t.Errorf("compact retry status = %d want 1 (got %d, first-turn statuses: %v)", retryCount, retryCount, firstTurn)
+	}
+	if len(s.messages) == 0 || !strings.Contains(messageText(s.messages[0]), "SUMMARY OF WORK") {
+		t.Errorf("history head must be the summary: %+v", s.messages)
 	}
 }
