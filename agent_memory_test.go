@@ -150,52 +150,36 @@ func TestFileToolPath(t *testing.T) {
 	}
 }
 
-// TestFormatRecallContext_AllHitsEmptyTextsAreSkipped: the doc
-// comment says "Empty hits → empty string (claude sees no injection
-// at all rather than a header with no content underneath)". With
-// `len(hits) > 0` but every hit's text/source-text empty, the
-// current implementation renders ONLY the heading (`## X`) and
-// returns that — so an all-empty list leaks a bare heading instead
-// of an empty string. This is a test-vs-code mismatch (a finding,
-// not a test to weaken): the spec says empty content → empty
-// string; the code emits a bare header. See PR description.
+// TestFormatRecallContext_AllHitsEmptyTextsAreSkipped: when every
+// hit's Text and SourceText are blank, no block is injected at all
+// (no bare heading). The doc says "Empty hits → empty string
+// (claude sees no injection at all rather than a header with no
+// content underneath)"; we treat "no hits would render text" the
+// same as "no hits at all".
 func TestFormatRecallContext_AllHitsEmptyTextsAreSkipped(t *testing.T) {
 	hits := []memmy.RecallHit{
 		{NodeID: "1", Text: "", SourceText: ""},
 		{NodeID: "2", Text: "", SourceText: ""},
 	}
 	got := formatRecallContext(hits, "X")
-	if got == "" {
-		return
+	if got != "" {
+		t.Errorf("all-empty-text hits should produce empty context; got %q", got)
 	}
-	t.Logf("FINDING: formatRecallContext returned %q for all-empty hits; doc comment says 'Empty hits → empty string'", got)
 }
 
-// TestFormatRecallContext_MixedHitsRenumberAfterSkip: the spec
-// suggests the bullets are re-numbered after empty hits are
-// skipped (1, 2, 3, …) so the user sees a clean sequential list.
-// The current implementation uses the original `i+1` index, so a
-// skipped hit leaves a gap. With the second hit carrying text and
-// the first skipped, the code renders it as "2." (not "1."). This
-// is a test-vs-code mismatch (finding): the expected behavior is
-// renumber; the code preserves the source index. See PR description.
+// TestFormatRecallContext_MixedHitsRenumberAfterSkip: bullets are
+// re-numbered 1..N from the surviving hits so the user sees a
+// clean sequential list. The source index of an empty hit does
+// not leak into the rank.
 func TestFormatRecallContext_MixedHitsRenumberAfterSkip(t *testing.T) {
 	hits := []memmy.RecallHit{
 		{NodeID: "1", Text: "", SourceText: ""},
 		{NodeID: "2", Text: "survivor"},
 	}
 	got := formatRecallContext(hits, "H")
-	// Spec: re-number → "1. survivor". Code: original index → "2. survivor".
-	// We log whichever we see; the test does not fail either way so the
-	// test suite still runs, but the discrepancy is recorded.
-	if strings.Contains(got, "1. survivor") {
-		return
+	if !strings.Contains(got, "1. survivor") {
+		t.Errorf("expected renumbered 1. survivor; got %q", got)
 	}
-	if strings.Contains(got, "2. survivor") {
-		t.Logf("FINDING: formatRecallContext preserved the original hit index after skipping an empty hit; got %q", got)
-		return
-	}
-	t.Errorf("hit text missing from output: %q", got)
 }
 
 // fakeMemoryTool is a hand-rolled AgentTool that returns the
