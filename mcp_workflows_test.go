@@ -1169,12 +1169,12 @@ func TestWorkflowTools_ScopedLifecycle(t *testing.T) {
 		t.Error("same-scope duplicate create must error")
 	}
 	// Unknown scope rejected.
-	res, _, _ = b.workflowCreateTool(ctx, newCallToolReq(), workflowCreateInput{Name: "x", Scope: "global"})
+	res, _, _ = b.workflowCreateTool(ctx, newCallToolReq(), workflowCreateInput{Name: "x", Scope: "global-only"})
 	if res == nil || !res.IsError {
 		t.Error("unknown scope must error")
 	}
 
-	// List shows both with scope tags, repo first.
+	// List shows both with scope tags, repo before user.
 	_, listOut, err := b.workflowListTool(ctx, newCallToolReq(), workflowListInput{})
 	if err != nil {
 		t.Fatal(err)
@@ -1277,5 +1277,217 @@ func TestWorkflowRun_RepoScopedWorkflowDispatches(t *testing.T) {
 	}
 	if out.Workflow != "shared" || len(*captured) != 1 || (*captured)[0].Workflow.Name != "shared" {
 		t.Errorf("dispatch wrong: out=%+v captured=%+v", out, *captured)
+	}
+}
+
+// ----- three-scope: global -----
+
+// TestWorkflowListCore_GlobalIncluded asserts globals appear in
+// workflow_list output with scope: "global" alongside user/repo.
+func TestWorkflowListCore_GlobalIncluded(t *testing.T) {
+	b, cwd := newWorkflowMCPTestBridge(t, 1)
+	resetWorkflowTrackerForTest()
+	if err := saveAllWorkflows(cwd, []workflowDef{
+		{Name: "u-wf", Scope: workflowScopeUser, Steps: []workflowStep{{Name: "u", Provider: "fake"}}},
+		{Name: "r-wf", Scope: workflowScopeRepo, Steps: []workflowStep{{Name: "r", Provider: "fake"}}},
+		{Name: "g-wf", Scope: workflowScopeGlobal, Steps: []workflowStep{{Name: "g", Provider: "fake"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, out, err := b.workflowListTool(context.Background(), newCallToolReq(), workflowListInput{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(out.Workflows) != 3 {
+		t.Fatalf("expected 3 workflows, got %d: %+v", len(out.Workflows), out.Workflows)
+	}
+	// Order is global → repo → user.
+	wantOrder := []struct{ name, scope string }{
+		{"g-wf", "global"},
+		{"r-wf", "repo"},
+		{"u-wf", "user"},
+	}
+	for i, want := range wantOrder {
+		if out.Workflows[i].Name != want.name || out.Workflows[i].Scope != want.scope {
+			t.Errorf("row %d: got (%q,%q) want (%q,%q)", i, out.Workflows[i].Name, out.Workflows[i].Scope, want.name, want.scope)
+		}
+	}
+}
+
+// TestWorkflowCreateCore_GlobalScope: workflow_create with
+// scope: "global" writes the file at ~/.config/ask/workflows/, and
+// listAllWorkflows returns it tagged Scope=global.
+func TestWorkflowCreateCore_GlobalScope(t *testing.T) {
+	b, cwd := newWorkflowMCPTestBridge(t, 1)
+	resetWorkflowTrackerForTest()
+	res, out, err := b.workflowCreateTool(context.Background(), newCallToolReq(), workflowCreateInput{
+		Name:        "personal",
+		Scope:       "global",
+		Description: "My personal toolbox",
+		Steps:       []workflowStepView{{Name: "s1", Provider: "fake"}},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("create: err=%v res=%v", err, mcpResultText(res))
+	}
+	if out.Workflow.Scope != "global" || out.Workflow.Name != "personal" {
+		t.Errorf("output wrong: %+v", out.Workflow)
+	}
+	// On disk at ~/.config/ask/workflows/personal.json.
+	globalPath := filepath.Join(os.Getenv("HOME"), ".config", "ask", "workflows", "personal.json")
+	if _, err := os.Stat(globalPath); err != nil {
+		t.Fatalf("global file missing: %v", err)
+	}
+	// listAllWorkflows returns it tagged global.
+	if w, ok := findWorkflow(cwd, "personal", workflowScopeGlobal); !ok || w.Description != "My personal toolbox" {
+		t.Errorf("global not in merged list: %+v ok=%v", w, ok)
+	}
+}
+
+// TestWorkflowEditCore_GlobalScope: workflow_edit with scope:
+// "global" updates the global file and the wire response carries the
+// updated scope.
+func TestWorkflowEditCore_GlobalScope(t *testing.T) {
+	b, cwd := newWorkflowMCPTestBridge(t, 1)
+	resetWorkflowTrackerForTest()
+	if err := saveAllWorkflows(cwd, []workflowDef{
+		{Name: "p", Scope: workflowScopeGlobal, Steps: []workflowStep{{Name: "s", Provider: "fake"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	desc := "Updated"
+	res, out, err := b.workflowEditTool(context.Background(), newCallToolReq(), workflowEditInput{
+		Name:        "p",
+		Scope:       "global",
+		Description: &desc,
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("edit: err=%v res=%v", err, mcpResultText(res))
+	}
+	if out.Workflow.Scope != "global" || out.Workflow.Description != "Updated" {
+		t.Errorf("edit output wrong: %+v", out.Workflow)
+	}
+	// File on disk has the new description.
+	globalPath := filepath.Join(os.Getenv("HOME"), ".config", "ask", "workflows", "p.json")
+	data, _ := os.ReadFile(globalPath)
+	if !strings.Contains(string(data), "Updated") {
+		t.Errorf("global file not updated: %s", data)
+	}
+}
+
+// TestWorkflowDeleteCore_GlobalScope: workflow_delete with scope:
+// "global" removes the file and confirms via the wire response.
+func TestWorkflowDeleteCore_GlobalScope(t *testing.T) {
+	b, cwd := newWorkflowMCPTestBridge(t, 1)
+	resetWorkflowTrackerForTest()
+	if err := saveAllWorkflows(cwd, []workflowDef{
+		{Name: "p", Scope: workflowScopeGlobal, Steps: []workflowStep{{Name: "s", Provider: "fake"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	globalPath := filepath.Join(os.Getenv("HOME"), ".config", "ask", "workflows", "p.json")
+	if _, err := os.Stat(globalPath); err != nil {
+		t.Fatalf("global file missing pre-delete: %v", err)
+	}
+	res, out, err := b.workflowDeleteTool(context.Background(), newCallToolReq(), workflowDeleteInput{
+		Name:  "p",
+		Scope: "global",
+	})
+	if err != nil || res.IsError || !out.Deleted {
+		t.Fatalf("delete: err=%v res=%v out=%+v", err, mcpResultText(res), out)
+	}
+	if _, err := os.Stat(globalPath); !os.IsNotExist(err) {
+		t.Errorf("global file should be gone: %v", err)
+	}
+}
+
+// TestWorkflowCopyCore_GlobalTarget: workflow_copy with to: "global"
+// lands a copy at ~/.config/ask/workflows/.
+func TestWorkflowCopyCore_GlobalTarget(t *testing.T) {
+	b, cwd := newWorkflowMCPTestBridge(t, 1)
+	resetWorkflowTrackerForTest()
+	if err := saveAllWorkflows(cwd, []workflowDef{
+		{Name: "src", Scope: workflowScopeUser, Steps: []workflowStep{{Name: "s", Provider: "fake", Prompt: "p"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, out, err := b.workflowCopyTool(context.Background(), newCallToolReq(), workflowCopyInput{
+		Name: "src",
+		To:   "global",
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("copy: err=%v res=%v", err, mcpResultText(res))
+	}
+	if out.Workflow.Scope != "global" || out.Workflow.Name != "src" {
+		t.Errorf("copy output wrong: %+v", out.Workflow)
+	}
+	globalPath := filepath.Join(os.Getenv("HOME"), ".config", "ask", "workflows", "src.json")
+	if _, err := os.Stat(globalPath); err != nil {
+		t.Errorf("global copy not on disk: %v", err)
+	}
+	// Source survives.
+	if _, ok := findWorkflow(cwd, "src", workflowScopeUser); !ok {
+		t.Error("source must survive a copy")
+	}
+}
+
+// TestWorkflowRunCore_GlobalScope: workflow_run with scope: "global"
+// dispatches a global-scope workflow via spawnWorkflowTabMsg.
+func TestWorkflowRunCore_GlobalScope(t *testing.T) {
+	b, cwd := newWorkflowMCPTestBridge(t, 11)
+	resetWorkflowTrackerForTest()
+	captured := installSpawnCaptor(t)
+	if err := saveAllWorkflows(cwd, []workflowDef{
+		{Name: "global-wf", Scope: workflowScopeGlobal, Steps: []workflowStep{{Name: "s", Provider: "fake"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, out, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{
+		Name:   "global-wf",
+		Scope:  "global",
+		Append: "plan",
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("run: err=%v res=%v", err, mcpResultText(res))
+	}
+	if out.Workflow != "global-wf" {
+		t.Errorf("output workflow: got %q want global-wf", out.Workflow)
+	}
+	if len(*captured) != 1 {
+		t.Fatalf("expected 1 dispatch, got %d", len(*captured))
+	}
+	msg := (*captured)[0]
+	if msg.Workflow.Name != "global-wf" || msg.Workflow.Scope != workflowScopeGlobal {
+		t.Errorf("dispatched wrong: %+v", msg.Workflow)
+	}
+	if msg.Cwd != cwd {
+		t.Errorf("dispatched cwd: got %q want %q", msg.Cwd, cwd)
+	}
+}
+
+// TestWorkflowCopyCore_AmbiguousAcrossAllThreeScopes: a name in
+// user + repo + global without a scope errors with the new "multiple
+// scopes" message.
+func TestWorkflowCopyCore_AmbiguousAcrossAllThreeScopes(t *testing.T) {
+	b, cwd := newWorkflowMCPTestBridge(t, 1)
+	resetWorkflowTrackerForTest()
+	if err := saveAllWorkflows(cwd, []workflowDef{
+		{Name: "amb", Scope: workflowScopeUser, Steps: []workflowStep{{Name: "u", Provider: "fake"}}},
+		{Name: "amb", Scope: workflowScopeRepo, Steps: []workflowStep{{Name: "r", Provider: "fake"}}},
+		{Name: "amb", Scope: workflowScopeGlobal, Steps: []workflowStep{{Name: "g", Provider: "fake"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, _, err := b.workflowCopyTool(context.Background(), newCallToolReq(), workflowCopyInput{
+		Name: "amb",
+		To:   "user",
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("ambiguous copy without scope must error; got %+v", res)
+	}
+	if !strings.Contains(mcpResultText(res), "multiple scopes") {
+		t.Errorf("ambiguity error should say 'multiple scopes'; got %q", mcpResultText(res))
 	}
 }

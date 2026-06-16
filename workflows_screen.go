@@ -363,11 +363,12 @@ func (b *workflowsBuilderState) focusStepRow(topIdx, innerIdx int) {
 
 // commitItems writes b.items back to disk and re-hydrates so any
 // normalisation the persistence layer applies is reflected locally.
-// b.items is the merged two-scope list; saveAllWorkflows routes each
-// def by its Scope tag (user → ask.json, repo → .ask/workflows/) and
-// serialises under the config lock so a concurrent workflow tracker
-// disk upsert or MCP workflow_edit call can't race the load → mutate
-// → save cycle and lose either side's update.
+// b.items is the merged three-scope list; saveAllWorkflows routes
+// each def by its Scope tag (user → ask.json, repo →
+// .ask/workflows/, global → ~/.config/ask/workflows/) and serialises
+// under the config lock so a concurrent workflow tracker disk
+// upsert or MCP workflow_edit call can't race the load → mutate →
+// save cycle and lose either side's update.
 func (b *workflowsBuilderState) commitItems() error {
 	if err := saveAllWorkflows(b.cwd, b.items); err != nil {
 		return err
@@ -376,10 +377,20 @@ func (b *workflowsBuilderState) commitItems() error {
 	return nil
 }
 
-// otherWorkflowScope is the copy/move target for a def: the scope it
-// is NOT currently in.
-func otherWorkflowScope(scope string) string {
-	if workflowScopeTag(scope) == workflowScopeRepo {
+// nextWorkflowScope is the destination for a copy / move: it
+// rotates user → repo → global → user so a single key (c or s)
+// steps through every scope. The first press from user still moves
+// to repo (the pre-global cycle's first hop); pressing once more
+// reaches global; a third press wraps back to user. The toast
+// always names the destination so the user never silently promotes
+// something to global.
+func nextWorkflowScope(scope string) string {
+	switch workflowScopeTag(scope) {
+	case workflowScopeUser:
+		return workflowScopeRepo
+	case workflowScopeRepo:
+		return workflowScopeGlobal
+	case workflowScopeGlobal:
 		return workflowScopeUser
 	}
 	return workflowScopeRepo
@@ -416,16 +427,18 @@ func (b *workflowsBuilderState) focusWorkflow(name, scope string) {
 }
 
 // copySelectedToOtherScope duplicates the workflow under the cursor
-// into the opposite scope. The copy keeps its name when the target
-// scope is free, else gets a -2/-3… suffix (the naming-conflict
-// rule). The source is untouched, so no running guard applies.
+// into the next scope (user → repo → global → user — the same 3-way
+// cycle nextWorkflowScope uses). The copy keeps its name when the
+// target scope is free, else gets a -2/-3… suffix (the
+// naming-conflict rule). The source is untouched, so no running
+// guard applies.
 func (b *workflowsBuilderState) copySelectedToOtherScope() {
 	wIdx, ok := b.selectedWorkflowIdx()
 	if !ok {
 		return
 	}
 	src := b.items[wIdx]
-	target := otherWorkflowScope(src.Scope)
+	target := nextWorkflowScope(src.Scope)
 	dup := src
 	dup.Scope = target
 	dup.Name = b.uniqueNameInScope(src.Name, target)
@@ -440,17 +453,17 @@ func (b *workflowsBuilderState) copySelectedToOtherScope() {
 }
 
 // moveSelectedToOtherScope relocates the workflow under the cursor to
-// the opposite scope (user ⇄ repo), renaming with a suffix when the
-// target scope already holds the name. Guarded against running
-// workflows like rename/delete — the tracker keys on name and a
-// mid-run identity change could strand it.
+// the next scope (user → repo → global → user), renaming with a
+// suffix when the target scope already holds the name. Guarded
+// against running workflows like rename/delete — the tracker keys on
+// name and a mid-run identity change could strand it.
 func (b *workflowsBuilderState) moveSelectedToOtherScope() {
 	wIdx, ok := b.selectedWorkflowIdx()
 	if !ok {
 		return
 	}
 	src := b.items[wIdx]
-	target := otherWorkflowScope(src.Scope)
+	target := nextWorkflowScope(src.Scope)
 	name := b.uniqueNameInScope(src.Name, target)
 	b.items[wIdx].Scope = target
 	b.items[wIdx].Name = name
@@ -1363,7 +1376,7 @@ func (b *workflowsBuilderState) renderBase(width, height int) string {
 // narrow pane.
 func (b *workflowsBuilderState) activeHint() string {
 	if b.focus == workflowsBuilderFocusLeft {
-		return "↑/↓ navigate · enter open · r rename · e description · c copy to other scope · s move scope · d delete · esc back"
+		return "↑/↓ navigate · enter open · r rename · e description · c copy · s move (rotates user→repo→global) · d delete · esc back"
 	}
 	switch b.rightMode {
 	case workflowsBuilderRightSteps:
@@ -1376,9 +1389,9 @@ func (b *workflowsBuilderState) activeHint() string {
 
 // renderLeftPane draws the workflow list. "+ New workflow" is row 0
 // so the create affordance is always discoverable at the top. Each
-// workflow row carries a right-aligned scope tag (repo/user) so the
-// user always sees where a workflow is saved; step counts moved to
-// the right pane's subtitle so the left pane stays narrow.
+// workflow row carries a right-aligned scope tag (user/repo/global)
+// so the user always sees where a workflow is saved; step counts
+// moved to the right pane's subtitle so the left pane stays narrow.
 func (b *workflowsBuilderState) renderLeftPane(width, height int) string {
 	innerW := workflowsPaneInnerWidth(width)
 	rows := []string{
@@ -1738,9 +1751,10 @@ func renderWorkflowsListRow(label string, width int, selected, activePane bool) 
 }
 
 // renderWorkflowsListRowTagged renders a workflow row with a
-// right-aligned scope tag (repo/user). Selected rows style the whole
-// line so the tag stays legible inside the selection background;
-// unselected rows dim the tag to keep the name as the focal point.
+// right-aligned scope tag (user/repo/global). Selected rows style
+// the whole line so the tag stays legible inside the selection
+// background; unselected rows dim the tag to keep the name as the
+// focal point.
 func renderWorkflowsListRowTagged(name, tag string, width int, selected, activePane bool) string {
 	tagW := lipgloss.Width(tag)
 	nameW := width - tagW - 1

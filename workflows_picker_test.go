@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -158,5 +159,55 @@ func TestWorkflowPicker_StepsCountFormatting(t *testing.T) {
 		if got := stepsCount(n); got != want {
 			t.Errorf("stepsCount(%d): got %q want %q", n, got, want)
 		}
+	}
+}
+
+// TestWorkflowPicker_IncludesGlobals opens the picker with a merged
+// list that includes a global-scope def, navigates onto it, and
+// dispatches it through Enter → spawnWorkflowTabMsg. The row's meta
+// should show "global" (workflowScopeTag passes through the global
+// literal; the picker's renderer doesn't need to change).
+func TestWorkflowPicker_IncludesGlobals(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	items := []workflowDef{
+		{Name: "alpha", Scope: workflowScopeUser, Steps: []workflowStep{{Name: "s", Provider: "fake"}}},
+		{Name: "toolbox", Scope: workflowScopeGlobal, Steps: []workflowStep{{Name: "s", Provider: "fake"}}},
+	}
+	issue := issueRef{Provider: "github", Project: "ow/r", Number: 1}
+	source := issueWorkflowSource(issue)
+	m = m.openWorkflowPicker(items, source)
+
+	// Cursor at 0 (alpha); down once to land on toolbox.
+	m2, _ := m.updateWorkflowPicker(tea.KeyPressMsg{Code: tea.KeyDown})
+	mm := m2.(model)
+	if mm.workflowPicker.Cursor != 1 {
+		t.Fatalf("cursor: got %d want 1", mm.workflowPicker.Cursor)
+	}
+
+	// Render: meta row should show "global" (workflowScopeTag returns
+	// the global literal).
+	rendered := m.renderWorkflowPicker()
+	if !strings.Contains(rendered, "global") {
+		t.Errorf("picker should show 'global' tag for global-scope rows; rendered:\n%s", rendered)
+	}
+
+	// Enter dispatches a spawnWorkflowTabMsg for the global workflow.
+	final, cmd := mm.updateWorkflowPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
+	mf := final.(model)
+	if mf.workflowPicker != nil {
+		t.Errorf("Enter should close the picker")
+	}
+	if cmd == nil {
+		t.Fatalf("Enter should produce a tea.Cmd")
+	}
+	spawn, ok := cmd().(spawnWorkflowTabMsg)
+	if !ok {
+		t.Fatalf("expected spawnWorkflowTabMsg, got %T", cmd())
+	}
+	if spawn.Workflow.Name != "toolbox" || spawn.Workflow.Scope != workflowScopeGlobal {
+		t.Errorf("dispatched wrong: %+v", spawn.Workflow)
+	}
+	if spawn.Source.Kind != workflowSourceIssue || spawn.Source.Issue != issue {
+		t.Errorf("dispatched source wrong: %+v", spawn.Source)
 	}
 }

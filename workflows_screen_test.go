@@ -735,9 +735,11 @@ func TestWorkflowsBuilder_CopyToRepoScope(t *testing.T) {
 	}
 }
 
-// TestWorkflowsBuilder_MoveScopeRoundTrip presses `s` twice: user →
-// repo (ask.json entry gone, file present) then repo → user (file
-// gone, ask.json entry back).
+// TestWorkflowsBuilder_MoveScopeRoundTrip presses `s` three times: user
+// → repo (ask.json entry gone, .ask/workflows/wf.json present) →
+// global (repo file gone, ~/.config/ask/workflows/wf.json present) →
+// user (global file gone, ask.json entry back). Pins the 3-way cycle
+// through the builder.
 func TestWorkflowsBuilder_MoveScopeRoundTrip(t *testing.T) {
 	m, cwd := seedWorkflowsBuilder(t, []workflowDef{{
 		Name:  "wf",
@@ -745,26 +747,43 @@ func TestWorkflowsBuilder_MoveScopeRoundTrip(t *testing.T) {
 	}})
 	m.workflowsBuilder.focus = workflowsBuilderFocusLeft
 
+	// 1st press: user → repo.
 	m1, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: 's'})
 	if _, ok := findWorkflow(cwd, "wf", workflowScopeRepo); !ok {
-		t.Fatal("workflow should be repo-scope after move")
+		t.Fatal("workflow should be repo-scope after 1st move")
 	}
 	if _, ok := findWorkflow(cwd, "wf", workflowScopeUser); ok {
 		t.Fatal("user copy must not survive a move")
 	}
 	if _, err := os.Stat(filepath.Join(cwd, ".ask", "workflows", "wf.json")); err != nil {
-		t.Fatalf("repo file missing after move: %v", err)
+		t.Fatalf("repo file missing after 1st move: %v", err)
 	}
 
-	// Cursor followed the moved item; move it back.
+	// 2nd press: repo → global.
 	m2, _, _ := workflowsScreen{}.updateKey(m1, tea.KeyPressMsg{Code: 's'})
-	if _, ok := findWorkflow(cwd, "wf", workflowScopeUser); !ok {
-		t.Fatal("workflow should be user-scope after moving back")
+	if _, ok := findWorkflow(cwd, "wf", workflowScopeGlobal); !ok {
+		t.Fatal("workflow should be global-scope after 2nd move")
+	}
+	globalDir := filepath.Join(os.Getenv("HOME"), ".config", "ask", "workflows")
+	if _, err := os.Stat(filepath.Join(globalDir, "wf.json")); err != nil {
+		t.Fatalf("global file missing after 2nd move: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(cwd, ".ask", "workflows", "wf.json")); !os.IsNotExist(err) {
-		t.Error("repo file must be gone after moving back")
+		t.Error("repo file must be gone after 2nd move")
 	}
-	_ = m2
+
+	// 3rd press: global → user (full cycle).
+	m3, _, _ := workflowsScreen{}.updateKey(m2, tea.KeyPressMsg{Code: 's'})
+	if _, ok := findWorkflow(cwd, "wf", workflowScopeUser); !ok {
+		t.Fatal("workflow should be user-scope after moving back through global")
+	}
+	if _, err := os.Stat(filepath.Join(globalDir, "wf.json")); !os.IsNotExist(err) {
+		t.Error("global file must be gone after 3rd move")
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".ask", "workflows", "wf.json")); !os.IsNotExist(err) {
+		t.Error("repo file must be gone after 3rd move")
+	}
+	_ = m3
 }
 
 // TestWorkflowsBuilder_MoveScopeConflictRenames seeds the same name in
@@ -814,6 +833,136 @@ func TestWorkflowsBuilder_MoveScopeBlockedWhileRunning(t *testing.T) {
 	}
 	if _, ok := findWorkflow(cwd, "busy", workflowScopeUser); !ok {
 		t.Error("guarded move must not relocate the workflow")
+	}
+}
+
+// TestWorkflowsBuilder_CopyCycleHitsGlobal exercises the 3-way copy
+// cycle: pressing `c` from a user-scope workflow reaches a global
+// copy on the second press. Cursor follows each new copy, so the
+// next press uses the cycle step from that scope.
+func TestWorkflowsBuilder_CopyCycleHitsGlobal(t *testing.T) {
+	m, cwd := seedWorkflowsBuilder(t, []workflowDef{{
+		Name:  "review",
+		Steps: []workflowStep{{Name: "s", Provider: "fake", Prompt: "go"}},
+	}})
+	m.workflowsBuilder.focus = workflowsBuilderFocusLeft
+	m.workflowsBuilder.listCursor = 1
+
+	// 1st press: cursor on user "review" → nextWorkflowScope(user) = repo.
+	m1, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: 'c'})
+	b1 := m1.workflowsBuilder
+	if _, err := os.Stat(filepath.Join(cwd, ".ask", "workflows", "review.json")); err != nil {
+		t.Fatalf("repo copy missing after 1st press: %v", err)
+	}
+	if !strings.Contains(b1.toast, "repo") {
+		t.Errorf("1st press toast should name 'repo'; got %q", b1.toast)
+	}
+	// Cursor followed the new copy; it should now be on the repo row.
+	wIdx, ok := b1.selectedWorkflowIdx()
+	if !ok || b1.items[wIdx].Scope != workflowScopeRepo {
+		t.Errorf("cursor should land on the new repo copy; got %+v", b1.items)
+	}
+
+	// 2nd press: cursor on repo "review" → nextWorkflowScope(repo) = global.
+	m2, _, _ := workflowsScreen{}.updateKey(m1, tea.KeyPressMsg{Code: 'c'})
+	b2 := m2.workflowsBuilder
+	globalDir := filepath.Join(os.Getenv("HOME"), ".config", "ask", "workflows")
+	if _, err := os.Stat(filepath.Join(globalDir, "review.json")); err != nil {
+		t.Fatalf("global copy missing after 2nd press: %v", err)
+	}
+	if !strings.Contains(b2.toast, "global") {
+		t.Errorf("2nd press toast should name 'global'; got %q", b2.toast)
+	}
+	wIdx, ok = b2.selectedWorkflowIdx()
+	if !ok || b2.items[wIdx].Scope != workflowScopeGlobal {
+		t.Errorf("cursor should land on the new global copy; got %+v", b2.items)
+	}
+	// Source user copy must still exist (a copy doesn't move).
+	if _, ok := findWorkflow(cwd, "review", workflowScopeUser); !ok {
+		t.Error("user source must survive a copy")
+	}
+}
+
+// TestWorkflowsBuilder_MoveToGlobalBlockedWhileRunning mirrors
+// TestWorkflowsBuilder_MoveScopeBlockedWhileRunning for the global
+// move: a workflow currently running cannot be moved into the global
+// dir. The tracker keys on name, and a global move relocates the
+// on-disk file, so the same guard applies.
+func TestWorkflowsBuilder_MoveToGlobalBlockedWhileRunning(t *testing.T) {
+	m, cwd := seedWorkflowsBuilder(t, []workflowDef{{Name: "busy", Scope: workflowScopeRepo}})
+	workflowTracker().markWorking(cwd, "k", "busy", 1)
+	t.Cleanup(resetWorkflowTrackerForTest)
+	m.workflowsBuilder.focus = workflowsBuilderFocusLeft
+	// Refresh items so the builder sees the repo-scope seed.
+	m.workflowsBuilder.refreshItems()
+	for i, w := range m.workflowsBuilder.items {
+		if w.Name == "busy" {
+			m.workflowsBuilder.listCursor = i + 1
+		}
+	}
+	m1, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: 's'})
+	b := m1.workflowsBuilder
+	if !strings.Contains(b.toast, "running") {
+		t.Errorf("move to global on a running workflow should toast the guard; got %q", b.toast)
+	}
+	if _, ok := findWorkflow(cwd, "busy", workflowScopeGlobal); ok {
+		t.Error("guarded move must not relocate the workflow to global")
+	}
+}
+
+// TestWorkflowsBuilder_MoveScopeConflict_Global mirrors
+// TestWorkflowsBuilder_MoveScopeConflictRenames for the global dir:
+// the same auto-suffix pattern fires when the destination already
+// holds the name. Pressing `s` from user goes user → repo (1st) →
+// global (2nd); the 2nd press collides on the global copy and
+// auto-suffixes.
+func TestWorkflowsBuilder_MoveScopeConflict_Global(t *testing.T) {
+	m, cwd := seedWorkflowsBuilder(t, []workflowDef{{Name: "shared"}})
+	if err := saveAllWorkflows(cwd, append(projectWorkflows(cwd),
+		workflowDef{Name: "shared", Scope: workflowScopeGlobal, Steps: []workflowStep{{Name: "g", Provider: "fake"}}},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	m.workflowsBuilder.refreshItems()
+	m.workflowsBuilder.focus = workflowsBuilderFocusLeft
+	// Cursor on the user "shared" row (row 2 since the global one
+	// comes first under global-first listing).
+	for i, w := range m.workflowsBuilder.items {
+		if w.Name == "shared" && w.Scope == workflowScopeUser {
+			m.workflowsBuilder.listCursor = i + 1
+		}
+	}
+
+	// 1st press: user → repo. The repo scope is empty, so the name
+	// "shared" doesn't collide and the move lands cleanly.
+	m1, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: 's'})
+	b := m1.workflowsBuilder
+	if !strings.Contains(b.toast, "repo") {
+		t.Errorf("1st press should move user→repo; toast=%q", b.toast)
+	}
+	// Cursor should follow the moved item to repo.
+	wIdx, ok := b.selectedWorkflowIdx()
+	if !ok || b.items[wIdx].Scope != workflowScopeRepo {
+		t.Errorf("cursor should land on the repo copy; got %+v", b.items)
+	}
+
+	// 2nd press: repo → global. The global scope already has
+	// "shared", so the move auto-suffixes to "shared-2".
+	m2, _, _ := workflowsScreen{}.updateKey(m1, tea.KeyPressMsg{Code: 's'})
+	b = m2.workflowsBuilder
+	moved, ok := findWorkflow(cwd, "shared-2", workflowScopeGlobal)
+	if !ok {
+		t.Fatalf("moved workflow should be auto-suffixed; items: %+v", projectWorkflows(cwd))
+	}
+	if moved.Steps != nil {
+		t.Errorf("auto-suffixed global move should carry the user def (no steps); got %+v", moved.Steps)
+	}
+	original, ok := findWorkflow(cwd, "shared", workflowScopeGlobal)
+	if !ok || len(original.Steps) != 1 {
+		t.Errorf("pre-existing global workflow must be untouched: %+v", original)
+	}
+	if !strings.Contains(b.toast, "shared-2") {
+		t.Errorf("toast should mention the new name; got %q", b.toast)
 	}
 }
 

@@ -53,18 +53,18 @@ type workflowListStepView struct {
 
 type workflowListItem struct {
 	Name        string                 `json:"name" jsonschema:"workflow name"`
-	Scope       string                 `json:"scope" jsonschema:"where the workflow is stored: 'user' (~/.config/ask/ask.json, machine-local) or 'repo' (<root>/.ask/workflows/, committed and shared)"`
+	Scope       string                 `json:"scope" jsonschema:"where the workflow is stored: 'user' (~/.config/ask/ask.json, machine-local), 'repo' (<root>/.ask/workflows/, committed and shared), or 'global' (~/.config/ask/workflows/, machine-local and visible from every project)"`
 	Description string                 `json:"description,omitempty" jsonschema:"the author's statement of what this workflow is for and when to use it; judge fit against THIS, not the step names"`
 	Steps       []workflowListStepView `json:"steps" jsonschema:"steps in execution order; prompts omitted to keep the listing small"`
 }
 
 type workflowListOutput struct {
-	Workflows []workflowListItem `json:"workflows" jsonschema:"all workflows visible to the current project, repo scope first"`
+	Workflows []workflowListItem `json:"workflows" jsonschema:"all workflows visible to the current project, in scope order global → repo → user"`
 }
 
 type workflowGetInput struct {
 	Name  string `json:"name" jsonschema:"workflow name"`
-	Scope string `json:"scope,omitempty" jsonschema:"optional scope to read from ('user' or 'repo'); empty resolves repo first, then user"`
+	Scope string `json:"scope,omitempty" jsonschema:"optional scope to read from ('user', 'repo', or 'global'); empty resolves global first, then repo, then user (personal-wins)"`
 }
 
 // workflowInnerStepView is an agent step inside a loop, in the full
@@ -95,7 +95,7 @@ type workflowStepView struct {
 
 type workflowDefView struct {
 	Name        string             `json:"name"`
-	Scope       string             `json:"scope" jsonschema:"where the workflow is stored: 'user' or 'repo'"`
+	Scope       string             `json:"scope" jsonschema:"where the workflow is stored: 'user', 'repo', or 'global'"`
 	Description string             `json:"description,omitempty" jsonschema:"the author's statement of what this workflow is for and when to use it"`
 	Steps       []workflowStepView `json:"steps"`
 }
@@ -106,7 +106,7 @@ type workflowGetOutput struct {
 
 type workflowCreateInput struct {
 	Name        string             `json:"name" jsonschema:"new workflow name; must be unique within the chosen scope"`
-	Scope       string             `json:"scope,omitempty" jsonschema:"where to store the workflow: 'user' (default; machine-local ask.json) or 'repo' (<root>/.ask/workflows/, committed and shared with the team)"`
+	Scope       string             `json:"scope,omitempty" jsonschema:"where to store the workflow: 'user' (default; machine-local ask.json), 'repo' (<root>/.ask/workflows/, committed and shared with the team), or 'global' (~/.config/ask/workflows/, machine-local and visible from every project)"`
 	Description string             `json:"description,omitempty" jsonschema:"what this workflow is for and when to use it; surfaced in workflow_list so the agent judges fit against your stated intent"`
 	Steps       []workflowStepView `json:"steps,omitempty" jsonschema:"steps to create the workflow with; may be empty"`
 }
@@ -117,7 +117,7 @@ type workflowCreateOutput struct {
 
 type workflowEditInput struct {
 	Name        string              `json:"name" jsonschema:"existing workflow name to edit"`
-	Scope       string              `json:"scope,omitempty" jsonschema:"scope holding the workflow ('user' or 'repo'); required when the name exists in both scopes"`
+	Scope       string              `json:"scope,omitempty" jsonschema:"scope holding the workflow ('user', 'repo', or 'global'); required when the name exists in multiple scopes"`
 	NewName     string              `json:"new_name,omitempty" jsonschema:"optional new name; must be unique within the workflow's scope"`
 	Description *string             `json:"description,omitempty" jsonschema:"if provided, replaces the description (pass an empty string to clear it); omit to leave it unchanged"`
 	Steps       *[]workflowStepView `json:"steps,omitempty" jsonschema:"if provided, replaces the entire steps array (full-replace semantics); omit to leave steps unchanged"`
@@ -129,7 +129,7 @@ type workflowEditOutput struct {
 
 type workflowDeleteInput struct {
 	Name  string `json:"name" jsonschema:"workflow name to delete"`
-	Scope string `json:"scope,omitempty" jsonschema:"scope holding the workflow ('user' or 'repo'); required when the name exists in both scopes"`
+	Scope string `json:"scope,omitempty" jsonschema:"scope holding the workflow ('user', 'repo', or 'global'); required when the name exists in multiple scopes"`
 }
 
 type workflowDeleteOutput struct {
@@ -138,8 +138,8 @@ type workflowDeleteOutput struct {
 
 type workflowCopyInput struct {
 	Name    string `json:"name" jsonschema:"workflow name to copy"`
-	Scope   string `json:"scope,omitempty" jsonschema:"scope holding the source ('user' or 'repo'); required when the name exists in both scopes"`
-	To      string `json:"to" jsonschema:"destination scope: 'user' (machine-local) or 'repo' (committed under <root>/.ask/workflows/)"`
+	Scope   string `json:"scope,omitempty" jsonschema:"scope holding the source ('user', 'repo', or 'global'); required when the name exists in multiple scopes"`
+	To      string `json:"to" jsonschema:"destination scope: 'user' (machine-local ask.json), 'repo' (committed under <root>/.ask/workflows/), or 'global' (machine-local under ~/.config/ask/workflows/, visible from every project)"`
 	NewName string `json:"new_name,omitempty" jsonschema:"optional name for the copy; required when the destination scope already has a workflow named after the source"`
 }
 
@@ -149,7 +149,7 @@ type workflowCopyOutput struct {
 
 type workflowRunInput struct {
 	Name   string `json:"name" jsonschema:"workflow name to run"`
-	Scope  string `json:"scope,omitempty" jsonschema:"scope holding the workflow ('user' or 'repo'); required when the name exists in both scopes"`
+	Scope  string `json:"scope,omitempty" jsonschema:"scope holding the workflow ('user', 'repo', or 'global'); required when the name exists in multiple scopes"`
 	Append string `json:"append" jsonschema:"REQUIRED. The workflow runs in a fresh session with NO access to this conversation — its history, file reads, and tool results do not carry over. This text is the ONLY context the run receives, threaded into step 1's prompt as a Reference block. Submit the FULL plan and all context the workflow needs to execute the task end to end: the goal, the concrete steps, relevant file paths, constraints, and acceptance criteria. Do not pass a one-line summary or a pointer back to this chat."`
 }
 
@@ -182,19 +182,19 @@ type endTurnSignalMsg struct {
 // ----- Tool descriptions -----
 
 const (
-	workflowListToolDescription = `List all workflows visible to the current project, from both scopes.
+	workflowListToolDescription = `List all workflows visible to the current project, across three scopes.
 
-A workflow lives in one of two scopes: 'user' (machine-local, stored in ~/.config/ask/ask.json) or 'repo' (stored as one JSON file per workflow under <project root>/.ask/workflows/ — committed to the repo and shared with the team). Repo-scope workflows list first. The same name may exist in both scopes; each item's 'scope' field disambiguates.
+A workflow lives in one of three scopes: 'user' (machine-local, stored in ~/.config/ask/ask.json), 'repo' (one JSON file per workflow under <project root>/.ask/workflows/ — committed to the repo and shared with the team), or 'global' (one JSON file per workflow under ~/.config/ask/workflows/ — machine-local but visible from every project). The merged list is ordered global → repo → user; the same name may exist in more than one scope, and each item's 'scope' field disambiguates.
 
 Returns each workflow's name, scope, description (what it's for and when to use it — judge fit against this), and its steps' (name, provider, model). Step prompts are omitted to keep the listing payload small — call workflow_get to see the full prompt for a specific workflow.`
 
 	workflowGetToolDescription = `Get the full definition of a workflow including each step's prompt.
 
-Pass scope ('user' or 'repo') to read a specific copy; with no scope the repo copy wins when the name exists in both. Errors when the named workflow does not exist.`
+Pass scope ('user', 'repo', or 'global') to read a specific copy; with no scope the global copy wins when the name exists in multiple scopes (personal-wins — a global workflow is the user's explicit pick). Errors when the named workflow does not exist.`
 
 	workflowCreateToolDescription = `Create a new workflow.
 
-The name must be non-empty and not collide with any existing workflow in the chosen scope. scope picks where it is stored: 'user' (default — machine-local ask.json) or 'repo' (one JSON file under <project root>/.ask/workflows/, committed and shared with the team).
+The name must be non-empty and not collide with any existing workflow in the chosen scope. scope picks where it is stored: 'user' (default — machine-local ask.json), 'repo' (one JSON file under <project root>/.ask/workflows/, committed and shared with the team), or 'global' (one JSON file under ~/.config/ask/workflows/, machine-local but visible from every project).
 
 description is optional but strongly recommended: state what the workflow is FOR and when to use it (its trigger conditions, in plain words). That text is surfaced verbatim in workflow_list, and the agent judges whether the workflow fits a task against it — without a description it must guess intent from the step names, which is unreliable.
 
@@ -208,17 +208,17 @@ Errors on duplicate name within the scope, empty step name, unknown provider, a 
 
 	workflowEditToolDescription = `Edit an existing workflow in place (it stays in its scope).
 
-Pass new_name to rename. Pass description to replace the workflow's purpose statement (empty string clears it). Pass steps to replace the entire steps array (full-replace semantics — no per-step CRUD). Omit a field to leave it unchanged. Steps follow the same agent/loop shape documented on workflow_create. When the name exists in both scopes you must pass scope to pick which copy to edit; use workflow_copy to move a workflow between scopes.
+Pass new_name to rename. Pass description to replace the workflow's purpose statement (empty string clears it). Pass steps to replace the entire steps array (full-replace semantics — no per-step CRUD). Omit a field to leave it unchanged. Steps follow the same agent/loop shape documented on workflow_create. When the name exists in multiple scopes you must pass scope to pick which copy to edit; use workflow_copy to move a workflow between scopes.
 
 Errors when the workflow doesn't exist, when the name is ambiguous across scopes and no scope was given, when new_name collides within the scope, when a step is malformed (empty name, unknown provider, nested loop, empty loop), or when the workflow is currently running anywhere in this process.`
 
 	workflowDeleteToolDescription = `Delete a workflow.
 
-When the name exists in both scopes you must pass scope to pick which copy to delete. Errors when the workflow doesn't exist, the name is ambiguous, or the workflow is currently running.`
+When the name exists in multiple scopes you must pass scope to pick which copy to delete. Errors when the workflow doesn't exist, the name is ambiguous, or the workflow is currently running.`
 
 	workflowCopyToolDescription = `Copy a workflow between scopes (or duplicate it within one).
 
-'to' is the destination scope: 'repo' makes a workflow repo-local (a committed JSON file under <project root>/.ask/workflows/ that the whole team can use), 'user' copies it into the machine-local ask.json. The source is untouched — to move, copy then workflow_delete the original.
+'to' is the destination scope: 'repo' makes a workflow repo-local (a committed JSON file under <project root>/.ask/workflows/ that the whole team can use), 'user' copies it into the machine-local ask.json, 'global' copies it into ~/.config/ask/workflows/ (machine-local, visible from every project). The source is untouched — to move, copy then workflow_delete the original.
 
 Naming conflicts: when the destination scope already has a workflow by that name, the call errors and you must pass new_name. new_name is also how you duplicate within the same scope.
 
@@ -226,7 +226,7 @@ Errors when the source doesn't exist, the source name is ambiguous across scopes
 
 	workflowRunToolDescription = `Dispatch a workflow run in the background.
 
-Fire-and-forget: returns immediately with the session key. The workflow runs in a fresh tab; the user can switch to it with the tab bar to watch progress. When the name exists in both scopes pass scope to pick which copy runs.
+Fire-and-forget: returns immediately with the session key. The workflow runs in a fresh tab; the user can switch to it with the tab bar to watch progress. When the name exists in multiple scopes pass scope ('user', 'repo', or 'global') to pick which copy runs.
 
 CRITICAL — the workflow starts in a brand-new session with NO access to this conversation. Its message history, the files you have read, and your tool results DO NOT carry over. The append parameter is the ONLY channel of context into the run: its text is threaded into step 1's prompt as a "Reference:" block, and that is everything the workflow gets.
 
@@ -477,16 +477,16 @@ func workflowDefToView(w workflowDef) workflowDefView {
 	}
 }
 
-// workflowItemsForCwd returns the merged repo+user workflow list,
-// propagating an unreadable ask.json as an error (the tool layer
-// reports it; pure-UI paths use listAllWorkflows and degrade
+// workflowItemsForCwd returns the merged global+repo+user workflow
+// list, propagating an unreadable ask.json as an error (the tool
+// layer reports it; pure-UI paths use listAllWorkflows and degrade
 // silently instead).
 func workflowItemsForCwd(cwd string) ([]workflowDef, error) {
 	user, err := loadUserWorkflows(cwd)
 	if err != nil {
 		return nil, err
 	}
-	return append(loadRepoWorkflows(cwd), user...), nil
+	return append(append(loadGlobalWorkflows(), loadRepoWorkflows(cwd)...), user...), nil
 }
 
 // resolveWorkflowResult adapts resolveWorkflowByName's error shapes
@@ -543,7 +543,7 @@ func workflowGetCore(cwd string, in workflowGetInput) (*mcp.CallToolResult, work
 		return errResult("name is required"), workflowGetOutput{}, nil
 	}
 	// Reads are forgiving on ambiguity: with no explicit scope the
-	// repo copy wins (project-wins, same as the picker / runner).
+	// global copy wins (personal-wins, same as the picker / runner).
 	scope := in.Scope
 	if scope != "" {
 		if _, err := normalizeWorkflowScope(scope); err != nil {
@@ -749,7 +749,7 @@ func workflowCopyCore(cwd string, in workflowCopyInput) (*mcp.CallToolResult, wo
 		return errResult("name is required"), workflowCopyOutput{}, nil
 	}
 	if strings.TrimSpace(in.To) == "" {
-		return errResult("to is required: pass 'user' or 'repo'"), workflowCopyOutput{}, nil
+		return errResult("to is required: pass 'user', 'repo', or 'global'"), workflowCopyOutput{}, nil
 	}
 	dup, err := copyWorkflowDef(cwd, name, in.Scope, in.To, in.NewName)
 	if err != nil {
