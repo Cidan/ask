@@ -39,7 +39,8 @@ ALL OF THE ABOVE IS NOT OPTIONAL. YOU MUST ALWAYS USE THE ABOVE REFERENCES.
 
 `ask` is a Bubble Tea v2 TUI coding agent. The agent loop runs
 in-process on `charm.land/fantasy` against provider APIs (anthropic,
-openai, deepseek) — there are NO CLI subprocesses and NO loopback MCP
+openai, deepseek, kimi, minimax, googleai, vertex) — there are NO CLI
+subprocesses and NO loopback MCP
 server; every tool (coding core, linear/workflow bridge twins,
 question modal, external MCP clients) is native Go. The tool surface
 is two-tier: a small fixed CORE rides the wire tool definitions,
@@ -61,6 +62,9 @@ One `package main`, one file per concern.
 | `deepseek.go`          | DeepSeek spec: model/effort options, `$DEEPSEEK_API_KEY` resolution, effort→wire mapping (thinking off / reasoning_effort), images rejected. |
 | `anthropic.go`         | Anthropic spec: catwalk model list, effort→`output_config.effort` with catalog clamping, manual prompt-cache breakpoints (`anthropicPrepareStep`: system + last 2 messages; `anthropicDecorateTools`: last tool) — without these the API bills uncached every turn. |
 | `openai.go`            | OpenAI spec: Responses API (prefix predicate `openaiUseResponsesAPI` so new gpt-5.x/codex ids never fall back to chat completions), reasoning summaries + encrypted reasoning content (stateless resume), effort clamping. |
+| `googleai.go`         | Google AI Studio spec: API-key auth (`google.New(google.WithGeminiAPIKey)`), effort→`google.ThinkingLevel` (catalog-clamped), catwalk-driven Gemini model list. |
+| `vertex.go`           | Vertex AI spec: project + location + ADC auth (`google.New(google.WithVertex)`), filters Claude ids out of the catwalk model list, `vertexPrepareCredentials` env-mutation seam for the optional SA-key path. |
+| `config_vertex.go`    | `/config → Vertex AI...` sub-picker. Three free-text rows (Project, Location, Service Account Key path) with regex validation + `expandTilde` for the SA-key row. |
 | `catalog.go`           | catwalk embedded-catalog lookups: model ids (default first), context windows, image capability, effort-level clamping. No network — the snapshot ships with the module. |
 | `agent_run.go`         | The in-process agent runtime: session goroutine, fantasy agent loop ↔ provider-protocol msgs, per-spec PrepareStep, image file parts, interrupt, loop detection, auto-compaction, dangling-tool-call repair. `refreshToolset` splits the surface: core → wire tool definitions, bridge twins + MCP → the deferred registry; the live-emit callbacks unwrap `invoke_tool` so the transcript shows the real registry tool. |
 | `agent_prompt.go`      | Coder system prompt assembly: static head, env snapshot, CLAUDE.md/AGENTS.md inclusion, `askSteeringPrompt` tail. Byte-stable per session for DeepSeek's prefix cache. |
@@ -165,6 +169,9 @@ exercised by the user; code alone won't catch layout regressions.
 | `model_picker_test.go`     | Ctrl+M picker — open/seed (incl. busy gate), header-skipping nav + wrap, fuzzy filter (provider name + friendly name + id), apply semantics (cross-provider clears session, same-provider keeps, no SaveSettings, tab-local), recents (record/cap/dedupe/resurface incl. synthesized custom ids), API-key gate (prompt/save/esc/env-or-config skip), custom-id editor, paste routing, friendly-name + fuzzy helpers, `missingAPIKeyError`. |
 | `anthropic_test.go`        | Anthropic spec — metadata/registry, effort→wire incl. clamping, cache-breakpoint placement (`anthropicPrepareStep` marks system + last 2, strips stale, never mutates caller; `anthropicDecorateTools` marks last tool), native `web_search` provider tool, no-key fail-fast, lifecycle w/ image attachment → wire FilePart, persisted transcript free of cache markers, context windows. |
 | `openai_test.go`           | OpenAI spec — metadata/registry, Responses-API prefix predicate, encrypted-reasoning + summary options, effort mapping, native `web_search` provider tool, no-key fail-fast, lifecycle (images accepted), context windows. |
+| `googleai_test.go`         | Google AI Studio spec — metadata/registry, effort→`google.ThinkingLevel` incl. `catalogClampEffort` (Gemini 3.1 Pro rejects "minimal" → "low"), no-key fail-fast, full session lifecycle against `fakeLM`, Materialize, store root, max output tokens (catalog-driven), image support, `modelContextLimit`. |
+| `vertex_test.go`           | Vertex AI spec — metadata/registry (incl. Claude-filtered picker + no key-prompt), effort mapping, no-key fail-fast (no project), SA-key auth via `vertexPrepareCredentials` seam (path validation, env mutation, env fallback, ADC discovery), full session lifecycle, Materialize, store root, `vertexModelOptions_FiltersClaude`. |
+| `config_vertex_test.go`    | `/config → Vertex AI` picker — global row presence, project/location regex validation, SA-key tilde + readable-file validation, persistence, paste accumulation, invalid input keeps editor open, summary state ("off" / "<project>/global"). |
 | `catalog_test.go`          | catwalk lookups — model hit/miss, default-first id list, window/image fallbacks, effort clamping (down to nearest, up from below-range). |
 | `cost_test.go`             | Session cost meter — `stepCostUSD` catalog pricing math + unpriceable fallbacks, `formatUSD`, usageMsg/costMsg/tabTitleMsg accumulation + foreign-proc/tab gating, resets (/new, /clear, cross-provider swap keeps same-provider), task-tool sub-agent cost emission, sidebar cost row derivation. |
 | `util_test.go` / `paths_test.go` | Pure helpers, path completion, frontmatter parsing.       |
@@ -690,6 +697,32 @@ so gpt-5.x/codex/o-series ids always take the Responses API even when
 fantasy's exact-id list lags. Reasoning summaries on; encrypted
 reasoning content always requested (Store defaults false → stateless
 replay needs the blobs round-tripped in persisted messages).
+
+**Google AI Studio** rides fantasy's `google` provider via
+`google.New(google.WithGeminiAPIKey(key))`. Auth is the API key
+(`$GOOGLE_API_KEY` env or `cfg.GoogleAI.APIKey`). Effort maps to
+`google.ThinkingLevel` with `catalogClampEffort` de-grading a pick
+the chosen model doesn't support (Gemini 3.1 Pro rejects "minimal"
+→ "low", Gemini 2.5 Pro rejects everything). Default model
+`gemini-3.1-pro-preview-customtools`. Brave-backed core
+`web_search` (no native Google Search grounding in fantasy yet).
+
+**Vertex AI** rides the same `google` provider via
+`google.New(google.WithVertex(project, location))`. Auth uses
+Google Cloud ADC: explicit `cfg.Vertex.ServiceAccountKey` (or
+`$GOOGLE_APPLICATION_CREDENTIALS` env) → `gcloud auth
+application-default login` creds → GCE metadata. The
+`vertexPrepareCredentials` helper validates the SA-key path and
+calls `vertexApplyEnv` (swappable) to set the env so
+`credentials.DetectDefault` finds the bytes. Project is required
+(fail-fast at session start); Location defaults to `global`. The
+catwalk model list includes five Claude ids that fantasy
+transparently routes through `anthropic.WithVertex` — those are
+filtered out of `vertexModelOptions` because their reasoning
+enum ([low/medium/high/max]) is incompatible with Gemini's
+[minimal/low/medium/high]. Users wanting Claude-on-Vertex use the
+regular Anthropic provider. Same Brave-backed `web_search` as
+Google AI Studio. Default model `gemini-3.1-pro-preview`.
 
 Model metadata (context windows, image capability, reasoning levels)
 comes from `charm.land/catwalk`'s embedded catalog (catalog.go) with

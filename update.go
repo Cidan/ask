@@ -1019,6 +1019,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.mode == modeConfig && m.configWebSearchPickerActive && m.configWebSearchEditing {
 			return m.applyConfigWebSearchPaste(msg.Content)
 		}
+		if m.mode == modeConfig && m.configVertexPickerActive && m.configVertexFieldEditing != "" {
+			return m.applyConfigVertexPaste(msg.Content)
+		}
 		if m.mode == modeModelPicker {
 			return m.applyModelPickerPaste(msg.Content)
 		}

@@ -664,3 +664,101 @@ func TestModelPicker_CtrlDClosesTab(t *testing.T) {
 	}
 	_ = mi
 }
+
+// newProviderRegistryFixture seeds the model picker with the real
+// googleai + vertex providers (alongside the kimi fake from the
+// existing fixture) so the picker headers + groups cover the new
+// providers end-to-end.
+func newProviderRegistryFixture(t *testing.T) model {
+	t.Helper()
+	isolateHome(t)
+	setKeyMapForTesting(DefaultKeyMap())
+	t.Cleanup(invalidateKeyMapCache)
+	// Ensure the kimi fake doesn't gate on a key for the picker test
+	// (it would surface as "no API key" notes on the header).
+	t.Setenv(moonshotEnvAPIKey, "fake-kimi-key")
+	t.Setenv(googleaiEnvAPIKey, "fake-googleai-key")
+	pKimi := newFakeProvider()
+	pKimi.id = kimiProviderID
+	pKimi.displayName = "Kimi (Moonshot)"
+	pKimi.modelPicker = ProviderPicker{Options: []string{"kimi-k2.7-code"}}
+	withRegisteredProviders(t, googleaiAgentProvider(), vertexAgentProvider(), pKimi)
+	m := newTestModel(t, pKimi)
+	return m
+}
+
+func TestModelPicker_GoogleAIAppearsAsSection(t *testing.T) {
+	m := newProviderRegistryFixture(t)
+	m = m.openModelPicker()
+	rows := m.modelPicker.rows()
+	var hasHeader, hasEntry bool
+	for _, r := range rows {
+		if r.kind == modelPickerRowHeader && r.title == "Google AI Studio" {
+			hasHeader = true
+		}
+		if r.kind == modelPickerRowEntry && r.entry.providerID == googleaiProviderID &&
+			r.entry.modelID == googleaiDefaultModel {
+			hasEntry = true
+		}
+	}
+	if !hasHeader {
+		t.Error("model picker must surface a Google AI Studio section header")
+	}
+	if !hasEntry {
+		t.Error("model picker must surface the googleai default model entry")
+	}
+}
+
+func TestModelPicker_VertexAppearsAsSection(t *testing.T) {
+	m := newProviderRegistryFixture(t)
+	m = m.openModelPicker()
+	rows := m.modelPicker.rows()
+	var hasHeader, hasEntry bool
+	for _, r := range rows {
+		if r.kind == modelPickerRowHeader && r.title == "Vertex AI" {
+			hasHeader = true
+		}
+		if r.kind == modelPickerRowEntry && r.entry.providerID == vertexProviderID &&
+			r.entry.modelID == vertexDefaultModel {
+			hasEntry = true
+		}
+	}
+	if !hasHeader {
+		t.Error("model picker must surface a Vertex AI section header")
+	}
+	if !hasEntry {
+		t.Error("model picker must surface the vertex default model entry")
+	}
+}
+
+func TestModelPicker_VertexNoKeyPrompt(t *testing.T) {
+	// Vertex auth is configured in the /config → Vertex AI submenu,
+	// not via the inline API-key prompt. Picking a Vertex model
+	// without a configured project should apply directly (and surface
+	// a "project is required" error on session start, not on the pick).
+	m := newProviderRegistryFixture(t)
+	if err := withConfigLock(func() error {
+		cfg, _ := loadConfig()
+		cfg.Vertex.Project = "" // explicit empty
+		return saveConfig(cfg)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m = m.openModelPicker()
+	// Walk to the Vertex section (Google AI Studio is registered first
+	// in the fixture, then Vertex, then Kimi).
+	for {
+		row := selectedRow(t, m)
+		if row.kind == modelPickerRowEntry && row.entry.providerID == vertexProviderID {
+			break
+		}
+		m = stepKey(t, m, pressSpecial(tea.KeyDown))
+	}
+	m = stepKey(t, m, pressSpecial(tea.KeyEnter))
+	if m.modelPicker != nil && m.modelPicker.keyEntry != nil {
+		t.Error("Vertex must not open an inline API-key prompt")
+	}
+	if m.mode != modeInput {
+		t.Errorf("Vertex pick should apply directly; mode=%v", m.mode)
+	}
+}
