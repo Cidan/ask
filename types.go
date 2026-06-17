@@ -530,6 +530,18 @@ type model struct {
 	configWebSearchEditing      bool
 	configWebSearchDraft        string
 
+	// configVertexPickerActive toggles the /config → Vertex AI
+	// sub-picker. Three rows: Project, Location, Service Account
+	// Key path. Pressing Enter on a row opens the inline editor
+	// (configVertexFieldEditing flips to the row id); the draft
+	// accumulates keystrokes/pastes and Enter validates + persists
+	// to cfg.Vertex.* via the matching vertexFieldSpec. Mirrors
+	// the memory picker's multi-field shape.
+	configVertexPickerActive bool
+	configVertexCursor       int
+	configVertexFieldEditing string
+	configVertexFieldDraft   string
+
 	// /config now layers into Global Options (existing knobs) vs
 	// Project Options (per-cwd issue provider). configGlobalPicker-
 	// Active is the gate for the Global submenu — it carries the

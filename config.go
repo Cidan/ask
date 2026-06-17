@@ -53,6 +53,8 @@ type askConfig struct {
 	Anthropic apiProviderConfig `json:"anthropic,omitempty"`
 	OpenAI    apiProviderConfig `json:"openai,omitempty"`
 	MiniMax   apiProviderConfig `json:"minimax,omitempty"`
+	GoogleAI  apiProviderConfig `json:"googleai,omitempty"`
+	Vertex    vertexConfig      `json:"vertex,omitempty"`
 	UI        uiConfig          `json:"ui,omitempty"`
 	Memory    memoryConfig      `json:"memory,omitempty"`
 	WebSearch webSearchConfig   `json:"webSearch,omitempty"`
@@ -614,6 +616,7 @@ const (
 	openaiEnvAPIKey    = "OPENAI_API_KEY"
 	braveEnvAPIKey     = "BRAVE_API_KEY"
 	minimaxEnvAPIKey   = "MINIMAX_API_KEY"
+	googleaiEnvAPIKey  = "GOOGLE_API_KEY"
 )
 
 // resolveAPIProviderKey returns the API key to use: an explicit config
@@ -645,6 +648,24 @@ func resolveOpenAIAPIKey(c apiProviderConfig) string {
 
 func resolveMiniMaxAPIKey(c apiProviderConfig) string {
 	return resolveAPIProviderKey(c, minimaxEnvAPIKey)
+}
+
+func resolveGoogleAIAPIKey(c apiProviderConfig) string {
+	return resolveAPIProviderKey(c, googleaiEnvAPIKey)
+}
+
+// vertexConfig holds the per-provider settings for the Vertex AI
+// backend. Vertex uses Google Cloud Application Default Credentials
+// (env-var SA key → gcloud login → GCE metadata) plus a project +
+// location, so it does NOT use apiProviderConfig — there's no API key
+// to store. The apiProviderConfig embed carries the model / effort /
+// slash-commands settings the spec's loadSettings/saveSettings
+// accessors need without duplicating JSON tags.
+type vertexConfig struct {
+	Project           string `json:"project,omitempty"`
+	Location          string `json:"location,omitempty"`
+	ServiceAccountKey string `json:"serviceAccountKey,omitempty"`
+	apiProviderConfig
 }
 
 // webSearchConfig holds the generic web-search settings. Today the only

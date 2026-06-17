@@ -45,6 +45,8 @@ var providerKeySpecs = []providerKeySpec{
 		func(c *askConfig) *apiProviderConfig { return &c.Moonshot }},
 	{minimaxProviderID, "MiniMax", minimaxEnvAPIKey,
 		func(c *askConfig) *apiProviderConfig { return &c.MiniMax }},
+	{googleaiProviderID, "Google AI Studio", googleaiEnvAPIKey,
+		func(c *askConfig) *apiProviderConfig { return &c.GoogleAI }},
 }
 
 func providerKeySpecByID(id string) (providerKeySpec, bool) {
@@ -85,6 +87,8 @@ var catwalkProviderIDs = map[string]catwalk.InferenceProvider{
 	openaiProviderID:    catwalk.InferenceProviderOpenAI,
 	deepseekProviderID:  catwalk.InferenceProviderDeepSeek,
 	minimaxProviderID:   catwalk.InferenceProviderMiniMax,
+	googleaiProviderID:  catwalk.InferenceProviderGemini,
+	vertexProviderID:    catwalk.InferenceProviderVertexAI,
 }
 
 // friendlyModelName resolves a model id to a human-friendly display

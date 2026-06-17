@@ -95,6 +95,7 @@ func (m model) globalConfigItems() []configItem {
 		{"Default Provider", provName, "provider"},
 		{"Memory...", mem, "memory"},
 		{"Web Search...", webSearch, "webSearch"},
+		{"Vertex AI...", vertexSummary(), "vertex"},
 		{"Keybindings...", "", "keybindings"},
 	}
 	return items
@@ -110,6 +111,22 @@ func (m model) refreshHistoryCmd() tea.Cmd {
 			ToolOutput:  m.toolOutputMode,
 			QuietMode:   m.quietMode,
 		}, true)
+}
+
+// vertexSummary reports the user-facing Vertex row key for the
+// /config menu: "off" when neither project nor location is set, a
+// "<project>/<location>" pair when both are. Mirrors the live-state
+// pattern used for memory ("on" vs "off (open failed)").
+func vertexSummary() string {
+	cfg, _ := loadConfig()
+	if cfg.Vertex.Project == "" {
+		return "off"
+	}
+	loc := vertexResolveLocation(cfg.Vertex)
+	if loc == vertexDefaultLocation {
+		return cfg.Vertex.Project + "/global"
+	}
+	return cfg.Vertex.Project + "/" + loc
 }
 
 func (m model) startConfigModal() model {
@@ -157,6 +174,9 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.configWebSearchPickerActive {
 		return m.updateConfigWebSearchPicker(msg)
+	}
+	if m.configVertexPickerActive {
+		return m.updateConfigVertexPicker(msg)
 	}
 	if m.configKeybindingsPickerActive {
 		return m.updateConfigKeybindingsPicker(msg)
@@ -393,6 +413,9 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "webSearch":
 		m = m.openConfigWebSearchPicker()
+		return m, nil
+	case "vertex":
+		m = m.openConfigVertexPicker()
 		return m, nil
 	case "keybindings":
 		m = m.openConfigKeybindingsPicker()
