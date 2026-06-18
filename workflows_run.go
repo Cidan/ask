@@ -136,6 +136,11 @@ func (m model) startWorkflowStep() (tea.Model, tea.Cmd) {
 	if r.loop != nil {
 		step = top.Steps[r.loop.innerIdx]
 	}
+
+	if m.worktreeName == "" && m.worktree && worktreeBackendAt(m.cwd) != workspaceBackendNone {
+		m.worktreeName = newWorktreeName(m.cwd)
+	}
+
 	isStartStep := r.StepIdx == 0 && r.loop == nil
 	// When the first step is a loop, the first inner step of
 	// iteration 1 acts as the start step — it writes to
@@ -144,11 +149,11 @@ func (m model) startWorkflowStep() (tea.Model, tea.Cmd) {
 	var notesDir string
 	switch {
 	case isStartStep, isLoopStartStep:
-		notesDir = startPlanDir(m.cwd)
+		notesDir = startPlanDir(m.cwd, m.worktreeName)
 	case r.loop != nil:
-		notesDir = stepNotesDir(m.cwd, step.Name, top.Name, r.loop.iteration)
+		notesDir = stepNotesDir(m.cwd, m.worktreeName, step.Name, top.Name, r.loop.iteration)
 	default:
-		notesDir = stepNotesDir(m.cwd, step.Name, "", 0)
+		notesDir = stepNotesDir(m.cwd, m.worktreeName, step.Name, "", 0)
 	}
 	r.currentNotesDir = notesDir
 	pc := &stepPromptCtx{
@@ -174,7 +179,7 @@ func (m model) startWorkflowStep() (tea.Model, tea.Cmd) {
 	// a regular file, kick the problem back to the current step instead of
 	// failing the run.
 	if pc.isStartStep {
-		if err := ensureStartPlanExists(m.cwd); err != nil {
+		if err := ensureStartPlanExists(m.cwd, m.worktreeName); err != nil {
 			r.remind = remindFixPlanDir
 			r.remindDetail = err.Error()
 			return m.sendToProvider(buildWorkflowStepPrompt(step, r.Source, r.contextForDispatch(), pc))
@@ -240,7 +245,7 @@ func (m model) workflowFinalize(ok bool, reason string) (tea.Model, tea.Cmd) {
 		r.done = true
 		workflowTracker().markFinal(m.cwd, r.Source.Key(), r.Workflow.Name, workflowStatusDone, r.StepIdx)
 		m.appendHistory(outputStyle.Render(promptStyle.Render("✓ workflow complete: " + r.Workflow.Name)))
-		if err := removeAllWorkflowPlans(m.cwd); err != nil {
+		if err := removeAllWorkflowPlans(m.cwd, m.worktreeName); err != nil {
 			debugLog("workflow cleanup: %v", err)
 		}
 	} else {
@@ -307,7 +312,7 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 		}
 		// Got the summary: render the step's line, record output, advance.
 		m.appendHistory(stepSummaryLine(step.Name, step.Provider, step.Model, sig.summary))
-		if err := revalidateWorkflowNotesDir(m.cwd, r); err != nil {
+		if err := revalidateWorkflowNotesDir(m.cwd, m.worktreeName, r); err != nil {
 			r.remind = remindFixPlanDir
 			r.remindDetail = err.Error()
 			return m.dispatchOrFinalize()
@@ -358,7 +363,7 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 	// same iteration. (A "continue" and an omitted decision are equivalent
 	// here — only the tail's continue advances the iteration.)
 	if !isTail {
-		if err := revalidateWorkflowNotesDir(m.cwd, r); err != nil {
+		if err := revalidateWorkflowNotesDir(m.cwd, m.worktreeName, r); err != nil {
 			r.remind = remindFixPlanDir
 			r.remindDetail = err.Error()
 			return m.dispatchOrFinalize()
@@ -386,7 +391,7 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 
 	// Tail registered continue: record output, then start the next
 	// iteration or soft-exit if the iteration cap is reached.
-	if err := revalidateWorkflowNotesDir(m.cwd, r); err != nil {
+	if err := revalidateWorkflowNotesDir(m.cwd, m.worktreeName, r); err != nil {
 		r.remind = remindFixPlanDir
 		r.remindDetail = err.Error()
 		return m.dispatchOrFinalize()
@@ -417,12 +422,12 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 // step that was fixing its directory gets another chance if the shape
 // is still wrong. The start directory must contain files; other
 // directories are auto-created when missing.
-func revalidateWorkflowNotesDir(cwd string, r *workflowRunState) error {
+func revalidateWorkflowNotesDir(cwd, worktreeName string, r *workflowRunState) error {
 	if r.currentNotesDir == "" {
 		return nil
 	}
-	if r.currentNotesDir == startPlanDir(cwd) {
-		return ensureStartPlanExists(cwd)
+	if r.currentNotesDir == startPlanDir(cwd, worktreeName) {
+		return ensureStartPlanExists(cwd, worktreeName)
 	}
 	return ensureStepNotesDir(r.currentNotesDir)
 }

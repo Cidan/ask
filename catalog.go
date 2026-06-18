@@ -93,8 +93,11 @@ func catalogClampEffort(provider catwalk.InferenceProvider, modelID, effort stri
 		return effort
 	}
 	m, ok := catalogModel(provider, modelID)
-	if !ok || len(m.ReasoningLevels) == 0 {
+	if !ok {
 		return effort
+	}
+	if len(m.ReasoningLevels) == 0 {
+		return ""
 	}
 	available := map[string]bool{}
 	for _, l := range m.ReasoningLevels {

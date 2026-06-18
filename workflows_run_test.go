@@ -1041,21 +1041,21 @@ func TestStepNotesDir_PathLayout(t *testing.T) {
 
 	// Linear non-start-step; the function doesn't know about "firstness" — the
 	// caller decides.  A normal linear step gets ask/plans/<sanitized>/.
-	got := stepNotesDir(cwd, "code review", "", 0)
+	got := stepNotesDir(cwd, "", "code review", "", 0)
 	wantSuffix := filepath.Join("ask", "plans", "code-review")
 	if !strings.HasSuffix(got, wantSuffix) {
 		t.Errorf("linear step: got %q, want suffix %q", got, wantSuffix)
 	}
 
 	// Loop step.
-	got = stepNotesDir(cwd, "inner", "refinement loop", 3)
+	got = stepNotesDir(cwd, "", "inner", "refinement loop", 3)
 	wantSuffix = filepath.Join("ask", "plans", "refinement-loop", "3")
 	if !strings.HasSuffix(got, wantSuffix) {
 		t.Errorf("loop step: got %q, want suffix %q", got, wantSuffix)
 	}
 
 	// Zero iteration or empty loop name falls back to linear.
-	got = stepNotesDir(cwd, "code review", "unused-loop", 0)
+	got = stepNotesDir(cwd, "", "code review", "unused-loop", 0)
 	wantSuffix = filepath.Join("ask", "plans", "code-review")
 	if !strings.HasSuffix(got, wantSuffix) {
 		t.Errorf("zero-iteration step: got %q, want suffix %q", got, wantSuffix)
@@ -1089,7 +1089,7 @@ func TestClearWorkflowPlans_Idempotent(t *testing.T) {
 	cwd := isolateHome(t)
 
 	// Missing dir: no-op.
-	if err := clearWorkflowPlans(cwd); err != nil {
+	if err := clearWorkflowPlans(cwd, ""); err != nil {
 		t.Fatalf("clear absent: %v", err)
 	}
 
@@ -1106,7 +1106,7 @@ func TestClearWorkflowPlans_Idempotent(t *testing.T) {
 	}
 
 	// First clear removes children.
-	if err := clearWorkflowPlans(cwd); err != nil {
+	if err := clearWorkflowPlans(cwd, ""); err != nil {
 		t.Fatalf("first clear: %v", err)
 	}
 	for _, sub := range []string{"start", "step-two"} {
@@ -1120,7 +1120,7 @@ func TestClearWorkflowPlans_Idempotent(t *testing.T) {
 	}
 
 	// Second clear on the now-empty dir is a no-op.
-	if err := clearWorkflowPlans(cwd); err != nil {
+	if err := clearWorkflowPlans(cwd, ""); err != nil {
 		t.Fatalf("second clear: %v", err)
 	}
 }

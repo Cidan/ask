@@ -66,6 +66,7 @@ func (m model) updateWorkflowPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return spawnWorkflowTabMsg{
 				OriginTabID: originTab,
 				Cwd:         cwd,
+					WorktreeName: m.worktreeName,
 				Workflow:    picked,
 				Source:      source,
 			}

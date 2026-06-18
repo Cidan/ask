@@ -139,3 +139,18 @@ func TestCatalogClampEffort_BelowRange(t *testing.T) {
 		t.Errorf("below-range pick must clamp to the lowest level %q, got %q", m.ReasoningLevels[0], got)
 	}
 }
+
+func TestCatalogClampEffort_NoReasoningLevels(t *testing.T) {
+	// A known model with no reasoning levels returns an empty string,
+	// signalling the caller must not send any reasoning parameter to the API.
+	m, ok := catalogModel(catwalk.InferenceProviderGemini, "gemini-2.5-pro")
+	if !ok {
+		t.Skip("gemini-2.5-pro not in catalog")
+	}
+	if len(m.ReasoningLevels) > 0 {
+		t.Skip("gemini-2.5-pro grew reasoning levels")
+	}
+	if got := catalogClampEffort(catwalk.InferenceProviderGemini, "gemini-2.5-pro", "high"); got != "" {
+		t.Errorf("known model without reasoning levels must clamp to empty string, got %q", got)
+	}
+}

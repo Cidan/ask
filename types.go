@@ -311,10 +311,11 @@ type tabTitleMsg struct {
 // tab, attaches a workflowRunState to its model, and dispatches the
 // first step.
 type spawnWorkflowTabMsg struct {
-	OriginTabID int
-	Cwd         string
-	Workflow    workflowDef
-	Source      workflowSource
+	OriginTabID  int
+	Cwd          string
+	WorktreeName string
+	Workflow     workflowDef
+	Source       workflowSource
 }
 
 // workflowRunStartStepMsg fires when a workflow tab is ready to

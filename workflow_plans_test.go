@@ -9,7 +9,7 @@ func TestWorkflowPlansDir(t *testing.T) {
 	root := initGitRepo(t)
 
 	t.Run("main_checkout", func(t *testing.T) {
-		got := workflowPlansDir(root)
+		got := workflowPlansDir(root, "")
 		want := filepath.Join(root, "ask", "plans")
 		if got != want {
 			t.Errorf("got %q want %q", got, want)
@@ -17,12 +17,12 @@ func TestWorkflowPlansDir(t *testing.T) {
 	})
 
 	t.Run("worktree", func(t *testing.T) {
-		path, _, err := createWorktreeAt(root)
+		path, name, err := createWorktreeAt(root)
 		if err != nil {
 			t.Fatal(err)
 		}
 		
-		got := workflowPlansDir(path)
+		got := workflowPlansDir(path, name)
 		want := filepath.Join(path, "ask", "plans")
 		if got != want {
 			t.Errorf("got %q want %q", got, want)

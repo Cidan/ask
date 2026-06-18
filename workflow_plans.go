@@ -25,10 +25,13 @@ const workflowStartPlanDirName = "start"
 
 // workflowPlansDir returns the absolute base plans directory for cwd.
 // Empty when projectRoot cannot be determined.
-func workflowPlansDir(cwd string) string {
+func workflowPlansDir(cwd, worktreeName string) string {
 	root := projectRoot(cwd)
 	if root == "" {
 		return ""
+	}
+	if worktreeName != "" {
+		return filepath.Join(worktreePath(root, worktreeName), filepath.FromSlash(workflowPlansDirName))
 	}
 	if name := worktreeNameFromCwd(cwd); name != "" {
 		return filepath.Join(worktreePath(root, name), filepath.FromSlash(workflowPlansDirName))
@@ -37,8 +40,8 @@ func workflowPlansDir(cwd string) string {
 }
 
 // startPlanDir returns the absolute path to ask/plans/start/.
-func startPlanDir(cwd string) string {
-	base := workflowPlansDir(cwd)
+func startPlanDir(cwd, worktreeName string) string {
+	base := workflowPlansDir(cwd, worktreeName)
 	if base == "" {
 		return ""
 	}
@@ -50,8 +53,8 @@ func startPlanDir(cwd string) string {
 //   - The first step of a workflow writes to ask/plans/start/.
 //   - Subsequent linear steps write to ask/plans/<step-name>/.
 //   - Steps inside a loop write to ask/plans/<loop-name>/<iteration>/.
-func stepNotesDir(cwd, stepName, loopName string, iteration int) string {
-	base := workflowPlansDir(cwd)
+func stepNotesDir(cwd, worktreeName, stepName, loopName string, iteration int) string {
+	base := workflowPlansDir(cwd, worktreeName)
 	if base == "" {
 		return ""
 	}
@@ -65,7 +68,7 @@ func stepNotesDir(cwd, stepName, loopName string, iteration int) string {
 // ask/plans/ tree for cwd's project root. It returns false when cwd has
 // no project root or when path is the plans directory itself.
 func isPathUnderWorkflowPlans(cwd, path string) bool {
-	plansDir := workflowPlansDir(cwd)
+	plansDir := workflowPlansDir(cwd, "")
 	if plansDir == "" {
 		return false
 	}
@@ -134,8 +137,8 @@ func ensureStepNotesDir(dir string) error {
 // directory and contains at least one non-directory entry before the
 // workflow begins. The error text is LLM-facing, so it repeats the
 // exact shape the path must have.
-func ensureStartPlanExists(cwd string) error {
-	dir := startPlanDir(cwd)
+func ensureStartPlanExists(cwd, worktreeName string) error {
+	dir := startPlanDir(cwd, worktreeName)
 	if dir == "" {
 		return errors.New("start plan is missing: " + startPlanDirInstruction)
 	}
@@ -168,8 +171,8 @@ func ensureStartPlanExists(cwd string) error {
 
 // clearWorkflowPlans removes all children under ask/plans/ but leaves
 // the directory itself. It is safe to call repeatedly.
-func clearWorkflowPlans(cwd string) error {
-	dir := workflowPlansDir(cwd)
+func clearWorkflowPlans(cwd, worktreeName string) error {
+	dir := workflowPlansDir(cwd, worktreeName)
 	if dir == "" {
 		return errors.New("no project root to locate ask/plans/")
 	}
@@ -197,8 +200,8 @@ func clearWorkflowPlans(cwd string) error {
 
 // removeAllWorkflowPlans removes the entire ask/plans/ tree. Used by
 // the runner after the final step succeeds.
-func removeAllWorkflowPlans(cwd string) error {
-	dir := workflowPlansDir(cwd)
+func removeAllWorkflowPlans(cwd, worktreeName string) error {
+	dir := workflowPlansDir(cwd, worktreeName)
 	if dir == "" {
 		return nil
 	}
@@ -228,7 +231,7 @@ func clearPlansCore(cwd string, in clearPlansInput) (*mcp.CallToolResult, clearP
 	if errRes := requireWorkflowCwd(cwd); errRes != nil {
 		return errRes, clearPlansOutput{}, nil
 	}
-	if err := clearWorkflowPlans(cwd); err != nil {
+	if err := clearWorkflowPlans(cwd, ""); err != nil {
 		return errResult(err.Error()), clearPlansOutput{}, nil
 	}
 	return okResult("ask/plans/ cleared"), clearPlansOutput{Cleared: true}, nil
