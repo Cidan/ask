@@ -104,6 +104,13 @@ type issue struct {
 	// belongs to the detail view, not the data, so we don't smear "the
 	// canonical thread order" across read sites.
 	comments []issueComment
+
+	// attachments are external resources linked to the issue (Slack
+	// threads, GitHub PRs, plain URLs, …). Linear surfaces a linked
+	// Slack thread here rather than as a comment unless the workspace
+	// syncs the thread, so the agent needs these to see the discussion
+	// at all.
+	attachments []issueAttachment
 }
 
 // issueComment is one comment in an issue's thread. Provider-neutral
@@ -113,6 +120,33 @@ type issueComment struct {
 	author    string
 	createdAt time.Time
 	body      string
+
+	// source tags the integration channel a synced comment came from
+	// (e.g. "slack") when it wasn't authored by a Linear user. Empty
+	// for native Linear comments.
+	source string
+
+	// url is a permalink to the comment's origin (e.g. the Slack
+	// message) when the provider exposes one. Empty otherwise.
+	url string
+}
+
+// issueAttachment is one external resource linked to an issue. For
+// Linear this is the GraphQL `Attachment` type — a Slack thread, a
+// GitHub PR, a Figma file, or a plain URL. title/subtitle/url are the
+// fields Linear renders in its attachment widget; sourceType is the
+// integration that created it ("slack", "github", …); body carries any
+// attachment bodyData (often the originating message text); metadata is
+// the integration-specific JSON, compacted, empty when Linear returned
+// an empty object.
+type issueAttachment struct {
+	title      string
+	subtitle   string
+	url        string
+	sourceType string
+	body       string
+	metadata   string
+	createdAt  time.Time
 }
 
 // issuesState is the per-tab state for the issues screen. Holds the
@@ -1632,29 +1666,76 @@ func (v *issueDetailView) renderBody(width int) string {
 	b.WriteString(strings.TrimRight(body, "\n"))
 	b.WriteString("\n")
 
-	if len(v.issue.comments) == 0 {
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("(no comments)"))
-		return b.String()
-	}
-
 	// All chrome inside the body sits at column 0 and inherits the
 	// screen-level indent. The separator's width matches the body
 	// width so it spans the indented column up to the right edge.
 	sepW := max(8, width-2)
-	b.WriteString("\n")
-	b.WriteString(dimStyle.Render(strings.Repeat("─", sepW)))
-	b.WriteString("\n\n")
-	b.WriteString(promptStyle.Render(
-		fmt.Sprintf("Comments (%d)", len(v.issue.comments))))
-	b.WriteString("\n\n")
+	section := func(title string) {
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(strings.Repeat("─", sepW)))
+		b.WriteString("\n\n")
+		b.WriteString(promptStyle.Render(title))
+		b.WriteString("\n\n")
+	}
 
+	// Attachments (Slack threads, linked PRs, …) come before comments —
+	// for a Linear issue a linked Slack discussion lives here, and it's
+	// usually the primary context the reader is after.
+	if len(v.issue.attachments) > 0 {
+		section(fmt.Sprintf("Attachments (%d)", len(v.issue.attachments)))
+		for i, a := range v.issue.attachments {
+			if i > 0 {
+				b.WriteString("\n")
+			}
+			label := strings.TrimSpace(a.title)
+			if label == "" {
+				label = "(attachment)"
+			}
+			if a.sourceType != "" {
+				label = fmt.Sprintf("%s (%s)", label, a.sourceType)
+			}
+			b.WriteString(promptStyle.Render(label))
+			b.WriteString("\n")
+			if sub := strings.TrimSpace(a.subtitle); sub != "" {
+				b.WriteString(dimStyle.Render(sub))
+				b.WriteString("\n")
+			}
+			if a.url != "" {
+				b.WriteString(dimStyle.Render(a.url))
+				b.WriteString("\n")
+			}
+			if bd := strings.TrimSpace(a.body); bd != "" {
+				rb, err := r.Render(bd)
+				if err != nil {
+					rb = bd
+				}
+				b.WriteString(strings.TrimRight(rb, "\n"))
+				b.WriteString("\n")
+			}
+		}
+	}
+
+	if len(v.issue.comments) == 0 {
+		if len(v.issue.attachments) == 0 {
+			b.WriteString("\n")
+			b.WriteString(dimStyle.Render("(no comments)"))
+		}
+		return b.String()
+	}
+
+	section(fmt.Sprintf("Comments (%d)", len(v.issue.comments)))
 	for i, c := range v.issue.comments {
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		head := fmt.Sprintf("%s · %s",
-			c.author, c.createdAt.Format("2006-01-02"))
+		author := c.author
+		if author == "" {
+			author = "(unknown)"
+		}
+		head := fmt.Sprintf("%s · %s", author, c.createdAt.Format("2006-01-02"))
+		if c.source != "" {
+			head = fmt.Sprintf("%s (%s) · %s", author, c.source, c.createdAt.Format("2006-01-02"))
+		}
 		b.WriteString(dimStyle.Render(head))
 		b.WriteString("\n")
 		body, err := r.Render(strings.TrimSpace(c.body))

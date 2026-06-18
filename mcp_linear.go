@@ -54,19 +54,38 @@ type linearGetInput struct {
 
 type linearCommentView struct {
 	Author    string `json:"author"`
+	Source    string `json:"source,omitempty"`
 	CreatedAt string `json:"created_at"`
 	Body      string `json:"body"`
+	URL       string `json:"url,omitempty"`
+}
+
+// linearAttachmentView is an external resource linked to the issue —
+// most importantly a Slack thread (source_type "slack"). Surfaced to
+// the agent so it can read or follow discussions Linear stores as
+// attachments rather than comments. body is the attachment's bodyData
+// (often the originating message); metadata is the integration's raw
+// JSON when non-empty.
+type linearAttachmentView struct {
+	Title      string `json:"title,omitempty"`
+	Subtitle   string `json:"subtitle,omitempty"`
+	URL        string `json:"url"`
+	SourceType string `json:"source_type,omitempty"`
+	Body       string `json:"body,omitempty"`
+	Metadata   string `json:"metadata,omitempty"`
+	CreatedAt  string `json:"created_at"`
 }
 
 type linearIssueDetailView struct {
-	Number      int                 `json:"number"`
-	Identifier  string              `json:"identifier"`
-	Title       string              `json:"title"`
-	Status      string              `json:"status"`
-	Assignee    string              `json:"assignee"`
-	CreatedAt   string              `json:"created_at"`
-	Description string              `json:"description"`
-	Comments    []linearCommentView `json:"comments,omitempty"`
+	Number      int                    `json:"number"`
+	Identifier  string                 `json:"identifier"`
+	Title       string                 `json:"title"`
+	Status      string                 `json:"status"`
+	Assignee    string                 `json:"assignee"`
+	CreatedAt   string                 `json:"created_at"`
+	Description string                 `json:"description"`
+	Comments    []linearCommentView    `json:"comments,omitempty"`
+	Attachments []linearAttachmentView `json:"attachments,omitempty"`
 }
 
 type linearGetOutput struct {
@@ -283,7 +302,9 @@ Returns a page of issues (number, identifier, title, status, assignee, created_a
 
 Errors when Linear is not configured for the current project (missing API key or team key).`
 
-	linearGetToolDescription = `Get one Linear issue by number, including description and comments.
+	linearGetToolDescription = `Get one Linear issue by number, including description, comments, and attachments.
+
+Attachments are external resources linked to the issue — most importantly Slack threads (source_type "slack"), plus GitHub PRs, Figma files, and plain URLs. A Slack discussion linked to an issue lives in attachments, not comments, unless the workspace syncs the thread; follow the attachment url to read the full Slack thread. Comments synced from an integration carry a "source" (e.g. "slack") and the external author's name in place of a Linear user.
 
 The configured team is implicit; the caller passes only the integer number. Errors when the issue does not exist or Linear is not configured for the current project.`
 
@@ -306,7 +327,7 @@ Supported edits:
   • estimate — set point estimate, or pass a negative value to clear
   • parent — set parent (TEAM-N / bare number / UUID) for sub-issue, or pass empty string to orphan
 
-Returns the post-update issue snapshot (full detail view including description and comments). Errors when no field was supplied, a name fails to resolve, the issue does not exist, or Linear is not configured.`
+Returns the post-update issue snapshot (full detail view including description, comments, and attachments). Errors when no field was supplied, a name fails to resolve, the issue does not exist, or Linear is not configured.`
 
 	linearCreateCommentToolDescription = `Add a comment to a Linear issue.
 
@@ -663,8 +684,9 @@ func linearIssueViewOf(it issue, teamKey string) linearIssueView {
 }
 
 // linearIssueDetailViewOf is the get-tool counterpart to
-// linearIssueViewOf — adds description and comments to the wire
-// shape so the agent gets the full body in one round trip.
+// linearIssueViewOf — adds description, comments, and attachments to
+// the wire shape so the agent gets the full body (including linked
+// Slack threads) in one round trip.
 func linearIssueDetailViewOf(it issue, teamKey string) linearIssueDetailView {
 	out := linearIssueDetailView{
 		Number:      it.number,
@@ -680,8 +702,24 @@ func linearIssueDetailViewOf(it issue, teamKey string) linearIssueDetailView {
 		for _, c := range it.comments {
 			out.Comments = append(out.Comments, linearCommentView{
 				Author:    c.author,
+				Source:    c.source,
 				CreatedAt: c.createdAt.Format(time.RFC3339),
 				Body:      c.body,
+				URL:       c.url,
+			})
+		}
+	}
+	if len(it.attachments) > 0 {
+		out.Attachments = make([]linearAttachmentView, 0, len(it.attachments))
+		for _, a := range it.attachments {
+			out.Attachments = append(out.Attachments, linearAttachmentView{
+				Title:      a.title,
+				Subtitle:   a.subtitle,
+				URL:        a.url,
+				SourceType: a.sourceType,
+				Body:       a.body,
+				Metadata:   a.metadata,
+				CreatedAt:  a.createdAt.Format(time.RFC3339),
 			})
 		}
 	}

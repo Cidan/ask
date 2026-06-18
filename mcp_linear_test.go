@@ -201,6 +201,83 @@ func TestLinearIssueDetailViewOf_OmitsCommentsWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestLinearIssueDetailViewOf_IncludesAttachmentsAndCommentSource(t *testing.T) {
+	ct := time.Date(2026, 2, 1, 10, 0, 0, 0, time.UTC)
+	at := time.Date(2026, 1, 21, 0, 0, 0, 0, time.UTC)
+	detail := linearIssueDetailViewOf(issue{
+		number: 776,
+		title:  "needs slack context",
+		comments: []issueComment{
+			{author: "Dana", source: "slack", body: "synced", url: "https://slack.example/p9", createdAt: ct},
+		},
+		attachments: []issueAttachment{
+			{title: "Slack thread", subtitle: "8 replies", url: "https://slack.example/p1", sourceType: "slack", body: "discussion", metadata: `{"channel":"eng"}`, createdAt: at},
+		},
+	}, "WAJ")
+	if len(detail.Attachments) != 1 {
+		t.Fatalf("attachments=%+v", detail.Attachments)
+	}
+	a := detail.Attachments[0]
+	if a.SourceType != "slack" || a.URL != "https://slack.example/p1" || a.Body != "discussion" || a.Metadata != `{"channel":"eng"}` {
+		t.Errorf("attachment view=%+v", a)
+	}
+	if a.CreatedAt != "2026-01-21T00:00:00Z" {
+		t.Errorf("attachment createdAt=%q", a.CreatedAt)
+	}
+	if len(detail.Comments) != 1 || detail.Comments[0].Source != "slack" || detail.Comments[0].URL != "https://slack.example/p9" {
+		t.Errorf("comment view=%+v", detail.Comments)
+	}
+}
+
+func TestLinearIssueDetailViewOf_OmitsAttachmentsWhenEmpty(t *testing.T) {
+	detail := linearIssueDetailViewOf(issue{number: 1, title: "x"}, "ENG")
+	if detail.Attachments != nil {
+		t.Errorf("Attachments should be nil when none, got %+v", detail.Attachments)
+	}
+}
+
+func TestLinearGetTool_SurfacesAttachments(t *testing.T) {
+	mock := newLinearMockServer(t)
+	mock.handlers["AskGetIssue"] = func(vars map[string]any) any {
+		return map[string]any{
+			"issue": map[string]any{
+				"number":      776,
+				"title":       "ctx",
+				"description": "body",
+				"state":       map[string]any{"type": "started"},
+				"createdAt":   "2026-01-20T00:00:00Z",
+				"attachments": map[string]any{
+					"nodes": []any{
+						map[string]any{
+							"title":      "Slack thread",
+							"url":        "https://slack.example/p1",
+							"sourceType": "slack",
+							"bodyData":   "the discussion",
+							"metadata":   map[string]any{},
+							"createdAt":  "2026-01-21T00:00:00Z",
+						},
+					},
+				},
+			},
+		}
+	}
+	b, _ := configuredLinearBridge(t, mock.URL())
+	res, out, _ := b.linearGetTool(context.Background(), &mcp.CallToolRequest{}, linearGetInput{Number: 776})
+	if res.IsError {
+		t.Fatalf("get errored: %s", textContent(res))
+	}
+	if len(out.Issue.Attachments) != 1 {
+		t.Fatalf("attachments=%+v", out.Issue.Attachments)
+	}
+	a := out.Issue.Attachments[0]
+	if a.SourceType != "slack" || a.URL != "https://slack.example/p1" || a.Body != "the discussion" {
+		t.Errorf("attachment=%+v", a)
+	}
+	if a.Metadata != "" {
+		t.Errorf("empty metadata should collapse, got %q", a.Metadata)
+	}
+}
+
 // -----------------------------------------------------------------------
 // linearProjectConfig gate coverage
 // -----------------------------------------------------------------------
