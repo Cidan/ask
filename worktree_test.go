@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -364,7 +365,10 @@ func TestCreateExternalWorktree_MakesSiblingAndBranch(t *testing.T) {
 		t.Errorf("expected branch worktree-%s, got:\n%s", name, branches)
 	}
 	// The lock reason should be ours.
-	locks := worktreeLocks(dir)
+	locks, err := worktreeLocks(dir)
+	if err != nil {
+		t.Fatalf("worktreeLocks: %v", err)
+	}
 	reason, ok := worktreeLockReason(locks, path)
 	if !ok {
 		t.Errorf("worktree should be locked after createExternalWorktree; locks=%v", locks)
@@ -530,7 +534,10 @@ func TestWorktreeLocks_ParsesPorcelain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createExternalWorktree: %v", err)
 	}
-	locks := worktreeLocks(dir)
+	locks, err := worktreeLocks(dir)
+	if err != nil {
+		t.Fatalf("worktreeLocks: %v", err)
+	}
 	if _, ok := worktreeLockReason(locks, path); !ok {
 		t.Errorf("worktreeLocks missing %s; got %v", path, locks)
 	}
@@ -538,6 +545,56 @@ func TestWorktreeLocks_ParsesPorcelain(t *testing.T) {
 	runGit(t, dir, "worktree", "unlock", path)
 	runGit(t, dir, "worktree", "remove", "--force", path)
 	runGit(t, dir, "branch", "-D", "worktree-"+name)
+}
+
+// A wedged or racing `git worktree list` makes worktreeLocks fail; prune
+// must then ABORT rather than treat every worktree as unlocked and reap a
+// live instance's workspace. With a healthy lister the same unlocked
+// worktree is removed, so this isolates the abort-on-error guard.
+func TestPruneWorktrees_AbortsWhenLockListingFails(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not installed")
+	}
+	dir := initGitRepo(t)
+	t.Chdir(dir)
+	path, _, err := createWorktree()
+	if err != nil {
+		t.Fatalf("createWorktree: %v", err)
+	}
+	// Unlock so a healthy prune *would* remove it — the worktree is clean.
+	runGit(t, dir, "worktree", "unlock", path)
+
+	boom := func(string) (map[string]string, error) {
+		return nil, errors.New("git worktree list failed")
+	}
+	pruneWorktreesWith(dir, boom)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("worktree must survive prune when lock listing fails: %v", err)
+	}
+
+	// A working lister reaps the same unlocked worktree, proving the abort
+	// above was the lock-listing failure and not some unrelated skip.
+	pruneWorktreesWith(dir, worktreeLocks)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("unlocked worktree should be pruned by a healthy prune: err=%v", err)
+	}
+}
+
+// worktreeLocks surfaces an error (rather than an empty map) when the git
+// query fails, so pruneWorktreesWith can distinguish "no locks" from
+// "couldn't read locks." A `.git` that isn't a real repo makes the
+// porcelain query fail.
+func TestWorktreeLocks_ErrorsOnBrokenRepo(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	if _, err := worktreeLocks(dir); err == nil {
+		t.Fatal("worktreeLocks should error when the git worktree query fails")
+	}
 }
 
 func TestWorktreeLockReason_DirectHit(t *testing.T) {
