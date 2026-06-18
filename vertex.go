@@ -151,10 +151,13 @@ var vertexLanguageModel = func(vc vertexConfig, modelID string) (fantasy.Languag
 // thinking controls. Same shape as googleaiProviderOptions — both
 // providers share the ThinkingConfig + ThinkingLevel wire surface.
 func vertexProviderOptions(modelID, effort string) (fantasy.ProviderOptions, *float64) {
-	if effort == "" {
+	if effort == "" || effort == "off" {
 		return nil, nil
 	}
 	clamped := catalogClampEffort(catwalk.InferenceProviderVertexAI, modelID, effort)
+	if clamped == "" || clamped == "off" {
+		return nil, nil
+	}
 	level := google.ThinkingLevel(strings.ToUpper(clamped))
 	opts := &google.ProviderOptions{
 		ThinkingConfig: &google.ThinkingConfig{ThinkingLevel: &level},

@@ -45,10 +45,13 @@ var googleaiLanguageModel = func(cfg apiProviderConfig, modelID string) (fantasy
 // the chosen model doesn't support (Gemini 3.1 Pro rejects
 // "minimal", Gemini 2.5 Pro rejects everything).
 func googleaiProviderOptions(modelID, effort string) (fantasy.ProviderOptions, *float64) {
-	if effort == "" {
+	if effort == "" || effort == "off" {
 		return nil, nil
 	}
 	clamped := catalogClampEffort(catwalk.InferenceProviderGemini, modelID, effort)
+	if clamped == "" || clamped == "off" {
+		return nil, nil
+	}
 	level := google.ThinkingLevel(strings.ToUpper(clamped))
 	opts := &google.ProviderOptions{
 		ThinkingConfig: &google.ThinkingConfig{ThinkingLevel: &level},
