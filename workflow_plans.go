@@ -30,6 +30,9 @@ func workflowPlansDir(cwd string) string {
 	if root == "" {
 		return ""
 	}
+	if name := worktreeNameFromCwd(cwd); name != "" {
+		return filepath.Join(worktreePath(root, name), filepath.FromSlash(workflowPlansDirName))
+	}
 	return filepath.Join(root, filepath.FromSlash(workflowPlansDirName))
 }
 
