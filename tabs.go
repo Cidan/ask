@@ -91,6 +91,39 @@ func (a app) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+func (m model) ownsCtrlListNav() bool {
+	if m.popoverOpen() {
+		return true
+	}
+	switch m.mode {
+	case modeSessionPicker, modeProviderSwitch:
+		return true
+	case modeAskQuestion:
+		return m.askOwnsCtrlListNav()
+	case modeConfig:
+		return m.configOwnsCtrlListNav()
+	default:
+		return false
+	}
+}
+
+func (m model) askOwnsCtrlListNav() bool {
+	if m.askConfirmingCancel || m.askOllamaActive || m.askEditing == askEditNote || m.isOnConfirmTab() {
+		return false
+	}
+	return m.askTab >= 0 && m.askTab < len(m.askQuestions)
+}
+
+func (m model) configOwnsCtrlListNav() bool {
+	if m.configMemoryPickerActive && m.configMemoryFieldEditing != "" {
+		return false
+	}
+	if m.configProjectPickerActive && m.configProjectFieldEditing != "" {
+		return false
+	}
+	return true
+}
+
 func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case closeTabMsg:
@@ -109,6 +142,14 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = normalizeKeyPressMsg(m)
 		km := currentKeyMap()
 		switch {
+		// A modal or inline popover that navigates with Ctrl+P/Ctrl+N
+		// owns those keys: defer them to the active tab before any
+		// app-level keymap action, so whatever the user has bound onto
+		// Ctrl+P/Ctrl+N (tab switch, new tab, suspend, ...) cannot shadow
+		// in-modal list navigation. Outside such a modal the keys fall
+		// through to the normal app actions below.
+		case isCtrlListNav(m) && a.activeTab().ownsCtrlListNav():
+			return a.dispatchActive(msg)
 		case km.Matches(ActionAppSuspend, m):
 			return a.suspendApp()
 		case km.Matches(ActionTabNew, m):

@@ -89,6 +89,182 @@ func TestApp_TabNavigationIgnoresLockModifiers(t *testing.T) {
 	}
 }
 
+// TestApp_TabNavDefersToModalListNav proves the app-level tab switcher
+// yields Ctrl+P/Ctrl+N to a modal in the active tab. With tab.prev /
+// tab.next rebound onto those keys (a real user config), pressing
+// Ctrl+N while a modal list — here the /config keybindings picker — is
+// open must navigate that list, NOT switch tabs. Without the deferral
+// the app layer would intercept the key before the tab ever saw it.
+func TestApp_TabNavDefersToModalListNav(t *testing.T) {
+	isolateHome(t)
+	setKeyMapForTesting(KeyMap{
+		ActionTabPrev:    {Mod: tea.ModCtrl, Code: 'p'},
+		ActionTabNext:    {Mod: tea.ModCtrl, Code: 'n'},
+		ActionTabNew:     defaultKeyBindings[ActionTabNew],
+		ActionAppSuspend: defaultKeyBindings[ActionAppSuspend],
+	})
+	defer invalidateKeyMapCache()
+
+	for _, tc := range []struct {
+		name       string
+		key        tea.KeyPressMsg
+		wantCursor int
+	}{
+		{"next", ctrlKey('n'), 1},
+		{"prev", ctrlKey('p'), len(actionMeta) - 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testAppWithTwoTabs(t)
+			a.active = 0
+			a.tabs[0].mode = modeConfig
+			a.tabs[0].configKeybindingsPickerActive = true
+
+			newA, _ := a.Update(tc.key)
+			a2, ok := newA.(app)
+			if !ok {
+				t.Fatalf("Update returned %T, want app", newA)
+			}
+			if a2.active != 0 {
+				t.Fatalf("%s with a modal list open must not switch tabs; active=%d", tc.key.String(), a2.active)
+			}
+			if got := a2.tabs[0].configKeybindingsCursor; got != tc.wantCursor {
+				t.Errorf("%s should move the modal list cursor; got %d want %d", tc.key.String(), got, tc.wantCursor)
+			}
+		})
+	}
+}
+
+func TestApp_TabNavSwitchesWhenModalDoesNotOwnListNav(t *testing.T) {
+	isolateHome(t)
+	setKeyMapForTesting(KeyMap{
+		ActionTabPrev:    {Mod: tea.ModCtrl, Code: 'p'},
+		ActionTabNext:    {Mod: tea.ModCtrl, Code: 'n'},
+		ActionTabNew:     defaultKeyBindings[ActionTabNew],
+		ActionAppSuspend: defaultKeyBindings[ActionAppSuspend],
+	})
+	defer invalidateKeyMapCache()
+
+	cases := []struct {
+		name  string
+		setup func(*model)
+	}{
+		{"cancel turn confirm", func(m *model) { m.cancelTurnConfirming = true }},
+		{"close tab confirm", func(m *model) { m.closeTabConfirming = true }},
+		{"merge PR confirm", func(m *model) { m.mergePRConfirming = true }},
+		{"approval", func(m *model) { m.mode = modeApproval }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testAppWithTwoTabs(t)
+			a.active = 0
+			tc.setup(a.tabs[0])
+
+			newA, _ := a.Update(ctrlKey('n'))
+			a2, ok := newA.(app)
+			if !ok {
+				t.Fatalf("Update returned %T, want app", newA)
+			}
+			if a2.active != 1 {
+				t.Errorf("Ctrl+N should switch tabs when %s does not own list navigation; active=%d", tc.name, a2.active)
+			}
+		})
+	}
+}
+
+// TestApp_ModalListNavWinsOverReboundAppActions proves the deferral runs
+// before every app-level action, not just tab switching: when a modal
+// owns list navigation, Ctrl+P/Ctrl+N navigate the list regardless of
+// what the user has bound onto them (suspend, new tab, ...). Without the
+// gate sitting first, those binds would shadow in-modal navigation.
+func TestApp_ModalListNavWinsOverReboundAppActions(t *testing.T) {
+	isolateHome(t)
+	defer invalidateKeyMapCache()
+
+	t.Run("suspend rebound onto Ctrl+N", func(t *testing.T) {
+		setKeyMapForTesting(KeyMap{
+			ActionAppSuspend: {Mod: tea.ModCtrl, Code: 'n'},
+			ActionTabNew:     defaultKeyBindings[ActionTabNew],
+			ActionTabPrev:    {Mod: tea.ModCtrl, Code: 'p'},
+			ActionTabNext:    {Mod: tea.ModCtrl, Code: 'n'},
+		})
+
+		a := testAppWithTwoTabs(t)
+		a.active = 0
+		a.tabs[0].mode = modeConfig
+		a.tabs[0].configKeybindingsPickerActive = true
+
+		newA, cmd := a.Update(ctrlKey('n'))
+		a2, ok := newA.(app)
+		if !ok {
+			t.Fatalf("Update returned %T, want app", newA)
+		}
+		if a2.suspending {
+			t.Error("modal list-nav must win: Ctrl+N should not suspend the app")
+		}
+		if cmd != nil {
+			if msg := cmd(); msg == (tea.SuspendMsg{}) {
+				t.Fatal("Ctrl+N should navigate the modal, not emit tea.SuspendMsg")
+			}
+		}
+		if got := a2.tabs[0].configKeybindingsCursor; got != 1 {
+			t.Errorf("Ctrl+N should advance the modal list cursor; got %d want 1", got)
+		}
+	})
+
+	t.Run("new-tab rebound onto Ctrl+N", func(t *testing.T) {
+		setKeyMapForTesting(KeyMap{
+			ActionAppSuspend: defaultKeyBindings[ActionAppSuspend],
+			ActionTabNew:     {Mod: tea.ModCtrl, Code: 'n'},
+			ActionTabPrev:    {Mod: tea.ModCtrl, Code: 'p'},
+			ActionTabNext:    {Mod: tea.ModCtrl, Code: 'n'},
+		})
+
+		a := testAppWithTwoTabs(t)
+		a.active = 0
+		a.tabs[0].mode = modeConfig
+		a.tabs[0].configKeybindingsPickerActive = true
+
+		newA, _ := a.Update(ctrlKey('n'))
+		a2, ok := newA.(app)
+		if !ok {
+			t.Fatalf("Update returned %T, want app", newA)
+		}
+		if len(a2.tabs) != 2 || a2.active != 0 {
+			t.Fatalf("modal list-nav must win: Ctrl+N should not open a tab; len=%d active=%d", len(a2.tabs), a2.active)
+		}
+		if got := a2.tabs[0].configKeybindingsCursor; got != 1 {
+			t.Errorf("Ctrl+N should advance the modal list cursor; got %d want 1", got)
+		}
+	})
+}
+
+// TestApp_TabNavSwitchesWithoutModal is the companion guard: with the
+// same Ctrl+N → tab.next rebind but no modal open, Ctrl+N must still do
+// its normal job and switch tabs. The deferral is conditional on a
+// modal/popover owning the keyboard, not a blanket suppression.
+func TestApp_TabNavSwitchesWithoutModal(t *testing.T) {
+	isolateHome(t)
+	setKeyMapForTesting(KeyMap{
+		ActionTabPrev:    {Mod: tea.ModCtrl, Code: 'p'},
+		ActionTabNext:    {Mod: tea.ModCtrl, Code: 'n'},
+		ActionTabNew:     defaultKeyBindings[ActionTabNew],
+		ActionAppSuspend: defaultKeyBindings[ActionAppSuspend],
+	})
+	defer invalidateKeyMapCache()
+
+	a := testAppWithTwoTabs(t)
+	a.active = 0 // default tab state: modeInput, empty input — no modal/popover
+
+	newA, _ := a.Update(ctrlKey('n'))
+	a2, ok := newA.(app)
+	if !ok {
+		t.Fatalf("Update returned %T, want app", newA)
+	}
+	if a2.active != 1 {
+		t.Errorf("Ctrl+N with no modal open must switch tabs; active=%d", a2.active)
+	}
+}
+
 func TestUpdate_ScreenShortcutIgnoresLockModifiers(t *testing.T) {
 	isolateHome(t)
 	invalidateKeyMapCache()
