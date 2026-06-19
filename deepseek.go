@@ -25,10 +25,8 @@ const (
 // 2026-07-24) are deliberately absent; AllowCustom covers stragglers.
 var deepseekModelOptions = []string{"deepseek-v4-pro", "deepseek-v4-flash"}
 
-// deepseekEffortOptions map onto the API's thinking controls: "off"
-// disables thinking entirely; "high"/"max" select reasoning_effort
-// (xhigh is DeepSeek's wire name for max).
-var deepseekEffortOptions = []string{"off", "high", "max"}
+// deepseekEffortOptions map onto the abstract effort levels.
+var deepseekEffortOptions = globalEffortOptions
 
 // deepseekLanguageModel builds the fantasy LanguageModel for one
 // session. Swappable in tests so StartSession can run against a fake
@@ -58,14 +56,14 @@ func deepseekProviderOptions(effort string) (fantasy.ProviderOptions, *float64) 
 	opts := &openaicompat.ProviderOptions{}
 	var temperature *float64
 	switch effort {
-	case "off":
+	case "low", "off": // off supported for legacy persistence
 		opts.ExtraBody = map[string]any{"thinking": map[string]any{"type": "disabled"}}
 		t := 0.0
 		temperature = &t
-	case "high":
+	case "medium":
 		e := openai.ReasoningEffortHigh
 		opts.ReasoningEffort = &e
-	default: // "max" and empty/unset both map to max effort (xhigh on the wire)
+	default: // "high" (or "max" legacy), empty mapping to max effort
 		e := openai.ReasoningEffortXHigh
 		opts.ReasoningEffort = &e
 	}
@@ -93,13 +91,13 @@ var deepseekSpec = agentProviderSpec{
 	loadSettings: func(cfg askConfig) ProviderSettings {
 		return ProviderSettings{
 			Model:         cfg.DeepSeek.Model,
-			Effort:        cfg.DeepSeek.Effort,
+			Effort:        cfg.Effort,
 			SlashCommands: cfg.DeepSeek.SlashCommands,
 		}
 	},
 	saveSettings: func(cfg *askConfig, s ProviderSettings) {
 		cfg.DeepSeek.Model = s.Model
-		cfg.DeepSeek.Effort = s.Effort
+		cfg.Effort = s.Effort
 		cfg.DeepSeek.SlashCommands = s.SlashCommands
 	},
 }

@@ -33,7 +33,7 @@ func TestDeepseekProvider_Metadata(t *testing.T) {
 	if len(picker.Options) != 2 || picker.Options[0] != "deepseek-v4-pro" || !picker.AllowCustom {
 		t.Errorf("model picker wrong: %+v", picker)
 	}
-	if efforts := p.EffortOptions(); len(efforts) != 3 || efforts[0] != "off" {
+	if efforts := p.EffortOptions(); len(efforts) != 3 || efforts[0] != "low" || efforts[2] != "high" {
 		t.Errorf("effort options wrong: %v", efforts)
 	}
 	if id := p.PreMintSessionID(ProviderSessionArgs{}); id == "" {
@@ -68,31 +68,31 @@ func TestDeepseekProvider_SettingsRoundTrip(t *testing.T) {
 }
 
 func TestDeepseekProviderOptions(t *testing.T) {
-	opts, temp := deepseekProviderOptions("off")
+	opts, temp := deepseekProviderOptions("low")
 	ds := opts["deepseek"].(*openaicompat.ProviderOptions)
 	if ds.ExtraBody == nil || temp == nil || *temp != 0.0 {
-		t.Errorf("off must disable thinking and pin temperature 0: %+v temp=%v", ds, temp)
+		t.Errorf("low must disable thinking and pin temperature 0: %+v temp=%v", ds, temp)
 	}
 	thinking, _ := ds.ExtraBody["thinking"].(map[string]any)
 	if thinking["type"] != "disabled" {
 		t.Errorf("thinking extra_body wrong: %+v", ds.ExtraBody)
 	}
 
-	opts, temp = deepseekProviderOptions("high")
+	opts, temp = deepseekProviderOptions("medium")
 	ds = opts["deepseek"].(*openaicompat.ProviderOptions)
 	if ds.ReasoningEffort == nil || string(*ds.ReasoningEffort) != "high" || temp != nil {
-		t.Errorf("high mapping wrong: %+v temp=%v", ds, temp)
+		t.Errorf("medium mapping wrong: %+v temp=%v", ds, temp)
 	}
 
-	opts, _ = deepseekProviderOptions("max")
+	opts, _ = deepseekProviderOptions("high")
 	ds = opts["deepseek"].(*openaicompat.ProviderOptions)
-	if ds.ReasoningEffort == nil || string(*ds.ReasoningEffort) != "xhigh" {
-		t.Errorf("max must map to xhigh: %+v", ds)
+	if ds.ReasoningEffort == nil || (string(*ds.ReasoningEffort) != "xhigh" && string(*ds.ReasoningEffort) != "max") {
+		t.Errorf("high must map to max/xhigh: %+v", ds)
 	}
 
 	opts, temp = deepseekProviderOptions("")
 	ds = opts["deepseek"].(*openaicompat.ProviderOptions)
-	if ds.ReasoningEffort == nil || string(*ds.ReasoningEffort) != "xhigh" || temp != nil {
+	if ds.ReasoningEffort == nil || (string(*ds.ReasoningEffort) != "xhigh" && string(*ds.ReasoningEffort) != "max") || temp != nil {
 		t.Errorf("default effort must be max thinking: %+v", ds)
 	}
 }

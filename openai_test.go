@@ -39,7 +39,7 @@ func TestOpenAIProvider_Metadata(t *testing.T) {
 	if !hasDefault {
 		t.Errorf("picker must include the default model %q", openaiDefaultModel)
 	}
-	if efforts := p.EffortOptions(); len(efforts) != 5 || efforts[0] != "minimal" || efforts[4] != "xhigh" {
+	if efforts := p.EffortOptions(); len(efforts) != 3 || efforts[0] != "low" || efforts[2] != "high" {
 		t.Errorf("effort options wrong: %v", efforts)
 	}
 
@@ -77,7 +77,7 @@ func TestOpenAIProviderOptions(t *testing.T) {
 	if temp != nil {
 		t.Errorf("openai options must not pin temperature: %v", temp)
 	}
-	if oo.ReasoningEffort == nil || *oo.ReasoningEffort != openai.ReasoningEffortHigh {
+	if oo.ReasoningEffort == nil || *oo.ReasoningEffort != openai.ReasoningEffortXHigh {
 		t.Errorf("high mapping wrong: %+v", oo)
 	}
 	if oo.ReasoningSummary == nil || *oo.ReasoningSummary != "auto" {

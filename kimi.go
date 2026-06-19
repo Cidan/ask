@@ -17,7 +17,7 @@ const (
 
 var kimiModelOptions = []string{"kimi-k2.7-code", "kimi-k2.5", "kimi-k2-thinking"}
 
-var kimiEffortOptions = []string{"off", "high"}
+var kimiEffortOptions = globalEffortOptions
 
 // kimiLanguageModel builds the fantasy LanguageModel for one session.
 // Swappable in tests so StartSession can run against a fake model with
@@ -45,11 +45,11 @@ func kimiProviderOptions(effort string) (fantasy.ProviderOptions, *float64) {
 	opts := &openaicompat.ProviderOptions{}
 	var temperature *float64
 	switch effort {
-	case "off":
+	case "low", "off":
 		opts.ExtraBody = map[string]any{"thinking": map[string]any{"type": "disabled"}}
 		t := 0.0
 		temperature = &t
-	default: // "high" and unset both ride the default thinking mode
+	default: // "high", "medium" and unset both ride the default thinking mode
 		e := openai.ReasoningEffortHigh
 		opts.ReasoningEffort = &e
 	}
@@ -77,13 +77,13 @@ var kimiSpec = agentProviderSpec{
 	loadSettings: func(cfg askConfig) ProviderSettings {
 		return ProviderSettings{
 			Model:         cfg.Moonshot.Model,
-			Effort:        cfg.Moonshot.Effort,
+			Effort:        cfg.Effort,
 			SlashCommands: cfg.Moonshot.SlashCommands,
 		}
 	},
 	saveSettings: func(cfg *askConfig, s ProviderSettings) {
 		cfg.Moonshot.Model = s.Model
-		cfg.Moonshot.Effort = s.Effort
+		cfg.Effort = s.Effort
 		cfg.Moonshot.SlashCommands = s.SlashCommands
 	},
 }

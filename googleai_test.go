@@ -33,7 +33,7 @@ func TestGoogleAIProvider_Metadata(t *testing.T) {
 	if len(picker.Options) == 0 || picker.Options[0] != googleaiDefaultModel || !picker.AllowCustom {
 		t.Errorf("model picker wrong: %+v", picker)
 	}
-	if efforts := p.EffortOptions(); len(efforts) != 4 || efforts[0] != "minimal" {
+	if efforts := p.EffortOptions(); len(efforts) != 3 || efforts[0] != "low" || efforts[2] != "high" {
 		t.Errorf("effort options wrong: %v", efforts)
 	}
 	if id := p.PreMintSessionID(ProviderSessionArgs{}); id == "" {
@@ -79,11 +79,11 @@ func TestGoogleAIProviderOptions(t *testing.T) {
 		t.Errorf("level=%q want LOW", *goo.ThinkingConfig.ThinkingLevel)
 	}
 
-	// "minimal" clamps to "low" on gemini-3.1-pro (no minimal in catwalk).
-	opts, _ = googleaiProviderOptions(googleaiDefaultModel, "minimal")
+	// "low" clamps to "low" on gemini-3.1-pro.
+	opts, _ = googleaiProviderOptions(googleaiDefaultModel, "low")
 	goo = opts["google"].(*google.ProviderOptions)
 	if *goo.ThinkingConfig.ThinkingLevel != "LOW" {
-		t.Errorf("minimal should clamp to LOW on 3.1 Pro, got %q", *goo.ThinkingConfig.ThinkingLevel)
+		t.Errorf("low should clamp to LOW on 3.1 Pro, got %q", *goo.ThinkingConfig.ThinkingLevel)
 	}
 
 	// "high" passes through.

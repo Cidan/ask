@@ -819,14 +819,14 @@ func TestSessionArgs_PopulatesAllFields(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.cwd = "/cwd"
 	m.providerModel = "claude-fable-5"
-	m.providerEffort = "xhigh"
+	m.providerEffort = "high"
 	m.skipAllPermissions = true
 	m.worktree = true
 	m.sessionID = "S-42"
 	m.resumeCwd = "/cwd/.claude/worktrees/alpha"
 	args := m.sessionArgs()
 	if args.Cwd != "/cwd" || args.Model != "claude-fable-5" ||
-		args.Effort != "xhigh" || !args.SkipAllPermissions ||
+		args.Effort != "high" || !args.SkipAllPermissions ||
 		!args.Worktree || args.SessionID != "S-42" ||
 		args.ResumeCwd != "/cwd/.claude/worktrees/alpha" {
 		t.Errorf("sessionArgs mismatch: %+v", args)

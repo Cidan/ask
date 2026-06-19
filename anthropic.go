@@ -26,7 +26,7 @@ const (
 // anthropicEffortOptions mirror the Messages API output_config.effort
 // levels. catalogClampEffort degrades a pick the chosen model doesn't
 // offer (e.g. xhigh on sonnet-4-6 → high).
-var anthropicEffortOptions = []string{"low", "medium", "high", "xhigh", "max"}
+var anthropicEffortOptions = globalEffortOptions
 
 // anthropicLanguageModel builds the fantasy LanguageModel for one
 // session. Swappable in tests.
@@ -54,7 +54,8 @@ var anthropicLanguageModel = func(cfg apiProviderConfig, modelID string) (fantas
 func anthropicProviderOptions(modelID, effort string) (fantasy.ProviderOptions, *float64) {
 	opts := &anthropic.ProviderOptions{}
 	if effort != "" {
-		e := anthropic.Effort(catalogClampEffort(catwalk.InferenceProviderAnthropic, modelID, effort))
+		resolved := catalogResolveEffort(catwalk.InferenceProviderAnthropic, modelID, effort)
+		e := anthropic.Effort(catalogClampEffort(catwalk.InferenceProviderAnthropic, modelID, resolved))
 		opts.Effort = &e
 	}
 	return fantasy.ProviderOptions{anthropic.Name: opts}, nil
@@ -151,13 +152,13 @@ var anthropicSpec = agentProviderSpec{
 	loadSettings: func(cfg askConfig) ProviderSettings {
 		return ProviderSettings{
 			Model:         cfg.Anthropic.Model,
-			Effort:        cfg.Anthropic.Effort,
+			Effort:        cfg.Effort,
 			SlashCommands: cfg.Anthropic.SlashCommands,
 		}
 	},
 	saveSettings: func(cfg *askConfig, s ProviderSettings) {
 		cfg.Anthropic.Model = s.Model
-		cfg.Anthropic.Effort = s.Effort
+		cfg.Effort = s.Effort
 		cfg.Anthropic.SlashCommands = s.SlashCommands
 	},
 }

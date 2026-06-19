@@ -23,7 +23,7 @@ const (
 // openaiEffortOptions mirror the Responses API reasoning_effort
 // levels. catalogClampEffort degrades a pick the chosen model doesn't
 // offer (e.g. xhigh on a high-capped model → high).
-var openaiEffortOptions = []string{"minimal", "low", "medium", "high", "xhigh"}
+var openaiEffortOptions = globalEffortOptions
 
 // openaiUseResponsesAPI routes the reasoning lineups through the
 // Responses API by prefix instead of fantasy's exact-id list, so a
@@ -72,7 +72,8 @@ func openaiProviderOptions(modelID, effort string) (fantasy.ProviderOptions, *fl
 		ReasoningSummary: &summary,
 	}
 	if effort != "" {
-		e := openai.ReasoningEffort(catalogClampEffort(catwalk.InferenceProviderOpenAI, modelID, effort))
+		resolved := catalogResolveEffort(catwalk.InferenceProviderOpenAI, modelID, effort)
+		e := openai.ReasoningEffort(catalogClampEffort(catwalk.InferenceProviderOpenAI, modelID, resolved))
 		opts.ReasoningEffort = &e
 	}
 	return fantasy.ProviderOptions{openai.Name: opts}, nil
@@ -108,13 +109,13 @@ var openaiSpec = agentProviderSpec{
 	loadSettings: func(cfg askConfig) ProviderSettings {
 		return ProviderSettings{
 			Model:         cfg.OpenAI.Model,
-			Effort:        cfg.OpenAI.Effort,
+			Effort:        cfg.Effort,
 			SlashCommands: cfg.OpenAI.SlashCommands,
 		}
 	},
 	saveSettings: func(cfg *askConfig, s ProviderSettings) {
 		cfg.OpenAI.Model = s.Model
-		cfg.OpenAI.Effort = s.Effort
+		cfg.Effort = s.Effort
 		cfg.OpenAI.SlashCommands = s.SlashCommands
 	},
 }

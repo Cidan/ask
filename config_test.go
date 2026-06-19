@@ -36,9 +36,9 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	retryFactor := 1.5
 	want := askConfig{
 		Provider: "anthropic",
+		Effort:   "high",
 		Anthropic: apiProviderConfig{
 			Model:  "claude-fable-5",
-			Effort: "high",
 			SlashCommands: []providerSlashEntry{
 				{Name: "extra", Description: "demo"},
 			},
@@ -59,7 +59,6 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 		Memory: memoryConfig{Enabled: &memOn},
 		DeepSeek: apiProviderConfig{
 			Model:   "deepseek-v4-flash",
-			Effort:  "max",
 			APIKey:  "sk-test-123",
 			BaseURL: "https://example.test/v1",
 		},
@@ -74,8 +73,11 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	if got.Provider != want.Provider {
 		t.Errorf("Provider=%q want %q", got.Provider, want.Provider)
 	}
-	if got.Anthropic.Model != want.Anthropic.Model || got.Anthropic.Effort != want.Anthropic.Effort {
-		t.Errorf("anthropic model/effort lost in roundtrip: %+v", got.Anthropic)
+	if got.Anthropic.Model != want.Anthropic.Model {
+		t.Errorf("anthropic model lost in roundtrip: %+v", got.Anthropic)
+	}
+	if got.Effort != want.Effort {
+		t.Errorf("effort lost in roundtrip: got %q, want %q", got.Effort, want.Effort)
 	}
 	if len(got.Anthropic.SlashCommands) != 1 || got.Anthropic.SlashCommands[0].Name != "extra" {
 		t.Errorf("slash commands: %+v", got.Anthropic.SlashCommands)
@@ -107,7 +109,7 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	if got.UI.Retry.BackoffFactor == nil || *got.UI.Retry.BackoffFactor != 1.5 {
 		t.Errorf("ui.retry.backoffFactor = %+v want 1.5", got.UI.Retry.BackoffFactor)
 	}
-	if got.DeepSeek.Model != want.DeepSeek.Model || got.DeepSeek.Effort != want.DeepSeek.Effort ||
+	if got.DeepSeek.Model != want.DeepSeek.Model ||
 		got.DeepSeek.APIKey != want.DeepSeek.APIKey || got.DeepSeek.BaseURL != want.DeepSeek.BaseURL {
 		t.Errorf("deepseek lost in roundtrip: %+v", got.DeepSeek)
 	}
@@ -277,7 +279,7 @@ func TestAnthropicProviderSettings_RoundTrip(t *testing.T) {
 	}
 	updated := ProviderSettings{
 		Model:         "sonnet[1m]",
-		Effort:        "xhigh",
+		Effort:        "high",
 		SlashCommands: []providerSlashEntry{{Name: "foo", Description: "bar"}},
 	}
 	if err := p.SaveSettings(updated); err != nil {
@@ -289,6 +291,40 @@ func TestAnthropicProviderSettings_RoundTrip(t *testing.T) {
 	}
 	if len(got.SlashCommands) != 1 || got.SlashCommands[0].Name != "foo" {
 		t.Errorf("slash commands lost: %+v", got.SlashCommands)
+	}
+}
+
+func TestLoadConfig_MigratesLegacyProviderEffort(t *testing.T) {
+	cases := []struct {
+		name       string
+		raw        string
+		wantEffort string
+	}{
+		{"off to low", `{"anthropic":{"effort":"off"}}`, "low"},
+		{"minimal to low", `{"openai":{"effort":"minimal"}}`, "low"},
+		{"medium remains", `{"deepseek":{"effort":"medium"}}`, "medium"},
+		{"xhigh to high", `{"kimi":{"effort":"xhigh"}}`, "high"},
+		{"max to high", `{"vertex":{"effort":"max"}}`, "high"},
+		{"existing top-level effort wins", `{"effort":"medium","anthropic":{"effort":"high"}}`, "medium"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			home := isolateHome(t)
+			path := filepath.Join(home, ".config", "ask", "ask.json")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			if err := os.WriteFile(path, []byte(c.raw), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			got, err := loadConfig()
+			if err != nil {
+				t.Fatalf("loadConfig: %v", err)
+			}
+			if got.Effort != c.wantEffort {
+				t.Errorf("Effort=%q want %q (legacy raw=%q)", got.Effort, c.wantEffort, c.raw)
+			}
+		})
 	}
 }
 
@@ -611,8 +647,9 @@ func TestResolveAnthropicOpenAIKeys(t *testing.T) {
 func TestAnthropicOpenAIConfigRoundTrip(t *testing.T) {
 	isolateHome(t)
 	want := askConfig{
-		Anthropic: apiProviderConfig{Model: "claude-fable-5", Effort: "xhigh", APIKey: "sk-a"},
-		OpenAI:    apiProviderConfig{Model: "gpt-5.5", Effort: "high", BaseURL: "https://proxy.test/v1"},
+		Effort:    "high",
+		Anthropic: apiProviderConfig{Model: "claude-fable-5", APIKey: "sk-a"},
+		OpenAI:    apiProviderConfig{Model: "gpt-5.5", BaseURL: "https://proxy.test/v1"},
 	}
 	if err := saveConfig(want); err != nil {
 		t.Fatalf("saveConfig: %v", err)
@@ -621,10 +658,13 @@ func TestAnthropicOpenAIConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if got.Anthropic.Model != "claude-fable-5" || got.Anthropic.Effort != "xhigh" || got.Anthropic.APIKey != "sk-a" {
+	if got.Anthropic.Model != "claude-fable-5" || got.Anthropic.APIKey != "sk-a" {
 		t.Errorf("anthropic block lost: %+v", got.Anthropic)
 	}
-	if got.OpenAI.Model != "gpt-5.5" || got.OpenAI.Effort != "high" || got.OpenAI.BaseURL != "https://proxy.test/v1" {
+	if got.OpenAI.Model != "gpt-5.5" || got.OpenAI.BaseURL != "https://proxy.test/v1" {
 		t.Errorf("openai block lost: %+v", got.OpenAI)
+	}
+	if got.Effort != "high" {
+		t.Errorf("effort block lost: got %q", got.Effort)
 	}
 }

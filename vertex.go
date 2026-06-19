@@ -33,10 +33,7 @@ const (
 )
 
 // vertexEffortOptions is the picker surface for reasoning effort.
-// Same shape as googleai: catalogClampEffort de-grades a pick the
-// chosen model doesn't support (Vertex's Gemini 3.1 Pro rejects
-// "minimal" — it drops to "low").
-var vertexEffortOptions = []string{"minimal", "low", "medium", "high"}
+var vertexEffortOptions = globalEffortOptions
 
 // vertexModelOptions filters the catalog's Vertex model list: the
 // Vertex catwalk bundle ships five Claude models alongside the
@@ -154,7 +151,8 @@ func vertexProviderOptions(modelID, effort string) (fantasy.ProviderOptions, *fl
 	if effort == "" || effort == "off" {
 		return nil, nil
 	}
-	clamped := catalogClampEffort(catwalk.InferenceProviderVertexAI, modelID, effort)
+	resolved := catalogResolveEffort(catwalk.InferenceProviderVertexAI, modelID, effort)
+	clamped := catalogClampEffort(catwalk.InferenceProviderVertexAI, modelID, resolved)
 	if clamped == "" || clamped == "off" {
 		return nil, nil
 	}
@@ -190,13 +188,13 @@ var vertexSpec = agentProviderSpec{
 	loadSettings: func(cfg askConfig) ProviderSettings {
 		return ProviderSettings{
 			Model:         cfg.Vertex.Model,
-			Effort:        cfg.Vertex.Effort,
+			Effort:        cfg.Effort,
 			SlashCommands: cfg.Vertex.SlashCommands,
 		}
 	},
 	saveSettings: func(cfg *askConfig, s ProviderSettings) {
 		cfg.Vertex.Model = s.Model
-		cfg.Vertex.Effort = s.Effort
+		cfg.Effort = s.Effort
 		cfg.Vertex.SlashCommands = s.SlashCommands
 	},
 }

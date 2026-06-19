@@ -76,6 +76,37 @@ func TestCatalogSupportsImagesFallback(t *testing.T) {
 	}
 }
 
+func TestCatalogResolveEffort(t *testing.T) {
+	// Custom/unknown model passes through
+	if got := catalogResolveEffort(catwalk.InferenceProviderAnthropic, "custom", "high"); got != "high" {
+		t.Errorf("custom model should pass through, got %q", got)
+	}
+	
+	// Model with no reasoning levels returns empty
+	m, ok := catalogModel(catwalk.InferenceProviderGemini, "gemini-2.5-pro")
+	if ok && len(m.ReasoningLevels) == 0 {
+		if got := catalogResolveEffort(catwalk.InferenceProviderGemini, "gemini-2.5-pro", "high"); got != "" {
+			t.Errorf("model with no reasoning levels should return empty, got %q", got)
+		}
+	}
+
+	// claude-fable-5 levels: [low, medium, high] probably?
+	// Wait, let's just check the logic.
+	m, ok = catalogModel(catwalk.InferenceProviderAnthropic, "claude-fable-5")
+	if ok && len(m.ReasoningLevels) > 0 {
+		levels := m.ReasoningLevels
+		if got := catalogResolveEffort(catwalk.InferenceProviderAnthropic, "claude-fable-5", "low"); got != levels[0] {
+			t.Errorf("low should map to first level %q, got %q", levels[0], got)
+		}
+		if got := catalogResolveEffort(catwalk.InferenceProviderAnthropic, "claude-fable-5", "medium"); got != levels[len(levels)/2] {
+			t.Errorf("medium should map to middle level, got %q", got)
+		}
+		if got := catalogResolveEffort(catwalk.InferenceProviderAnthropic, "claude-fable-5", "high"); got != levels[len(levels)-1] {
+			t.Errorf("high should map to last level %q, got %q", levels[len(levels)-1], got)
+		}
+	}
+}
+
 func TestCatalogClampEffort(t *testing.T) {
 	// Supported level passes through.
 	if got := catalogClampEffort(catwalk.InferenceProviderAnthropic, "claude-fable-5", "xhigh"); got != "xhigh" {

@@ -33,7 +33,7 @@ func TestMiniMaxProvider_Metadata(t *testing.T) {
 	if len(picker.Options) != 1 || picker.Options[0] != "MiniMax-M3" || !picker.AllowCustom {
 		t.Errorf("model picker wrong: %+v", picker)
 	}
-	if efforts := p.EffortOptions(); len(efforts) != 2 || efforts[0] != "off" {
+	if efforts := p.EffortOptions(); len(efforts) != 3 || efforts[0] != "low" || efforts[2] != "high" {
 		t.Errorf("effort options wrong: %v", efforts)
 	}
 	if id := p.PreMintSessionID(ProviderSessionArgs{}); id == "" {
@@ -68,7 +68,7 @@ func TestMiniMaxProvider_SettingsRoundTrip(t *testing.T) {
 }
 
 func TestMiniMaxProviderOptions(t *testing.T) {
-	opts, temp := minimaxProviderOptions("off")
+	opts, temp := minimaxProviderOptions("low")
 	ds := opts["minimax"].(*openaicompat.ProviderOptions)
 	if ds.ExtraBody == nil || temp == nil || *temp != 0.0 {
 		t.Errorf("off must disable thinking and pin temperature 0: %+v temp=%v", ds, temp)
