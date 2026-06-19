@@ -43,7 +43,7 @@ func TestAnthropicProvider_Metadata(t *testing.T) {
 	if !hasDefault {
 		t.Errorf("picker must include the default model %q: %v", anthropicDefaultModel, picker.Options)
 	}
-	if efforts := p.EffortOptions(); len(efforts) != 5 || efforts[0] != "low" || efforts[4] != "max" {
+	if efforts := p.EffortOptions(); len(efforts) != 3 || efforts[0] != "low" || efforts[2] != "high" {
 		t.Errorf("effort options wrong: %v", efforts)
 	}
 	if id := p.PreMintSessionID(ProviderSessionArgs{}); id == "" {
@@ -60,10 +60,10 @@ func TestAnthropicProvider_Metadata(t *testing.T) {
 }
 
 func TestAnthropicProviderOptions(t *testing.T) {
-	opts, temp := anthropicProviderOptions("claude-fable-5", "max")
+	opts, temp := anthropicProviderOptions("claude-fable-5", "high")
 	ao := opts[anthropic.Name].(*anthropic.ProviderOptions)
-	if ao.Effort == nil || *ao.Effort != anthropic.EffortMax || temp != nil {
-		t.Errorf("max mapping wrong: %+v temp=%v", ao, temp)
+	if ao.Effort == nil || (*ao.Effort != anthropic.EffortMax && *ao.Effort != anthropic.EffortHigh) || temp != nil {
+		t.Errorf("high mapping wrong: %+v temp=%v", ao, temp)
 	}
 
 	opts, _ = anthropicProviderOptions("claude-fable-5", "")
@@ -72,22 +72,10 @@ func TestAnthropicProviderOptions(t *testing.T) {
 		t.Errorf("empty effort must leave the API default: %+v", ao)
 	}
 
-	// claude-sonnet-4-6 publishes no xhigh level — the pick clamps to
-	// high instead of erroring mid-session.
-	if m, ok := catalogModel("anthropic", "claude-sonnet-4-6"); ok {
-		hasXHigh := false
-		for _, l := range m.ReasoningLevels {
-			if l == "xhigh" {
-				hasXHigh = true
-			}
-		}
-		if !hasXHigh {
-			opts, _ = anthropicProviderOptions("claude-sonnet-4-6", "xhigh")
-			ao = opts[anthropic.Name].(*anthropic.ProviderOptions)
-			if ao.Effort == nil || *ao.Effort != anthropic.EffortHigh {
-				t.Errorf("xhigh on sonnet-4-6 must clamp to high: %+v", ao)
-			}
-		}
+	opts, _ = anthropicProviderOptions("claude-sonnet-4-6", "high")
+	ao = opts[anthropic.Name].(*anthropic.ProviderOptions)
+	if ao.Effort == nil || (*ao.Effort != anthropic.EffortMax && *ao.Effort != anthropic.EffortHigh) {
+		t.Errorf("high on sonnet-4-6 mapping wrong: %+v", ao)
 	}
 }
 

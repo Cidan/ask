@@ -83,10 +83,9 @@ func modelPickerOptions(picker ProviderPicker) []string {
 
 func (m model) startEffortPicker() model {
 	effortOptions := m.provider.EffortOptions()
-	prompt := "Select " + m.provider.DisplayName() + " reasoning effort"
 	m = m.startAsk([]question{{
 		kind:     qPickOne,
-		prompt:   prompt,
+		prompt:   "Select reasoning effort",
 		options:  effortOptions,
 		diagrams: make([]string, len(effortOptions)),
 	}})
@@ -116,9 +115,6 @@ func (m model) applyEffortPick() (model, tea.Cmd) {
 			break
 		}
 	}
-	if strings.EqualFold(picked, "default") {
-		picked = ""
-	}
 	m = m.clearAsk()
 	if picked == m.providerEffort {
 		return m, nil
@@ -130,10 +126,7 @@ func (m model) applyEffortPick() (model, tea.Cmd) {
 	if err := m.provider.SaveSettings(settings); err != nil {
 		debugLog("SaveSettings err: %v", err)
 	}
-	msg := "✓ effort cleared (using " + m.provider.DisplayName() + " default)"
-	if picked != "" {
-		msg = "✓ effort set to " + picked
-	}
+	msg := "✓ effort set to " + picked
 	m.appendHistory(outputStyle.Render(promptStyle.Render(msg)))
 	return m, nil
 }

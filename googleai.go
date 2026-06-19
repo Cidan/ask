@@ -17,10 +17,7 @@ const (
 )
 
 // googleaiEffortOptions is the picker surface for reasoning effort.
-// catalogClampEffort degrades a pick the chosen model doesn't offer
-// (e.g. "minimal" on a gemini-3.1-pro — which only supports
-// [low, medium, high] — drops to "low").
-var googleaiEffortOptions = []string{"minimal", "low", "medium", "high"}
+var googleaiEffortOptions = globalEffortOptions
 
 // googleaiLanguageModel builds the fantasy LanguageModel for one
 // session. Swappable in tests so StartSession can run against a fake
@@ -48,7 +45,8 @@ func googleaiProviderOptions(modelID, effort string) (fantasy.ProviderOptions, *
 	if effort == "" || effort == "off" {
 		return nil, nil
 	}
-	clamped := catalogClampEffort(catwalk.InferenceProviderGemini, modelID, effort)
+	resolved := catalogResolveEffort(catwalk.InferenceProviderGemini, modelID, effort)
+	clamped := catalogClampEffort(catwalk.InferenceProviderGemini, modelID, resolved)
 	if clamped == "" || clamped == "off" {
 		return nil, nil
 	}
@@ -85,13 +83,13 @@ var googleaiSpec = agentProviderSpec{
 	loadSettings: func(cfg askConfig) ProviderSettings {
 		return ProviderSettings{
 			Model:         cfg.GoogleAI.Model,
-			Effort:        cfg.GoogleAI.Effort,
+			Effort:        cfg.Effort,
 			SlashCommands: cfg.GoogleAI.SlashCommands,
 		}
 	},
 	saveSettings: func(cfg *askConfig, s ProviderSettings) {
 		cfg.GoogleAI.Model = s.Model
-		cfg.GoogleAI.Effort = s.Effort
+		cfg.Effort = s.Effort
 		cfg.GoogleAI.SlashCommands = s.SlashCommands
 	},
 }

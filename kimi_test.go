@@ -33,7 +33,7 @@ func TestKimiProvider_Metadata(t *testing.T) {
 	if len(picker.Options) != 3 || picker.Options[0] != "kimi-k2.7-code" || !picker.AllowCustom {
 		t.Errorf("model picker wrong: %+v", picker)
 	}
-	if efforts := p.EffortOptions(); len(efforts) != 2 || efforts[0] != "off" {
+	if efforts := p.EffortOptions(); len(efforts) != 3 || efforts[0] != "low" || efforts[2] != "high" {
 		t.Errorf("effort options wrong: %v", efforts)
 	}
 	if id := p.PreMintSessionID(ProviderSessionArgs{}); id == "" {

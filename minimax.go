@@ -20,7 +20,7 @@ const (
 var minimaxModelOptions = []string{"MiniMax-M3"}
 
 // minimaxEffortOptions controls M3's reasoning/thinking mode.
-var minimaxEffortOptions = []string{"off", "high"}
+var minimaxEffortOptions = globalEffortOptions
 
 // minimaxLanguageModel builds the fantasy LanguageModel for one session.
 // Swappable in tests so StartSession can run against a fake model.
@@ -48,11 +48,11 @@ func minimaxProviderOptions(effort string) (fantasy.ProviderOptions, *float64) {
 	opts := &openaicompat.ProviderOptions{}
 	var temperature *float64
 	switch effort {
-	case "off":
+	case "low", "off":
 		opts.ExtraBody = map[string]any{"thinking": map[string]any{"type": "disabled"}}
 		t := 0.0
 		temperature = &t
-	default: // "high" and unset
+	default: // "high", "medium" and unset
 		opts.ExtraBody = map[string]any{
 			"thinking":        map[string]any{"type": "adaptive"},
 			"reasoning_split": true,
@@ -84,13 +84,13 @@ var minimaxSpec = agentProviderSpec{
 	loadSettings: func(cfg askConfig) ProviderSettings {
 		return ProviderSettings{
 			Model:         cfg.MiniMax.Model,
-			Effort:        cfg.MiniMax.Effort,
+			Effort:        cfg.Effort,
 			SlashCommands: cfg.MiniMax.SlashCommands,
 		}
 	},
 	saveSettings: func(cfg *askConfig, s ProviderSettings) {
 		cfg.MiniMax.Model = s.Model
-		cfg.MiniMax.Effort = s.Effort
+		cfg.Effort = s.Effort
 		cfg.MiniMax.SlashCommands = s.SlashCommands
 	},
 }

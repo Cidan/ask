@@ -43,7 +43,7 @@ func TestVertexProvider_Metadata(t *testing.T) {
 			t.Errorf("picker must filter Claude / anthropic ids, got %q", id)
 		}
 	}
-	if efforts := p.EffortOptions(); len(efforts) != 4 || efforts[0] != "minimal" {
+	if efforts := p.EffortOptions(); len(efforts) != 3 || efforts[0] != "low" || efforts[2] != "high" {
 		t.Errorf("effort options wrong: %v", efforts)
 	}
 	if id := p.PreMintSessionID(ProviderSessionArgs{}); id == "" {
@@ -97,11 +97,11 @@ func TestVertexProviderOptions(t *testing.T) {
 		t.Errorf("level=%q want LOW", *goo.ThinkingConfig.ThinkingLevel)
 	}
 
-	// "minimal" clamps to "low" on gemini-3.1-pro (no minimal in catwalk).
-	opts, _ = vertexProviderOptions(vertexDefaultModel, "minimal")
+	// "low" clamps to "low" on gemini-3.1-pro.
+	opts, _ = vertexProviderOptions(vertexDefaultModel, "low")
 	goo = opts["google"].(*google.ProviderOptions)
 	if *goo.ThinkingConfig.ThinkingLevel != "LOW" {
-		t.Errorf("minimal should clamp to LOW on 3.1 Pro, got %q", *goo.ThinkingConfig.ThinkingLevel)
+		t.Errorf("low should clamp to LOW on 3.1 Pro, got %q", *goo.ThinkingConfig.ThinkingLevel)
 	}
 
 	// "high" passes through.

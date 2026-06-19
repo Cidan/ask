@@ -48,6 +48,7 @@ type askConfig struct {
 	// "deepseek"). Empty means "use the first registered provider" —
 	// currently anthropic.
 	Provider  string            `json:"provider,omitempty"`
+	Effort    string            `json:"effort,omitempty"`
 	DeepSeek  apiProviderConfig `json:"deepseek,omitempty"`
 	Moonshot  apiProviderConfig `json:"kimi,omitempty"`
 	Anthropic apiProviderConfig `json:"anthropic,omitempty"`
@@ -587,7 +588,6 @@ func validateNeo4jPort(s string) error {
 type apiProviderConfig struct {
 	SlashCommands []providerSlashEntry `json:"slashCommands,omitempty"`
 	Model         string               `json:"model,omitempty"`
-	Effort        string               `json:"effort,omitempty"`
 	APIKey        string               `json:"apiKey,omitempty"`
 	BaseURL       string               `json:"baseURL,omitempty"`
 }
@@ -838,9 +838,56 @@ func loadConfig() (askConfig, error) {
 		return cfg, err
 	}
 	_ = json.Unmarshal(data, &cfg)
+	migrateLegacyProviderEffort(&cfg, data)
 	migrateLegacyToolOutput(&cfg, data)
 	migrateLegacyIssuesGitHub(&cfg, data)
 	return cfg, nil
+}
+
+// migrateLegacyProviderEffort folds old per-provider effort fields into the
+// new global askConfig.Effort field. It maps the first non-empty value found.
+func migrateLegacyProviderEffort(cfg *askConfig, data []byte) {
+	if cfg.Effort != "" {
+		return
+	}
+	var legacy struct {
+		Anthropic struct{ Effort string `json:"effort,omitempty"` } `json:"anthropic,omitempty"`
+		OpenAI    struct{ Effort string `json:"effort,omitempty"` } `json:"openai,omitempty"`
+		DeepSeek  struct{ Effort string `json:"effort,omitempty"` } `json:"deepseek,omitempty"`
+		GoogleAI  struct{ Effort string `json:"effort,omitempty"` } `json:"googleai,omitempty"`
+		Vertex    struct{ Effort string `json:"effort,omitempty"` } `json:"vertex,omitempty"`
+		Kimi      struct{ Effort string `json:"effort,omitempty"` } `json:"kimi,omitempty"`
+		MiniMax   struct{ Effort string `json:"effort,omitempty"` } `json:"minimax,omitempty"`
+	}
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return
+	}
+
+	var found string
+	if legacy.Anthropic.Effort != "" {
+		found = legacy.Anthropic.Effort
+	} else if legacy.OpenAI.Effort != "" {
+		found = legacy.OpenAI.Effort
+	} else if legacy.DeepSeek.Effort != "" {
+		found = legacy.DeepSeek.Effort
+	} else if legacy.GoogleAI.Effort != "" {
+		found = legacy.GoogleAI.Effort
+	} else if legacy.Vertex.Effort != "" {
+		found = legacy.Vertex.Effort
+	} else if legacy.Kimi.Effort != "" {
+		found = legacy.Kimi.Effort
+	} else if legacy.MiniMax.Effort != "" {
+		found = legacy.MiniMax.Effort
+	}
+
+	switch found {
+	case "off", "minimal", "low":
+		cfg.Effort = "low"
+	case "medium":
+		cfg.Effort = "medium"
+	case "high", "xhigh", "max":
+		cfg.Effort = "high"
+	}
 }
 
 // migrateLegacyToolOutput folds the deprecated "renderToolOutput" bool

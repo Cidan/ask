@@ -51,7 +51,7 @@ func newFakeProvider() *fakeProvider {
 	return &fakeProvider{
 		id:            "fake",
 		displayName:   "Fake",
-		effortOptions: []string{"default", "low", "high"},
+		effortOptions: []string{"low", "medium", "high"},
 		baseSlash:     []slashCmd{{"/new", "start a new fake session"}},
 		caps: ProviderCapabilities{
 			Resume:       true,

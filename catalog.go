@@ -82,6 +82,38 @@ func catalogSupportsImages(provider catwalk.InferenceProvider, modelID string, f
 	return fallback
 }
 
+var globalEffortOptions = []string{"low", "medium", "high"}
+
+// catalogResolveEffort maps the global abstract effort levels onto concrete
+// ReasoningLevels for the given model. It returns empty if the model has no
+// reasoning levels or if the effort is unknown.
+//  - "low" maps to the first available level
+//  - "medium" maps to the middle available level
+//  - "high" maps to the absolute top available level
+func catalogResolveEffort(providerID catwalk.InferenceProvider, modelID, effort string) string {
+	if effort == "" {
+		return ""
+	}
+	model, ok := catalogModel(providerID, modelID)
+	if !ok {
+		return effort // passthrough unknown
+	}
+	levels := model.ReasoningLevels
+	if len(levels) == 0 {
+		return ""
+	}
+
+	switch effort {
+	case "low":
+		return levels[0]
+	case "medium":
+		return levels[len(levels)/2]
+	case "high":
+		return levels[len(levels)-1]
+	}
+	return effort // passthrough unknown abstract or exact matches
+}
+
 // catalogClampEffort clamps a picked effort onto what the model
 // actually offers, using ranks so an unsupported pick degrades to the
 // nearest level below it (xhigh on a high-capped model → high) instead

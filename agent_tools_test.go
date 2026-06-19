@@ -753,6 +753,7 @@ func (rt rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 }
 
 func TestAgentTodosTool(t *testing.T) {
+	isolateHome(t)
 	env, msgs := newTestToolEnv(t)
 	tool := agentTodosTool(env)
 	resp := runTool(t, tool, agentTodosParams{Todos: []agentTodoEntry{
@@ -984,6 +985,7 @@ func TestAgentTodosWorkflowGuard_DisarmedByRun(t *testing.T) {
 }
 
 func TestAgentTodosWorkflowGuard_InertWithoutWorkflows(t *testing.T) {
+	isolateHome(t)
 	// No workflows defined → the guard never fires, even on the first call.
 	env, msgs := newTestToolEnv(t)
 	if env.workflowsAvailable {
@@ -1012,6 +1014,7 @@ func TestAgentTodosWorkflowGuard_InertWithoutWorkflows(t *testing.T) {
 // lands. This is what guarantees the workflow guard (inside todos) is
 // reached before the model starts mutating in that mode.
 func TestRequireTodosBeforeEdit(t *testing.T) {
+	isolateHome(t)
 	env, _ := newTestToolEnv(t)
 	path := writeTestFile(t, env.cwd, "f.txt", "hello world\n")
 	env.files.recordRead(path) // satisfy read-before-mutate
@@ -1051,6 +1054,7 @@ func TestRequireTodosBeforeEdit(t *testing.T) {
 
 // TestRequireTodosBeforeWrite mirrors the edit case for the write tool.
 func TestRequireTodosBeforeWrite(t *testing.T) {
+	isolateHome(t)
 	env, _ := newTestToolEnv(t)
 	path := filepath.Join(env.cwd, "new.txt")
 	write := agentWriteTool(env)
@@ -1085,6 +1089,7 @@ func TestRequireTodosBeforeWrite(t *testing.T) {
 // list everywhere, so even a workflow-less project must create one
 // before mutating.
 func TestRequireTodos_AppliesInAllProjects(t *testing.T) {
+	isolateHome(t)
 	env, _ := newTestToolEnv(t)
 	if env.workflowsAvailable {
 		t.Fatal("this test assumes a workflow-less project")
