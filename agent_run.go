@@ -449,6 +449,18 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		s.emit(turnCompleteMsg{})
 		return
 	case err != nil:
+		debugLog("agent.Stream failed: %v", err)
+		debugLog("agent.Stream failed full error: %+v", err)
+		if len(turn.text) > 0 {
+			debugLog("agent.Stream failed prompt length: %d", len(turn.text))
+			debugLog("agent.Stream failed prompt excerpt: %q", turn.text)
+		}
+		debugLog("agent.Stream failed history length: %d", len(history))
+		for i, msg := range history {
+			role := msg.Role
+			partsLen := len(msg.Content)
+			debugLog("  history[%d]: role=%s parts=%d", i, role, partsLen)
+		}
 		s.emit(providerDoneMsg{
 			res: providerResult{SessionID: s.sessionID, IsError: true, Result: err.Error()},
 			err: err,

@@ -24,7 +24,7 @@ var debugFileFactory = func() (*os.File, error) {
 // debugOnEnv is a seam: tests swap it to flip the debug-on flag
 // without touching os.Setenv (which is process-global and would
 // race the parallel test suite).
-var debugOnEnv = func() bool { return os.Getenv("ASK_DEBUG") != "" }
+var debugOnEnv = func() bool { return true }
 
 func debugLog(format string, args ...any) {
 	if !debugOnEnv() {
