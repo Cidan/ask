@@ -277,9 +277,10 @@ func (m model) workflowFinalize(ok bool, reason string) (tea.Model, tea.Cmd) {
 //
 //	any step      · no end_turn → re-prompt the same step (need a summary)
 //	linear        · summary     → record, advance the top-level cursor
-//	loop any      · break       → exit loop now, skip rest of the iteration
+//	loop non-tail · break       → ignored (advances to next inner step)
 //	loop non-tail · else        → run the next inner step (same iteration)
 //	loop tail     · no decision → re-prompt the tail (need continue/break)
+//	loop tail     · break       → exit loop now
 //	loop tail     · continue    → next iteration, or soft-exit on the cap
 func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 	r := m.workflowRun
@@ -347,9 +348,9 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 	// We have a summary: render the inner step's line.
 	m.appendHistory(stepSummaryLine(inner.Name, inner.Provider, inner.Model, sig.summary))
 
-	// Break from any inner step exits the loop immediately, skipping the
-	// rest of the iteration.
-	if sig.decision == workflowLoopBreak {
+	// Break from the tail step exits the loop immediately. Non-tail steps
+	// cannot break the loop; if they pass a decision, it is ignored.
+	if isTail && sig.decision == workflowLoopBreak {
 		r.prevNotesDir = r.currentNotesDir
 		if txt != "" {
 			r.loop.iterationLog = append(r.loop.iterationLog, txt)
@@ -634,8 +635,7 @@ func buildWorkflowStepPrompt(step workflowStep, source workflowSource, prevOutpu
 // endTurnInstructionBlock renders the auto-injected end_turn contract for
 // a step. Every step is told to call end_turn with a summary; a loop step
 // additionally gets the loop framing, and its tail the "you MUST include a
-// decision" clause (a non-tail step is told to break only in the
-// exceptional case the exit goal is already met).
+// decision" clause (a non-tail step is told to omit decision entirely).
 func endTurnInstructionBlock(loop *loopPromptCtx) string {
 	var b strings.Builder
 	if loop != nil {
@@ -656,8 +656,7 @@ func endTurnInstructionBlock(loop *loopPromptCtx) string {
 				"loop's exit goal is met — breaking should be exceptional.")
 		} else {
 			b.WriteString(" You are inside a loop but not its final step, so omit `decision` and let the loop " +
-				"proceed — unless the exit goal is already met and the remaining steps should be skipped, in which " +
-				"case pass `decision=\"break\"` (this should be exceptional).")
+				"proceed.")
 		}
 	}
 	return b.String()

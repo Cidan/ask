@@ -366,23 +366,26 @@ func TestWorkflowLoop_TailBreakExitsToNextStep(t *testing.T) {
 	assertStartStepCmd(t, cmd, m.id)
 }
 
-// TestWorkflowLoop_NonTailBreakSkipsRestOfIteration: a break from a
-// non-tail step exits immediately without running later inner steps.
-func TestWorkflowLoop_NonTailBreakSkipsRestOfIteration(t *testing.T) {
+// TestWorkflowLoop_NonTailBreakIgnored: a break from a
+// non-tail step is ignored, proceeding to the next inner step.
+func TestWorkflowLoop_NonTailBreakIgnored(t *testing.T) {
 	m := loopRunModel(t, loopInner2, 5, 0, 1)
 	m.workflowRun.currentStep.WriteString("early done")
 	m.workflowRun.pendingEndTurn = &endTurnSignal{decision: workflowLoopBreak, summary: "trivial"}
 
 	newM, _ := m.advanceWorkflowStep(nil)
 	r := newM.(model).workflowRun
-	if r.loop != nil {
-		t.Error("non-tail break should exit the loop")
+	if r.loop == nil || r.loop.innerIdx != 1 {
+		t.Fatalf("should advance to inner 1; got %+v", r.loop)
 	}
-	if r.StepIdx != 1 {
-		t.Errorf("StepIdx=%d want 1", r.StepIdx)
+	if r.loop.iteration != 1 {
+		t.Errorf("iteration should stay 1; got %d", r.loop.iteration)
 	}
-	if len(r.stepLog) != 1 || r.stepLog[0] != "early done" {
-		t.Errorf("partial iteration output should be committed; got %+v", r.stepLog)
+	if len(r.loop.iterationLog) != 1 || r.loop.iterationLog[0] != "early done" {
+		t.Errorf("iterationLog=%+v want [early done]", r.loop.iterationLog)
+	}
+	if !wfHistoryHas(newM.(model), "trivial") {
+		t.Errorf("non-tail summary should be rendered")
 	}
 }
 
