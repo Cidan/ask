@@ -218,12 +218,14 @@ const (
 	histPrerendered historyKind = iota
 	histResponse
 	histUser
+	histWorkflowDone
 )
 
 type historyEntry struct {
-	kind     historyKind
-	text     string
-	rendered string
+	kind           historyKind
+	text           string
+	rendered       string
+	workflowHeader string
 
 	// wrapped is the soft-wrapped slice of rendered lines for the
 	// width recorded in wrappedFor. It is the only thing chatView

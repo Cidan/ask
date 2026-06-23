@@ -519,6 +519,9 @@ var (
 	themePickerHelpStyle  lipgloss.Style
 	themePickerRowStyle   lipgloss.Style
 
+	workflowMarginStyle lipgloss.Style
+	workflowStepStyle   lipgloss.Style
+
 	themeBackground color.Color
 	themeForeground color.Color
 	activeTheme     theme
@@ -637,6 +640,9 @@ func applyTheme(t theme) {
 	themePickerTitleStyle = lipgloss.NewStyle().Foreground(t.accent).Bold(true)
 	themePickerHelpStyle = lipgloss.NewStyle().Foreground(t.dim)
 	themePickerRowStyle = lipgloss.NewStyle().Foreground(t.darkFG).Background(t.accent).Bold(true)
+
+	workflowMarginStyle = lipgloss.NewStyle().Foreground(t.accentAlt).Bold(true)
+	workflowStepStyle = lipgloss.NewStyle().MarginLeft(5)
 
 }
 

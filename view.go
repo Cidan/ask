@@ -233,7 +233,7 @@ func (m *model) ensureEntryWrapped(idx, width int) {
 	e := &m.history[idx]
 	if e.wrappedFor != width {
 		switch e.kind {
-		case histResponse, histUser:
+		case histResponse, histUser, histWorkflowDone:
 			e.rendered = ""
 		}
 	}
@@ -243,6 +243,12 @@ func (m *model) ensureEntryWrapped(idx, width int) {
 	}
 	if needsRender {
 		switch e.kind {
+		case histWorkflowDone:
+			if m.renderer == nil || m.rendererWidth != width {
+				m.renderer = newRenderer(width)
+				m.rendererWidth = width
+			}
+			e.rendered = e.workflowHeader + "\n" + m.renderResponse(e.text)
 		case histResponse:
 			if m.renderer == nil || m.rendererWidth != width {
 				m.renderer = newRenderer(width)
@@ -454,9 +460,24 @@ func (m *model) blankChatFrame(contentH int) string {
 	return m.chat.style.Render(strings.Repeat("\n", max(0, contentH-1)))
 }
 
+func (m model) renderWorkflowActiveLine() string {
+	name, provider, mdl := currentWorkflowStepMeta(m.workflowRun)
+	meta := providerMeta(provider, mdl)
+	line := m.spinner.View() + " " +
+		workflowMarginStyle.Render("|") + " " +
+		promptStyle.Render("▸ "+nonEmpty(name, "step"))
+	if meta != "" {
+		line += dimStyle.Render(" (" + meta + ")")
+	}
+	return workflowStepStyle.Render(line)
+}
+
 func (m model) spinnerLine() string {
 	if m.shellMode {
 		return thinkingStyle.Render(promptStyle.Render("▸ Shell Mode"))
+	}
+	if r := m.workflowRun; r != nil && !r.done && !r.failed {
+		return m.renderWorkflowActiveLine()
 	}
 	if !m.busy {
 		return ""
@@ -469,7 +490,7 @@ func (m model) spinnerLine() string {
 }
 
 func (m model) spinnerBlockHeight() int {
-	if m.shellMode || m.busy {
+	if m.shellMode || m.busy || (m.workflowRun != nil && !m.workflowRun.done && !m.workflowRun.failed) {
 		return 2
 	}
 	return 0
@@ -1282,19 +1303,14 @@ func (m model) renderWorkflowBanner() string {
 // step that hasn't registered a loop decision.
 func (m model) workflowRunningBannerLines(sourceLabel, cancelClause string) (title, line2 string) {
 	r := m.workflowRun
-	stepName := "(unnamed)"
-	stepProvider := ""
-	stepModel := ""
-	stepLabel := ""
+	stepName, stepProvider, stepModel := currentWorkflowStepMeta(r)
+	if stepName == "" {
+		stepName = "(unnamed)"
+	}
+	stepLabel := stepName
 	if r.StepIdx < len(r.Workflow.Steps) {
 		top := r.Workflow.Steps[r.StepIdx]
 		if r.loop != nil && top.isLoop() && r.loop.innerIdx < len(top.Steps) {
-			inner := top.Steps[r.loop.innerIdx]
-			if inner.Name != "" {
-				stepName = inner.Name
-			}
-			stepProvider = inner.Provider
-			stepModel = inner.Model
 			loopName := top.Name
 			if loopName == "" {
 				loopName = "loop"
@@ -1305,12 +1321,6 @@ func (m model) workflowRunningBannerLines(sourceLabel, cancelClause string) (tit
 				stepLabel += fmt.Sprintf(" · re-prompt #%d", r.loop.retry)
 			}
 		} else {
-			if top.Name != "" {
-				stepName = top.Name
-			}
-			stepProvider = top.Provider
-			stepModel = top.Model
-			stepLabel = stepName
 			if r.linearRetry > 0 {
 				stepLabel += fmt.Sprintf(" · re-prompt #%d", r.linearRetry)
 			}
