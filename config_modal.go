@@ -666,7 +666,7 @@ func (m model) closeThemePicker() model {
 func (m *model) invalidateThemedRender() {
 	for i := range m.history {
 		switch m.history[i].kind {
-		case histResponse, histUser:
+		case histResponse, histUser, histWorkflowDone:
 			invalidateEntryRender(&m.history[i])
 		}
 	}

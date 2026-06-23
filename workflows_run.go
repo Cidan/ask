@@ -9,6 +9,18 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+func currentWorkflowStepMeta(r *workflowRunState) (name, provider, model string) {
+	if r == nil || r.StepIdx < 0 || r.StepIdx >= len(r.Workflow.Steps) {
+		return "", "", ""
+	}
+	top := r.Workflow.Steps[r.StepIdx]
+	if r.loop != nil && top.isLoop() && r.loop.innerIdx < len(top.Steps) {
+		inner := top.Steps[r.loop.innerIdx]
+		return inner.Name, inner.Provider, inner.Model
+	}
+	return top.Name, top.Provider, top.Model
+}
+
 // workflowTabHandleKey gates input on a workflow tab. The user
 // cannot type a turn — there is no chat input on a workflow tab —
 // but they can still scroll the chat viewport to read streaming
@@ -312,7 +324,7 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 			return m.dispatchOrFinalize()
 		}
 		// Got the summary: render the step's line, record output, advance.
-		m.appendHistory(stepSummaryLine(step.Name, step.Provider, step.Model, sig.summary))
+		m.appendWorkflowStepDone(step.Name, step.Provider, step.Model, sig.summary)
 		if err := revalidateWorkflowNotesDir(m.cwd, m.worktreeName, r); err != nil {
 			r.remind = remindFixPlanDir
 			r.remindDetail = err.Error()
@@ -346,7 +358,7 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 	}
 
 	// We have a summary: render the inner step's line.
-	m.appendHistory(stepSummaryLine(inner.Name, inner.Provider, inner.Model, sig.summary))
+	m.appendWorkflowStepDone(inner.Name, inner.Provider, inner.Model, sig.summary)
 
 	// Break from the tail step exits the loop immediately. Non-tail steps
 	// cannot break the loop; if they pass a decision, it is ignored.
@@ -700,20 +712,22 @@ func loopNoteLine(loopName, action, detail string) string {
 	return workflowNoteLine(fmt.Sprintf("⟳ loop %q %s", loopName, action), detail)
 }
 
-// stepSummaryLine renders a completed step's entry in the workflow log: a
+// appendWorkflowStepDone renders a completed step's entry in the workflow log: a
 // styled "▸ name (provider/model)" header with the agent's end_turn
 // summary beneath it. This per-step content is what replaces the raw
 // transcript on a workflow tab. The summary is not pre-wrapped; the
 // viewport soft-wraps it at render time.
-func stepSummaryLine(name, provider, model, summary string) string {
-	header := promptStyle.Render("▸ " + nonEmpty(name, "step"))
-	if meta := providerMeta(provider, model); meta != "" {
+func (m *model) appendWorkflowStepDone(name, provider, mdl, summary string) {
+	header := "   " + workflowMarginStyle.Render("|") + " " +
+		promptStyle.Render("▸ "+nonEmpty(name, "step"))
+	if meta := providerMeta(provider, mdl); meta != "" {
 		header += dimStyle.Render(" (" + meta + ")")
 	}
-	if s := strings.TrimSpace(summary); s != "" {
-		header += "\n" + outputStyle.Render("  " + s)
-	}
-	return header
+	m.history = append(m.history, historyEntry{
+		kind:           histWorkflowDone,
+		text:           summary,
+		workflowHeader: workflowStepStyle.Render(header),
+	})
 }
 
 // providerMeta renders the "provider/model" suffix shown next to a step

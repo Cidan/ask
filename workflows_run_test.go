@@ -654,30 +654,115 @@ func TestBuildWorkflowStepPrompt_EndTurnInstructions(t *testing.T) {
 	}
 }
 
-// TestStepSummaryLine renders the per-step log entry: name, provider/model
-// meta, and the agent's summary. The summary must NOT be pre-wrapped — the
-// viewport soft-wraps it at render time, so stepSummaryLine returns it as a
-// single unbroken rendered string.
-func TestStepSummaryLine(t *testing.T) {
-	summary := "This is a very long summary that would absolutely wrap under the old narrow width-based logic and must remain a single unbroken rendered string"
-	got := stepSummaryLine("review", "codex", "gpt-5", summary)
+func TestCurrentWorkflowStepMeta(t *testing.T) {
+	name, provider, mdl := currentWorkflowStepMeta(nil)
+	if name != "" || provider != "" || mdl != "" {
+		t.Errorf("expected empty strings for nil run, got %q, %q, %q", name, provider, mdl)
+	}
+
+	run := &workflowRunState{
+		Workflow: workflowDef{
+			Steps: []workflowStep{
+				{Name: "step1", Provider: "p1", Model: "m1"},
+				{
+					Name: "loop1", Kind: "loop", Steps: []workflowStep{
+						{Name: "inner1", Provider: "p2", Model: "m2"},
+					},
+				},
+			},
+		},
+	}
+
+	run.StepIdx = -1
+	name, provider, mdl = currentWorkflowStepMeta(run)
+	if name != "" || provider != "" || mdl != "" {
+		t.Errorf("expected empty strings for out of bounds step, got %q, %q, %q", name, provider, mdl)
+	}
+
+	run.StepIdx = 2
+	name, provider, mdl = currentWorkflowStepMeta(run)
+	if name != "" || provider != "" || mdl != "" {
+		t.Errorf("expected empty strings for out of bounds step, got %q, %q, %q", name, provider, mdl)
+	}
+
+	run.StepIdx = 0
+	name, provider, mdl = currentWorkflowStepMeta(run)
+	if name != "step1" || provider != "p1" || mdl != "m1" {
+		t.Errorf("expected step1, p1, m1, got %q, %q, %q", name, provider, mdl)
+	}
+
+	run.StepIdx = 1
+	run.loop = &loopRunFrame{innerIdx: 0}
+	name, provider, mdl = currentWorkflowStepMeta(run)
+	if name != "inner1" || provider != "p2" || mdl != "m2" {
+		t.Errorf("expected inner1, p2, m2, got %q, %q, %q", name, provider, mdl)
+	}
+
+	run.loop.innerIdx = 1 // out of bounds inner
+	name, provider, mdl = currentWorkflowStepMeta(run)
+	if name != "loop1" || provider != "" || mdl != "" { // falls back to top step
+		t.Errorf("expected fallback to loop step, got %q, %q, %q", name, provider, mdl)
+	}
+}
+
+func TestRenderWorkflowActiveLine(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{
+			Name: "test-flow",
+			Steps: []workflowStep{
+				{Name: "step1", Provider: "p1", Model: "m1"},
+			},
+		},
+		StepIdx: 0,
+	}
+	line := m.spinnerLine()
+	if !strings.Contains(line, "|") {
+		t.Errorf("expected active line to contain |, got %q", line)
+	}
+	if !strings.Contains(line, "step1") {
+		t.Errorf("expected active line to contain step1, got %q", line)
+	}
+}
+
+func TestEnsureEntryWrapped_WorkflowDone(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.appendWorkflowStepDone("step1", "p1", "m1", "**bold** summary")
+	if len(m.history) == 0 {
+		t.Fatal("expected history entry")
+	}
+	m.ensureEntryWrapped(0, 80)
+	e := &m.history[0]
+	if e.rendered == "" {
+		t.Error("expected rendered text to be populated")
+	}
+	if !strings.Contains(e.rendered, "|") || !strings.Contains(e.rendered, "step1") {
+		t.Errorf("expected rendered text to contain header, got %q", e.rendered)
+	}
+	if !strings.Contains(e.rendered, "bold") || !strings.Contains(e.rendered, "summary") { // glamour adds ANSI between words
+		t.Errorf("expected rendered text to contain rendered markdown, got %q", e.rendered)
+	}
+}
+
+// TestAppendWorkflowStepDone appends the per-step log entry to history: kind histWorkflowDone,
+// text = summary, and workflowHeader populated.
+func TestAppendWorkflowStepDone(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	summary := "This is a very long summary"
+	m.appendWorkflowStepDone("review", "codex", "gpt-5", summary)
+	if len(m.history) == 0 {
+		t.Fatal("expected history entry")
+	}
+	e := m.history[len(m.history)-1]
+	if e.kind != histWorkflowDone {
+		t.Errorf("expected kind histWorkflowDone, got %v", e.kind)
+	}
+	if e.text != summary {
+		t.Errorf("expected text %q, got %q", summary, e.text)
+	}
 	for _, want := range []string{"review", "codex/gpt-5"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("summary line missing %q; got %q", want, got)
-		}
-	}
-	if !strings.Contains(got, summary) {
-		t.Errorf("full summary text must appear verbatim; got %q", got)
-	}
-	// No hard newline should break a word in the summary body. Splitting on
-	// newlines and looking for the summary header line (which starts with "▸")
-	// vs the summary body line — the body line must carry the full text.
-	for _, ln := range strings.Split(got, "\n") {
-		if strings.HasPrefix(ln, "▸") {
-			continue
-		}
-		if strings.Contains(ln, "summary") && !strings.Contains(ln, summary) {
-			t.Errorf("summary body line contains a fragment but not the full text — hard-wrapped; line=%q", ln)
+		if !strings.Contains(e.workflowHeader, want) {
+			t.Errorf("header missing %q; got %q", want, e.workflowHeader)
 		}
 	}
 }
