@@ -451,6 +451,21 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	case err != nil:
 		debugLog("agent.Stream failed: %v", err)
 		debugLog("agent.Stream failed full error: %+v", err)
+		debugLog("agent.Stream model ID: %s", s.modelID)
+		sysExcerpt := s.system
+		if len(sysExcerpt) > 1000 {
+			sysExcerpt = sysExcerpt[:1000] + "..."
+		}
+		debugLog("agent.Stream system prompt length: %d", len(s.system))
+		debugLog("agent.Stream system prompt excerpt: %q", sysExcerpt)
+		tools := s.currentTools()
+		debugLog("agent.Stream tools count: %d", len(tools))
+		for i, tool := range tools {
+			info := tool.Info()
+			debugLog("  tool[%d]: %s", i, info.Name)
+			schemaBytes, _ := json.Marshal(info)
+			debugLog("    schema: %s", string(schemaBytes))
+		}
 		if len(turn.text) > 0 {
 			debugLog("agent.Stream failed prompt length: %d", len(turn.text))
 			debugLog("agent.Stream failed prompt excerpt: %q", turn.text)
