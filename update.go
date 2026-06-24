@@ -1239,8 +1239,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 				state = "ON"
 			}
 			m.killProc()
-			m.sessionID = ""
-			m.sessionMinted = false
 			return m, m.toast.show("Planning mode: " + state)
 		}
 		newM, cmd, _ := m.activeScreen().updateKey(m, msg)
