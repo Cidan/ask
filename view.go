@@ -248,7 +248,11 @@ func (m *model) ensureEntryWrapped(idx, width int) {
 				m.renderer = newRenderer(width)
 				m.rendererWidth = width
 			}
-			e.rendered = e.workflowHeader + "\n" + m.renderResponse(e.text)
+			if e.workflowHeader != "" {
+				e.rendered = e.workflowHeader + "\n" + m.renderResponse(e.text)
+			} else {
+				e.rendered = m.renderResponse(e.text)
+			}
 		case histResponse:
 			if m.renderer == nil || m.rendererWidth != width {
 				m.renderer = newRenderer(width)
@@ -460,26 +464,11 @@ func (m *model) blankChatFrame(contentH int) string {
 	return m.chat.style.Render(strings.Repeat("\n", max(0, contentH-1)))
 }
 
-func (m model) renderWorkflowActiveLine() string {
-	name, provider, mdl := currentWorkflowStepMeta(m.workflowRun)
-	meta := providerMeta(provider, mdl)
-	line := m.spinner.View() + " " +
-		workflowMarginStyle.Render("|") + " " +
-		promptStyle.Render("▸ "+nonEmpty(name, "step"))
-	if meta != "" {
-		line += dimStyle.Render(" (" + meta + ")")
-	}
-	return workflowStepStyle.Render(line)
-}
-
 func (m model) spinnerLine() string {
 	if m.shellMode {
 		return thinkingStyle.Render(promptStyle.Render("▸ Shell Mode"))
 	}
-	if r := m.workflowRun; r != nil && !r.done && !r.failed {
-		return m.renderWorkflowActiveLine()
-	}
-	if !m.busy {
+	if !m.busy && (m.workflowRun == nil || m.workflowRun.done || m.workflowRun.failed) {
 		return ""
 	}
 	s := m.status

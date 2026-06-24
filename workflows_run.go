@@ -149,6 +149,15 @@ func (m model) startWorkflowStep() (tea.Model, tea.Cmd) {
 		step = top.Steps[r.loop.innerIdx]
 	}
 
+	if r.remind == remindNone {
+		header := "   " + workflowMarginStyle.Render("|") + " " +
+			promptStyle.Render("▸ "+nonEmpty(step.Name, "step"))
+		if meta := providerMeta(step.Provider, step.Model); meta != "" {
+			header += dimStyle.Render(" (" + meta + ")")
+		}
+		m.appendHistory(header)
+	}
+
 	if m.worktreeName == "" && m.worktree && worktreeBackendAt(m.cwd) != workspaceBackendNone {
 		m.worktreeName = newWorktreeName(m.cwd)
 	}
@@ -712,21 +721,14 @@ func loopNoteLine(loopName, action, detail string) string {
 	return workflowNoteLine(fmt.Sprintf("⟳ loop %q %s", loopName, action), detail)
 }
 
-// appendWorkflowStepDone renders a completed step's entry in the workflow log: a
-// styled "▸ name (provider/model)" header with the agent's end_turn
-// summary beneath it. This per-step content is what replaces the raw
-// transcript on a workflow tab. The summary is not pre-wrapped; the
-// viewport soft-wraps it at render time.
+// appendWorkflowStepDone renders a completed step's entry in the workflow log.
+// The summary is not pre-wrapped; the viewport soft-wraps it at render time.
+// The step title (header) is emitted exactly once when the step starts.
 func (m *model) appendWorkflowStepDone(name, provider, mdl, summary string) {
-	header := "   " + workflowMarginStyle.Render("|") + " " +
-		promptStyle.Render("▸ "+nonEmpty(name, "step"))
-	if meta := providerMeta(provider, mdl); meta != "" {
-		header += dimStyle.Render(" (" + meta + ")")
-	}
 	m.history = append(m.history, historyEntry{
 		kind:           histWorkflowDone,
 		text:           summary,
-		workflowHeader: workflowStepStyle.Render(header),
+		workflowHeader: "",
 	})
 }
 

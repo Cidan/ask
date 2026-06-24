@@ -716,12 +716,10 @@ func TestRenderWorkflowActiveLine(t *testing.T) {
 		},
 		StepIdx: 0,
 	}
+	m.status = "executing bash"
 	line := m.spinnerLine()
-	if !strings.Contains(line, "|") {
-		t.Errorf("expected active line to contain |, got %q", line)
-	}
-	if !strings.Contains(line, "step1") {
-		t.Errorf("expected active line to contain step1, got %q", line)
+	if !strings.Contains(line, "executing bash") {
+		t.Errorf("expected active line to contain status, got %q", line)
 	}
 }
 
@@ -736,8 +734,8 @@ func TestEnsureEntryWrapped_WorkflowDone(t *testing.T) {
 	if e.rendered == "" {
 		t.Error("expected rendered text to be populated")
 	}
-	if !strings.Contains(e.rendered, "|") || !strings.Contains(e.rendered, "step1") {
-		t.Errorf("expected rendered text to contain header, got %q", e.rendered)
+	if strings.Contains(e.rendered, "|") || strings.Contains(e.rendered, "step1") {
+		t.Errorf("expected rendered text to NOT contain header, got %q", e.rendered)
 	}
 	if !strings.Contains(e.rendered, "bold") || !strings.Contains(e.rendered, "summary") { // glamour adds ANSI between words
 		t.Errorf("expected rendered text to contain rendered markdown, got %q", e.rendered)
@@ -745,7 +743,7 @@ func TestEnsureEntryWrapped_WorkflowDone(t *testing.T) {
 }
 
 // TestAppendWorkflowStepDone appends the per-step log entry to history: kind histWorkflowDone,
-// text = summary, and workflowHeader populated.
+// text = summary, and workflowHeader empty.
 func TestAppendWorkflowStepDone(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	summary := "This is a very long summary"
@@ -760,10 +758,8 @@ func TestAppendWorkflowStepDone(t *testing.T) {
 	if e.text != summary {
 		t.Errorf("expected text %q, got %q", summary, e.text)
 	}
-	for _, want := range []string{"review", "codex/gpt-5"} {
-		if !strings.Contains(e.workflowHeader, want) {
-			t.Errorf("header missing %q; got %q", want, e.workflowHeader)
-		}
+	if e.workflowHeader != "" {
+		t.Errorf("expected empty header, got %q", e.workflowHeader)
 	}
 }
 
