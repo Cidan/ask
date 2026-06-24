@@ -3,8 +3,10 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -311,8 +313,30 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 	txt := strings.TrimSpace(r.currentStep.String())
 	r.currentStep.Reset()
 	if stepErr != nil {
+		m.killProc()
+		cfg, _ := loadConfig()
+		maxRetries, initialDelay, backoffFactor := agentRetryOptions(cfg)
+
+		if r.stepErrorRetry < maxRetries {
+			r.stepErrorRetry++
+			wait := time.Duration(float64(initialDelay) * math.Pow(backoffFactor, float64(r.stepErrorRetry-1)))
+
+			stepName, _, _ := currentWorkflowStepMeta(r)
+			var note string
+			if r.loop != nil {
+				note = loopNoteLine(r.Workflow.Steps[r.StepIdx].Name, "failed", fmt.Sprintf("step %q: %v — retrying in %s (attempt %d of %d)", stepName, stepErr, humanDuration(wait), r.stepErrorRetry, maxRetries))
+			} else {
+				note = workflowNoteLine(fmt.Sprintf("step %q failed: %v", stepName, stepErr), fmt.Sprintf("retrying in %s (attempt %d of %d)", humanDuration(wait), r.stepErrorRetry, maxRetries))
+			}
+			m.appendHistory(note)
+
+			return m, tea.Tick(wait, func(t time.Time) tea.Msg {
+				return workflowRunStartStepMsg{tabID: m.id}
+			})
+		}
 		return m.workflowFinalize(false, stepErr.Error())
 	}
+	r.stepErrorRetry = 0
 	m.killProc()
 	sig := r.pendingEndTurn
 	r.pendingEndTurn = nil
