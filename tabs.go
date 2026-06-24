@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -380,9 +381,11 @@ func (a app) supplantWorkflow(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
 	t.drainPendingReplies()
 	t.killProc()
 	t.workflowRun = &workflowRunState{
-		Workflow: req.Workflow,
-		Source:   req.Source,
-		StepIdx:  0,
+		Workflow:  req.Workflow,
+		Source:    req.Source,
+		runID:     newUUIDv4(),
+		startedAt: time.Now().UTC(),
+		StepIdx:   0,
 		supplanted: &workflowTabSnapshot{
 			provider:           t.provider,
 			providerModel:      t.providerModel,
@@ -500,9 +503,13 @@ func (a app) closeTab(tabID int) (tea.Model, tea.Cmd) {
 		// "last session: …" inline before tea.Quit tears the altscreen
 		// down. Empty vsID = nothing to print, so don't even arm the
 		// flag — saves a redundant render flicker.
-		if t.virtualSessionID != "" {
+		quittingVID := t.virtualSessionID
+		if t.workflowRun != nil && t.workflowRun.supplanted != nil && t.workflowRun.supplanted.virtualSessionID != "" {
+			quittingVID = t.workflowRun.supplanted.virtualSessionID
+		}
+		if quittingVID != "" {
 			a.quitting = true
-			a.quittingVID = t.virtualSessionID
+			a.quittingVID = quittingVID
 		}
 		return a, tea.Quit
 	}

@@ -708,6 +708,9 @@ type workflowRunState struct {
 	Workflow workflowDef
 	Source   workflowSource
 
+	runID     string
+	startedAt time.Time
+
 	// StepIdx is the top-level cursor: the index into Workflow.Steps of
 	// the step (agent or loop) currently executing. While inside a loop
 	// it points at the loop step and `loop` carries the inner position.

@@ -250,3 +250,40 @@ func TestApp_VirtualSessionMaterializedStaysOnOwningTab(t *testing.T) {
 		t.Errorf("tab 2 state mutated unexpectedly: session=%q busy=%v", a2.tabs[1].sessionID, a2.tabs[1].busy)
 	}
 }
+
+func TestCloseTab_QuittingVIDUsesSupplantedVS(t *testing.T) {
+	a := testAppWithTwoTabs(t)
+	a.tabs = a.tabs[:1]
+	a.active = 0
+	
+	a.tabs[0].virtualSessionID = "vs-workflow"
+	a.tabs[0].workflowRun = &workflowRunState{
+		supplanted: &workflowTabSnapshot{virtualSessionID: "vs-parent"},
+	}
+	
+	newA, cmd := a.closeTab(a.tabs[0].id)
+	if cmd == nil || cmd() != (tea.QuitMsg{}) {
+		t.Fatal("expected QuitMsg")
+	}
+	a2 := newA.(app)
+	if !a2.quitting || a2.quittingVID != "vs-parent" {
+		t.Errorf("quittingVID wrong: %v %v", a2.quitting, a2.quittingVID)
+	}
+}
+
+func TestCloseTab_QuittingVIDFallsBackToTabVS(t *testing.T) {
+	a := testAppWithTwoTabs(t)
+	a.tabs = a.tabs[:1]
+	a.active = 0
+	
+	a.tabs[0].virtualSessionID = "vs-tab"
+	
+	newA, cmd := a.closeTab(a.tabs[0].id)
+	if cmd == nil || cmd() != (tea.QuitMsg{}) {
+		t.Fatal("expected QuitMsg")
+	}
+	a2 := newA.(app)
+	if !a2.quitting || a2.quittingVID != "vs-tab" {
+		t.Errorf("quittingVID wrong: %v %v", a2.quitting, a2.quittingVID)
+	}
+}

@@ -18,7 +18,7 @@ import (
 // virtualSessionStoreVersion is the on-disk schema version for
 // ~/.config/ask/sessions.json. Bump when the VirtualSession shape
 // changes so loadVirtualSessions can migrate older payloads.
-const virtualSessionStoreVersion = 1
+const virtualSessionStoreVersion = 2
 
 // VirtualSession is ask's provider-agnostic session abstraction: one
 // logical conversation whose ProviderSessions maps provider IDs to
@@ -33,6 +33,7 @@ type VirtualSession struct {
 	Preview          string                        `json:"preview,omitempty"`
 	LastProvider     string                        `json:"lastProvider,omitempty"`
 	ProviderSessions map[string]ProviderSessionRef `json:"providerSessions"`
+	WorkflowRuns     []VirtualSessionWorkflowRun   `json:"workflowRuns,omitempty"`
 
 	// Title is the short LLM-generated description of the
 	// conversation (tab_title.go), surfaced on sidebar cards and
@@ -53,6 +54,22 @@ type VirtualSession struct {
 type ProviderSessionRef struct {
 	SessionID string `json:"sessionID"`
 	Cwd       string `json:"cwd,omitempty"`
+}
+
+type VirtualSessionWorkflowRun struct {
+	RunID        string                       `json:"runID"`
+	WorkflowName string                       `json:"workflowName"`
+	StartedAt    time.Time                    `json:"startedAt"`
+	Steps        []VirtualSessionWorkflowStep `json:"steps"`
+}
+
+type VirtualSessionWorkflowStep struct {
+	StepIdx       int                `json:"stepIdx"`
+	StepName      string             `json:"stepName"`
+	ProviderID    string             `json:"providerID"`
+	LoopIteration int                `json:"loopIteration,omitempty"`
+	LoopInnerIdx  int                `json:"loopInnerIdx,omitempty"`
+	Session       ProviderSessionRef `json:"session"`
 }
 
 // virtualSessionStore is the versioned on-disk envelope so schema
@@ -332,6 +349,71 @@ func (m *model) recordVirtualSession(nativeID string) {
 	addedDirs := append([]string(nil), m.addedDirs...)
 	tabTitle := m.tabTitle
 	now := time.Now().UTC()
+
+	if m.workflowRun != nil {
+		if vsID == "" {
+			return
+		}
+		stepName, stepProvider, _ := currentWorkflowStepMeta(m.workflowRun)
+		var loopIteration, loopInnerIdx int
+		if m.workflowRun.loop != nil {
+			loopIteration = m.workflowRun.loop.iteration
+			loopInnerIdx = m.workflowRun.loop.innerIdx
+		}
+		step := VirtualSessionWorkflowStep{
+			StepIdx:       m.workflowRun.StepIdx,
+			StepName:      stepName,
+			ProviderID:    stepProvider,
+			LoopIteration: loopIteration,
+			LoopInnerIdx:  loopInnerIdx,
+			Session:       ProviderSessionRef{SessionID: nativeID, Cwd: nativeCwd},
+		}
+
+		err := mutateVirtualSessions(func(store *virtualSessionStore) error {
+			vs := store.findByID(vsID)
+			if vs == nil {
+				return nil
+			}
+			runIdx := -1
+			for i := range vs.WorkflowRuns {
+				if vs.WorkflowRuns[i].RunID == m.workflowRun.runID {
+					runIdx = i
+					break
+				}
+			}
+			if runIdx == -1 {
+				vs.WorkflowRuns = append(vs.WorkflowRuns, VirtualSessionWorkflowRun{
+					RunID:        m.workflowRun.runID,
+					WorkflowName: m.workflowRun.Workflow.Name,
+					StartedAt:    m.workflowRun.startedAt,
+				})
+				runIdx = len(vs.WorkflowRuns) - 1
+			}
+			stepFound := false
+			for i := range vs.WorkflowRuns[runIdx].Steps {
+				s := &vs.WorkflowRuns[runIdx].Steps[i]
+				if s.StepIdx == step.StepIdx && s.LoopIteration == step.LoopIteration && s.LoopInnerIdx == step.LoopInnerIdx {
+					*s = step
+					stepFound = true
+					break
+				}
+			}
+			if !stepFound {
+				vs.WorkflowRuns[runIdx].Steps = append(vs.WorkflowRuns[runIdx].Steps, step)
+			}
+			vs.AddedDirs = addedDirs
+			if vs.Title == "" && tabTitle != "" {
+				vs.Title = tabTitle
+			}
+			vs.UpdatedAt = now
+			return nil
+		})
+		if err != nil {
+			debugLog("recordVirtualSession: %v", err)
+		}
+		return
+	}
+
 	var newID string
 	err := mutateVirtualSessions(func(store *virtualSessionStore) error {
 		newID = upsertVirtualSession(store, vsID, workspace, providerID, nativeID, nativeCwd, preview, now)
