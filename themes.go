@@ -452,6 +452,7 @@ var (
 	outputStyle      lipgloss.Style
 	thinkingStyle    lipgloss.Style
 	chipStyle        lipgloss.Style
+	planningChipStyle lipgloss.Style
 	scrollThumbStyle lipgloss.Style
 	scrollTrackStyle lipgloss.Style
 	thumbBorderStyle lipgloss.Style
@@ -546,6 +547,7 @@ func applyTheme(t theme) {
 	outputStyle = lipgloss.NewStyle().MarginLeft(5)
 	thinkingStyle = lipgloss.NewStyle().MarginLeft(3)
 	chipStyle = lipgloss.NewStyle().MarginLeft(3).Foreground(t.accent).Bold(true)
+	planningChipStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
 	scrollThumbStyle = lipgloss.NewStyle().Foreground(t.dim)
 	scrollTrackStyle = lipgloss.NewStyle().Foreground(t.scrollTrack)
 	thumbBorderStyle = lipgloss.NewStyle().Foreground(t.accentAlt)

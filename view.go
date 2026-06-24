@@ -1455,20 +1455,23 @@ func (m model) statusChipHeight() int {
 // upward and never recovered.
 func (m model) worktreeChip() string {
 	var parts []string
+	if m.planningMode {
+		parts = append(parts, planningChipStyle.Render("[ planning ]"))
+	}
 	if m.worktreeName != "" {
-		parts = append(parts, "[🌳 "+m.worktreeName+"]")
+		parts = append(parts, dimStyle.Render("[🌳 "+m.worktreeName+"]"))
 	}
 	if n := len(m.bgTasks); n > 0 {
 		label := "agent"
 		if n != 1 {
 			label = "agents"
 		}
-		parts = append(parts, fmt.Sprintf("[%d background %s active]", n, label))
+		parts = append(parts, dimStyle.Render(fmt.Sprintf("[%d background %s active]", n, label)))
 	}
 	if len(parts) == 0 {
 		return ""
 	}
-	return dimStyle.Render(strings.Join(parts, "  "))
+	return strings.Join(parts, "  ")
 }
 
 // providerChip is the right-anchored status badge: current provider ID,
