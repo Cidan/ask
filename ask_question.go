@@ -451,33 +451,55 @@ func (m model) submitAsk() (model, tea.Cmd) {
 		m.askReply <- askReply{answers: m.askAnswers}
 		m.status = "thinking…"
 	}
-	m.appendHistory(renderAskHistorySummary(m.askQuestions, m.askAnswers))
+	m.appendResponse(renderAskHistorySummary(m.askQuestions, m.askAnswers))
 	return m.clearAsk(), nil
 }
 
 func renderAskHistorySummary(questions []question, answers []qAnswer) string {
 	var b strings.Builder
-	b.WriteString(promptStyle.Render("✓ answered"))
+	b.WriteString("### ✓ answered\n")
 	for i, q := range questions {
 		b.WriteString("\n")
-		b.WriteString(dimStyle.Render(fmt.Sprintf("%d. ", i+1)))
-		b.WriteString(q.prompt)
-		b.WriteString("\n   → ")
-		b.WriteString(renderAnswerSummary(q, answers[i]))
+		b.WriteString(fmt.Sprintf("%d. %s  \n", i+1, q.prompt))
+		b.WriteString("↳ ")
+		b.WriteString(renderAnswerSummaryMarkdown(q, answers[i]))
 		if note := answers[i].note; note != "" {
-			b.WriteString("\n   ")
+			b.WriteString("  \n")
+			b.WriteString("**note:** ")
 			noteLines := strings.Split(note, "\n")
 			for j, ln := range noteLines {
-				if j == 0 {
-					b.WriteString(askNoteLabelStyle.Render("note: "))
-				} else {
-					b.WriteString("\n         ")
+				if j > 0 {
+					b.WriteString("  \n")
 				}
 				b.WriteString(ln)
 			}
 		}
 	}
-	return outputStyle.Render(b.String())
+	return b.String()
+}
+
+func renderAnswerSummaryMarkdown(q question, ans qAnswer) string {
+	if len(ans.picks) == 0 {
+		return "*(no answer)*"
+	}
+	picked := make([]string, 0, len(ans.picks))
+	customIdx := len(q.options) - 1
+	isCustom := strings.EqualFold(q.options[customIdx], switcherCustomRowLabel)
+	for i, opt := range q.options {
+		if !ans.picks[i] {
+			continue
+		}
+		if isCustom && i == customIdx {
+			if ans.custom != "" {
+				picked = append(picked, fmt.Sprintf("%q", ans.custom))
+			} else {
+				picked = append(picked, "*(custom, empty)*")
+			}
+		} else {
+			picked = append(picked, opt)
+		}
+	}
+	return strings.Join(picked, ", ")
 }
 
 func renderAnswerSummary(q question, ans qAnswer) string {

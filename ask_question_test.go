@@ -508,3 +508,98 @@ func TestIsCustomOption(t *testing.T) {
 		t.Error("question with no custom row should NOT be flagged")
 	}
 }
+
+func TestRenderAskHistorySummary_Markdown(t *testing.T) {
+	qs := []question{
+		{prompt: "What is your quest?", options: []string{"a"}},
+		{prompt: "What is your favorite color?", options: []string{"blue"}},
+	}
+	ans := []qAnswer{
+		{picks: map[int]bool{0: true}},
+		{picks: map[int]bool{0: true}, note: "Yellow\nNo wait!"},
+	}
+	got := renderAskHistorySummary(qs, ans)
+	
+	// Assert no ANSI escapes
+	if strings.Contains(got, "\x1b[") {
+		t.Errorf("history summary contains ANSI escapes: %q", got)
+	}
+
+	wantSubstrings := []string{
+		"### ✓ answered\n",
+		"1. What is your quest?  \n",
+		"↳ a",
+		"2. What is your favorite color?  \n",
+		"↳ blue  \n",
+		"**note:** Yellow  \n",
+		"No wait!",
+	}
+	for _, sub := range wantSubstrings {
+		if !strings.Contains(got, sub) {
+			t.Errorf("summary missing %q; got:\n%s", sub, got)
+		}
+	}
+}
+
+func TestRenderAnswerSummaryMarkdown(t *testing.T) {
+	q := question{
+		options: []string{"opt1", "opt2", switcherCustomRowLabel},
+	}
+
+	t.Run("no answer", func(t *testing.T) {
+		got := renderAnswerSummaryMarkdown(q, qAnswer{picks: map[int]bool{}})
+		if got != "*(no answer)*" {
+			t.Errorf("got %q want *(no answer)*", got)
+		}
+	})
+	t.Run("single pick", func(t *testing.T) {
+		got := renderAnswerSummaryMarkdown(q, qAnswer{picks: map[int]bool{0: true}})
+		if got != "opt1" {
+			t.Errorf("got %q want opt1", got)
+		}
+	})
+	t.Run("multiple picks", func(t *testing.T) {
+		got := renderAnswerSummaryMarkdown(q, qAnswer{picks: map[int]bool{0: true, 1: true}})
+		if got != "opt1, opt2" {
+			t.Errorf("got %q want opt1, opt2", got)
+		}
+	})
+	t.Run("custom populated", func(t *testing.T) {
+		got := renderAnswerSummaryMarkdown(q, qAnswer{
+			picks:  map[int]bool{2: true},
+			custom: "my \"custom\" value",
+		})
+		want := `"my \"custom\" value"`
+		if got != want {
+			t.Errorf("got %q want %q", got, want)
+		}
+	})
+	t.Run("custom empty", func(t *testing.T) {
+		got := renderAnswerSummaryMarkdown(q, qAnswer{
+			picks: map[int]bool{2: true},
+		})
+		if got != "*(custom, empty)*" {
+			t.Errorf("got %q want *(custom, empty)*", got)
+		}
+	})
+}
+
+func TestSubmitAsk_AppendsResponseEntry(t *testing.T) {
+	m, reply := newAskModel(t)
+	m = m.startAsk([]question{{kind: qPickOne, prompt: "Q", options: []string{"a"}}})
+	m.askAnswers[0].picks[0] = true
+	m.askTab = 1 // confirm
+	got, _ := m.submitAsk()
+
+	if len(got.history) == 0 {
+		t.Fatal("history empty")
+	}
+	last := got.history[len(got.history)-1]
+	if last.kind != histResponse {
+		t.Errorf("history kind=%v want histResponse", last.kind)
+	}
+	if !strings.Contains(last.text, "### ✓ answered") {
+		t.Errorf("history text missing markdown heading; got: %q", last.text)
+	}
+	_ = reply
+}
