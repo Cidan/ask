@@ -176,6 +176,13 @@ func buildAgentSystemPrompt(args ProviderSessionArgs) string {
 
 	b.WriteString("\n\n")
 	b.WriteString(steeringPromptFor(args))
+
+	if args.PlanningMode {
+		b.WriteString("\n\n<planning_mode>\n")
+		b.WriteString("PLANNING MODE IS ON. You are currently restricted to exploring the codebase and conversing with the user. You MUST NOT attempt to mutate any files, run mutating commands, or launch workflows. Any tools that modify state will be blocked. Guide the user and outline a plan, but do not execute it.\n")
+		b.WriteString("</planning_mode>")
+	}
+
 	return b.String()
 }
 

@@ -376,6 +376,7 @@ type model struct {
 	// providerDoneMsg; cleared by /new and /clear.
 	virtualSessionID string
 	busy             bool
+	planningMode     bool
 	width            int
 	height           int
 

@@ -217,6 +217,7 @@ type ProviderSessionArgs struct {
 	SessionID          string
 	NewSessionID       string
 	ResumeCwd          string
+	PlanningMode       bool
 	// AddedDirs are absolute paths the user has registered with /add-dir.
 	// Providers translate these into their native equivalents (claude:
 	// --add-dir; codex: sandbox_workspace_write.writable_roots). The

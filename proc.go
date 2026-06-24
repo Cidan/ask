@@ -31,6 +31,7 @@ func (m model) sessionArgs() ProviderSessionArgs {
 		SkipAllPermissions: m.skipAllPermissions,
 		Worktree:           m.worktree,
 		ResumeCwd:          m.resumeCwd,
+		PlanningMode:       m.planningMode,
 		AddedDirs:          append([]string(nil), m.addedDirs...),
 		ProjectMCP:         projectGitHubMCP(m.cwd),
 	}

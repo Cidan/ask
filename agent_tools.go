@@ -69,14 +69,16 @@ type agentToolEnv struct {
 	// editing. When the gate is false (default), this flag is unused.
 	// Guarded by wfMu.
 	todosApplied bool
+	planningMode bool
 }
 
-func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, gateTodosBeforeMutate bool, emit func(tea.Msg)) *agentToolEnv {
+func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, gateTodosBeforeMutate bool, planningMode bool, emit func(tea.Msg)) *agentToolEnv {
 	env := &agentToolEnv{
 		cwd:                   cwd,
 		tabID:                 tabID,
 		skipPermissions:       skipPermissions,
 		gateTodosBeforeMutate: gateTodosBeforeMutate,
+		planningMode:          planningMode,
 		emit:                  emit,
 		files:                 newAgentFileTracker(),
 		jobs:                  newAgentJobManager(),
