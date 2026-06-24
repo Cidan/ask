@@ -1773,3 +1773,150 @@ func TestWorktreeNameFromVS_NilSafe(t *testing.T) {
 		t.Errorf("worktreeNameFromVS(nil)=%q want empty", got)
 	}
 }
+
+func TestRecordVirtualSession_WorkflowRunDoesNotClobberProviderSessions(t *testing.T) {
+	isolateHome(t)
+	m := newTestModel(t, newFakeProvider())
+	m.virtualSessionID = "vs-1"
+	m.cwd = "/ws"
+	m.workflowRun = &workflowRunState{
+		Workflow:  workflowDef{Name: "test-flow", Steps: []workflowStep{{Name: "step1", Provider: "claude"}}},
+		runID:     "run-1",
+		startedAt: time.Now().UTC(),
+		StepIdx:   0,
+		Source:    workflowSource{Kind: workflowSourceChat},
+	}
+
+	store := &virtualSessionStore{Version: 2}
+	upsertVirtualSession(store, "vs-1", "/ws", "claude", "chat-id", "/ws", "chat", time.Now().UTC())
+	if err := saveVirtualSessions(store); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	m.recordVirtualSession("workflow-step-1")
+
+	got, _ := loadVirtualSessions()
+	vs := got.findByID("vs-1")
+	if vs.ProviderSessions["claude"].SessionID != "chat-id" {
+		t.Errorf("ProviderSessions clobbered")
+	}
+	if len(vs.WorkflowRuns) != 1 {
+		t.Fatalf("WorkflowRuns missing")
+	}
+	if vs.WorkflowRuns[0].RunID != "run-1" {
+		t.Errorf("RunID wrong")
+	}
+	if len(vs.WorkflowRuns[0].Steps) != 1 {
+		t.Fatalf("WorkflowStep missing")
+	}
+	if vs.WorkflowRuns[0].Steps[0].Session.SessionID != "workflow-step-1" {
+		t.Errorf("WorkflowStep session ID wrong")
+	}
+}
+
+func TestRecordVirtualSession_WorkflowRunAppendsStepsToSameRun(t *testing.T) {
+	isolateHome(t)
+	m := newTestModel(t, newFakeProvider())
+	m.virtualSessionID = "vs-1"
+	m.cwd = "/ws"
+	m.workflowRun = &workflowRunState{
+		Workflow:  workflowDef{Name: "test-flow", Steps: []workflowStep{{Name: "step1", Provider: "claude"}, {Name: "step2", Provider: "claude"}}},
+		runID:     "run-1",
+		startedAt: time.Now().UTC(),
+		StepIdx:   0,
+		Source:    workflowSource{Kind: workflowSourceChat},
+	}
+
+	store := &virtualSessionStore{Version: 2}
+	upsertVirtualSession(store, "vs-1", "/ws", "claude", "chat-id", "/ws", "chat", time.Now().UTC())
+	saveVirtualSessions(store)
+
+	m.recordVirtualSession("step-1-sess")
+	m.workflowRun.StepIdx = 1
+	m.recordVirtualSession("step-2-sess")
+
+	got, _ := loadVirtualSessions()
+	vs := got.findByID("vs-1")
+	if len(vs.WorkflowRuns) != 1 {
+		t.Fatalf("want 1 run, got %d", len(vs.WorkflowRuns))
+	}
+	if len(vs.WorkflowRuns[0].Steps) != 2 {
+		t.Fatalf("want 2 steps, got %d", len(vs.WorkflowRuns[0].Steps))
+	}
+
+	// Reprompt same step overwrites
+	m.recordVirtualSession("step-2-reprompt")
+	got, _ = loadVirtualSessions()
+	vs = got.findByID("vs-1")
+	if len(vs.WorkflowRuns[0].Steps) != 2 {
+		t.Fatalf("want 2 steps after reprompt, got %d", len(vs.WorkflowRuns[0].Steps))
+	}
+	if vs.WorkflowRuns[0].Steps[1].Session.SessionID != "step-2-reprompt" {
+		t.Errorf("step not replaced")
+	}
+}
+
+func TestRecordVirtualSession_WorkflowRunLoopStep(t *testing.T) {
+	isolateHome(t)
+	m := newTestModel(t, newFakeProvider())
+	m.virtualSessionID = "vs-1"
+	m.cwd = "/ws"
+	m.workflowRun = &workflowRunState{
+		Workflow:  workflowDef{Name: "test-flow", Steps: []workflowStep{{Name: "loop", Kind: "loop", Steps: []workflowStep{{Name: "inner", Provider: "claude"}}}}},
+		runID:     "run-1",
+		startedAt: time.Now().UTC(),
+		StepIdx:   0,
+		Source:    workflowSource{Kind: workflowSourceChat},
+		loop:      &loopRunFrame{iteration: 2, innerIdx: 0},
+	}
+
+	store := &virtualSessionStore{Version: 2}
+	upsertVirtualSession(store, "vs-1", "/ws", "claude", "chat-id", "/ws", "chat", time.Now().UTC())
+	saveVirtualSessions(store)
+
+	m.recordVirtualSession("loop-sess")
+	got, _ := loadVirtualSessions()
+	vs := got.findByID("vs-1")
+	step := vs.WorkflowRuns[0].Steps[0]
+	if step.LoopIteration != 2 || step.LoopInnerIdx != 0 {
+		t.Errorf("Loop info wrong: %d %d", step.LoopIteration, step.LoopInnerIdx)
+	}
+}
+
+func TestRecordVirtualSession_WorkflowRunSkipsWhenNoParentVS(t *testing.T) {
+	isolateHome(t)
+	m := newTestModel(t, newFakeProvider())
+	m.virtualSessionID = ""
+	m.workflowRun = &workflowRunState{runID: "run-1"}
+
+	m.recordVirtualSession("sess-1")
+	got, _ := loadVirtualSessions()
+	if len(got.Sessions) != 0 {
+		t.Errorf("Should not create VS")
+	}
+}
+
+func TestVirtualSessions_WorkflowRunsRoundTrip(t *testing.T) {
+	isolateHome(t)
+	store := &virtualSessionStore{
+		Version: 2,
+		Sessions: []VirtualSession{
+			{
+				ID: "vs-1",
+				WorkflowRuns: []VirtualSessionWorkflowRun{
+					{
+						RunID: "run-1",
+						Steps: []VirtualSessionWorkflowStep{
+							{StepIdx: 0, Session: ProviderSessionRef{SessionID: "s-1"}},
+						},
+					},
+				},
+			},
+		},
+	}
+	saveVirtualSessions(store)
+	got, _ := loadVirtualSessions()
+	if got.Sessions[0].WorkflowRuns[0].Steps[0].Session.SessionID != "s-1" {
+		t.Errorf("Roundtrip failed")
+	}
+}
