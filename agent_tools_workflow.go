@@ -74,6 +74,15 @@ func agentWorkflowTools(env *agentToolEnv) []fantasy.AgentTool {
 			}),
 		nativeBridgeTool("workflow_run", workflowRunToolDescription,
 			func(_ context.Context, in workflowRunInput) (*mcp.CallToolResult, workflowRunOutput, error) {
+				if env.planningMode {
+					return &mcp.CallToolResult{
+						Content: []mcp.Content{
+							&mcp.TextContent{
+								Text: "Planning mode is ON. Workflows are currently blocked.",
+							},
+						},
+					}, workflowRunOutput{}, nil
+				}
 				env.markWorkflowsChecked()
 				env.markWorkflowRunDispatched()
 				return workflowRunCore(cwd(), env.tabID, in)
