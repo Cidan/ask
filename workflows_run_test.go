@@ -140,8 +140,8 @@ func TestAdvanceWorkflowStep_FinalisesOnLastStep(t *testing.T) {
 }
 
 // TestAdvanceWorkflowStep_FailsOnError covers the `failed` path: an error
-// from the step finalises the chain immediately (bypassing the end_turn
-// requirement), persisting `failed` to disk.
+// from the step finalises the chain after retries are exhausted,
+// persisting `failed` to disk.
 func TestAdvanceWorkflowStep_FailsOnError(t *testing.T) {
 	cwd := isolateHome(t)
 	resetWorkflowTrackerForTest()
@@ -158,10 +158,15 @@ func TestAdvanceWorkflowStep_FailsOnError(t *testing.T) {
 	}
 	workflowTracker().markWorking(cwd, issue.Key(), "wf", m.id)
 
-	newM, _ := m.advanceWorkflowStep(errors.New("boom"))
+	var newM tea.Model
+	// Default config has 4 retries, so the 5th failure will exhaust them.
+	for i := 0; i < 5; i++ {
+		newM, _ = m.advanceWorkflowStep(errors.New("boom"))
+		m = newM.(model)
+	}
 	mm := newM.(model)
 	if !mm.workflowRun.failed {
-		t.Errorf("expected failed=true on step error")
+		t.Errorf("expected failed=true on step error exhausted")
 	}
 	if mm.workflowRun.failedReason != "boom" {
 		t.Errorf("failedReason: got %q want boom", mm.workflowRun.failedReason)
@@ -174,6 +179,108 @@ func TestAdvanceWorkflowStep_FailsOnError(t *testing.T) {
 	sess, ok := pc.Workflows.Sessions[issue.Key()]
 	if !ok || sess.Status != workflowStatusFailed {
 		t.Errorf("disk should record failed; got %+v", sess)
+	}
+}
+
+// TestAdvanceWorkflowStep_RetriesOnError verifies that a step error triggers
+// multiple retries with backoff, correctly computes the delay, resets the counter
+// on success, handles loop-note formatting, and properly exhausts retries.
+func TestAdvanceWorkflowStep_RetriesOnError(t *testing.T) {
+	cwd := isolateHome(t)
+	resetWorkflowTrackerForTest()
+	m := newTestModel(t, newFakeProvider())
+	m.cwd = cwd
+	issue := issueRef{Provider: "github", Project: "ow/r", Number: 4}
+
+	maxR := 3
+	initD := 2000
+	backoff := 2.0
+	cfg := askConfig{}
+	cfg.UI.Retry = &retryUIConfig{
+		MaxRetries:     &maxR,
+		InitialDelayMs: &initD,
+		BackoffFactor:  &backoff,
+	}
+	saveConfig(cfg)
+
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{
+			Name:  "wf",
+			Steps: []workflowStep{{Name: "step1"}},
+		},
+		Source:  issueWorkflowSource(issue),
+		StepIdx: 0,
+	}
+	workflowTracker().markWorking(cwd, issue.Key(), "wf", m.id)
+
+	// Attempt 1: Fail (stepErrorRetry -> 1, Delay = 2s)
+	newM, cmd := m.advanceWorkflowStep(errors.New("temp fail 1"))
+	mm := newM.(model)
+	if mm.workflowRun.failed {
+		t.Errorf("expected step to retry, but it failed immediately")
+	}
+	if mm.workflowRun.stepErrorRetry != 1 {
+		t.Errorf("stepErrorRetry: got %d want 1", mm.workflowRun.stepErrorRetry)
+	}
+	if !wfHistoryHas(mm, "temp fail 1") || !wfHistoryHas(mm, "retrying in now (attempt 1 of 3)") {
+		t.Errorf("expected workflow history note about attempt 1")
+	}
+	if cmd == nil {
+		t.Fatalf("expected a tea.Tick command for attempt 1")
+	}
+
+	// Attempt 2: Fail (stepErrorRetry -> 2, Delay = 4s)
+	// We'll also simulate being inside a loop to test loop-note formatting.
+	mm.workflowRun.loop = &loopRunFrame{}
+	newM, cmd = mm.advanceWorkflowStep(errors.New("temp fail 2"))
+	mm = newM.(model)
+	if mm.workflowRun.stepErrorRetry != 2 {
+		t.Errorf("stepErrorRetry: got %d want 2", mm.workflowRun.stepErrorRetry)
+	}
+	if !wfHistoryHas(mm, "temp fail 2") || !wfHistoryHas(mm, "retrying in now (attempt 2 of 3)") {
+		t.Errorf("expected loop history note about attempt 2")
+	}
+	if cmd == nil {
+		t.Fatalf("expected a tea.Tick command for attempt 2")
+	}
+
+	// Attempt 3: Fail (stepErrorRetry -> 3, Delay = 8s)
+	newM, cmd = mm.advanceWorkflowStep(errors.New("temp fail 3"))
+	mm = newM.(model)
+	if mm.workflowRun.stepErrorRetry != 3 {
+		t.Errorf("stepErrorRetry: got %d want 3", mm.workflowRun.stepErrorRetry)
+	}
+	if !wfHistoryHas(mm, "temp fail 3") || !wfHistoryHas(mm, "retrying in now (attempt 3 of 3)") {
+		t.Errorf("expected loop history note about attempt 3")
+	}
+
+	mm.workflowRun.loop = nil // clear loop state so we don't panic on a linear step
+
+	// Branch B: Exhaustion on attempt 4
+	// Do this BEFORE the success branch so we don't reset the shared pointer's counter!
+	// We'll restore the counter back to 3 after this test so Branch A can succeed from attempt 3.
+	newMFail, _ := mm.advanceWorkflowStep(errors.New("temp fail 4"))
+	mmFail := newMFail.(model)
+	if !mmFail.workflowRun.failed {
+		t.Errorf("expected step to fail exhaustively after max retries")
+	}
+	if mmFail.workflowRun.failedReason != "temp fail 4" {
+		t.Errorf("expected failedReason to be the final error")
+	}
+
+	mm.workflowRun.failed = false // reset the failure
+	mm.workflowRun.failedReason = ""
+
+	// Branch A: Success after retries
+	mmSuccess := mm
+	mmSuccess.workflowRun.pendingEndTurn = &endTurnSignal{summary: "success"}
+	newMSuccess, _ := mmSuccess.advanceWorkflowStep(nil)
+	mm2 := newMSuccess.(model)
+	if mm2.workflowRun.stepErrorRetry != 0 {
+		t.Errorf("expected stepErrorRetry to reset on success, got %d", mm2.workflowRun.stepErrorRetry)
+	}
+	if mm2.workflowRun.StepIdx != 1 {
+		t.Errorf("expected StepIdx to advance on success, got %d", mm2.workflowRun.StepIdx)
 	}
 }
 

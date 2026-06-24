@@ -741,6 +741,10 @@ type workflowRunState struct {
 	linearRetry int
 	linearText  string
 
+	// stepErrorRetry tracks how many times the current step has been retried
+	// after failing with a step error. Reset to 0 when a step succeeds.
+	stepErrorRetry int
+
 	// remind records why the current dispatch is a re-prompt (a missing
 	// end_turn call, a loop tail that omitted its decision, or a plan
 	// directory that is not usable) so buildWorkflowStepPrompt can append
