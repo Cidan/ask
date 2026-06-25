@@ -1,4 +1,4 @@
-.PHONY: all build clean setup-llama download-model
+.PHONY: all build clean setup-llama download-model install
 
 # Variables
 LLAMA_DIR := build/llama.cpp
@@ -10,6 +10,10 @@ LLAMA_BRANCH := master
 MODEL_URL := https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf
 MODEL_DIR := build/models
 MODEL_FILE := $(MODEL_DIR)/embeddinggemma-300M-Q8_0.gguf
+
+export CGO_LDFLAGS=-L$(PWD)/$(LLAMA_DIR)/build/src -L$(PWD)/$(LLAMA_DIR)/build/ggml/src -lllama -lggml -lstdc++ -lm
+export CGO_CXXFLAGS=-I$(PWD)/$(LLAMA_DIR)/include -I$(PWD)/$(LLAMA_DIR)/ggml/include
+export CGO_CFLAGS=-I$(PWD)
 
 all: setup-llama download-model build
 
@@ -31,16 +35,14 @@ download-model:
 
 build: setup-llama download-model
 	@echo "Building ask..."
-	CGO_LDFLAGS="-L$(PWD)/$(LLAMA_DIR)/build/src -L$(PWD)/$(LLAMA_DIR)/build/ggml/src -lllama -lggml -lstdc++ -lm" \
-	CGO_CXXFLAGS="-I$(PWD)/$(LLAMA_DIR)/include -I$(PWD)/$(LLAMA_DIR)/ggml/include" \
-	CGO_CFLAGS="-I$(PWD)" \
 	go build -o bin/ask .
+
+install: setup-llama download-model
+	@echo "Installing ask..."
+	go install .
 
 test: setup-llama download-model
 	@echo "Testing ask..."
-	CGO_LDFLAGS="-L$(PWD)/$(LLAMA_DIR)/build/src -L$(PWD)/$(LLAMA_DIR)/build/ggml/src -lllama -lggml -lstdc++ -lm" \
-	CGO_CXXFLAGS="-I$(PWD)/$(LLAMA_DIR)/include -I$(PWD)/$(LLAMA_DIR)/ggml/include" \
-	CGO_CFLAGS="-I$(PWD)" \
 	go test ./...
 
 clean:

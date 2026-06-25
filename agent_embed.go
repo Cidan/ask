@@ -10,6 +10,14 @@ package main
 #include "ggml-backend.h"
 
 // Helper function to tokenize
+static void empty_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
+    // empty
+}
+
+static void silence_llama_logs() {
+    llama_log_set(empty_log_callback, NULL);
+}
+
 static int tokenize(struct llama_model * model, const char * text, int text_len, llama_token * tokens, int n_max_tokens, bool add_bos, bool special) {
     const struct llama_vocab * vocab = llama_model_get_vocab(model);
     return llama_tokenize(vocab, text, text_len, tokens, n_max_tokens, add_bos, special);
@@ -30,6 +38,7 @@ type EmbeddingModel struct {
 }
 
 func LoadEmbeddingModel(path string) (*EmbeddingModel, error) {
+	C.silence_llama_logs()
 	C.ggml_backend_load_all()
 	C.llama_backend_init()
 
