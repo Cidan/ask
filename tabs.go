@@ -412,7 +412,6 @@ func (a app) supplantWorkflow(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
 	t.configProjectPickerActive = false
 	t.configThemePickerActive = false
 	t.configProviderPickerActive = false
-	t.configMemoryPickerActive = false
 	t.configWebSearchPickerActive = false
 	t.configVertexPickerActive = false
 	t.configKeybindingsPickerActive = false
@@ -539,17 +538,12 @@ func (a app) closeTab(tabID int) (tea.Model, tea.Cmd) {
 // shutdown is called from main() once the tea.Program has stopped
 // running. Sessions (and their MCP managers + background jobs) are
 // torn down before closeMemoryService so an in-flight native memory
-// recall never races the neo4j driver being nilled out.
+// recall never races the sqlite-vec db being closed.
 func (a app) shutdown() {
 	for _, t := range a.tabs {
 		t.drainPendingReplies()
 		t.killProc()
 		t.killShellProc()
-	}
-	// closeMemoryService is idempotent and safe to call when memory was
-	// never enabled this run, so we don't gate it on cfg.Memory.Enabled.
-	if err := closeMemoryService(); err != nil {
-		debugLog("memory close at shutdown: %v", err)
 	}
 }
 

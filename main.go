@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -104,7 +103,7 @@ func newTab(id int, cfg askConfig) (*model, error) {
 		shellHistoryIdx:       -1,
 		fc:                    &frameCache{},
 	}
-	// 80 cells gives a Neo4j error (e.g. "create database 'ask_tests':
+	// 80 cells gives a SQLite error (e.g. "database is locked:
 	// connectivity: ...") room to wrap across a few lines instead of
 	// being truncated with an ellipsis the user can't expand. The
 	// toast still tail-truncates past defaultToastMaxHeight rows so a
@@ -265,6 +264,8 @@ func main() {
 	}
 	cfg, _ := loadConfig()
 	_ = saveConfig(cfg)
+	openMemoryService(cfg)
+	defer closeMemoryService()
 	// Resume-time provider override: respects the conversation's
 	// LastProvider so resuming a Claude thread under a Codex default
 	// reopens under Claude. Applied AFTER saveConfig so the override
@@ -280,24 +281,6 @@ func main() {
 		ensureWorktreeGitignore()
 	}
 	pruneWorktrees()
-	// Memory is opt-in. When the user has it persisted as on, bring the
-	// service up before any tab is constructed so consumers (which the
-	// integration plan adds in later slices) see a ready singleton from
-	// turn one. A failure here is non-fatal — the persisted flag stays
-	// "on" so a subsequent /config toggle can retry — but we log it so
-	// silent breakage is at least diagnosable via ASK_DEBUG=1.
-	if memoryConfigEnabled(cfg) {
-		if err := openMemoryService(cfg); err != nil {
-			// errMemoryNoKey is the expected case when the user has
-			// flipped Enabled but not yet pasted a key. Log it but
-			// don't print a noisy stderr line — the picker already
-			// surfaces "off (open failed)" so the user can paste.
-			if !errors.Is(err, errMemoryNoKey) {
-				fmt.Fprintln(os.Stderr, "ask: memory:", err)
-			}
-			debugLog("memory open at startup: %v", err)
-		}
-	}
 	first, err := newTab(1, cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ask: mcp:", err)
