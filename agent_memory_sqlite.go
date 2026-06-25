@@ -40,22 +40,17 @@ func openMemoryService(cfg askConfig) error {
 		return nil
 	}
 
-	modelPath := filepath.Join(projectRoot("."), "build", "models", "embeddinggemma-300M-Q8_0.gguf")
-	if !filepath.IsAbs(modelPath) {
-		cwd, _ := os.Getwd()
-		modelPath = filepath.Join(projectRoot(cwd), "build", "models", "embeddinggemma-300M-Q8_0.gguf")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
 	}
+	modelPath := filepath.Join(home, ".local", "share", "ask", "models", "embeddinggemma-300M-Q8_0.gguf")
 
 	model, err := LoadEmbeddingModel(modelPath)
 	if err != nil {
 		return fmt.Errorf("failed to load embedding model: %w", err)
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		model.Close()
-		return err
-	}
 	dbDir := filepath.Join(home, ".config", "ask", "memory")
 	if err := os.MkdirAll(dbDir, 0700); err != nil {
 		model.Close()
