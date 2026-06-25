@@ -74,7 +74,7 @@ func (b linearTestTenant) linearListCyclesTool(ctx context.Context, _ *mcp.CallT
 // the reads share one projectKey on macOS /var symlinks.
 func newLinearMCPTestBridge(t *testing.T, cfgFn func(*projectConfig)) (linearTestTenant, string) {
 	t.Helper()
-	cwd := memoryProjectRoot(isolateHome(t))
+	cwd := projectRoot(isolateHome(t))
 	if cfgFn != nil {
 		cfg, _ := loadConfig()
 		pc := loadProjectConfig(cfg, cwd)

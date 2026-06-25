@@ -262,6 +262,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	s.coreTools = wrapFileToolsWithMemory(s.coreTools, s.args.Cwd)
 	s.coreTools = wrapReadToolWithRules(s.coreTools, s.args.Cwd, discoverRules(s.args.Cwd))
 	s.deferredBase = agentLinearTools(env)
+	s.deferredBase = append(s.deferredBase, agentMemoryIndexTool(env))
 	s.mcp = newMCPManager(s.args.TabID,
 		func() bool {
 			return s.spec != nil && s.spec.supportsImages != nil && s.spec.supportsImages(s.modelID)

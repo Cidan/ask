@@ -18,8 +18,7 @@ func TestLoadConfig_MissingReturnsZero(t *testing.T) {
 		t.Fatalf("loadConfig: %v", err)
 	}
 	if cfg.Provider != "" || cfg.DeepSeek.Model != "" || cfg.Anthropic.Model != "" ||
-		cfg.UI.Theme != "" || cfg.UI.QuietMode != nil ||
-		cfg.Memory.Enabled != nil {
+		cfg.UI.Theme != "" || cfg.UI.QuietMode != nil {
 		t.Errorf("missing file should yield zero askConfig, got %+v", cfg)
 	}
 }
@@ -30,7 +29,6 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	diffsTrue := true
 	worktreeTrue := true
 	gateTodosTrue := true
-	memOn := true
 	retryMax := 3
 	retryDelay := 500
 	retryFactor := 1.5
@@ -56,7 +54,6 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 				BackoffFactor:  &retryFactor,
 			},
 		},
-		Memory: memoryConfig{Enabled: &memOn},
 		DeepSeek: apiProviderConfig{
 			Model:   "deepseek-v4-flash",
 			APIKey:  "sk-test-123",
@@ -93,9 +90,6 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	}
 	if got.UI.GateTodosBeforeMutate == nil || *got.UI.GateTodosBeforeMutate != true {
 		t.Errorf("gateTodosBeforeMutate lost in roundtrip: %+v", got.UI.GateTodosBeforeMutate)
-	}
-	if got.Memory.Enabled == nil || *got.Memory.Enabled != true {
-		t.Errorf("memory.enabled lost in roundtrip: %+v", got.Memory.Enabled)
 	}
 	if got.UI.Retry == nil {
 		t.Fatalf("ui.retry block lost in roundtrip")

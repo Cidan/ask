@@ -517,23 +517,6 @@ type model struct {
 	configProviderCursor       int
 	configProviderBackup       string
 
-	// configMemoryPickerActive toggles the /config → Memory sub-picker.
-	// Cursor is over the submenu rows (Enabled, Gemini API key, Neo4j
-	// host/port/user/password/database); future rows drop in by
-	// appending to memoryPickerItems without reshaping the picker state
-	// machine.
-	configMemoryPickerActive bool
-	configMemoryCursor       int
-
-	// configMemoryFieldEditing names the row whose inline editor is
-	// currently active (e.g. "geminiKey", "neo4jHost", "neo4jPassword").
-	// Empty string means the editor is closed and the cursor is moving
-	// over rows. While non-empty, key presses and pastes append to
-	// configMemoryFieldDraft and Enter persists the draft to the
-	// matching cfg.Memory.* field.
-	configMemoryFieldEditing string
-	configMemoryFieldDraft   string
-
 	// configWebSearchPickerActive toggles the /config → Web Search
 	// sub-picker. It carries the Brave Search API key (the only knob).
 	// Pressing Enter on the key row opens the inline editor
@@ -661,13 +644,6 @@ type model struct {
 	// because claude resolves aliases ("opus[1m]") to fully-qualified
 	// ids. Falls back to providerModel before the init event lands.
 	modelForContext string
-
-	// currentTurn accumulates the per-turn signal (prompt, tools,
-	// files, response text) that flushMemoryTurn writes to memmy on
-	// turnCompleteMsg. The maps stay nil between turns; resetMemory-
-	// Turn populates them when sendToProvider dispatches a new user
-	// prompt.
-	currentTurn memoryTurn
 
 	// workflowRun, when non-nil, marks this tab as a workflow runner.
 	// The textarea is replaced with a read-only banner showing the

@@ -27,7 +27,7 @@ func TestGlobalConfigItems_LiftsExistingRows(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	items := m.globalConfigItems()
 	want := []string{"quiet", "cursorBlink", "renderDiffs", "toolOutput",
-		"skipAllPermissions", "worktree", "theme", "provider", "memory"}
+		"skipAllPermissions", "worktree", "theme", "provider"}
 	have := make(map[string]bool, len(items))
 	for _, it := range items {
 		have[it.id] = true

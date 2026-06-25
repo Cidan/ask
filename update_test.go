@@ -1532,27 +1532,6 @@ func TestUpdate_PasteMsgInNonInputModesIsAbsorbed(t *testing.T) {
 	}
 }
 
-// modeConfig has two field-edit fast paths that route paste into the
-// editor's draft buffer instead of the chat composer. These were
-// already correct pre-fix; re-asserted here as a regression guard
-// since the dispatcher was rewritten.
-func TestUpdate_PasteMsgInConfigMemoryFieldEditorRoutes(t *testing.T) {
-	m := newTestModel(t, newFakeProvider())
-	m.mode = modeConfig
-	m.configMemoryPickerActive = true
-	m.configMemoryFieldEditing = "geminiKey"
-	m.configMemoryFieldDraft = "AIza"
-	m.input.SetValue("composer-untouched")
-
-	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "-paste"})
-
-	if m2.configMemoryFieldDraft != "AIza-paste" {
-		t.Errorf("paste should append to memory field draft: %q", m2.configMemoryFieldDraft)
-	}
-	if m2.input.Value() != "composer-untouched" {
-		t.Errorf("composer must not receive the paste while a memory field is open: %q", m2.input.Value())
-	}
-}
 
 func TestUpdate_PasteMsgInConfigProjectFieldEditorRoutes(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
@@ -1704,18 +1683,15 @@ func TestUpdate_PasteMsgInAskModalCancelConfirmIsAbsorbed(t *testing.T) {
 func TestUpdate_PasteMsgInConfigWithoutEditorIsAbsorbed(t *testing.T) {
 	cases := []struct {
 		name                string
-		memoryPickerActive  bool
 		projectPickerActive bool
 	}{
-		{"no picker", false, false},
-		{"memory picker open, no field", true, false},
-		{"project picker open, no field", false, true},
+		{"no picker", false},
+		{"project picker open, no field", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			m := newTestModel(t, newFakeProvider())
 			m.mode = modeConfig
-			m.configMemoryPickerActive = c.memoryPickerActive
 			m.configProjectPickerActive = c.projectPickerActive
 			m.input.SetValue("seed")
 
@@ -1724,9 +1700,9 @@ func TestUpdate_PasteMsgInConfigWithoutEditorIsAbsorbed(t *testing.T) {
 			if m2.input.Value() != "seed" {
 				t.Errorf("paste in modeConfig without editor must be absorbed: got %q", m2.input.Value())
 			}
-			if m2.configMemoryFieldDraft != "" || m2.configProjectFieldDraft != "" {
-				t.Errorf("paste must not leak into field drafts: memory=%q project=%q",
-					m2.configMemoryFieldDraft, m2.configProjectFieldDraft)
+			if m2.configProjectFieldDraft != "" {
+				t.Errorf("paste must not leak into field drafts: project=%q",
+					m2.configProjectFieldDraft)
 			}
 		})
 	}

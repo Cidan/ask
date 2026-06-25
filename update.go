@@ -445,11 +445,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if msg.proc != m.proc {
 			return m, nil
 		}
-		// Memory capture: accumulate tool name + file path so the
-		// turn-end flush can write per-file observations. Always
-		// runs (no service-open gate) — memoryWrite is the no-op
-		// guard at the bottom of the call.
-		(&m).recordToolCall(msg.name, msg.input)
 		if m.shouldRenderToolCall(msg) {
 			m.appendHistory(renderToolCallBlock(msg.name, msg.input, m.toolOutputMode))
 		}
@@ -616,9 +611,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if msg.proc != m.proc {
 			return m, nil
 		}
-		// Memory capture: feed the response builder for the per-turn
-		// outcome line. No-op when no turn is in flight.
-		(&m).recordAssistantText(msg.text)
 		// Workflow capture: feed the per-step output buffer so
 		// step N+1's prompt can carry "Previous step output:". No-op
 		// off a workflow tab.
@@ -651,11 +643,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		m.flushTurnBuffer()
-		// Memory capture: write the accumulated turn observations to
-		// memmy. No-op when memory is disabled (memoryWrite is closed-
-		// service-safe). flushMemoryTurn resets internal state, so a
-		// subsequent stray turnCompleteMsg won't double-fire.
-		(&m).flushMemoryTurn()
 		m.busy = false
 		m.status = ""
 		m.todos = nil
@@ -1022,9 +1009,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, cmd
 
 	case tea.PasteMsg:
-		if m.mode == modeConfig && m.configMemoryPickerActive && m.configMemoryFieldEditing != "" {
-			return m.applyConfigMemoryPaste(msg.Content)
-		}
 		if m.mode == modeConfig && m.configWebSearchPickerActive && m.configWebSearchEditing {
 			return m.applyConfigWebSearchPaste(msg.Content)
 		}

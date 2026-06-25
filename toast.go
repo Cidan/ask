@@ -23,7 +23,7 @@ type toastTickMsg struct{}
 
 // defaultToastMaxHeight caps how many wrapped body lines a single
 // toast can occupy before the tail gets truncated with an ellipsis.
-// Tuned for our typical error payload (Neo4j errors with a code +
+// Tuned for our typical error payload (SQLite errors with a code +
 // short sentence) — long enough to read a real message, short enough
 // that a runaway error doesn't take over the chat viewport.
 const defaultToastMaxHeight = 8
@@ -146,7 +146,7 @@ func (t *toastModel) renderChip() string {
 		body = t.prefix + " " + body
 	}
 	innerMax := max(1, t.maxWidth-4) // border (2) + padding (2)
-	// Wrap rather than truncate so multi-clause error messages (Neo4j
+	// Wrap rather than truncate so multi-clause error messages (SQLite
 	// errors in particular) actually display end-to-end. ansi.Wrap
 	// splits on word boundaries first and falls back to a hard break,
 	// which matters for code-laden messages with no spaces.
