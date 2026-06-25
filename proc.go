@@ -40,6 +40,9 @@ func (m model) sessionArgs() ProviderSessionArgs {
 	} else {
 		args.SessionID = m.sessionID
 	}
+	if m.workflowRun != nil {
+		args.IsWorkflowFinalStep = m.workflowRun.StepIdx == len(m.workflowRun.Workflow.Steps)-1
+	}
 	return args
 }
 
