@@ -151,7 +151,7 @@ func sweepOldMemories() {
 }
 
 func serializeVector(vec []float32) []byte {
-	b, _ := json.Marshal(vec)
+	b, _ := sqlite_vec.SerializeFloat32(vec)
 	return b
 }
 
