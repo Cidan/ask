@@ -839,6 +839,15 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 	case workflowRunStepDoneMsg:
 		return m.workflowRunHandleStepDone(msg)
 
+	case finishWorkflowSignalMsg:
+		if msg.tabID != m.id {
+			return m, nil
+		}
+		if r := m.workflowRun; r != nil && !r.done && !r.failed {
+			r.finishData = msg.data
+		}
+		return m, nil
+
 	case endTurnSignalMsg:
 		return m.handleEndTurnSignal(msg)
 

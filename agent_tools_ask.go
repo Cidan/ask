@@ -94,6 +94,38 @@ func agentAskUserQuestionTool(env *agentToolEnv) fantasy.AgentTool {
 	)
 }
 
+type agentFinishWorkflowParams struct {
+	Description string   `json:"description" description:"required: summary of the workflow outcome"`
+	Artifacts   []string `json:"artifacts,omitempty" description:"list of created/modified artifacts (e.g. PR link). If a PR was created, it MUST be a part of the artifacts"`
+}
+
+// agentFinishWorkflowTool is the tool to be called at the end of a workflow
+// to provide the final outcome and artifacts.
+func agentFinishWorkflowTool(env *agentToolEnv) fantasy.AgentTool {
+	return fantasy.NewAgentTool(
+		"finish_workflow",
+		"Report the final outcome and artifacts of the workflow. REQUIRED on the final step.",
+		func(ctx context.Context, p agentFinishWorkflowParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			desc := strings.TrimSpace(p.Description)
+			if desc == "" {
+				return fantasy.NewTextErrorResponse("description is required: provide a summary of the workflow outcome"), nil
+			}
+
+			if !agentSendToProgram(finishWorkflowSignalMsg{
+				tabID: env.tabID,
+				data: &finishWorkflowData{
+					Description: desc,
+					Artifacts:   p.Artifacts,
+				},
+			}) {
+				return fantasy.NewTextErrorResponse("ask UI not ready"), nil
+			}
+
+			return fantasy.NewTextResponse("finish_workflow recorded. Now call end_turn to complete the step."), nil
+		},
+	)
+}
+
 type agentEndTurnParams struct {
 	Summary  string `json:"summary" description:"required: 1-3 sentence summary of what you did this step (and what remains), recorded as this step's line in the workflow log"`
 	Decision string `json:"decision,omitempty" enum:",continue,break" description:"loop control, required only on the final step of a loop iteration: 'continue' to run another iteration or 'break' to end the loop; omit when not the final step of a loop"`

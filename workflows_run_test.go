@@ -121,6 +121,7 @@ func TestAdvanceWorkflowStep_FinalisesOnLastStep(t *testing.T) {
 		StepIdx: 0,
 	}
 	m.workflowRun.pendingEndTurn = &endTurnSignal{summary: "all done"}
+	m.workflowRun.finishData = &finishWorkflowData{Description: "done"}
 	workflowTracker().markWorking(cwd, issue.Key(), "single", m.id)
 
 	newM, _ := m.advanceWorkflowStep(nil)
@@ -137,6 +138,43 @@ func TestAdvanceWorkflowStep_FinalisesOnLastStep(t *testing.T) {
 	if sess.Status != workflowStatusDone {
 		t.Errorf("session status: got %q want %q", sess.Status, workflowStatusDone)
 	}
+}
+
+// TestAdvanceWorkflowStep_LinearFinalStepNoFinishToolRePrompts verifies that the final
+// linear step requires a finish_workflow tool call before it can be finalised.
+func TestAdvanceWorkflowStep_LinearFinalStepNoFinishToolRePrompts(t *testing.T) {
+	cwd := isolateHome(t)
+	resetWorkflowTrackerForTest()
+	m := newTestModel(t, newFakeProvider())
+	m.cwd = cwd
+	issue := issueRef{Provider: "github", Project: "ow/r", Number: 1}
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{
+			Name:  "wf",
+			Steps: []workflowStep{{Name: "only"}},
+		},
+		Source:  issueWorkflowSource(issue),
+		StepIdx: 0,
+	}
+	m.workflowRun.currentStep.WriteString("did work but no finishData")
+	m.workflowRun.pendingEndTurn = &endTurnSignal{summary: "done"}
+	workflowTracker().markWorking(cwd, m.workflowRun.Source.Key(), "wf", m.id)
+
+	newM, cmd := m.advanceWorkflowStep(nil)
+	r := newM.(model).workflowRun
+	if r.done {
+		t.Errorf("must not be done without finish_workflow")
+	}
+	if r.linearRetry != 1 {
+		t.Errorf("linearRetry=%d want 1", r.linearRetry)
+	}
+	if r.linearText != "did work but no finishData" {
+		t.Errorf("linearText=%q", r.linearText)
+	}
+	if r.remind != remindNoFinishTool {
+		t.Errorf("remind=%v want remindNoFinishTool", r.remind)
+	}
+	assertStartStepCmd(t, cmd, m.id)
 }
 
 // TestAdvanceWorkflowStep_FailsOnError covers the `failed` path: an error
@@ -274,6 +312,7 @@ func TestAdvanceWorkflowStep_RetriesOnError(t *testing.T) {
 	// Branch A: Success after retries
 	mmSuccess := mm
 	mmSuccess.workflowRun.pendingEndTurn = &endTurnSignal{summary: "success"}
+	mmSuccess.workflowRun.finishData = &finishWorkflowData{Description: "done"}
 	newMSuccess, _ := mmSuccess.advanceWorkflowStep(nil)
 	mm2 := newMSuccess.(model)
 	if mm2.workflowRun.stepErrorRetry != 0 {
@@ -496,6 +535,34 @@ func TestWorkflowLoop_NonTailBreakIgnored(t *testing.T) {
 	}
 }
 
+// TestWorkflowLoop_TailBreakFinalStepNoFinishToolRePrompts verifies that if the loop
+// is the final step in the workflow, breaking from its tail requires a finish_workflow
+// tool call before finalisation.
+func TestWorkflowLoop_TailBreakFinalStepNoFinishToolRePrompts(t *testing.T) {
+	m := loopRunModel(t, loopInner2, 5, 1, 3)
+	// Make the loop the final step
+	m.workflowRun.Workflow.Steps = m.workflowRun.Workflow.Steps[:1]
+	m.workflowRun.loop.iterationLog = []string{"code out"}
+	m.workflowRun.currentStep.WriteString("looks good but no finishData")
+	m.workflowRun.pendingEndTurn = &endTurnSignal{decision: workflowLoopBreak, summary: "no issues"}
+
+	newM, cmd := m.advanceWorkflowStep(nil)
+	r := newM.(model).workflowRun
+	if r.done {
+		t.Errorf("must not be done without finish_workflow")
+	}
+	if r.loop.retry != 1 {
+		t.Errorf("loop.retry=%d want 1", r.loop.retry)
+	}
+	if r.loop.retryText != "looks good but no finishData" {
+		t.Errorf("retryText=%q", r.loop.retryText)
+	}
+	if r.remind != remindNoFinishTool {
+		t.Errorf("remind=%v want remindNoFinishTool", r.remind)
+	}
+	assertStartStepCmd(t, cmd, m.id)
+}
+
 // TestWorkflowLoop_NonTailProceedsToNextInner: a non-tail step that
 // registers a summary with no decision simply advances to the next inner
 // step in the same iteration.
@@ -634,6 +701,33 @@ func TestWorkflowLoop_MaxIterationsSoftExit(t *testing.T) {
 	if r.failed {
 		t.Error("hitting the cap must not fail the run (soft proceed)")
 	}
+}
+
+// TestWorkflowLoop_MaxIterationsSoftExitFinalStepNoFinishToolRePrompts: hitting the iteration cap on a
+// final loop step without finishData reprompts for finish_workflow instead of soft-exiting.
+func TestWorkflowLoop_MaxIterationsSoftExitFinalStepNoFinishToolRePrompts(t *testing.T) {
+	m := loopRunModel(t, loopInner2, 2, 1, 2)
+	// Make the loop the final step
+	m.workflowRun.Workflow.Steps = m.workflowRun.Workflow.Steps[:1]
+	m.workflowRun.loop.iterationLog = []string{"code out"}
+	m.workflowRun.currentStep.WriteString("still not done")
+	m.workflowRun.pendingEndTurn = &endTurnSignal{decision: workflowLoopContinue, summary: "more"}
+
+	newM, cmd := m.advanceWorkflowStep(nil)
+	r := newM.(model).workflowRun
+	if r.done {
+		t.Errorf("must not be done without finish_workflow")
+	}
+	if r.loop.retry != 1 {
+		t.Errorf("loop.retry=%d want 1", r.loop.retry)
+	}
+	if r.loop.retryText != "still not done" {
+		t.Errorf("retryText=%q", r.loop.retryText)
+	}
+	if r.remind != remindNoFinishTool {
+		t.Errorf("remind=%v want remindNoFinishTool", r.remind)
+	}
+	assertStartStepCmd(t, cmd, m.id)
 }
 
 // TestStartWorkflowStep_EntersLoop: dispatching onto a loop step creates
