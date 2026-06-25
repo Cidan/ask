@@ -197,11 +197,12 @@ func (m model) startWorkflowStep() (tea.Model, tea.Cmd) {
 	}
 	r.currentNotesDir = notesDir
 	pc := &stepPromptCtx{
-		remind:       r.remind,
-		remindDetail: r.remindDetail,
-		notesDir:     notesDir,
-		prevNotesDir: r.prevNotesDir,
-		isStartStep:  isStartStep || isLoopStartStep,
+		remind:              r.remind,
+		remindDetail:        r.remindDetail,
+		notesDir:            notesDir,
+		prevNotesDir:        r.prevNotesDir,
+		isStartStep:         isStartStep || isLoopStartStep,
+		isWorkflowFinalStep: r.StepIdx == len(r.Workflow.Steps)-1,
 	}
 	if r.loop != nil {
 		pc.loop = &loopPromptCtx{
@@ -284,7 +285,20 @@ func (m model) workflowFinalize(ok bool, reason string) (tea.Model, tea.Cmd) {
 	if ok {
 		r.done = true
 		workflowTracker().markFinal(m.cwd, r.Source.Key(), r.Workflow.Name, workflowStatusDone, r.StepIdx)
-		m.appendHistory(outputStyle.Render(promptStyle.Render("✓ workflow complete: " + r.Workflow.Name)))
+		
+		var out strings.Builder
+		out.WriteString(promptStyle.Render("✓ workflow complete: " + r.Workflow.Name))
+		if r.finishData != nil {
+			out.WriteString("\n  Outcome: " + r.finishData.Description)
+			if len(r.finishData.Artifacts) > 0 {
+				out.WriteString("\n  Artifacts:")
+				for _, art := range r.finishData.Artifacts {
+					out.WriteString("\n  • " + art)
+				}
+			}
+		}
+		m.appendHistory(outputStyle.Render(out.String()))
+
 		if err := removeAllWorkflowPlans(m.cwd, m.worktreeName); err != nil {
 			debugLog("workflow cleanup: %v", err)
 		}
@@ -375,6 +389,16 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 		}
 		// Got the summary: render the step's line, record output, advance.
 		m.appendWorkflowStepDone(step.Name, step.Provider, step.Model, sig.summary)
+
+		if r.StepIdx == len(r.Workflow.Steps)-1 && r.finishData == nil {
+			r.linearRetry++
+			r.linearText = txt
+			r.remind = remindNoFinishTool
+			m.appendHistory(workflowNoteLine(
+				fmt.Sprintf("re-prompting %q for finish_workflow (attempt %d)", nonEmpty(step.Name, "step"), r.linearRetry+1), ""))
+			return m.dispatchOrFinalize()
+		}
+
 		if err := revalidateWorkflowNotesDir(m.cwd, m.worktreeName, r); err != nil {
 			r.remind = remindFixPlanDir
 			r.remindDetail = err.Error()
@@ -413,6 +437,14 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 	// Break from the tail step exits the loop immediately. Non-tail steps
 	// cannot break the loop; if they pass a decision, it is ignored.
 	if isTail && sig.decision == workflowLoopBreak {
+		if r.StepIdx == len(r.Workflow.Steps)-1 && r.finishData == nil {
+			r.loop.retry++
+			r.loop.retryText = txt
+			r.remind = remindNoFinishTool
+			m.appendHistory(loopNoteLine(top.Name,
+				fmt.Sprintf("re-prompting %q for finish_workflow (attempt %d)", nonEmpty(inner.Name, "step"), r.loop.retry+1), ""))
+			return m.dispatchOrFinalize()
+		}
 		r.prevNotesDir = r.currentNotesDir
 		if txt != "" {
 			r.loop.iterationLog = append(r.loop.iterationLog, txt)
@@ -464,6 +496,14 @@ func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
 		r.loop.iterationLog = append(r.loop.iterationLog, txt)
 	}
 	if r.loop.iteration >= top.effectiveMaxIterations() {
+		if r.StepIdx == len(r.Workflow.Steps)-1 && r.finishData == nil {
+			r.loop.retry++
+			r.loop.retryText = txt
+			r.remind = remindNoFinishTool
+			m.appendHistory(loopNoteLine(top.Name,
+				fmt.Sprintf("re-prompting %q for finish_workflow (attempt %d)", nonEmpty(inner.Name, "step"), r.loop.retry+1), ""))
+			return m.dispatchOrFinalize()
+		}
 		m.appendHistory(loopNoteLine(top.Name, "hit iteration limit",
 			fmt.Sprintf("%d iteration(s)", r.loop.iteration)))
 		r.exitLoop()
@@ -601,6 +641,7 @@ const (
 	remindNoSummary             // the prior turn ended without calling end_turn
 	remindNoDecision            // a loop tail called end_turn but omitted its decision
 	remindFixPlanDir            // a workflow notes directory is missing or is a file
+	remindNoFinishTool          // the prior turn ended the workflow without calling finish_workflow
 )
 
 // stepPromptCtx carries the per-dispatch facts buildWorkflowStepPrompt
@@ -608,12 +649,13 @@ const (
 // why this dispatch is a re-prompt (remindNone on a normal first dispatch),
 // and the current/previous notes directories.
 type stepPromptCtx struct {
-	loop         *loopPromptCtx
-	remind       remindKind
-	remindDetail string
-	notesDir     string
-	prevNotesDir string
-	isStartStep  bool
+	loop                *loopPromptCtx
+	remind              remindKind
+	remindDetail        string
+	notesDir            string
+	prevNotesDir        string
+	isStartStep         bool
+	isWorkflowFinalStep bool
 }
 
 // loopPromptCtx carries the per-dispatch loop facts injected into an
@@ -681,12 +723,14 @@ func buildWorkflowStepPrompt(step workflowStep, source workflowSource, prevOutpu
 	}
 	var loop *loopPromptCtx
 	remind := remindNone
+	isFinalStep := false
 	if pc != nil {
 		loop = pc.loop
 		remind = pc.remind
+		isFinalStep = pc.isWorkflowFinalStep
 	}
 	b.WriteString("\n\n")
-	b.WriteString(endTurnInstructionBlock(loop))
+	b.WriteString(endTurnInstructionBlock(loop, isFinalStep))
 	if remind != remindNone {
 		b.WriteString("\n\n")
 		b.WriteString(endTurnReminder(remind, pc.remindDetail))
@@ -698,7 +742,7 @@ func buildWorkflowStepPrompt(step workflowStep, source workflowSource, prevOutpu
 // a step. Every step is told to call end_turn with a summary; a loop step
 // additionally gets the loop framing, and its tail the "you MUST include a
 // decision" clause (a non-tail step is told to omit decision entirely).
-func endTurnInstructionBlock(loop *loopPromptCtx) string {
+func endTurnInstructionBlock(loop *loopPromptCtx, isFinalStep bool) string {
 	var b strings.Builder
 	if loop != nil {
 		fmt.Fprintf(&b, "[Workflow loop %q · iteration %d of up to %d]", loop.name, loop.iteration, loop.maxIterations)
@@ -707,6 +751,16 @@ func endTurnInstructionBlock(loop *loopPromptCtx) string {
 			b.WriteString(cond)
 		}
 		b.WriteString("\n")
+	}
+	if isFinalStep {
+		if loop != nil && loop.isTail {
+			b.WriteString("This is the final step of the workflow. If you choose to pass `decision: \"break\"` to `end_turn`, you MUST FIRST call the `finish_workflow` tool to summarize the outcome.\n")
+		} else if loop == nil {
+			b.WriteString("This is the final step of the workflow. You MUST call the `finish_workflow` tool before calling `end_turn`.\n")
+		}
+		if loop != nil && loop.iteration >= loop.maxIterations && loop.isTail {
+			b.WriteString("This is the maximum iteration limit. You MUST break and you MUST call finish_workflow before end_turn.\n")
+		}
 	}
 	b.WriteString("When you have finished this step, you MUST call the end_turn tool as your final action, with " +
 		"a `summary` of 1-3 sentences describing what you did and the outcome. This records your progress in the " +
@@ -728,6 +782,8 @@ func endTurnInstructionBlock(loop *loopPromptCtx) string {
 // why it's being asked again without making it redo the work shown above.
 func endTurnReminder(k remindKind, detail string) string {
 	switch k {
+	case remindNoFinishTool:
+		return "REMINDER: You ended the workflow but forgot to call the `finish_workflow` tool. Call it with your description and artifacts, then call `end_turn` again."
 	case remindNoDecision:
 		return "REMINDER: you called end_turn without a `decision`, which is required for the final step of a " +
 			"loop iteration. You have already done the work shown above — do NOT repeat it. Call end_turn again now " +

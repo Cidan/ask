@@ -339,6 +339,16 @@ type workflowRunStepDoneMsg struct {
 	err   error
 }
 
+type finishWorkflowData struct {
+	Description string   `json:"description"`
+	Artifacts   []string `json:"artifacts"`
+}
+
+type finishWorkflowSignalMsg struct {
+	tabID int
+	data  *finishWorkflowData
+}
+
 // startupResumeMsg is fired by Init when the model was pre-seeded with
 // a virtualSessionID by `ask resume <vid>` on the CLI. It's the same
 // trigger as picking the row from the /resume picker — Update routes it
@@ -793,6 +803,9 @@ type workflowRunState struct {
 	// user left it (restoreSupplantedTab). Nil on a dedicated
 	// workflow tab — there is nothing underneath to return to.
 	supplanted *workflowTabSnapshot
+
+	// finishData holds the result of the finish_workflow tool call.
+	finishData *finishWorkflowData
 }
 
 // workflowTabSnapshot is the pre-run state of a chat tab a workflow

@@ -233,6 +233,9 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		agentSearchToolsTool(s.deferredTools),
 		agentInvokeToolTool(s.deferredTools, s.isCoreToolName, env),
 	}
+	if s.args.IsWorkflowFinalStep {
+		s.coreTools = append(s.coreTools, agentFinishWorkflowTool(env))
+	}
 	// The ask-built-in workflow tools (workflow_list/get/create/edit/
 	// delete/copy/run + clear_plans) are deliberate core exceptions —
 	// the two-stage workflow guard forces the model to call

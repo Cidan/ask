@@ -108,3 +108,46 @@ func TestAgentEndTurnTool(t *testing.T) {
 		t.Errorf("bad decision should error: %+v", resp)
 	}
 }
+
+func TestAgentFinishWorkflowTool(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	env.tabID = 4
+	tool := agentFinishWorkflowTool(env)
+
+	captured := swapProgramSend(t, func(msg tea.Msg) bool {
+		sig, ok := msg.(finishWorkflowSignalMsg)
+		if !ok {
+			t.Fatalf("unexpected msg type %T", msg)
+		}
+		if sig.tabID != 4 {
+			t.Errorf("tabID=%d want 4", sig.tabID)
+		}
+		if sig.data.Description != "done" {
+			t.Errorf("Description=%q want done", sig.data.Description)
+		}
+		if len(sig.data.Artifacts) != 1 || sig.data.Artifacts[0] != "PR: #123" {
+			t.Errorf("Artifacts=%+v want [PR: #123]", sig.data.Artifacts)
+		}
+		return true
+	})
+
+	resp := runTool(t, tool, agentFinishWorkflowParams{
+		Description: "done",
+		Artifacts:   []string{"PR: #123"},
+	})
+	if resp.IsError {
+		t.Fatalf("finish_workflow error: %s", resp.Content)
+	}
+	if !strings.Contains(resp.Content, "finish_workflow recorded. Now call end_turn to complete the step.") {
+		t.Errorf("unexpected success reply: %q", resp.Content)
+	}
+	if len(*captured) != 1 {
+		t.Errorf("expected 1 message, got %d", len(*captured))
+	}
+
+	// Test missing description validation
+	resp = runTool(t, tool, agentFinishWorkflowParams{})
+	if !resp.IsError || !strings.Contains(resp.Content, "description is required") {
+		t.Errorf("expected validation error for empty description, got: %+v", resp)
+	}
+}
