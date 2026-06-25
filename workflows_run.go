@@ -31,16 +31,33 @@ func currentWorkflowStepMeta(r *workflowRunState) (name, provider, model string)
 // press can't bleed into the chain.
 func (m model) workflowTabHandleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if currentKeyMap().Matches(ActionTabClose, msg) {
+		if r := m.workflowRun; r != nil && (r.done || r.failed) {
+			if r.supplanted != nil {
+				return m.restoreSupplantedTab()
+			}
+			return m, closeTabCmd(m.id)
+		}
 		return m, closeTabCmd(m.id)
 	}
 	// Enter on a finished supplanted run hands the tab back to the
 	// conversation it took over. Dedicated workflow tabs have nothing
-	// underneath — Enter stays absorbed.
+	// underneath — Enter closes them.
 	if msg.Mod == 0 && msg.Code == tea.KeyEnter {
-		if r := m.workflowRun; r != nil && (r.done || r.failed) && r.supplanted != nil {
-			return m.restoreSupplantedTab()
+		if r := m.workflowRun; r != nil && (r.done || r.failed) {
+			if r.supplanted != nil {
+				return m.restoreSupplantedTab()
+			}
+			return m, closeTabCmd(m.id)
 		}
 		return m, nil
+	}
+	if msg.Mod == 0 && msg.Code == 'r' {
+		if r := m.workflowRun; r != nil && r.failed {
+			r.failed = false
+			r.failedReason = ""
+			workflowTracker().markWorking(m.cwd, r.Source.Key(), r.Workflow.Name, m.id)
+			return m, workflowStartStepCmd(m.id)
+		}
 	}
 	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
 		// Ctrl+C on a running workflow tab cancels the chain — the

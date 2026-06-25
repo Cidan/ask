@@ -1266,17 +1266,20 @@ func (m model) renderWorkflowBanner() string {
 			sourceLabel,
 			fmt.Sprintf("step %d", r.StepIdx+1),
 			reason,
+			"r to retry",
 			returnClause,
 			closeClause,
 		))
 	case r.done:
 		box = box.BorderForeground(activeTheme.accent)
 		title = promptStyle.Render("✓ workflow complete: ") + r.Workflow.Name
+		if returnClause == "" {
+			returnClause = "enter to close"
+		}
 		line2 = dimStyle.Render(joinHintClauses(
 			sourceLabel,
 			fmt.Sprintf("%d step(s)", len(r.Workflow.Steps)),
 			returnClause,
-			closeClause,
 		))
 	default:
 		box = box.BorderForeground(activeTheme.accent)
