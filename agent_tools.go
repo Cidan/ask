@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -69,7 +70,7 @@ type agentToolEnv struct {
 	// editing. When the gate is false (default), this flag is unused.
 	// Guarded by wfMu.
 	todosApplied bool
-	planningMode bool
+	planningMode atomic.Bool
 }
 
 func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, gateTodosBeforeMutate bool, planningMode bool, emit func(tea.Msg)) *agentToolEnv {
@@ -78,12 +79,12 @@ func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, gateTodosBefor
 		tabID:                 tabID,
 		skipPermissions:       skipPermissions,
 		gateTodosBeforeMutate: gateTodosBeforeMutate,
-		planningMode:          planningMode,
 		emit:                  emit,
 		files:                 newAgentFileTracker(),
 		jobs:                  newAgentJobManager(),
 		workflowsAvailable:    len(listAllWorkflows(cwd)) > 0,
 	}
+	env.planningMode.Store(planningMode)
 	env.approve = env.approveViaModal
 	return env
 }

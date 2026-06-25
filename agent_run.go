@@ -45,6 +45,7 @@ type agentSession struct {
 	spec   *agentProviderSpec
 	model  fantasy.LanguageModel
 	env    *agentToolEnv
+	sysMu  sync.RWMutex
 	system string
 
 	// coreTools are the harness natives — the ONLY tools that reach
@@ -170,6 +171,17 @@ func (s *agentSession) setTurnCancel(fn context.CancelFunc) {
 	s.turnMu.Lock()
 	defer s.turnMu.Unlock()
 	s.turnCancel = fn
+}
+
+// SetPlanningMode updates the session's planning mode toggle and regenerates
+// the system prompt in-place.
+func (s *agentSession) SetPlanningMode(enabled bool) {
+	s.args.PlanningMode = enabled
+	s.env.planningMode.Store(enabled)
+	newSystem := buildAgentSystemPrompt(s.args)
+	s.sysMu.Lock()
+	s.system = newSystem
+	s.sysMu.Unlock()
 }
 
 // stepCost prices one API call of this session's model. Safe on
@@ -325,8 +337,12 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	// never appears as a construct in the transcript.
 	displayNames := map[string]string{}
 
+	s.sysMu.RLock()
+	systemPrompt := s.system
+	s.sysMu.RUnlock()
+
 	agentOpts := []fantasy.AgentOption{
-		fantasy.WithSystemPrompt(s.system),
+		fantasy.WithSystemPrompt(systemPrompt),
 		fantasy.WithTools(s.currentTools()...),
 		fantasy.WithStopConditions(
 			agentLoopDetectionCondition(),
@@ -452,11 +468,11 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		debugLog("agent.Stream failed: %v", err)
 		debugLog("agent.Stream failed full error: %+v", err)
 		debugLog("agent.Stream model ID: %s", s.modelID)
-		sysExcerpt := s.system
+		sysExcerpt := systemPrompt
 		if len(sysExcerpt) > 1000 {
 			sysExcerpt = sysExcerpt[:1000] + "..."
 		}
-		debugLog("agent.Stream system prompt length: %d", len(s.system))
+		debugLog("agent.Stream system prompt length: %d", len(systemPrompt))
 		debugLog("agent.Stream system prompt excerpt: %q", sysExcerpt)
 		tools := s.currentTools()
 		debugLog("agent.Stream tools count: %d", len(tools))
