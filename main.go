@@ -264,7 +264,9 @@ func main() {
 	}
 	cfg, _ := loadConfig()
 	_ = saveConfig(cfg)
-	openMemoryService(cfg)
+	if err := openMemoryService(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "ask: memory service failed to start: %v\n", err)
+	}
 	defer closeMemoryService()
 	// Resume-time provider override: respects the conversation's
 	// LastProvider so resuming a Claude thread under a Codex default

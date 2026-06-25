@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	_ "github.com/asg017/sqlite-vec-go-bindings/cgo"
+	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -58,6 +58,7 @@ func openMemoryService(cfg askConfig) error {
 	}
 	dbPath := filepath.Join(dbDir, "memory.db")
 
+	sqlite_vec.Auto()
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		model.Close()
