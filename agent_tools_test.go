@@ -1435,7 +1435,7 @@ func TestAgentJobAppendOutput(t *testing.T) {
 func TestPlanningMode_AgentTools(t *testing.T) {
 	isolateHome(t)
 	env, _ := newTestToolEnv(t)
-	env.planningMode = true
+	env.planningMode.Store(true)
 
 	write := agentWriteTool(env)
 	resp := runTool(t, write, agentWriteParams{FilePath: "x.txt", Content: "data"})

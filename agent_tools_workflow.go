@@ -74,7 +74,7 @@ func agentWorkflowTools(env *agentToolEnv) []fantasy.AgentTool {
 			}),
 		nativeBridgeTool("workflow_run", workflowRunToolDescription,
 			func(_ context.Context, in workflowRunInput) (*mcp.CallToolResult, workflowRunOutput, error) {
-				if env.planningMode {
+				if env.planningMode.Load() {
 					return &mcp.CallToolResult{
 						Content: []mcp.Content{
 							&mcp.TextContent{

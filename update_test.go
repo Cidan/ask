@@ -1743,8 +1743,8 @@ func TestUpdate_ActionPlanningModePreservesSession(t *testing.T) {
 	if m2.sessionID != "test-session-123" {
 		t.Errorf("expected sessionID to be preserved, got %q", m2.sessionID)
 	}
-	if m2.sessionMinted {
-		t.Errorf("expected sessionMinted to be cleared by killProc")
+	if !m2.sessionMinted {
+		t.Errorf("expected sessionMinted to remain true")
 	}
 	if !m2.planningMode {
 		t.Errorf("expected planningMode to be true")

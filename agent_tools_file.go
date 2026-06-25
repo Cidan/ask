@@ -121,7 +121,7 @@ func agentWriteTool(env *agentToolEnv) fantasy.AgentTool {
 		"write",
 		agentWriteToolDescription,
 		func(ctx context.Context, p agentWriteParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			if env.planningMode {
+			if env.planningMode.Load() {
 				return fantasy.NewTextResponse("Planning mode is ON. File modifications are currently blocked."), nil
 			}
 			if strings.TrimSpace(p.FilePath) == "" {
@@ -202,7 +202,7 @@ func agentEditTool(env *agentToolEnv) fantasy.AgentTool {
 		"edit",
 		agentEditToolDescription,
 		func(ctx context.Context, p agentEditParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			if env.planningMode {
+			if env.planningMode.Load() {
 				return fantasy.NewTextResponse("Planning mode is ON. File modifications are currently blocked."), nil
 			}
 			if strings.TrimSpace(p.FilePath) == "" {

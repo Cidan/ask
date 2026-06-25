@@ -1247,7 +1247,11 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			if m.planningMode {
 				state = "ON"
 			}
-			m.killProc()
+			if m.proc != nil {
+				if s, ok := m.proc.payload.(*agentSession); ok {
+					s.SetPlanningMode(m.planningMode)
+				}
+			}
 			return m, m.toast.show("Planning mode: " + state)
 		}
 		newM, cmd, _ := m.activeScreen().updateKey(m, msg)
