@@ -8,7 +8,7 @@ LLAMA_BRANCH := master
 
 # Model details
 MODEL_URL := https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf
-MODEL_DIR := build/models
+MODEL_DIR := $(HOME)/.local/share/ask/models
 MODEL_FILE := $(MODEL_DIR)/embeddinggemma-300M-Q8_0.gguf
 
 export CGO_LDFLAGS=-L$(PWD)/$(LLAMA_DIR)/build/src -L$(PWD)/$(LLAMA_DIR)/build/ggml/src -lllama -lggml -lstdc++ -lm
