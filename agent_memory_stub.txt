@@ -1,0 +1,9 @@
+package main
+
+import "charm.land/fantasy"
+
+func openMemoryService(cfg askConfig) error { return nil }
+func closeMemoryService() error { return nil }
+func wrapFileToolsWithMemory(tools []fantasy.AgentTool, cwd string) []fantasy.AgentTool { return tools }
+func agentMemorySystemBlock(cwd string) string { return "" }
+func agentMemoryPromptContext(cwd, prompt string) string { return "" }

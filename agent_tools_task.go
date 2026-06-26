@@ -137,7 +137,7 @@ func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel, maxTok
 					label = "agent " + p.Agent
 				}
 				jobCtx, cancel := context.WithCancel(context.Background())
-				job := env.jobs.add(label+": "+short(prompt), cancel)
+				job := env.jobs.add(label+": "+short(prompt), true, cancel)
 				go func() {
 					report, err := run(jobCtx)
 					switch {
