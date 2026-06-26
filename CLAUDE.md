@@ -178,6 +178,7 @@ exercised by the user; code alone won't catch layout regressions.
 
 ### Testing conventions
 
+- **Every new feature must include comprehensive tests.** Do not write or merge features without end-to-end or unit tests that verify their behavior. A PR without comprehensive tests is incomplete.
 - **Every new piece of functionality ships with tests.** This is non-negotiable: when adding a feature, fixing a bug, or refactoring anything in the file table above, add or extend tests in the matching `_test.go` file. A PR that grows the codebase without growing the tests is incomplete.
 - Tests must be **behavioral**, not rendering-based. Assert on `model` state, emitted `tea.Msg` values, serialized JSON bytes, file-system state, exec argv — never on styled output strings or view snapshots.
 - **No subprocess spawning** except `git` in `worktree_test.go`. Everything else uses the `fakeProvider` from `testhelpers_test.go` or direct function calls. The agent harness keeps this rule via seams: `agentRunShell` (bash exec), `agentGitStatus` (prompt env), `deepseekLanguageModel` (the API client), and `agentSendToProgram` (modal routing) are all swappable vars; `fakeLM` in `agent_run_test.go` scripts whole fantasy streams with zero network.
