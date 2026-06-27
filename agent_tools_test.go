@@ -411,6 +411,28 @@ func TestAgentBashTool(t *testing.T) {
 	}
 }
 
+func TestAgentBashTool_TokenSavings(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	tool := agentBashTool(env)
+
+	swapShellRunner(t, func(_, _ string) (*shellHandle, error) {
+		return fakeShellHandle([]string{"go: downloading github.com/foo/bar v1.2.3\nok  \tgithub.com/my/pkg\t0.012s\n"}, shellResult{exitCode: 0}), nil
+	})
+
+	resp := runTool(t, tool, agentBashParams{Command: "go test"})
+	if resp.IsError || strings.Contains(resp.Content, "downloading") {
+		t.Errorf("output should be filtered: %+v", resp)
+	}
+	if !strings.Contains(resp.Content, "ok") {
+		t.Errorf("expected ok in output: %q", resp.Content)
+	}
+
+	respRaw := runTool(t, tool, agentBashParams{Command: "go test", DisableTokenSavings: true})
+	if respRaw.IsError || !strings.Contains(respRaw.Content, "downloading") {
+		t.Errorf("raw output should NOT be filtered: %+v", respRaw)
+	}
+}
+
 func TestAgentBashTool_ApprovalFlow(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 	env.skipPermissions = false

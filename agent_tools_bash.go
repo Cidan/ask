@@ -114,6 +114,9 @@ type agentJob struct {
 	done      bool
 	result    shellResult
 
+	disableSavings  bool
+	savingsRecorded bool
+
 	kill   func()
 	doneCh chan struct{}
 }
@@ -152,15 +155,16 @@ func newAgentJobManager() *agentJobManager {
 	return &agentJobManager{jobs: map[string]*agentJob{}}
 }
 
-func (m *agentJobManager) add(command string, kill func()) *agentJob {
+func (m *agentJobManager) add(command string, disableSavings bool, kill func()) *agentJob {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.seq++
 	job := &agentJob{
-		id:      fmt.Sprintf("job-%d", m.seq),
-		command: command,
-		kill:    kill,
-		doneCh:  make(chan struct{}),
+		id:             fmt.Sprintf("job-%d", m.seq),
+		command:        command,
+		disableSavings: disableSavings,
+		kill:           kill,
+		doneCh:         make(chan struct{}),
 	}
 	m.jobs[job.id] = job
 	return job
@@ -191,13 +195,14 @@ func (m *agentJobManager) killAll() {
 	}
 }
 
-const agentBashToolDescription = `Run a shell command in the working directory and return its combined stdout/stderr (interleaved, truncated middle-out past 30000 chars). Commands run in independent shells — no state persists between calls, so prefer absolute paths over cd. Set run_in_background for servers and long builds, then poll with job_output and stop with job_kill. Quote paths containing spaces.`
+const agentBashToolDescription = `Run a shell command in the working directory and return its combined stdout/stderr (interleaved, truncated middle-out past 30000 chars). Standard noisy command output is automatically compressed to save tokens; set disable_token_savings to true if you strictly need raw uncompressed output. Commands run in independent shells — no state persists between calls, so prefer absolute paths over cd. Set run_in_background for servers and long builds, then poll with job_output and stop with job_kill. Quote paths containing spaces.`
 
 type agentBashParams struct {
-	Command         string `json:"command" description:"the shell command to execute"`
-	Description     string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this command does"`
-	Timeout         int    `json:"timeout,omitempty" description:"max seconds to wait before the command is killed (default 120, max 600)"`
-	RunInBackground bool   `json:"run_in_background,omitempty" description:"start the command as a background job and return its job id immediately"`
+	Command             string `json:"command" description:"the shell command to execute"`
+	Description         string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this command does"`
+	Timeout             int    `json:"timeout,omitempty" description:"max seconds to wait before the command is killed (default 120, max 600)"`
+	RunInBackground     bool   `json:"run_in_background,omitempty" description:"start the command as a background job and return its job id immediately"`
+	DisableTokenSavings bool   `json:"disable_token_savings,omitempty" description:"set to true to disable standard output filtering for this command if raw uncompressed output is strictly needed"`
 }
 
 func agentBashTool(env *agentToolEnv) fantasy.AgentTool {
@@ -224,7 +229,7 @@ func agentBashTool(env *agentToolEnv) fantasy.AgentTool {
 			}
 
 			if p.RunInBackground {
-				job := env.jobs.add(command, handle.kill)
+				job := env.jobs.add(command, p.DisableTokenSavings, handle.kill)
 				go func() {
 					for chunk := range handle.output {
 						job.appendOutput(chunk)
@@ -249,6 +254,16 @@ func agentBashTool(env *agentToolEnv) fantasy.AgentTool {
 			defer timer.Stop()
 
 			var buf strings.Builder
+			handleFinalOutput := func(rawStr string) string {
+				if p.DisableTokenSavings {
+					return rawStr
+				}
+				filteredStr, tokensSaved := applyBashFilter(command, rawStr)
+				if tokensSaved > 0 {
+					_ = RecordSavings(extractBaseCommand(command), tokensSaved)
+				}
+				return filteredStr
+			}
 			rawTruncated := false
 			collect := func(chunk string) {
 				if buf.Len() >= agentBashRawCap {
@@ -262,7 +277,7 @@ func agentBashTool(env *agentToolEnv) fantasy.AgentTool {
 				case chunk, ok := <-handle.output:
 					if !ok {
 						res := <-handle.done
-						return bashResponse(buf.String(), rawTruncated, res), nil
+						return bashResponse(handleFinalOutput(buf.String()), rawTruncated, res), nil
 					}
 					collect(chunk)
 				case <-timer.C:
@@ -270,11 +285,11 @@ func agentBashTool(env *agentToolEnv) fantasy.AgentTool {
 					drainShellOutput(handle.output, collect)
 					return fantasy.NewTextErrorResponse(fmt.Sprintf(
 						"command timed out after %s and was killed\n%s",
-						timeout, truncateMiddle(buf.String()))), nil
+						timeout, truncateMiddle(handleFinalOutput(buf.String())))), nil
 				case <-ctx.Done():
 					handle.kill()
 					drainShellOutput(handle.output, collect)
-					return fantasy.NewTextErrorResponse("command cancelled\n" + truncateMiddle(buf.String())), nil
+					return fantasy.NewTextErrorResponse("command cancelled\n" + truncateMiddle(handleFinalOutput(buf.String()))), nil
 				}
 			}
 		},
@@ -335,6 +350,22 @@ func agentJobOutputTool(env *agentToolEnv) fantasy.AgentTool {
 				}
 			}
 			output, truncated, done, res := job.snapshot()
+			if !job.disableSavings {
+				filtered, saved := applyBashFilter(job.command, output)
+				if done {
+					var shouldRecord bool
+					job.mu.Lock()
+					if !job.savingsRecorded && saved > 0 {
+						job.savingsRecorded = true
+						shouldRecord = true
+					}
+					job.mu.Unlock()
+					if shouldRecord {
+						_ = RecordSavings(extractBaseCommand(job.command), saved)
+					}
+				}
+				output = filtered
+			}
 			body := truncateMiddle(output)
 			if truncated {
 				body += "\n(output exceeded the in-memory cap; middle portions were dropped)"
