@@ -688,6 +688,7 @@ type model struct {
 	finalizedPlanSelectingWorkflow bool
 	finalizedPlanWorkflowCursor    int
 	finalizedPlanWorkflows         []workflowDef
+	finalizedPlanFocusBottom       bool
 }
 
 // workflowRunState carries per-tab workflow execution state. Owned

@@ -824,6 +824,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m.finalizedPlanCursor = 0
 		m.finalizedPlanScrollY = 0
 		m.finalizedPlanSelectingWorkflow = false
+		m.finalizedPlanFocusBottom = true
 		return m, nil
 
 	case approvalRequestMsg:
@@ -919,6 +920,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case tea.MouseWheelMsg:
+		if m.mode == modeFinalizedPlan {
+			return m.updateFinalizedPlanMouseWheel(msg)
+		}
 		if m.mode != modeInput {
 			return m, nil
 		}

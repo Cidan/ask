@@ -18,6 +18,7 @@ func (m *model) clearFinalizedPlan() {
 	m.finalizedPlanSelectingWorkflow = false
 	m.finalizedPlanWorkflowCursor = 0
 	m.finalizedPlanWorkflows = nil
+	m.finalizedPlanFocusBottom = false
 }
 
 func (m model) finalizedPlanOptions() []string {
@@ -42,6 +43,80 @@ func (m model) finalizedPlanOptions() []string {
 	return opts
 }
 
+func (m *model) scrollFinalizedPlan(delta int, linesCount, scrollH int) {
+	maxScrollY := linesCount - scrollH
+	if maxScrollY < 0 {
+		maxScrollY = 0
+	}
+	m.finalizedPlanScrollY += delta
+	if m.finalizedPlanScrollY < 0 {
+		m.finalizedPlanScrollY = 0
+	}
+	if m.finalizedPlanScrollY > maxScrollY {
+		m.finalizedPlanScrollY = maxScrollY
+	}
+}
+
+func (m model) finalizedPlanBounds() (width, height, scrollH int, lines []string) {
+	width = m.width - 10
+	if width < 40 {
+		width = 40
+	}
+	if width > m.width {
+		width = m.width
+	}
+
+	height = m.height - 10
+	if height < 12 {
+		height = 12
+	}
+	if height > m.height {
+		height = m.height
+	}
+
+	contentW := width - 6
+	lines = m.renderMarkdown(m.finalizedPlan, contentW)
+
+	// Explanation lines count
+	linesExpl := len(strings.Split(wrapText(m.finalizedPlanExplanation, contentW), "\n"))
+
+	// Options area lines count
+	var linesOptions int
+	if m.finalizedPlanSelectingWorkflow {
+		linesOptions = 1 + len(m.finalizedPlanWorkflows)
+		if linesOptions < 5 {
+			linesOptions = 5 // 1 title + 4 empty/option rows
+		}
+	} else {
+		linesOptions = len(m.finalizedPlanOptions())
+		if linesOptions < 4 {
+			linesOptions = 4
+		}
+	}
+
+	// Dynamic height math:
+	// Border & Padding consumes 4 rows
+	// title + \n -> 2
+	// planText -> scrollH
+	// scrollLine + \n -> 2
+	// divider + \n -> 2
+	// expl + \n -> linesExpl + 1
+	// divider + \n -> 2
+	// optionsArea -> linesOptions
+	// helpText -> 1
+	// Total inner static height = 2 + 2 + 2 + linesExpl + 1 + 2 + linesOptions + 1 = linesExpl + linesOptions + 10
+	// Plus 4 rows for border/padding -> linesExpl + linesOptions + 14.
+	// Adding 1 for safety to avoid overdraw.
+	totalStaticHeight := linesExpl + linesOptions + 15
+
+	scrollH = height - totalStaticHeight
+	if scrollH < 3 {
+		scrollH = 3
+	}
+
+	return width, height, scrollH, lines
+}
+
 func (m model) updateFinalizedPlan(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
 		if m.finalizedPlanReply != nil {
@@ -52,7 +127,37 @@ func (m model) updateFinalizedPlan(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Tab / Shift+Tab swaps focus between top and bottom pane
+	if msg.Code == tea.KeyTab {
+		m.finalizedPlanFocusBottom = !m.finalizedPlanFocusBottom
+		return m, nil
+	}
+
 	if m.finalizedPlanSelectingWorkflow {
+		if !m.finalizedPlanFocusBottom {
+			// Top focused: arrow keys scroll plan text, Enter is ignored
+			scrollDelta := 0
+			switch {
+			case msg.Code == tea.KeyPgUp || (msg.Mod == tea.ModCtrl && msg.Code == 'u'):
+				scrollDelta = -10
+			case msg.Code == tea.KeyPgDown || (msg.Mod == tea.ModCtrl && msg.Code == 'd'):
+				scrollDelta = 10
+			case listNavPrev(msg):
+				scrollDelta = -1
+			case listNavNext(msg):
+				scrollDelta = 1
+			case msg.Code == tea.KeyEsc:
+				m.finalizedPlanSelectingWorkflow = false
+				return m, nil
+			}
+			if scrollDelta != 0 {
+				_, _, scrollH, lines := m.finalizedPlanBounds()
+				(&m).scrollFinalizedPlan(scrollDelta, len(lines), scrollH)
+			}
+			return m, nil
+		}
+
+		// Bottom focused: navigate workflow picker
 		switch {
 		case msg.Code == tea.KeyEsc:
 			m.finalizedPlanSelectingWorkflow = false
@@ -95,12 +200,6 @@ func (m model) updateFinalizedPlan(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		scrollDelta = -10
 	case msg.Code == tea.KeyPgDown || (msg.Mod == tea.ModCtrl && msg.Code == 'd'):
 		scrollDelta = 10
-	case listNavPrev(msg):
-		m.finalizedPlanCursor = listNavWrap(m.finalizedPlanCursor, -1, len(opts))
-		return m, nil
-	case listNavNext(msg):
-		m.finalizedPlanCursor = listNavWrap(m.finalizedPlanCursor, +1, len(opts))
-		return m, nil
 	case msg.Code == tea.KeyEsc:
 		if m.finalizedPlanReply != nil {
 			m.finalizedPlanReply <- finalizedPlanReply{cancelled: true}
@@ -108,109 +207,113 @@ func (m model) updateFinalizedPlan(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeInput
 		m.clearFinalizedPlan()
 		return m, nil
-	case msg.Code == tea.KeyEnter:
-		if len(opts) == 0 {
-			return m, nil
-		}
-		pickedOpt := opts[m.finalizedPlanCursor]
+	}
+
+	if !m.finalizedPlanFocusBottom {
+		// Top focused: arrow keys scroll plan text, Enter is ignored
 		switch {
-		case strings.HasPrefix(pickedOpt, "Execute in workflow"):
-			var pickedDef workflowDef
-			for _, w := range listAllWorkflows(m.cwd) {
-				if w.Name == m.finalizedPlanWorkflow {
-					pickedDef = w
-					break
-				}
-			}
-			src := chatWorkflowSource(m.id, m.history)
-			cmd := func() tea.Msg {
-				return spawnWorkflowTabMsg{
-					OriginTabID:  m.id,
-					Cwd:          m.cwd,
-					WorktreeName: m.worktreeName,
-					Workflow:     pickedDef,
-					Source:       src,
-				}
-			}
-			if m.finalizedPlanReply != nil {
-				m.finalizedPlanReply <- finalizedPlanReply{workflowName: m.finalizedPlanWorkflow}
-			}
-			m.mode = modeInput
-			m.clearFinalizedPlan()
-			return m, cmd
-
-		case pickedOpt == "Pick a different workflow...":
-			m.finalizedPlanWorkflows = listAllWorkflows(m.cwd)
-			m.finalizedPlanWorkflowCursor = 0
-			m.finalizedPlanSelectingWorkflow = true
+		case listNavPrev(msg):
+			scrollDelta = -1
+		case listNavNext(msg):
+			scrollDelta = 1
+		}
+	} else {
+		// Bottom focused: arrow keys navigate option picker, Enter executes
+		switch {
+		case listNavPrev(msg):
+			m.finalizedPlanCursor = listNavWrap(m.finalizedPlanCursor, -1, len(opts))
 			return m, nil
-
-		case pickedOpt == "Execute without a workflow":
-			m.planningMode = false
-			if m.proc != nil {
-				if s, ok := m.proc.payload.(*agentSession); ok {
-					s.SetPlanningMode(false)
+		case listNavNext(msg):
+			m.finalizedPlanCursor = listNavWrap(m.finalizedPlanCursor, +1, len(opts))
+			return m, nil
+		case msg.Code == tea.KeyEnter:
+			if len(opts) == 0 {
+				return m, nil
+			}
+			pickedOpt := opts[m.finalizedPlanCursor]
+			switch {
+			case strings.HasPrefix(pickedOpt, "Execute in workflow"):
+				var pickedDef workflowDef
+				for _, w := range listAllWorkflows(m.cwd) {
+					if w.Name == m.finalizedPlanWorkflow {
+						pickedDef = w
+						break
+					}
 				}
-			}
-			if m.finalizedPlanReply != nil {
-				m.finalizedPlanReply <- finalizedPlanReply{executeInline: true}
-			}
-			m.mode = modeInput
-			m.clearFinalizedPlan()
-			return m, nil
+				src := chatWorkflowSource(m.id, m.history)
+				cmd := func() tea.Msg {
+					return spawnWorkflowTabMsg{
+						OriginTabID:  m.id,
+						Cwd:          m.cwd,
+						WorktreeName: m.worktreeName,
+						Workflow:     pickedDef,
+						Source:       src,
+					}
+				}
+				if m.finalizedPlanReply != nil {
+					m.finalizedPlanReply <- finalizedPlanReply{workflowName: m.finalizedPlanWorkflow}
+				}
+				m.mode = modeInput
+				m.clearFinalizedPlan()
+				return m, cmd
 
-		case pickedOpt == "I want to talk about this some more":
-			if m.finalizedPlanReply != nil {
-				m.finalizedPlanReply <- finalizedPlanReply{talkMore: true}
+			case pickedOpt == "Pick a different workflow...":
+				m.finalizedPlanWorkflows = listAllWorkflows(m.cwd)
+				m.finalizedPlanWorkflowCursor = 0
+				m.finalizedPlanSelectingWorkflow = true
+				return m, nil
+
+			case pickedOpt == "Execute without a workflow":
+				m.planningMode = false
+				if m.proc != nil {
+					if s, ok := m.proc.payload.(*agentSession); ok {
+						s.SetPlanningMode(false)
+					}
+				}
+				if m.finalizedPlanReply != nil {
+					m.finalizedPlanReply <- finalizedPlanReply{executeInline: true}
+				}
+				m.mode = modeInput
+				m.clearFinalizedPlan()
+				return m, nil
+
+			case pickedOpt == "I want to talk about this some more":
+				if m.finalizedPlanReply != nil {
+					m.finalizedPlanReply <- finalizedPlanReply{talkMore: true}
+				}
+				m.mode = modeInput
+				m.clearFinalizedPlan()
+				return m, nil
 			}
-			m.mode = modeInput
-			m.clearFinalizedPlan()
-			return m, nil
 		}
 	}
 
 	if scrollDelta != 0 {
-		width := 84
-		if width > m.width-8 {
-			width = m.width - 8
-		}
-		contentW := width - 6
-		lines := m.renderMarkdown(m.finalizedPlan, contentW)
-		scrollH := (m.height - 4) - 10
-		if scrollH < 3 {
-			scrollH = 3
-		}
-		maxScrollY := len(lines) - scrollH
-		if maxScrollY < 0 {
-			maxScrollY = 0
-		}
-		m.finalizedPlanScrollY += scrollDelta
-		if m.finalizedPlanScrollY < 0 {
-			m.finalizedPlanScrollY = 0
-		}
-		if m.finalizedPlanScrollY > maxScrollY {
-			m.finalizedPlanScrollY = maxScrollY
-		}
+		_, _, scrollH, lines := m.finalizedPlanBounds()
+		(&m).scrollFinalizedPlan(scrollDelta, len(lines), scrollH)
 	}
 
 	return m, nil
 }
 
+func (m model) updateFinalizedPlanMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	if !m.finalizedPlanFocusBottom {
+		_, _, scrollH, lines := m.finalizedPlanBounds()
+		delta := 0
+		if msg.Button == tea.MouseWheelUp {
+			delta = -3
+		} else if msg.Button == tea.MouseWheelDown {
+			delta = 3
+		}
+		if delta != 0 {
+			(&m).scrollFinalizedPlan(delta, len(lines), scrollH)
+		}
+	}
+	return m, nil
+}
+
 func (m model) viewFinalizedPlan() string {
-	width := 84
-	if width > m.width-8 {
-		width = m.width - 8
-	}
-	if width < 40 {
-		width = 40
-	}
-	height := 24
-	if height > m.height-4 {
-		height = m.height - 4
-	}
-	if height < 12 {
-		height = 12
-	}
+	width, height, scrollH, lines := m.finalizedPlanBounds()
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -220,22 +323,6 @@ func (m model) viewFinalizedPlan() string {
 	contentW := width - 6
 
 	title := configTitleStyle.Render("Confirm Finalized Plan")
-	lines := m.renderMarkdown(m.finalizedPlan, contentW)
-
-	scrollH := height - 10
-	if scrollH < 3 {
-		scrollH = 3
-	}
-	maxScrollY := len(lines) - scrollH
-	if maxScrollY < 0 {
-		maxScrollY = 0
-	}
-	if m.finalizedPlanScrollY > maxScrollY {
-		m.finalizedPlanScrollY = maxScrollY
-	}
-	if m.finalizedPlanScrollY < 0 {
-		m.finalizedPlanScrollY = 0
-	}
 
 	endY := m.finalizedPlanScrollY + scrollH
 	if endY > len(lines) {
@@ -254,16 +341,27 @@ func (m model) viewFinalizedPlan() string {
 		planText += strings.Repeat("\n", scrollH-linesRenderedCount)
 	}
 
-	scrollLine := configHelpStyle.Render(fmt.Sprintf("▲ --- Line %d to %d of %d --- ▼", m.finalizedPlanScrollY+1, endY, len(lines)))
+	var scrollLine string
+	scrollProgressStr := fmt.Sprintf("▲ --- Line %d to %d of %d --- ▼", m.finalizedPlanScrollY+1, endY, len(lines))
 	if len(lines) <= scrollH {
-		scrollLine = configHelpStyle.Render("--- Complete Plan ---")
+		scrollProgressStr = "--- Complete Plan ---"
+	}
+	if !m.finalizedPlanFocusBottom {
+		scrollLine = lipgloss.NewStyle().Foreground(activeTheme.accent).Bold(true).Render(scrollProgressStr)
+	} else {
+		scrollLine = configHelpStyle.Render(scrollProgressStr)
 	}
 
 	explTitle := configHelpStyle.Bold(true).Render("Explanation:")
 	wrappedExpl := wrapText(m.finalizedPlanExplanation, contentW)
 
-	helpText := configHelpStyle.Render("PgUp/PgDn or Ctrl+U/Ctrl+D: scroll plan · Esc: cancel/exit")
+	helpText := configHelpStyle.Render("Tab/Shift+Tab: swap focus · PgUp/PgDn: scroll · Esc: cancel/exit")
 	divider := configHelpStyle.Render(strings.Repeat("─", contentW))
+
+	unfocusedSelectedStyle := lipgloss.NewStyle().
+		Foreground(activeTheme.darkFG).
+		Background(activeTheme.dim).
+		Bold(true)
 
 	var optionsArea string
 	if m.finalizedPlanSelectingWorkflow {
@@ -275,7 +373,11 @@ func (m model) viewFinalizedPlan() string {
 			}
 			row = truncateForRow(row, contentW)
 			if i == m.finalizedPlanWorkflowCursor {
-				optionsArea += configSelectedRowStyle.Width(contentW).Render(row) + "\n"
+				if m.finalizedPlanFocusBottom {
+					optionsArea += configSelectedRowStyle.Width(contentW).Render(row) + "\n"
+				} else {
+					optionsArea += unfocusedSelectedStyle.Width(contentW).Render(row) + "\n"
+				}
 			} else {
 				optionsArea += row + "\n"
 			}
@@ -288,7 +390,11 @@ func (m model) viewFinalizedPlan() string {
 		for i, opt := range opts {
 			row := "  " + opt
 			if i == m.finalizedPlanCursor {
-				optionsArea += configSelectedRowStyle.Width(contentW).Render(row) + "\n"
+				if m.finalizedPlanFocusBottom {
+					optionsArea += configSelectedRowStyle.Width(contentW).Render(row) + "\n"
+				} else {
+					optionsArea += unfocusedSelectedStyle.Width(contentW).Render(row) + "\n"
+				}
 			} else {
 				optionsArea += row + "\n"
 			}
