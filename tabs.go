@@ -176,6 +176,8 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askToolRequestMsg:
 		return a.dispatchByTabID(m.tabID, msg)
+	case finalizedPlanRequestMsg:
+		return a.dispatchByTabID(m.tabID, msg)
 	case approvalRequestMsg:
 		return a.dispatchByTabID(m.tabID, msg)
 	case shellBatchMsg:
@@ -263,6 +265,10 @@ func (a app) dispatchByTabID(tabID int, msg tea.Msg) (tea.Model, tea.Cmd) {
 		case askToolRequestMsg:
 			if m.reply != nil {
 				m.reply <- askReply{cancelled: true}
+			}
+		case finalizedPlanRequestMsg:
+			if m.reply != nil {
+				m.reply <- finalizedPlanReply{cancelled: true}
 			}
 		case approvalRequestMsg:
 			if m.reply != nil {

@@ -525,4 +525,11 @@ func (m *model) drainPendingReplies() {
 		}
 		m.approvalReply = nil
 	}
+	if m.finalizedPlanReply != nil {
+		select {
+		case m.finalizedPlanReply <- finalizedPlanReply{cancelled: true}:
+		default:
+		}
+		m.finalizedPlanReply = nil
+	}
 }

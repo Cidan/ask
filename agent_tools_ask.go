@@ -166,3 +166,61 @@ func agentEndTurnTool(env *agentToolEnv) fantasy.AgentTool {
 		},
 	)
 }
+
+type agentFinalizedPlanParams struct {
+	Plan            string `json:"plan" description:"required: the full markdown plan covering the necessary file changes, tests, and verification steps"`
+	Explanation     string `json:"explanation" description:"required: one or two sentences explaining why this plan is optimal"`
+	DefaultWorkflow string `json:"default_workflow,omitempty" description:"optional: the matched/suggested workflow name (e.g. 'ship') if any matches the plan"`
+}
+
+// agentFinalizedPlanTool ends the LLM turn and displays a near full-screen
+// confirmation dialog where the user can choose to run the plan in a workflow,
+// select a different workflow, execute inline without a workflow, or continue discussion.
+func agentFinalizedPlanTool(env *agentToolEnv) fantasy.AgentTool {
+	return fantasy.NewAgentTool(
+		"finalized_plan",
+		"Present a finalized implementation plan to the user for confirmation and execution choice.",
+		func(ctx context.Context, p agentFinalizedPlanParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			plan := strings.TrimSpace(p.Plan)
+			explanation := strings.TrimSpace(p.Explanation)
+			if plan == "" {
+				return fantasy.NewTextErrorResponse("plan is required"), nil
+			}
+			if explanation == "" {
+				return fantasy.NewTextErrorResponse("explanation is required"), nil
+			}
+
+			reply := make(chan finalizedPlanReply, 1)
+			if !agentSendToProgram(finalizedPlanRequestMsg{
+				tabID:           env.tabID,
+				plan:            plan,
+				explanation:     explanation,
+				defaultWorkflow: strings.TrimSpace(p.DefaultWorkflow),
+				reply:           reply,
+			}) {
+				return fantasy.NewTextErrorResponse("ask UI not ready"), nil
+			}
+
+			select {
+			case resp := <-reply:
+				if resp.headless {
+					return fantasy.NewTextResponse("This step is running headless as part of an automated workflow. Continuing directly."), nil
+				}
+				if resp.cancelled {
+					return fantasy.NewTextErrorResponse("user cancelled or closed the finalized plan dialog"), nil
+				}
+				if resp.talkMore {
+					return fantasy.NewTextResponse("The user declined the plan and wants to continue discussing. Re-evaluate your approach based on the user's feedback."), nil
+				}
+				if resp.executeInline {
+					env.markWorkflowsChecked()
+					env.markWorkflowRunDispatched()
+					return fantasy.NewTextResponse("Plan approved for inline execution. Planning mode has been turned OFF and todos guards have been disarmed. You can now execute your plan directly using write/edit/bash/etc."), nil
+				}
+				return fantasy.NewTextResponse(fmt.Sprintf("Plan approved. Executing in workflow %q.", resp.workflowName)), nil
+			case <-ctx.Done():
+				return fantasy.NewTextErrorResponse("cancelled while waiting for user confirmation"), nil
+			}
+		},
+	)
+}

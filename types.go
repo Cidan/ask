@@ -39,6 +39,7 @@ const (
 	modeApproval
 	modeConfig
 	modeModelPicker
+	modeFinalizedPlan
 )
 
 type streamStatusMsg struct {
@@ -683,6 +684,16 @@ type model struct {
 	// title call (tab_title.go) and persisted on the VirtualSession.
 	// Empty until the first turn; /new and /clear reset it.
 	tabTitle string
+
+	finalizedPlan                  string
+	finalizedPlanWorkflow          string
+	finalizedPlanExplanation       string
+	finalizedPlanReply             chan finalizedPlanReply
+	finalizedPlanCursor            int
+	finalizedPlanScrollY           int
+	finalizedPlanSelectingWorkflow bool
+	finalizedPlanWorkflowCursor    int
+	finalizedPlanWorkflows         []workflowDef
 }
 
 // workflowRunState carries per-tab workflow execution state. Owned

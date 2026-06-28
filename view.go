@@ -595,8 +595,9 @@ func (m model) View() tea.View {
 	needCancelConfirm := m.cancelTurnConfirming && m.mode == modeInput
 	needCloseTabConfirm := m.closeTabConfirming && m.mode == modeInput
 	needMergeConfirm := m.mergePRConfirming && m.mode == modeInput
+	needFinalizedPlan := m.mode == modeFinalizedPlan
 
-	if (needBox || needModal || needApproval || needConfig || needSwitch || needCancelConfirm || needCloseTabConfirm || needMergeConfirm) && m.width > 0 && m.height > 0 {
+	if (needBox || needModal || needApproval || needConfig || needSwitch || needCancelConfirm || needCloseTabConfirm || needMergeConfirm || needFinalizedPlan) && m.width > 0 && m.height > 0 {
 		cbStart := time.Now()
 		canvas := uv.NewScreenBuffer(m.width, m.height)
 		uv.NewStyledString(body).Draw(canvas, image.Rectangle{
@@ -888,6 +889,23 @@ func (m model) View() tea.View {
 			uv.NewStyledString(confirm).Draw(canvas, image.Rectangle{
 				Min: image.Pt(cX, cY),
 				Max: image.Pt(cX+cW, cY+cH),
+			})
+		}
+		if needFinalizedPlan {
+			modal := m.viewFinalizedPlan()
+			mW := lipgloss.Width(modal)
+			mH := lipgloss.Height(modal)
+			mX := (m.width - mW) / 2
+			mY := (m.height - mH) / 2
+			if mX < 0 {
+				mX = 0
+			}
+			if mY < 0 {
+				mY = 0
+			}
+			uv.NewStyledString(modal).Draw(canvas, image.Rectangle{
+				Min: image.Pt(mX, mY),
+				Max: image.Pt(mX+mW, mY+mH),
 			})
 		}
 		rStart := time.Now()

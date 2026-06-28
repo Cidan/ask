@@ -802,6 +802,30 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m.askReply = msg.reply
 		return m, nil
 
+	case finalizedPlanRequestMsg:
+		debugLog("finalizedPlanRequestMsg plan len=%d", len(msg.plan))
+		if m.workflowRun != nil {
+			if msg.reply != nil {
+				msg.reply <- finalizedPlanReply{headless: true}
+			}
+			return m, nil
+		}
+		if m.mode == modeFinalizedPlan {
+			if msg.reply != nil {
+				msg.reply <- finalizedPlanReply{cancelled: true}
+			}
+			return m, nil
+		}
+		m.mode = modeFinalizedPlan
+		m.finalizedPlan = msg.plan
+		m.finalizedPlanExplanation = msg.explanation
+		m.finalizedPlanWorkflow = msg.defaultWorkflow
+		m.finalizedPlanReply = msg.reply
+		m.finalizedPlanCursor = 0
+		m.finalizedPlanScrollY = 0
+		m.finalizedPlanSelectingWorkflow = false
+		return m, nil
+
 	case approvalRequestMsg:
 		debugLog("approvalRequestMsg tool=%s id=%s", msg.toolName, msg.toolUseID)
 		if m.workflowRun != nil {
@@ -1117,6 +1141,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m.updateConfigModal(msg)
 		case modeModelPicker:
 			return m.updateModelPicker(msg)
+		case modeFinalizedPlan:
+			return m.updateFinalizedPlan(msg)
 		}
 		// Workflow tabs are read-only: the input area is replaced
 		// with a status banner and the user has no way to type a

@@ -213,3 +213,20 @@ func permissionRuleFor(toolName string, input map[string]any) permissionRule {
 	}
 	return r
 }
+
+type finalizedPlanReply struct {
+	headless      bool
+	cancelled     bool
+	talkMore      bool
+	executeInline bool
+	workflowName  string
+}
+
+type finalizedPlanRequestMsg struct {
+	tabID           int
+	plan            string
+	defaultWorkflow string
+	explanation     string
+	reply           chan finalizedPlanReply
+}
+
