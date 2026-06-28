@@ -1031,6 +1031,21 @@ func (m model) workflowsBuilderUpdateModelPicker(msg tea.KeyPressMsg) (model, te
 			return m, nil, true
 		}
 		picked := b.modelPickerOpts[b.modelCursor]
+		if picked == switcherCustomRowLabel {
+			b.modelPicker = false
+			b.renaming = "model"
+			if t, ok := b.currentStepTarget(); ok && !t.isLoop {
+				step := b.stepAt(t)
+				if step.Model != switcherCustomRowLabel {
+					b.renameDraft = step.Model
+				} else {
+					b.renameDraft = ""
+				}
+			} else {
+				b.renameDraft = ""
+			}
+			return m, nil, true
+		}
 		if t, ok := b.currentStepTarget(); ok && !t.isLoop {
 			b.stepAt(t).Model = picked
 			if err := b.commitItems(); err != nil {
@@ -1100,6 +1115,13 @@ func (m model) workflowsBuilderUpdateRename(msg tea.KeyPressMsg) (model, tea.Cmd
 				}
 			}
 			b.stepAt(t).Name = draft
+		case "model":
+			t, ok := b.currentStepTarget()
+			if !ok {
+				b.renaming = ""
+				return m, nil, true
+			}
+			b.stepAt(t).Model = draft
 		}
 		if err := b.commitItems(); err != nil {
 			b.toast = "save failed: " + err.Error()
@@ -1924,6 +1946,9 @@ func (b *workflowsBuilderState) renderRename(width, height int) string {
 		title = "Rename step"
 	case "workflow":
 		title = "Rename workflow"
+	case "model":
+		title = "Step Model"
+		hint = "Type custom model ID; enter to save, esc to cancel"
 	case "maxiter":
 		title = "Max iterations"
 		hint = "Whole number (blank = default of 10); enter to save"

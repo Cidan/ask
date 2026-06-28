@@ -314,3 +314,59 @@ func TestUpdateRename_DuplicateNameToasts(t *testing.T) {
 		t.Errorf("name should not change on duplicate; got %q", got.workflowsBuilder.items[0].Name)
 	}
 }
+
+func TestUpdateModelPicker_EnterYourOwn(t *testing.T) {
+	m := withWorkflowsBuilder(t, workflowDef{
+		Name: "wf",
+		Steps: []workflowStep{
+			{Name: "s1", Provider: "fake", Model: "old-model"},
+		},
+	})
+	m.workflowsBuilder.listCursor = 1 // select wf
+	m.workflowsBuilder.syncRightFromLeft()
+	m.workflowsBuilder.rightMode = workflowsBuilderRightSteps
+	m.workflowsBuilder.stepsCursor = 1 // on s1
+
+	m.workflowsBuilder.modelPicker = true
+	m.workflowsBuilder.modelPickerOpts = []string{"opt1", switcherCustomRowLabel}
+	m.workflowsBuilder.modelCursor = 1
+
+	m2, _, _ := m.workflowsBuilderUpdateModelPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
+	b := m2.workflowsBuilder
+
+	if b.modelPicker {
+		t.Error("modelPicker should be closed")
+	}
+	if b.renaming != "model" {
+		t.Errorf("renaming = %q want 'model'", b.renaming)
+	}
+	if b.renameDraft != "old-model" {
+		t.Errorf("renameDraft = %q want 'old-model'", b.renameDraft)
+	}
+}
+
+func TestUpdateRename_CustomModel(t *testing.T) {
+	m := withWorkflowsBuilder(t, workflowDef{
+		Name: "wf",
+		Steps: []workflowStep{
+			{Name: "s1", Provider: "fake", Model: "old-model"},
+		},
+	})
+	m.workflowsBuilder.listCursor = 1 // select wf
+	m.workflowsBuilder.syncRightFromLeft()
+	m.workflowsBuilder.rightMode = workflowsBuilderRightSteps
+	m.workflowsBuilder.stepsCursor = 1 // on s1
+
+	m.workflowsBuilder.renaming = "model"
+	m.workflowsBuilder.renameDraft = "my-custom-model-id"
+
+	m2, _, _ := m.workflowsBuilderUpdateRename(tea.KeyPressMsg{Code: tea.KeyEnter})
+	b := m2.workflowsBuilder
+
+	if b.renaming != "" {
+		t.Error("renaming should be cleared")
+	}
+	if step := b.items[0].Steps[0]; step.Model != "my-custom-model-id" {
+		t.Errorf("step model = %q want 'my-custom-model-id'", step.Model)
+	}
+}
