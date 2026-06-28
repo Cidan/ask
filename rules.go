@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"charm.land/fantasy"
 )
@@ -294,44 +296,49 @@ func rulesPromptBlock(rules []askRule) string {
 	return b.String()
 }
 
-// ruleAwareTool decorates the read tool so that reading a file whose
-// project-root-relative path matches a path-scoped rule appends that
-// rule's body to the tool result — the JIT half of the standard. Each
-// rule is injected at most once per session (tracked on `fired`) so
-// re-reading the same file, or several matching files, never re-spends
-// the same rule. Eager rules are excluded here; they already live in
-// the system prompt.
-type ruleAwareTool struct {
+// contextAwareTool decorates the read, glob, grep, and ls tools.
+// It injects context files (CLAUDE.md, etc.) by walking upwards from the target directory,
+// and for the read tool, it also injects JIT path-scoped rules. Each injection happens
+// at most once per session (tracked on `firedRules` and `seenCtx`).
+type contextAwareTool struct {
 	fantasy.AgentTool
-	root  string
-	rules []askRule
-	fired map[string]bool // rule.Path → already injected this session
+	cwd        string
+	root       string
+	rules      []askRule
+	mu         *sync.Mutex
+	firedRules map[string]bool // rule.Path → already injected this session
+	seenCtx    map[string]bool // dir path → already injected this session
 }
 
-// wrapReadToolWithRules decorates the read tool with JIT rule
-// injection when any path-scoped rules exist. No path-scoped rules →
-// the tools are returned untouched (zero overhead). The fired-set is
-// shared across the returned wrapper so once-per-session dedup holds
-// for the whole session.
-func wrapReadToolWithRules(tools []fantasy.AgentTool, cwd string, rules []askRule) []fantasy.AgentTool {
+// wrapContextAwareTools decorates the read, glob, grep, and ls tools with JIT rule
+// injection and directory-aware context file injection.
+func wrapContextAwareTools(tools []fantasy.AgentTool, cwd string, rules []askRule) []fantasy.AgentTool {
 	var scoped []askRule
 	for _, r := range rules {
 		if !r.eager() {
 			scoped = append(scoped, r)
 		}
 	}
-	if len(scoped) == 0 {
-		return tools
-	}
 	root := projectRoot(cwd)
 	if root == "" {
 		root = cwd
 	}
-	fired := map[string]bool{}
+	mu := &sync.Mutex{}
+	firedRules := map[string]bool{}
+	seenCtx := map[string]bool{}
 	out := make([]fantasy.AgentTool, len(tools))
 	for i, t := range tools {
-		if t.Info().Name == "read" {
-			out[i] = &ruleAwareTool{AgentTool: t, root: root, rules: scoped, fired: fired}
+		name := t.Info().Name
+		if name == "read" || name == "glob" || name == "grep" || name == "ls" {
+			out[i] = &contextAwareTool{
+				AgentTool:  t,
+				cwd:        cwd,
+				root:       root,
+				rules:      scoped,
+				mu:         mu,
+				firedRules: firedRules,
+				seenCtx:    seenCtx,
+			}
 		} else {
 			out[i] = t
 		}
@@ -339,31 +346,128 @@ func wrapReadToolWithRules(tools []fantasy.AgentTool, cwd string, rules []askRul
 	return out
 }
 
-func (rt *ruleAwareTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	resp, err := rt.AgentTool.Run(ctx, call)
+func (ct *contextAwareTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	resp, err := ct.AgentTool.Run(ctx, call)
 	if err != nil || resp.IsError || resp.Type != "text" {
 		return resp, err
 	}
-	rel := rt.relPath(fileToolPath(call.Input))
-	if rel == "" {
+
+	var targetPath string
+	name := ct.Info().Name
+	if name == "read" {
+		targetPath = fileToolPath(call.Input)
+	} else {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(call.Input), &parsed); err == nil {
+			if p, ok := parsed["path"].(string); ok && p != "" {
+				targetPath = p
+			}
+		}
+		if targetPath == "" {
+			targetPath = ct.cwd
+		}
+	}
+
+	if targetPath == "" {
 		return resp, err
 	}
-	var add []string
-	for _, r := range rt.rules {
-		if rt.fired[r.Path] || !r.matches(rel) {
-			continue
+
+	absPath := targetPath
+	if !filepath.IsAbs(absPath) {
+		absPath = filepath.Join(ct.cwd, absPath)
+	}
+	absPath = filepath.Clean(absPath)
+
+	var ctxAdd []string
+
+	// 1. Directory Upward Walk for context files
+	dir := absPath
+	info, errStat := os.Stat(absPath)
+	if errStat == nil && !info.IsDir() {
+		dir = filepath.Dir(absPath)
+	} else if errStat != nil {
+		dir = filepath.Dir(absPath)
+	}
+
+	for {
+		ct.mu.Lock()
+		seen := ct.seenCtx[dir]
+		ct.seenCtx[dir] = true
+		ct.mu.Unlock()
+
+		var dirAdd []string
+		if !seen {
+			seenFile := map[string]bool{}
+			for _, name := range agentContextFileNames {
+				key := strings.ToLower(name)
+				if seenFile[key] {
+					continue
+				}
+				p := filepath.Join(dir, name)
+				if data, err := os.ReadFile(p); err == nil {
+					seenFile[key] = true
+					content := string(data)
+					if len(strings.TrimSpace(content)) == 0 {
+						continue
+					}
+					if len(content) > agentContextFileCap {
+						content = content[:agentContextFileCap] + "\n… (truncated)"
+					}
+					
+					relP, err := filepath.Rel(ct.root, p)
+					if err != nil || strings.HasPrefix(relP, "..") {
+						relP = filepath.Base(p) // fallback
+					} else {
+						relP = filepath.ToSlash(relP)
+					}
+					
+					dirAdd = append(dirAdd, fmt.Sprintf("## Project instructions from %s\n\n%s", relP, strings.TrimRight(content, "\n")))
+				}
+			}
 		}
-		rt.fired[r.Path] = true
-		add = append(add, fmt.Sprintf("## Rule for %s (%s)\n\n%s", rel, r.Rel, r.Body))
-		if linked := ruleLinkedDocs(rt.root, r.Body); len(linked) > 0 {
-			for _, d := range linked {
-				add = append(add, fmt.Sprintf("### Included from %s\n\n%s", d.Path, d.Body))
+
+		// Prepend the current directory's instructions so that the innermost
+		// instructions appear at the bottom (closest to the output).
+		ctxAdd = append(dirAdd, ctxAdd...)
+
+		if dir == ct.root || dir == filepath.Dir(dir) {
+			break
+		}
+		dir = filepath.Dir(dir)
+	}
+
+	var add []string
+	add = append(add, ctxAdd...)
+
+	// 2. JIT Rules logic ONLY for 'read'
+	if name == "read" {
+		rel := ct.relPath(targetPath)
+		if rel != "" {
+			for _, r := range ct.rules {
+				ct.mu.Lock()
+				fired := ct.firedRules[r.Path]
+				ct.mu.Unlock()
+				if fired || !r.matches(rel) {
+					continue
+				}
+				ct.mu.Lock()
+				ct.firedRules[r.Path] = true
+				ct.mu.Unlock()
+
+				add = append(add, fmt.Sprintf("## Rule for %s (%s)\n\n%s", rel, r.Rel, r.Body))
+				if linked := ruleLinkedDocs(ct.root, r.Body); len(linked) > 0 {
+					for _, d := range linked {
+						add = append(add, fmt.Sprintf("### Included from %s\n\n%s", d.Path, d.Body))
+					}
+				}
 			}
 		}
 	}
+
 	if len(add) > 0 {
 		resp.Content = resp.Content + "\n\n" + strings.Join(add, "\n\n")
 	}
+
 	return resp, err
 }
 
@@ -371,16 +475,16 @@ func (rt *ruleAwareTool) Run(ctx context.Context, call fantasy.ToolCall) (fantas
 // separated path relative to the project root for glob matching.
 // Returns "" when the path resolves outside the project root (rules
 // can't scope files they don't cover).
-func (rt *ruleAwareTool) relPath(p string) string {
+func (ct *contextAwareTool) relPath(p string) string {
 	if p == "" {
 		return ""
 	}
 	abs := p
 	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(rt.root, abs)
+		abs = filepath.Join(ct.cwd, abs)
 	}
 	abs = filepath.Clean(abs)
-	rel, err := filepath.Rel(rt.root, abs)
+	rel, err := filepath.Rel(ct.root, abs)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return ""
 	}

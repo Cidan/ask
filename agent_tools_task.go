@@ -99,6 +99,7 @@ func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel, maxTok
 			}
 
 			run := func(runCtx context.Context) (string, error) {
+				tools = wrapContextAwareTools(tools, env.cwd, discoverRules(env.cwd))
 				taskCfg, _ := loadConfig()
 				taskMaxRetries, _, _ := agentRetryOptions(taskCfg)
 				sub := fantasy.NewAgent(lm,

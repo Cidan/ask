@@ -260,7 +260,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		s.coreTools = append(s.coreTools, agentWebSearchTool(env))
 	}
 	s.coreTools = wrapFileToolsWithMemory(s.coreTools, s.args.Cwd)
-	s.coreTools = wrapReadToolWithRules(s.coreTools, s.args.Cwd, discoverRules(s.args.Cwd))
+	s.coreTools = wrapContextAwareTools(s.coreTools, s.args.Cwd, discoverRules(s.args.Cwd))
 	s.deferredBase = agentLinearTools(env)
 	s.deferredBase = append(s.deferredBase, agentMemoryIndexTool(env))
 	s.mcp = newMCPManager(s.args.TabID,
