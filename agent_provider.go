@@ -233,6 +233,9 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		agentSearchToolsTool(s.deferredTools),
 		agentInvokeToolTool(s.deferredTools, s.isCoreToolName, env),
 	}
+	if s.args.PlanningMode {
+		s.coreTools = append(s.coreTools, agentFinalizedPlanTool(env))
+	}
 	if s.args.IsWorkflowFinalStep {
 		s.coreTools = append(s.coreTools, agentFinishWorkflowTool(env))
 	}
