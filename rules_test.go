@@ -172,7 +172,7 @@ func TestRulesPromptBlock_EagerOnly(t *testing.T) {
 	}
 }
 
-func TestWrapReadToolWithRules_JITInjectionAndDedup(t *testing.T) {
+func TestWrapContextAwareTools_JITInjectionAndDedup(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 	// projectRoot(env.cwd) needs a .git dir to anchor on env.cwd; the
 	// temp dir isn't a checkout, so projectRoot falls back to cwd —
@@ -184,7 +184,7 @@ func TestWrapReadToolWithRules_JITInjectionAndDedup(t *testing.T) {
 		{Path: "/r/api.md", Rel: "api.md", Paths: []string{"src/api/**/*.go"}, Body: "API rule body."},
 		{Path: "/r/eager.md", Rel: "eager.md", Body: "Eager body."}, // must be ignored by the wrapper
 	}
-	tools := wrapReadToolWithRules([]fantasy.AgentTool{agentReadTool(env)}, env.cwd, rules)
+	tools := wrapContextAwareTools([]fantasy.AgentTool{agentReadTool(env)}, env.cwd, rules)
 	read := tools[0]
 
 	// Matching read → rule injected.
@@ -209,18 +209,17 @@ func TestWrapReadToolWithRules_JITInjectionAndDedup(t *testing.T) {
 	}
 }
 
-func TestWrapReadToolWithRules_NoScopedRulesIsPassthrough(t *testing.T) {
+func TestWrapContextAwareTools_AlwaysWrapsForContext(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 	orig := agentReadTool(env)
-	// Only eager rules → wrapper returns the slice untouched.
-	got := wrapReadToolWithRules([]fantasy.AgentTool{orig}, env.cwd, []askRule{{Body: "eager"}})
-	if got[0] != orig {
-		t.Error("with no path-scoped rules the read tool must be returned untouched")
+	got := wrapContextAwareTools([]fantasy.AgentTool{orig}, env.cwd, []askRule{{Body: "eager"}})
+	if got[0] == orig {
+		t.Error("tools must be wrapped even with no scoped rules to support context walk")
 	}
 }
 
 func TestRuleAwareTool_RelPathRejectsOutsideRoot(t *testing.T) {
-	rt := &ruleAwareTool{root: "/proj"}
+	rt := &contextAwareTool{root: "/proj", cwd: "/proj"}
 	if got := rt.relPath("/proj/src/a.go"); got != "src/a.go" {
 		t.Errorf("relPath abs in-root = %q, want src/a.go", got)
 	}
@@ -244,7 +243,7 @@ func TestRuleAwareTool_LinkedDocs(t *testing.T) {
 			Body: "API rule body. See @docs/ref.md for details.\n",
 		},
 	}
-	tools := wrapReadToolWithRules([]fantasy.AgentTool{agentReadTool(env)}, env.cwd, rules)
+	tools := wrapContextAwareTools([]fantasy.AgentTool{agentReadTool(env)}, env.cwd, rules)
 	read := tools[0]
 
 	resp := runTool(t, read, agentReadParams{FilePath: "src/api/handler.go"})
@@ -264,5 +263,45 @@ func TestRuleAwareTool_LinkedDocs(t *testing.T) {
 	resp = runTool(t, read, agentReadParams{FilePath: "src/api/handler.go"})
 	if strings.Contains(resp.Content, "API rule body.") || strings.Contains(resp.Content, "Linked body here.") {
 		t.Error("rule and linked docs must inject at most once per session")
+	}
+}
+
+func TestContextAwareTool_DirectoryWalk(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	// Create a nested file structure
+	writeTestFile(t, env.cwd, "src/api/deep/handler.go", "package deep\n")
+	// Create context files
+	writeTestFile(t, env.cwd, "CLAUDE.md", "Root instructions\n")
+	writeTestFile(t, env.cwd, "src/api/AGENTS.md", "API instructions\n")
+
+	tools := wrapContextAwareTools([]fantasy.AgentTool{agentReadTool(env)}, env.cwd, nil)
+	read := tools[0]
+
+	// Reading the deep file should discover both context files
+	resp := runTool(t, read, agentReadParams{FilePath: "src/api/deep/handler.go"})
+	if !strings.Contains(resp.Content, "Root instructions") {
+		t.Error("root context file missing")
+	}
+	if !strings.Contains(resp.Content, "API instructions") {
+		t.Error("api context file missing")
+	}
+	if !strings.Contains(resp.Content, "CLAUDE.md") {
+		t.Error("root context file header missing")
+	}
+	if !strings.Contains(resp.Content, "src/api/AGENTS.md") {
+		t.Error("api context file header missing")
+	}
+
+	// Reading again should not re-inject (deduplication)
+	resp = runTool(t, read, agentReadParams{FilePath: "src/api/deep/handler.go"})
+	if strings.Contains(resp.Content, "Root instructions") || strings.Contains(resp.Content, "API instructions") {
+		t.Error("context files must inject at most once per session")
+	}
+
+	// Reading a different file in the same directory should also not re-inject
+	writeTestFile(t, env.cwd, "src/api/deep/other.go", "package deep\n")
+	resp = runTool(t, read, agentReadParams{FilePath: "src/api/deep/other.go"})
+	if strings.Contains(resp.Content, "Root instructions") || strings.Contains(resp.Content, "API instructions") {
+		t.Error("context files must inject at most once per session even for different files in visited directories")
 	}
 }
