@@ -109,8 +109,10 @@ type agentSession struct {
 // SDK goroutines; the next turn (and the next search_tools call)
 // picks the new sets up.
 func (s *agentSession) refreshToolset() {
+	s.toolsMu.Lock()
 	tools := append([]fantasy.AgentTool(nil), s.coreTools...)
 	deferred := append([]fantasy.AgentTool(nil), s.deferredBase...)
+	s.toolsMu.Unlock()
 	if s.mcp != nil {
 		deferred = append(deferred, s.mcp.tools()...)
 	}
@@ -140,6 +142,8 @@ func (s *agentSession) deferredTools() []fantasy.AgentTool {
 // invoke_tool can steer the model back to a direct call instead of a
 // generic "unknown tool" error.
 func (s *agentSession) isCoreToolName(name string) bool {
+	s.toolsMu.Lock()
+	defer s.toolsMu.Unlock()
 	for _, t := range s.coreTools {
 		if t.Info().Name == name {
 			return true
@@ -177,7 +181,33 @@ func (s *agentSession) setTurnCancel(fn context.CancelFunc) {
 // the system prompt in-place.
 func (s *agentSession) SetPlanningMode(enabled bool) {
 	s.args.PlanningMode = enabled
-	s.env.planningMode.Store(enabled)
+	s.env.planningMode.Store(enabled && !s.args.InWorkflow)
+
+	s.toolsMu.Lock()
+	if enabled {
+		found := false
+		for _, t := range s.coreTools {
+			if t.Info().Name == "finalized_plan" {
+				found = true
+				break
+			}
+		}
+		if !found && !s.args.InWorkflow {
+			s.coreTools = append(s.coreTools, agentFinalizedPlanTool(s.env))
+		}
+	} else {
+		var filtered []fantasy.AgentTool
+		for _, t := range s.coreTools {
+			if t.Info().Name != "finalized_plan" {
+				filtered = append(filtered, t)
+			}
+		}
+		s.coreTools = filtered
+	}
+	s.toolsMu.Unlock()
+
+	s.refreshToolset()
+
 	newSystem := buildAgentSystemPrompt(s.args)
 	s.sysMu.Lock()
 	s.system = newSystem
