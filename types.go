@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Cidan/ask/pkg/diff"
+
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
@@ -148,17 +150,9 @@ type cancelWatchdogMsg struct {
 	proc *providerProc
 }
 
-type diffHunk struct {
-	oldStart int
-	oldLines int
-	newStart int
-	newLines int
-	lines    []string
-}
-
 type toolDiffMsg struct {
 	filePath string
-	hunks    []diffHunk
+	hunks    []diff.Hunk
 	proc     *providerProc
 }
 

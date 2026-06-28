@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"github.com/Cidan/ask/pkg/diff"
 	"strings"
 	"testing"
 	"time"
@@ -429,7 +430,7 @@ func TestUpdate_ToolDiffMsgRendersWhenEnabled(t *testing.T) {
 	m.quietMode = false
 	msg := toolDiffMsg{
 		filePath: "/a.txt",
-		hunks:    []diffHunk{{oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: []string{"-x", "+y"}}},
+		hunks:    []diff.Hunk{{OldStart: 1, OldLines: 1, NewStart: 1, NewLines: 1, Lines: []string{"-x", "+y"}}},
 		proc:     m.proc,
 	}
 	m2, _ := runUpdate(t, m, msg)

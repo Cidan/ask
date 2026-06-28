@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"path/filepath"
+	"github.com/Cidan/ask/pkg/diff"
 	"strings"
 	"time"
 
@@ -485,7 +486,7 @@ func (m model) spinnerBlockHeight() int {
 	return 0
 }
 
-func renderDiffBlock(path string, hunks []diffHunk) string {
+func renderDiffBlock(path string, hunks []diff.Hunk) string {
 	var lines []string
 	if path != "" {
 		lines = append(lines, outputStyle.Render(diffPathStyle.Render(path)))
@@ -494,9 +495,9 @@ func renderDiffBlock(path string, hunks []diffHunk) string {
 		if i > 0 {
 			lines = append(lines, "")
 		}
-		header := fmt.Sprintf("@@ -%d,%d +%d,%d @@", h.oldStart, h.oldLines, h.newStart, h.newLines)
+		header := fmt.Sprintf("@@ -%d,%d +%d,%d @@", h.OldStart, h.OldLines, h.NewStart, h.NewLines)
 		lines = append(lines, outputStyle.Render(diffHunkHeaderStyle.Render(header)))
-		for _, line := range h.lines {
+		for _, line := range h.Lines {
 			var styled string
 			switch {
 			case strings.HasPrefix(line, "+"):
