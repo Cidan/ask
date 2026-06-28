@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/diff"
 )
 
 const agentReadToolDescription = `Read a file from the filesystem. Returns the content with 1-based line numbers (cat -n format). Use offset/limit for large files; lines longer than 2000 chars are truncated. Reading a file is required before editing or overwriting it.`
@@ -345,11 +346,11 @@ func (env *agentToolEnv) emitFileDiff(path, oldBody, newBody string) {
 	if env.emit == nil {
 		return
 	}
-	diff := unifiedDiff(oldBody, newBody)
-	if diff == "" {
+	d := diff.Unified(oldBody, newBody)
+	if d == "" {
 		return
 	}
-	hunks := parseUnifiedDiff(diff)
+	hunks := diff.Parse(d)
 	if len(hunks) == 0 {
 		return
 	}

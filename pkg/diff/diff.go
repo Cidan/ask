@@ -1,18 +1,27 @@
-package main
+package diff
 
 import (
 	"fmt"
 	"strings"
 )
 
-// unifiedDiff produces a standard unified diff (3 context lines) of two
-// file bodies for the agent harness's edit/write tools. The output
-// round-trips through parseUnifiedDiff so the existing renderDiffBlock
+// Hunk represents a unified diff hunk.
+type Hunk struct {
+	OldStart int
+	OldLines int
+	NewStart int
+	NewLines int
+	Lines    []string
+}
+
+// Unified produces a standard unified diff (3 context lines) of two
+// file bodies for the agent harness’s edit/write tools. The output
+// round-trips through Parse so the existing renderDiffBlock
 // pipeline renders agent edits exactly like claude/codex diffs. Returns
 // "" when the bodies are identical. No ---/+++ file header is emitted:
-// toolDiffMsg carries the path separately and parseUnifiedDiff drops
+// toolDiffMsg carries the path separately and Parse drops
 // pre-@@ lines anyway.
-func unifiedDiff(oldBody, newBody string) string {
+func Unified(oldBody, newBody string) string {
 	if oldBody == newBody {
 		return ""
 	}
@@ -28,7 +37,7 @@ func unifiedDiff(oldBody, newBody string) string {
 	pendingCtx := 0 // equal lines seen since last change, not yet emitted
 
 	aLine := func(i int) string { return a[i] }
-	noEOLMarker := `\ No newline at end of file`
+	noEOLMarker := "\x5c No newline at end of file"
 
 	flush := func() {
 		if hunkOldLines == 0 && hunkNewLines == 0 {
@@ -46,7 +55,7 @@ func unifiedDiff(oldBody, newBody string) string {
 		fmt.Fprintf(&out, "@@ -%d,%d +%d,%d @@\n", oldStart, hunkOldLines, newStart, hunkNewLines)
 		for _, l := range hunk {
 			out.WriteString(l)
-			out.WriteByte('\n')
+			out.WriteByte(10)
 		}
 		hunk = nil
 		hunkOldLines, hunkNewLines = 0, 0
@@ -129,10 +138,72 @@ func unifiedDiff(oldBody, newBody string) string {
 		}
 	}
 	flush()
-	// No trailing newline: parseUnifiedDiff keeps hunk body lines
+	// No trailing newline: Parse keeps hunk body lines
 	// verbatim, so a final "\n" would read back as a spurious empty
 	// hunk line.
-	return strings.TrimSuffix(out.String(), "\n")
+	return strings.TrimSuffix(out.String(), "\x0a")
+}
+
+// Parse turns a unified diff string into a slice of Hunks.
+// Lines whose first character is neither space, +, -, nor \ are kept
+// verbatim (no prefix re-writing) so renderDiffBlock’s existing prefix-based
+// styling applies. Lines before the first `@@` (file headers like "--- a/f")
+// are dropped — we already know the path from the FileUpdateChange record.
+func Parse(s string) []Hunk {
+	var hunks []Hunk
+	var cur *Hunk
+	flush := func() {
+		if cur != nil && len(cur.Lines) > 0 {
+			hunks = append(hunks, *cur)
+		}
+		cur = nil
+	}
+	for _, line := range strings.Split(s, "\x0a") {
+		if strings.HasPrefix(line, "@@") {
+			flush()
+			h := parseUnifiedHunkHeader(line)
+			cur = &h
+			continue
+		}
+		if cur == nil {
+			continue
+		}
+		cur.Lines = append(cur.Lines, line)
+	}
+	flush()
+	return hunks
+}
+
+// parseUnifiedHunkHeader extracts OldStart/OldLines/NewStart/NewLines
+// from a line like "@@ -12,7 +12,8 @@ optional context". The line
+// count defaults to 1 when the comma is omitted (standard POSIX diff
+// convention). Malformed headers collapse to a zero-valued hunk —
+// renderDiffBlock handles that gracefully.
+func parseUnifiedHunkHeader(line string) Hunk {
+	var h Hunk
+	if _, err := fmt.Sscanf(line, "@@ -%d,%d +%d,%d @@",
+		&h.OldStart, &h.OldLines, &h.NewStart, &h.NewLines); err == nil {
+		return h
+	}
+	// Handle the abbreviated forms where one side omits the line
+	// count. Try the combinations in order from most to least likely.
+	h = Hunk{}
+	if _, err := fmt.Sscanf(line, "@@ -%d +%d,%d @@",
+		&h.OldStart, &h.NewStart, &h.NewLines); err == nil {
+		h.OldLines = 1
+		return h
+	}
+	h = Hunk{}
+	if _, err := fmt.Sscanf(line, "@@ -%d,%d +%d @@",
+		&h.OldStart, &h.OldLines, &h.NewStart); err == nil {
+		h.NewLines = 1
+		return h
+	}
+	h = Hunk{}
+	if _, err := fmt.Sscanf(line, "@@ -%d +%d @@", &h.OldStart, &h.NewStart); err == nil {
+		h.OldLines, h.NewLines = 1, 1
+	}
+	return h
 }
 
 // splitDiffLines splits a body into lines without trailing newlines and
@@ -142,9 +213,9 @@ func splitDiffLines(s string) ([]string, bool) {
 	if s == "" {
 		return nil, false
 	}
-	noEOL := !strings.HasSuffix(s, "\n")
-	s = strings.TrimSuffix(s, "\n")
-	return strings.Split(s, "\n"), noEOL
+	noEOL := !strings.HasSuffix(s, "\x0a")
+	s = strings.TrimSuffix(s, "\x0a")
+	return strings.Split(s, "\x0a"), noEOL
 }
 
 // diffKeys returns comparison keys for a line slice: identical text
@@ -316,3 +387,4 @@ search:
 	}
 	return ops
 }
+
