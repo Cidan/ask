@@ -115,11 +115,13 @@ One `package main`, one file per concern.
 
 ## Build, verify, install
 
+Use the Makefile for building, testing, and installing ask:
+
 ```
-go build ./...
-go vet ./...
-go test ./...
-go install .
+make build      # Build the ask binary to bin/ask (includes llama.cpp setup)
+make test       # Run all behavioral tests
+make install    # Install ask to GOPATH/bin
+make clean      # Clean up build artifacts
 ```
 
 The installed binary lives at `$(go env GOPATH)/bin/ask`. The test
