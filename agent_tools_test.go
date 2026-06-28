@@ -409,6 +409,18 @@ func TestAgentBashTool(t *testing.T) {
 	if resp = runTool(t, tool, agentBashParams{Command: "true"}); resp.Content != "(no output)" {
 		t.Errorf("silent success: %q", resp.Content)
 	}
+
+	// Test direct sudo command rejection
+	resp = runTool(t, tool, agentBashParams{Command: "sudo apt-get update"})
+	if !resp.IsError || !strings.Contains(resp.Content, "sudo: command not allowed") {
+		t.Errorf("expected sudo command to be rejected, got: %+v", resp)
+	}
+
+	// Test substring/piped sudo command rejection
+	resp = runTool(t, tool, agentBashParams{Command: "echo 'hello' | sudo tee /etc/foo"})
+	if !resp.IsError || !strings.Contains(resp.Content, "sudo: command not allowed") {
+		t.Errorf("expected piped sudo command to be rejected, got: %+v", resp)
+	}
 }
 
 func TestAgentBashTool_TokenSavings(t *testing.T) {

@@ -214,6 +214,9 @@ func agentBashTool(env *agentToolEnv) fantasy.AgentTool {
 			if command == "" {
 				return fantasy.NewTextErrorResponse("command is required"), nil
 			}
+			if strings.Contains(command, "sudo ") {
+				return fantasy.NewTextErrorResponse("sudo: command not allowed. ask does not permit running commands with sudo."), nil
+			}
 			if !agentSafeShellCommand(command) {
 				if denied := env.requestApproval(ctx, "bash", map[string]any{
 					"command":     command,
