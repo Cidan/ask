@@ -68,6 +68,38 @@ func TestBuildAgentSystemPrompt_WorktreePinsClause(t *testing.T) {
 	}
 }
 
+func TestBuildAgentSystemPrompt_InWorkflow(t *testing.T) {
+	isolateHome(t)
+	stubGitStatus(t, "")
+	cwd := t.TempDir()
+	args := ProviderSessionArgs{
+		Cwd:          cwd,
+		InWorkflow:   true,
+		PlanningMode: true,
+	}
+	prompt := buildAgentSystemPrompt(args)
+
+	// InWorkflow should omit the workflow checking paragraph
+	if strings.Contains(prompt, "checking the project's workflows is a hard precondition") {
+		t.Error("prompt should not instruct agent to check workflows when already in a workflow")
+	}
+
+	// InWorkflow should not require confirmation for side effects
+	if strings.Contains(prompt, "Before you make changes — writing or editing files, modifying configuration, or executing commands with side effects — confirm the plan") {
+		t.Error("prompt should not require confirmation for side effects when already in a workflow")
+	}
+
+	// InWorkflow should include the automated pre-cleared paragraph
+	if !strings.Contains(prompt, "You are running as a step in an automated workflow. All changes are pre-cleared by the user") {
+		t.Error("prompt should state that steps are pre-cleared in automated workflow")
+	}
+
+	// InWorkflow should disable planning mode prompt block and finalized_plan instructions
+	if strings.Contains(prompt, "<planning_mode>") {
+		t.Error("prompt should not contain planning_mode block when inside a workflow")
+	}
+}
+
 func TestBuildAgentSystemPrompt_NonRepoOmitsGit(t *testing.T) {
 	isolateHome(t)
 	stubGitStatus(t, "should not appear")

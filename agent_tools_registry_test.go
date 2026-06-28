@@ -414,6 +414,49 @@ func TestSetupAgentSessionTools_WebSearchSelection(t *testing.T) {
 	}
 }
 
+func TestSetupAgentSessionTools_WorkflowRestrictions(t *testing.T) {
+	isolateHome(t)
+	s := &agentSession{
+		args: ProviderSessionArgs{
+			Cwd:        t.TempDir(),
+			TabID:      1,
+			InWorkflow: true,
+		},
+	}
+	s.env = newAgentToolEnv(s.args.Cwd, 1, true, true, false, func(tea.Msg) {})
+	setupAgentSessionTools(s, askConfig{})
+
+	wire := map[string]bool{}
+	for _, name := range toolNames(s.currentTools()) {
+		wire[name] = true
+	}
+
+	restrictedTools := []string{
+		"finalized_plan",
+		"workflow_list",
+		"workflow_get",
+		"workflow_create",
+		"workflow_edit",
+		"workflow_delete",
+		"workflow_copy",
+		"workflow_run",
+		"clear_plans",
+	}
+
+	for _, name := range restrictedTools {
+		if wire[name] {
+			t.Errorf("tool %s should not be available inside a workflow step, but it is", name)
+		}
+	}
+
+	// Other essential tools should still be there
+	for _, name := range []string{"read", "edit", "write", "bash", "end_turn"} {
+		if !wire[name] {
+			t.Errorf("essential tool %s should be available inside a workflow, but it is missing", name)
+		}
+	}
+}
+
 func TestAgentSession_InvokeToolUnwrapInTranscript(t *testing.T) {
 	lm := &fakeLM{turns: [][]fantasy.StreamPart{
 		toolCallTurn("c1", "invoke_tool",

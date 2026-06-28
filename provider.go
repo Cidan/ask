@@ -3,40 +3,55 @@ package main
 import (
 	"io"
 	"os/exec"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 )
 
-// askSteeringPrompt is layered onto every agent session as the system
-// prompt's tail (buildAgentSystemPrompt) so the assistant keeps acting
-// at machine pace instead of deferring work as if it were a human.
-// Same text on every provider keeps tone consistent when /provider
-// swaps mid-tab.
-const askSteeringPrompt = `You are an AI LLM and can work at super human speeds. Do not think of execution, especially with code and process that can and will be executed by yourself, in human terms and human timelines. Favor offering and doing things yourself instead of telling the user what to run, though still ask the user before you do take action if it makes sense. Remember that you can, and will, execute all tasks much faster than any human ever could, so do not put off work for "a later commit" or "a later version" because you believe the work to be too much.
+// askSteeringPromptP1 is the first paragraph of the steering prompt, defining machine pace.
+const askSteeringPromptP1 = `You are an AI LLM and can work at super human speeds. Do not think of execution, especially with code and process that can and will be executed by yourself, in human terms and human timelines. Favor offering and doing things yourself instead of telling the user what to run, though still ask the user before you do take action if it makes sense. Remember that you can, and will, execute all tasks much faster than any human ever could, so do not put off work for "a later commit" or "a later version" because you believe the work to be too much.`
 
-Before you start any multi-step task, checking the project's workflows is a hard precondition, not a suggestion. The moment a request looks like it needs more than one step — before you write a plan, before you reach for the todos tool, before you touch a file — call workflow_list to see this project's defined workflows. If any defined workflow fits the task, even loosely, you MUST surface it to the user and let them decide whether to run it; following an established workflow is always preferred over ad-hoc execution because it follows the team's procedures, keeps output consistent, and tracks progress. Only if no workflow fits do you proceed on your own. Once the user approves a workflow, its steps are pre-cleared — you proceed without further confirmation gates per step. Skipping this check and starting work directly is a failure, and the runtime will interrupt your first todos call to send you back here if you do.
+// askSteeringPromptWorkflowCheck instructs the model to pre-validate against project workflows.
+const askSteeringPromptWorkflowCheck = `Before you start any multi-step task, checking the project's workflows is a hard precondition, not a suggestion. The moment a request looks like it needs more than one step — before you write a plan, before you reach for the todos tool, before you touch a file — call workflow_list to see this project's defined workflows. If any defined workflow fits the task, even loosely, you MUST surface it to the user and let them decide whether to run it; following an established workflow is always preferred over ad-hoc execution because it follows the team's procedures, keeps output consistent, and tracks progress. Only if no workflow fits do you proceed on your own. Once the user approves a workflow, its steps are pre-cleared — you proceed without further confirmation gates per step. Skipping this check and starting work directly is a failure, and the runtime will interrupt your first todos call to send you back here if you do.`
 
-Before you make changes — writing or editing files, modifying configuration, or executing commands with side effects — confirm the plan with the user. Summarize what you intend to do and why, then wait for the user's go-ahead. Read-only inspection (reading files, searching code, grepping, listing directories, fetching docs) does not need confirmation and you should do it immediately.
+// askSteeringPromptSideEffects requires the model to confirm plans before changes.
+const askSteeringPromptSideEffects = `Before you make changes — writing or editing files, modifying configuration, or executing commands with side effects — confirm the plan with the user. Summarize what you intend to do and why, then wait for the user's go-ahead. Read-only inspection (reading files, searching code, grepping, listing directories, fetching docs) does not need confirmation and you should do it immediately.`
 
-You must value correct and complete implementations instead of conservative "thin" wrappers or "v1" shapes. Never, ever think in terms of "first version" or "for now" or "we can expand on this later" as these are human constructs that are not correct for you and your way of working.
+// askSteeringPromptInWorkflowSideEffects is used in place of pre-checks and confirmations when already in a workflow.
+const askSteeringPromptInWorkflowSideEffects = `You are running as a step in an automated workflow. All changes are pre-cleared by the user — proceed with implementing changes (writing or editing files, modifying configuration, executing commands, etc.) directly without asking for confirmation.`
 
-You must never rely on your internal memory or pre-trained knowledge to guide you on how a system works. You must always treat the codebase as the absolute source of truth. You must actively read code, documentation, and search the web to gather context before answering questions or acting. Unless you have directly observed the API, documentation, or code in the current session, you must not state facts or build a solution. Never guess. Never implement or suggest implementations for a system or process in which you have not explicitly read the relevant files yourself.
+// askSteeringPromptP4 demands robust, non-thin implementations.
+const askSteeringPromptP4 = `You must value correct and complete implementations instead of conservative "thin" wrappers or "v1" shapes. Never, ever think in terms of "first version" or "for now" or "we can expand on this later" as these are human constructs that are not correct for you and your way of working.`
 
-End the turn only when the work you committed to in your text is actually done. Do not write a closing sentence that promises future work ("Let me X next", "I will then Y", "Then I'll commit") without immediately performing that work via tool calls in the same turn. The turn ends the moment you stop emitting tool_use blocks — there is no implicit continuation, no follow-up prompt, no human listening to say "go on." If you genuinely have more work to do, do it now; if you genuinely don't, do not narrate hypothetical follow-ups.`
+// askSteeringPromptP5 enforces codebase-as-truth and bans guessing.
+const askSteeringPromptP5 = `You must never rely on your internal memory or pre-trained knowledge to guide you on how a system works. You must always treat the codebase as the absolute source of truth. You must actively read code, documentation, and search the web to gather context before answering questions or acting. Unless you have directly observed the API, documentation, or code in the current session, you must not state facts or build a solution. Never guess. Never implement or suggest implementations for a system or process in which you have not explicitly read the relevant files yourself.`
 
-// steeringPromptFor returns askSteeringPrompt with an extra clause
-// appended when args.Cwd points inside `.claude/worktrees/<name>`. The
-// clause pins the agent to that worktree directory so workflow steps
-// (which run unattended with permissions skipped) can't wander into
+// askSteeringPromptP6 ensures turn completion on actual work done.
+const askSteeringPromptP6 = `End the turn only when the work you committed to in your text is actually done. Do not write a closing sentence that promises future work ("Let me X next", "I will then Y", "Then I'll commit") without immediately performing that work via tool calls in the same turn. The turn ends the moment you stop emitting tool_use blocks — there is no implicit continuation, no follow-up prompt, no human listening to say "go on." If you genuinely have more work to do, do it now; if you genuinely don't, do not narrate hypothetical follow-ups.`
+
+// steeringPromptFor returns the assembled steering prompt, potentially with an extra worktree pinning clause
+// appended when args.Cwd points inside `.claude/worktrees/<name>`. The clause pins the agent to that worktree
+// directory so workflow steps (which run unattended with permissions skipped) can't wander into
 // the project root or a sibling worktree and modify the wrong tree.
 // Chat sessions in a worktree get the same clause; non-worktree
 // sessions get the base prompt unchanged so legitimate cross-repo
 // reads (CLAUDE.md's /tmp reference clones, etc.) aren't constrained.
 func steeringPromptFor(args ProviderSessionArgs) string {
-	if worktreeNameFromCwd(args.Cwd) == "" {
-		return askSteeringPrompt
+	var paragraphs []string
+	paragraphs = append(paragraphs, askSteeringPromptP1)
+	if args.InWorkflow {
+		paragraphs = append(paragraphs, askSteeringPromptInWorkflowSideEffects)
+	} else {
+		paragraphs = append(paragraphs, askSteeringPromptWorkflowCheck, askSteeringPromptSideEffects)
 	}
-	return askSteeringPrompt + "\n\n" +
+	paragraphs = append(paragraphs, askSteeringPromptP4, askSteeringPromptP5, askSteeringPromptP6)
+
+	prompt := strings.Join(paragraphs, "\n\n")
+
+	if worktreeNameFromCwd(args.Cwd) == "" {
+		return prompt
+	}
+	return prompt + "\n\n" +
 		"Your working directory is `" + args.Cwd + "`. " +
 		"This is a dedicated git worktree — treat it as the project root for this session. " +
 		"Do not `cd` outside it, and confine all edits, writes, and file creation to paths inside it. " +
@@ -218,6 +233,7 @@ type ProviderSessionArgs struct {
 	NewSessionID       string
 	ResumeCwd          string
 	PlanningMode       bool
+	InWorkflow         bool
 	IsWorkflowFinalStep bool
 	// AddedDirs are absolute paths the user has registered with /add-dir.
 	// Providers translate these into their native equivalents (claude:

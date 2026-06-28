@@ -233,7 +233,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		agentSearchToolsTool(s.deferredTools),
 		agentInvokeToolTool(s.deferredTools, s.isCoreToolName, env),
 	}
-	if s.args.PlanningMode {
+	if s.args.PlanningMode && !s.args.InWorkflow {
 		s.coreTools = append(s.coreTools, agentFinalizedPlanTool(env))
 	}
 	if s.args.IsWorkflowFinalStep {
@@ -249,7 +249,9 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	// live in the tool closures themselves so the guard clears whether
 	// the model uses the direct or invoke path. See
 	// agent_tools_workflow.go.
-	s.coreTools = append(s.coreTools, agentWorkflowTools(env)...)
+	if !s.args.InWorkflow {
+		s.coreTools = append(s.coreTools, agentWorkflowTools(env)...)
+	}
 	// web_search is the rare second deliberate core exception (alongside
 	// fetch): an agent cannot reach for current information unless it sees
 	// the tool unprompted. Providers with first-party search (anthropic,
