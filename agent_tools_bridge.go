@@ -19,11 +19,11 @@ import (
 // they are never part of the wire tool definitions and are reached
 // through search_tools + invoke_tool.
 //
-// The 8 ask-built-in workflow_* tools (and clear_plans) used to live
+// The 7 ask-built-in workflow_* tools (and clear_plans) used to live
 // here too but were promoted to the core wire toolset — see
 // agent_tools_workflow.go. The promotion is a deliberate, documented
 // core exception (the two-stage workflow guard forces the model to
-// call workflow_list and workflow_run as a precondition for multi-step
+// call workflow_list as a precondition for multi-step
 // work; an extra search_tools round-trip per guard interaction was
 // pure overhead). nativeBridgeTool, bridgeAgentTool, and
 // mcpResultText are still reused by agent_tools_workflow.go.

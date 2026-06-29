@@ -208,7 +208,7 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 // tools" in CLAUDE.md). The two documented exceptions today are
 // `web_search` (current information) and the ask-built-in workflow_*
 // tools (the two-stage workflow guard forces the model to call
-// workflow_list and workflow_run as a precondition for multi-step
+// workflow_list as a precondition for multi-step
 // work, and an extra search_tools round-trip per guard interaction
 // would be pure overhead — see agent_tools_workflow.go).
 func setupAgentSessionTools(s *agentSession, cfg askConfig) {
@@ -242,7 +242,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	// The ask-built-in workflow tools (workflow_list/get/create/edit/
 	// delete/copy/run + clear_plans) are deliberate core exceptions —
 	// the two-stage workflow guard forces the model to call
-	// workflow_list and workflow_run as a precondition for multi-step
+	// workflow_list as a precondition for multi-step
 	// work. Keeping them in the deferred registry would cost an extra
 	// search_tools round-trip on every guard interaction. The disarm
 	// hooks (env.markWorkflowsChecked, env.markWorkflowRunDispatched)

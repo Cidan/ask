@@ -215,7 +215,7 @@ func removeAllWorkflowPlans(cwd, worktreeName string) error {
 
 const clearPlansToolDescription = `Clear the workflow plans directory (ask/plans/).
 
-This removes all files and subdirectories under ask/plans/ but leaves the directory itself. Call this before submitting a new workflow_run to ensure no stale plan data from a previous run interferes with the next workflow.
+This removes all files and subdirectories under ask/plans/ but leaves the directory itself. Call this before starting a new workflow run to ensure no stale plan data from a previous run interferes with the next workflow.
 
 After clearing, create the directory ask/plans/start/ and write the starting plan into one or more files inside that directory (for example ask/plans/start/plan.md). ask/plans/start/ must be a directory, not a file.
 

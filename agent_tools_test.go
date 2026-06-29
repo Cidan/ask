@@ -931,8 +931,8 @@ func TestAgentTodosWorkflowGuard_DisarmedByCheck(t *testing.T) {
 	if resp.IsError {
 		t.Fatalf("decision guard notice should not be an error: %q", resp.Content)
 	}
-	if !strings.Contains(resp.Content, "NOT applied") || !strings.Contains(resp.Content, "workflow_run") {
-		t.Errorf("second-stage guard should steer to workflow_run; got %q", resp.Content)
+	if !strings.Contains(resp.Content, "NOT applied") || !strings.Contains(resp.Content, "choose the workflow execution path") {
+		t.Errorf("second-stage guard should steer to choose the workflow execution path; got %q", resp.Content)
 	}
 	for _, m := range msgs {
 		if _, ok := m.(todoUpdatedMsg); ok {
@@ -960,7 +960,7 @@ func TestAgentTodosWorkflowGuard_DisarmedByCheck(t *testing.T) {
 }
 
 // TestAgentTodosWorkflowGuard_DisarmedByRun verifies that actually
-// dispatching a workflow_run satisfies BOTH guard stages: the first
+// dispatching a workflow satisfies BOTH guard stages: the first
 // todos call afterward applies without any punt.
 func TestAgentTodosWorkflowGuard_DisarmedByRun(t *testing.T) {
 	isolateHome(t)
@@ -975,28 +975,20 @@ func TestAgentTodosWorkflowGuard_DisarmedByRun(t *testing.T) {
 	var msgs []tea.Msg
 	env := newAgentToolEnv(cwd, 1, true, true, false, func(m tea.Msg) { msgs = append(msgs, m) })
 
-	// workflow_run dispatches into a fresh tab via the swap, so the
+	// workflow execution dispatches into a fresh tab via the swap, so the
 	// test runs without a real tea.Program wired.
 	prev := mcpSpawnWorkflowTab
 	mcpSpawnWorkflowTab = func(spawnWorkflowTabMsg) error { return nil }
 	t.Cleanup(func() { mcpSpawnWorkflowTab = prev })
 
-	// The model looked AND ran a workflow — both are direct core
-	// tool calls now (agent_tools_workflow.go) and their closures
-	// fire the workflow-guard disarm hooks.
+	// The model looked AND ran a workflow (simulated here by calling env.markWorkflowRunDispatched() directly)
 	list := workflowToolByName(t, env, "workflow_list")
 	if r, _ := list.Run(context.Background(), fantasy.ToolCall{ID: "1", Name: "workflow_list", Input: `{}`}); r.IsError {
 		t.Fatalf("workflow_list: %q", r.Content)
 	}
-	run := workflowToolByName(t, env, "workflow_run")
-	if r, _ := run.Run(context.Background(), fantasy.ToolCall{
-		ID: "2", Name: "workflow_run",
-		Input: `{"name":"ship-it","append":"plan"}`,
-	}); r.IsError {
-		t.Fatalf("workflow_run: %q", r.Content)
-	}
+	env.markWorkflowRunDispatched()
 	if !env.workflowRunDispatched {
-		t.Fatal("calling workflow_run core should set workflowRunDispatched")
+		t.Fatal("markWorkflowRunDispatched should set workflowRunDispatched")
 	}
 
 	// Both stages satisfied → the first todos call applies.
@@ -1143,8 +1135,8 @@ func TestRequireTodos_AppliesInAllProjects(t *testing.T) {
 
 // TestRequireTodos_BypassedForWorkflowPlans_Write verifies that writes
 // under ask/plans/ bypass the require-todos gate. This is required so
-// the model can pre-create the workflow start plan before calling
-// workflow_run, breaking the circular dependency where the gate blocked
+// the model can pre-create the workflow start plan before starting a workflow,
+// breaking the circular dependency where the gate blocked
 // the very writes the workflow runner demands.
 func TestRequireTodos_BypassedForWorkflowPlans_Write(t *testing.T) {
 	env, _ := newTestToolEnv(t)
@@ -1483,11 +1475,4 @@ func TestPlanningMode_AgentTools(t *testing.T) {
 		t.Errorf("edit in planning mode: %q", resp.Content)
 	}
 
-	run := workflowToolByName(t, env, "workflow_run")
-	if r, _ := run.Run(context.Background(), fantasy.ToolCall{
-		ID: "1", Name: "workflow_run",
-		Input: `{"name":"ship-it","append":"plan"}`,
-	}); r.IsError || !strings.Contains(r.Content, "Planning mode is ON") {
-		t.Errorf("workflow_run in planning mode: %q", r.Content)
-	}
 }

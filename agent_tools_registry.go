@@ -20,10 +20,10 @@ import (
 // byte-stable for anthropic's cached tool block.
 //
 // The ask-built-in workflow tools (workflow_list/get/create/edit/
-// delete/copy/run + clear_plans) are NOT here — they are core
+// delete/copy + clear_plans) are NOT here — they are core
 // exceptions that live on the wire (agent_tools_workflow.go). The
 // two-stage workflow guard forces the model to call workflow_list
-// and workflow_run as a precondition for multi-step work, and the
+// as a precondition for multi-step work, and the
 // disarm hooks live in the workflow tool closures themselves, so the
 // direct-call path clears the guard without going through
 // invoke_tool.
@@ -229,11 +229,11 @@ func (t *agentInvokeTool) Run(ctx context.Context, call fantasy.ToolCall) (fanta
 	}
 	// The workflow-guard disarm hooks used to live here so the registry
 	// path (search_tools → invoke_tool) cleared the todos workflow
-	// guard. workflow_list and workflow_run were promoted to the core
-	// wire toolset (agent_tools_workflow.go) and the disarm hooks now
-	// live in their own closures, so a model that follows the direct-
+	// guard. workflow_list was promoted to the core
+	// wire toolset (agent_tools_workflow.go) and the disarm hook now
+	// lives in its own closure, so a model that follows the direct-
 	// call pattern clears the guard without going through invoke_tool.
-	// If a model still routes workflow_list / workflow_run through
+	// If a model still routes workflow_list through
 	// invoke_tool, the runtime will reject it as a core-tool name and
 	// steer it back to a direct call.
 	return inner.Run(ctx, fantasy.ToolCall{

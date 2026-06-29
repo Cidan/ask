@@ -344,7 +344,7 @@ func TestSetupAgentSessionTools_RegistrySurface(t *testing.T) {
 	// registry, so the model can call them directly. The linear_*
 	// tools are still registry-only.
 	wfCore := []string{"workflow_list", "workflow_get", "workflow_create",
-		"workflow_edit", "workflow_delete", "workflow_copy", "workflow_run",
+		"workflow_edit", "workflow_delete", "workflow_copy",
 		"clear_plans"}
 	for _, name := range wfCore {
 		if !wire[name] {
@@ -439,7 +439,6 @@ func TestSetupAgentSessionTools_WorkflowRestrictions(t *testing.T) {
 		"workflow_edit",
 		"workflow_delete",
 		"workflow_copy",
-		"workflow_run",
 		"clear_plans",
 	}
 

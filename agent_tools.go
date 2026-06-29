@@ -45,11 +45,11 @@ type agentToolEnv struct {
 	// computed once at session start (true only when the project or user
 	// scope actually defines a workflow). workflowsChecked flips when
 	// the model invokes workflow_list; workflowRunDispatched flips when
-	// it invokes workflow_run. workflowGuardFired and decisionGuardFired
+	// a workflow run is dispatched. workflowGuardFired and decisionGuardFired
 	// ensure the todos tool punts the model back at most once per stage,
 	// so a model that legitimately proceeds inline is never blocked more
 	// than these two checkpoints. The disarms now live in the
-	// workflow_list / workflow_run core tool closures
+	// workflow_list core tool closure
 	// (agent_tools_workflow.go) — when those tools were in the deferred
 	// registry the disarms fired inside agentInvokeTool.Run, but
 	// promoting them to the core wire toolset moved the hooks next to
@@ -100,10 +100,9 @@ func (env *agentToolEnv) markWorkflowsChecked() {
 }
 
 // markWorkflowRunDispatched records that the model actually launched a
-// workflow via workflow_run. This permanently satisfies the decision
+// workflow. This permanently satisfies the decision
 // guard: a model that ran a workflow is never punted back to reconcile
-// an inline decision. Called from the workflow_run core tool closure
-// (agent_tools_workflow.go).
+// an inline decision.
 func (env *agentToolEnv) markWorkflowRunDispatched() {
 	env.wfMu.Lock()
 	env.workflowRunDispatched = true
@@ -131,7 +130,7 @@ func (env *agentToolEnv) workflowGuardShouldFire() bool {
 // decision with the user. It is the second-stage guard: it fires only
 // after the first guard is satisfied (the model has looked at the
 // workflows, workflowsChecked == true) but the model is now starting
-// inline work without ever having dispatched a workflow_run — the exact
+// inline work without ever having proposed/run a workflow — the exact
 // failure where a weak model asks the user, gets a yes, then proceeds
 // inline anyway. It fires at most once per session and never when a
 // workflow was actually run. The first call that returns true latches

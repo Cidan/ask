@@ -20,10 +20,9 @@ Send the FULL list every time (it replaces the previous one). Keep exactly one i
 // the first time the model calls todos in a project that has workflows
 // without having consulted them. It does not apply the list — the model
 // must check workflows and then resend. The text deliberately names the
-// mechanic (the workflow_run tool) and forces an explicit fit verdict,
+// pre-check precondition and forces an explicit fit verdict,
 // because a weaker model otherwise conflates "user approved the work"
-// with "do it inline" and never connects approval to the workflow_run
-// tool.
+// with "do it inline" and never connects approval to the workflow execution.
 const workflowGuardTodosNotice = `Your task list was NOT applied. You are about to start multi-step work but you haven't checked this project's workflows yet — that check is a precondition, not a suggestion.
 
 Do this now, in order:
@@ -32,20 +31,20 @@ Do this now, in order:
   3. State a one-line verdict, out loud, before doing anything else. Either:
        - "Workflow <name> fits." — then STOP. Do NOT start the task with read/edit/bash. Tell the user the workflow's name and ask exactly: "Run workflow <name>, or should I handle this directly?" An established workflow is ALWAYS preferred over ad-hoc execution.
        - "No workflow fits because <reason>." — then you may proceed inline. When in doubt about fit, surface the workflow to the user rather than declining it yourself.
-  4. If the user approves running the workflow, your VERY NEXT action MUST be to call the workflow_run tool with the workflow's name. Running the workflow means CALLING workflow_run — it does NOT mean doing the task yourself with your normal tools. Doing the task yourself is only correct when the user explicitly chose "handle this directly" or when no workflow fit.
+  4. If the user wants to run the workflow: let the user trigger it from the interface. If you are currently in planning mode, use the "finalized_plan" tool to submit the plan and set the "default_workflow" parameter to that workflow's name so the TUI can present a structured execution path. Do NOT attempt to run the workflow manually or execute its steps yourself.
 
 Then resend this exact todos call — it will go through. This guard fires only once per session.`
 
 // workflowDecisionGuardNotice is returned the second (and last) time the
 // guard fires: the model looked at the workflows but is now re-sending a
-// task list to start inline work without ever having run a workflow or
-// stated why none fit. It catches the exact failure where the model asks
-// the user, gets a yes, and then proceeds inline anyway instead of
-// calling workflow_run.
-const workflowDecisionGuardNotice = `Your task list was NOT applied. You consulted the workflows but you are now about to do this work inline, and you never invoked workflow_run.
+// task list to start inline work without ever having proposed executing a workflow
+// or stated why none fit. It catches the exact failure where the model asks
+// the user, gets a yes, and then proceeds inline anyway instead of proposing
+// the workflow.
+const workflowDecisionGuardNotice = `Your task list was NOT applied. You consulted the workflows but you are now about to do this work inline, and you never let the user choose the workflow execution path.
 
 Reconcile this before continuing:
-  - If a workflow fits and the user approved it: STOP. Do not start the task. Your next action MUST be to call the workflow_run tool with that workflow's name. Inline tools (read/edit/bash) are the wrong move here.
+  - If a workflow fits: STOP. Do not start the task. Present the plan to the user. If you are in planning mode, use the "finalized_plan" tool with the "default_workflow" parameter set to the workflow's name so the user can select to run it.
   - If you are proceeding inline on purpose: confirm with the user that they want it handled directly INSTEAD of the workflow, and state which workflow you are declining and why. Base that decision on the workflow's description (what it is FOR), not on its step names — a workflow whose steps mention "PR" or "validate" can still be the right fit for a refactor, deletion, or fix. If your only reason for declining is the step structure, you are probably declining wrongly: surface it to the user instead.
 
 Then resend this exact todos call — it will go through. This decision guard fires only once per session.`

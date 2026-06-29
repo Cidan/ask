@@ -9,23 +9,22 @@ import (
 
 // agent_tools_workflow.go hoists the ask-built-in workflow tools onto
 // the core wire toolset — workflow_list, workflow_get, workflow_create,
-// workflow_edit, workflow_delete, workflow_copy, workflow_run, and
-// clear_plans. They used to live in the deferred registry (reached via
+// workflow_edit, workflow_delete, workflow_copy, and clear_plans.
+// They used to live in the deferred registry (reached via
 // search_tools → invoke_tool), but the two-stage workflow guard in
-// agent_tools_todos.go forces the model to call workflow_list and
-// workflow_run as a precondition for any multi-step work, so paying an
+// agent_tools_todos.go forces the model to call workflow_list
+// as a precondition for any multi-step work, so paying an
 // extra search_tools round-trip on every guard interaction is pure
 // overhead. The linear_* bridge twins and external MCP tools stay in
 // the deferred registry; only the ask-built-in workflow tools are
 // promoted.
 //
-// The runtime disarms the workflow guard inside the workflow_list and
-// workflow_run closures (env.markWorkflowsChecked and
-// env.markWorkflowRunDispatched). The disarm must live here — not in
+// The runtime disarms the workflow guard inside the workflow_list closure
+// (env.markWorkflowsChecked). The disarm must live here — not in
 // invoke_tool — so a model that follows the new direct-call pattern
 // (the only legal one now that the tools are core) still disarms the
-// guard. markWorkflowsChecked and markWorkflowRunDispatched are
-// idempotent one-shot latches; calling them from anywhere is safe.
+// guard. markWorkflowsChecked is an idempotent one-shot latch; calling
+// it from anywhere is safe.
 //
 // The tool bodies reuse the nativeBridgeTool adapter from
 // agent_tools_bridge.go (and its cwd-parameterized cores in
@@ -71,21 +70,6 @@ func agentWorkflowTools(env *agentToolEnv) []fantasy.AgentTool {
 		nativeBridgeTool("workflow_copy", workflowCopyToolDescription,
 			func(_ context.Context, in workflowCopyInput) (*mcp.CallToolResult, workflowCopyOutput, error) {
 				return workflowCopyCore(cwd(), in)
-			}),
-		nativeBridgeTool("workflow_run", workflowRunToolDescription,
-			func(_ context.Context, in workflowRunInput) (*mcp.CallToolResult, workflowRunOutput, error) {
-				if env.planningMode.Load() {
-					return &mcp.CallToolResult{
-						Content: []mcp.Content{
-							&mcp.TextContent{
-								Text: "Planning mode is ON. Workflows are currently blocked.",
-							},
-						},
-					}, workflowRunOutput{}, nil
-				}
-				env.markWorkflowsChecked()
-				env.markWorkflowRunDispatched()
-				return workflowRunCore(cwd(), env.tabID, in)
 			}),
 		nativeBridgeTool("clear_plans", clearPlansToolDescription,
 			func(_ context.Context, in clearPlansInput) (*mcp.CallToolResult, clearPlansOutput, error) {
