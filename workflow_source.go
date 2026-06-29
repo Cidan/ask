@@ -18,8 +18,8 @@ type workflowSourceKind int
 const (
 	workflowSourceIssue workflowSourceKind = iota
 	workflowSourceChat
-	// workflowSourceText is the LLM-driven entry path: an MCP
-	// workflow_run call hands an arbitrary text blob the agent
+	// workflowSourceText is the LLM-driven entry path: a finalized_plan
+	// proposal hands an arbitrary text blob the agent
 	// wants appended after step 1's prompt. Disposable per run —
 	// no kanban surface, no on-disk identity.
 	workflowSourceText
@@ -58,7 +58,7 @@ type workflowSource struct {
 	TextLabel string
 	// TextKey is the unique session-map key for this text run
 	// ("mcp:<tabID>:<unix-nanos>:<counter>") so two consecutive
-	// workflow_run calls don't collide on the workflow tracker.
+	// workflow runs don't collide on the workflow tracker.
 	TextKey string
 	// TextAppend carries the raw blob the LLM wants appended after
 	// step 1's prompt. Empty means RefBlock returns "" — no

@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -33,7 +32,7 @@ func TestAgentWorkflowTools_CoversEveryWorkflowTool(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 	want := []string{
 		"workflow_list", "workflow_get", "workflow_create",
-		"workflow_edit", "workflow_delete", "workflow_copy", "workflow_run",
+		"workflow_edit", "workflow_delete", "workflow_copy",
 		"clear_plans",
 	}
 	got := map[string]bool{}
@@ -164,78 +163,6 @@ func TestNativeBridgeTool_WorkflowDescriptionRoundTrip(t *testing.T) {
 	}
 }
 
-func TestNativeBridgeTool_WorkflowRunDispatches(t *testing.T) {
-	isolateHome(t)
-	env, _ := newTestToolEnv(t)
-	env.tabID = 9
-
-	create := workflowToolByName(t, env, "workflow_create")
-	if resp, err := create.Run(context.Background(), fantasy.ToolCall{
-		ID: "1", Name: "workflow_create",
-		Input: `{"name":"go","steps":[{"name":"s1","provider":"deepseek","prompt":"do it"}]}`,
-	}); err != nil || resp.IsError {
-		t.Fatalf("create: %+v %v", resp, err)
-	}
-
-	var (
-		mu      sync.Mutex
-		spawned []spawnWorkflowTabMsg
-	)
-	prev := mcpSpawnWorkflowTab
-	mcpSpawnWorkflowTab = func(msg spawnWorkflowTabMsg) error {
-		mu.Lock()
-		spawned = append(spawned, msg)
-		mu.Unlock()
-		return nil
-	}
-	t.Cleanup(func() { mcpSpawnWorkflowTab = prev })
-
-	run := workflowToolByName(t, env, "workflow_run")
-	resp, err := run.Run(context.Background(), fantasy.ToolCall{ID: "2", Name: "workflow_run", Input: `{"name":"go","append":"full plan and context"}`})
-	if err != nil || resp.IsError {
-		t.Fatalf("run: %+v %v", resp, err)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(spawned) != 1 || spawned[0].Workflow.Name != "go" ||
-		spawned[0].OriginTabID != 9 || spawned[0].Cwd != env.cwd {
-		t.Errorf("spawn msg wrong: %+v", spawned)
-	}
-	if !strings.Contains(resp.Content, "dispatched") {
-		t.Errorf("run output: %q", resp.Content)
-	}
-}
-
-// TestWorkflowRun_AppendIsRequiredInSchema pins that the generated
-// workflow_run schema marks `append` required — dropping omitempty from
-// the field is what forces the model to supply the full plan, and the
-// jsonschema generator infers "required" from the absence of omitempty.
-// A future edit that re-adds omitempty would silently make it optional;
-// this guards against that.
-func TestWorkflowRun_AppendIsRequiredInSchema(t *testing.T) {
-	env, _ := newTestToolEnv(t)
-	var run fantasy.AgentTool
-	for _, tool := range agentWorkflowTools(env) {
-		if tool.Info().Name == "workflow_run" {
-			run = tool
-			break
-		}
-	}
-	if run == nil {
-		t.Fatal("workflow_run tool not found")
-	}
-	required := map[string]bool{}
-	for _, r := range run.Info().Required {
-		required[r] = true
-	}
-	if !required["name"] {
-		t.Error("name must be required")
-	}
-	if !required["append"] {
-		t.Errorf("append must be required; got required=%v", run.Info().Required)
-	}
-}
-
 // TestClearPlans_WorkflowCoreToolIdempotent: the clear_plans core tool
 // is wired, clears ask/plans/ children (leaving the dir itself), and is
 // idempotent over empty or missing directories. Mirrors the prior
@@ -302,7 +229,7 @@ func TestClearPlans_WorkflowCoreToolIdempotent(t *testing.T) {
 // TestAgentWorkflowTools_DisarmHooksFire checks the workflow-guard
 // disarm hooks the plan pinned in agent_tools_workflow.go. After the
 // promotion, the disarm is in the tool closures (not in invoke_tool),
-// so a direct workflow_list / workflow_run call clears the guard.
+// so a direct workflow_list call clears the guard.
 func TestAgentWorkflowTools_DisarmHooksFire(t *testing.T) {
 	isolateHome(t)
 	cwd := t.TempDir()
@@ -313,7 +240,7 @@ func TestAgentWorkflowTools_DisarmHooksFire(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("saveAllWorkflows: %v", err)
 	}
-	// env must point at the seeded cwd so workflow_run resolves
+	// env must point at the seeded cwd so workflow lookup resolves
 	// "ship-it" (env.cwd is the only place workflow tools look).
 	env := newAgentToolEnv(cwd, 1, true, true, false, func(tea.Msg) {})
 
@@ -325,20 +252,11 @@ func TestAgentWorkflowTools_DisarmHooksFire(t *testing.T) {
 		t.Error("calling workflow_list core must mark workflowsChecked")
 	}
 
-	// workflow_run also marks both flags; capture the spawn so the test
-	// can run unattended (mcpSpawnWorkflowTab is installed by the test
-	// run — we restore it after).
-	prev := mcpSpawnWorkflowTab
-	mcpSpawnWorkflowTab = func(spawnWorkflowTabMsg) error { return nil }
-	t.Cleanup(func() { mcpSpawnWorkflowTab = prev })
-	run := workflowToolByName(t, env, "workflow_run")
-	if r, _ := run.Run(context.Background(), fantasy.ToolCall{
-		ID: "2", Name: "workflow_run", Input: `{"name":"ship-it","append":"plan"}`,
-	}); r.IsError {
-		t.Fatalf("workflow_run: %q", r.Content)
-	}
+	// workflow_run is no longer an agent-facing tool; its dispatch is now simulated
+	// or called directly during finalized_plan execution (tested in agent_tools_ask_test.go).
+	env.markWorkflowRunDispatched()
 	if !env.workflowRunDispatched {
-		t.Error("calling workflow_run core must mark workflowRunDispatched")
+		t.Error("markWorkflowRunDispatched must set workflowRunDispatched")
 	}
 }
 

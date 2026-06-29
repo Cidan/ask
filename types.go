@@ -652,7 +652,7 @@ type model struct {
 	workflowRun *workflowRunState
 
 	// pendingWorkflow, when non-nil, stores a workflow launch request
-	// that arrived mid-turn (the agent called workflow_run while the
+	// that arrived mid-turn (a finalized plan was approved while the
 	// tab was busy). The turnCompleteMsg handler fires it after the
 	// turn finishes; error paths discard it. Nil when the turn is idle
 	// or no deferred launch is waiting.

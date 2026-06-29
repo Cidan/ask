@@ -657,7 +657,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.workflowRun != nil && !m.workflowRun.done && !m.workflowRun.failed {
 			workflowCmd = workflowAdvanceCmd(m.id, nil)
 		}
-		// Deferred workflow launch: the agent called workflow_run
+		// Deferred workflow launch: the agent approved a finalized plan
 		// mid-turn; fire it now that the turn is complete and the
 		// tab is no longer busy. Emit the stored spawnWorkflowTabMsg
 		// so the app handler processes it as if it arrived fresh.

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -21,7 +20,7 @@ import (
 // the workflow tracker's terminal-status persistence cannot race the
 // load → mutate → save cycle.
 //
-// Per the plan: workflow_run is fire-and-forget. The handler emits a
+// Per the plan: workflow execution is fire-and-forget. The handler emits a
 // spawnWorkflowTabMsg via teaProgramPtr.Send and returns immediately
 // with the session key — there is no synchronous round-trip and no
 // `wait` flag. Status tools are intentionally out of scope for v1.
@@ -55,7 +54,7 @@ type workflowListItem struct {
 	Name        string                 `json:"name" jsonschema:"workflow name"`
 	Scope       string                 `json:"scope" jsonschema:"where the workflow is stored: 'user' (~/.config/ask/ask.json, machine-local), 'repo' (<root>/.ask/workflows/, committed and shared), or 'global' (~/.config/ask/workflows/, machine-local and visible from every project)"`
 	Description string                 `json:"description,omitempty" jsonschema:"the author's statement of what this workflow is for and when to use it; judge fit against THIS, not the step names"`
-	Steps       []workflowListStepView `json:"steps" jsonschema:"steps in execution order; prompts omitted to keep the listing small"`
+	Steps       []workflowListStepView `json:"steps" jsonschema:"steps in execution order; prompts omitted to keep the listing payload small"`
 }
 
 type workflowListOutput struct {
@@ -147,21 +146,6 @@ type workflowCopyOutput struct {
 	Workflow workflowDefView `json:"workflow" jsonschema:"the new copy, in its destination scope"`
 }
 
-type workflowRunInput struct {
-	Name   string `json:"name" jsonschema:"workflow name to run"`
-	Scope  string `json:"scope,omitempty" jsonschema:"scope holding the workflow ('user', 'repo', or 'global'); required when the name exists in multiple scopes"`
-	Append string `json:"append" jsonschema:"REQUIRED. The workflow runs in a fresh session with NO access to this conversation — its history, file reads, and tool results do not carry over. This text is the ONLY context the run receives, threaded into step 1's prompt as a Reference block. Submit the FULL plan and all context the workflow needs to execute the task end to end: the goal, the concrete steps, relevant file paths, constraints, and acceptance criteria. Do not pass a one-line summary or a pointer back to this chat."`
-}
-
-type workflowRunOutput struct {
-	Workflow   string `json:"workflow" jsonschema:"workflow name that was dispatched"`
-	SessionKey string `json:"session_key" jsonschema:"unique key for this run; consumed by the workflow tracker"`
-	StartedAt  string `json:"started_at" jsonschema:"RFC3339 timestamp marking dispatch"`
-}
-
-// endTurnReply is the model's answer to an endTurnSignalMsg. registered
-// is true when a workflow step was live and the summary landed; note is
-// the human-readable status echoed back to the agent.
 type endTurnReply struct {
 	registered bool
 	note       string
@@ -224,24 +208,6 @@ Naming conflicts: when the destination scope already has a workflow by that name
 
 Errors when the source doesn't exist, the source name is ambiguous across scopes and no scope was given, or the destination name is taken.`
 
-	workflowRunToolDescription = `Dispatch a workflow run in the background.
-
-Fire-and-forget: returns immediately with the session key. The workflow runs in a fresh tab; the user can switch to it with the tab bar to watch progress. When the name exists in multiple scopes pass scope ('user', 'repo', or 'global') to pick which copy runs.
-
-CRITICAL — the workflow starts in a brand-new session with NO access to this conversation. Its message history, the files you have read, and your tool results DO NOT carry over. The append parameter is the ONLY channel of context into the run: its text is threaded into step 1's prompt as a "Reference:" block, and that is everything the workflow gets.
-
-BEFORE calling workflow_run you MUST:
-  1. Call clear_plans to remove any stale plan artifacts from previous runs.
-  2. Create the directory ask/plans/start/ and write the starting plan into one or more FILES INSIDE that directory — for example ask/plans/start/plan.md.
-
-CRITICAL: ask/plans/start/ must be a DIRECTORY, not a file. Do not write a single file named "start". The workflow runner verifies the shape before step 1. If it is missing, empty, or a file, step 1 is re-prompted to fix the directory before any work is done — the run itself is not aborted.
-
-After step 1, each step writes its notes to ask/plans/<step-name>/. Missing directories are created automatically, but if the path exists as a file the step is re-prompted to fix it.
-
-append is REQUIRED. You MUST submit the FULL plan the workflow needs to carry the task through end to end on its own — the goal, the concrete steps to take, the relevant file paths, the constraints, and the acceptance criteria. Do NOT pass a bare one-line summary, and do NOT point back at "the conversation above" — the workflow cannot see it. Write append as if briefing someone who has never seen this chat.
-
-Errors when the workflow doesn't exist, the name is ambiguous across scopes, when it has no steps, when append is empty, or when the UI isn't ready to spawn a tab.`
-
 	endTurnToolDescription = `Report the end of your turn for the current workflow step. REQUIRED on every step.
 
 Call this once, as the final action of your turn, with:
@@ -251,7 +217,7 @@ Call this once, as the final action of your turn, with:
 Calling this RECORDS your report; it does NOT end your turn early or exit a loop immediately. Finish your turn normally — the workflow acts on what you registered when your turn completes. If your turn ends without calling end_turn (or, as a loop's final step, without a decision), you will be re-prompted to provide it.`
 )
 
-// mcpSpawnWorkflowTab is the indirection workflow_run uses to dispatch
+// mcpSpawnWorkflowTab is the indirection the runner uses to dispatch
 // a spawn message back to the app. Production points at the live
 // tea.Program through teaProgramPtr; tests swap it to a captor so the
 // run handler's wiring can be verified without a real bubbletea
@@ -757,54 +723,4 @@ func workflowCopyCore(cwd string, in workflowCopyInput) (*mcp.CallToolResult, wo
 	}
 	return okResult(fmt.Sprintf("workflow %q copied to %s scope as %q", name, workflowScopeTag(dup.Scope), dup.Name)),
 		workflowCopyOutput{Workflow: workflowDefToView(dup)}, nil
-}
-
-func workflowRunCore(cwd string, tabID int, in workflowRunInput) (*mcp.CallToolResult, workflowRunOutput, error) {
-	if errRes := requireWorkflowCwd(cwd); errRes != nil {
-		return errRes, workflowRunOutput{}, nil
-	}
-	name := strings.TrimSpace(in.Name)
-	if name == "" {
-		return errResult("name is required"), workflowRunOutput{}, nil
-	}
-	// append is the sole context channel into the fresh workflow session —
-	// the run cannot see this conversation. Reject an empty/whitespace
-	// value so the model is forced to submit the full plan instead of
-	// dispatching a workflow with no brief.
-	if strings.TrimSpace(in.Append) == "" {
-		return errResult("append is required: the workflow runs in a fresh session with no access to this conversation, so you must submit the full plan and context (goal, steps, file paths, constraints, acceptance criteria) the workflow needs to execute the task end to end"), workflowRunOutput{}, nil
-	}
-	w, errRes := resolveWorkflowResult(cwd, name, in.Scope)
-	if errRes != nil {
-		return errRes, workflowRunOutput{}, nil
-	}
-	if len(w.Steps) == 0 {
-		return errResult(fmt.Sprintf("workflow %q has no steps", name)), workflowRunOutput{}, nil
-	}
-	// Re-validate the persisted definition before dispatch — a
-	// workflow saved before a provider was unregistered (or hand-
-	// edited on disk) would crash the runner mid-step. Catch it here
-	// so the LLM gets a clear error instead of a workflow tab that
-	// fails on step N for opaque reasons. validateSteps walks loop
-	// containers too, so a malformed loop is rejected up front.
-	if err := validateSteps(stepsDefToView(w.Steps)); err != nil {
-		return errResult(fmt.Sprintf("workflow %q is invalid: %v", name, err)), workflowRunOutput{}, nil
-	}
-
-	source := textWorkflowSource(tabID, in.Append)
-	startedAt := time.Now().UTC()
-	if err := mcpSpawnWorkflowTab(spawnWorkflowTabMsg{
-		OriginTabID: tabID,
-		Cwd:         cwd,
-		Workflow:    w,
-		Source:      source,
-	}); err != nil {
-		return errResult(err.Error()), workflowRunOutput{}, nil
-	}
-	return okResult(fmt.Sprintf("workflow %q dispatched (session_key=%s)", w.Name, source.Key())),
-		workflowRunOutput{
-			Workflow:   w.Name,
-			SessionKey: source.Key(),
-			StartedAt:  startedAt.Format(time.RFC3339Nano),
-		}, nil
 }

@@ -135,7 +135,7 @@ func agentWriteTool(env *agentToolEnv) fantasy.AgentTool {
 			// Refuse until todos has applied.
 			//
 			// Workflow plan files live under ask/plans/ and must be writable
-			// before a workflow_run can be submitted (the runner gates on the
+			// before a workflow run can be submitted (the runner gates on the
 			// start plan existing). Allowing them through here breaks the
 			// circular dependency between "write the plan" and "create a task
 			// list / run a workflow".
@@ -219,7 +219,7 @@ func agentEditTool(env *agentToolEnv) fantasy.AgentTool {
 			// Refuse until todos has applied.
 			//
 			// Workflow plan files live under ask/plans/ and must be writable
-			// before a workflow_run can be submitted. Allowing them through
+			// before a workflow run can be submitted. Allowing them through
 			// here breaks the circular dependency between "edit the plan" and
 			// "create a task list / run a workflow".
 			if !isPathUnderWorkflowPlans(env.cwd, path) {

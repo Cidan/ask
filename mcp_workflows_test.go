@@ -43,10 +43,6 @@ func (b workflowTestTenant) workflowDeleteTool(_ context.Context, _ *mcp.CallToo
 	return workflowDeleteCore(b.cwd, in)
 }
 
-func (b workflowTestTenant) workflowRunTool(_ context.Context, _ *mcp.CallToolRequest, in workflowRunInput) (*mcp.CallToolResult, workflowRunOutput, error) {
-	return workflowRunCore(b.cwd, b.tabID, in)
-}
-
 func (b workflowTestTenant) workflowCopyTool(_ context.Context, _ *mcp.CallToolRequest, in workflowCopyInput) (*mcp.CallToolResult, workflowCopyOutput, error) {
 	return workflowCopyCore(b.cwd, in)
 }
@@ -644,155 +640,6 @@ func TestWorkflowDelete_RejectsBlankName(t *testing.T) {
 	}
 }
 
-// ----- workflow_run -----
-
-func TestWorkflowRun_DispatchesSpawnMessage(t *testing.T) {
-	b, cwd := newWorkflowMCPTestBridge(t, 42)
-	seedWorkflows(t, cwd, []workflowDef{{
-		Name: "alpha",
-		Steps: []workflowStep{
-			{Name: "s1", Provider: "fake"},
-		},
-	}})
-	captured := installSpawnCaptor(t)
-	res, out, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{
-		Name:   "alpha",
-		Append: "extra context",
-	})
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if res.IsError {
-		t.Fatalf("run should succeed; got %+v", res)
-	}
-	if out.Workflow != "alpha" {
-		t.Errorf("output workflow: got %q want alpha", out.Workflow)
-	}
-	if !strings.HasPrefix(out.SessionKey, "mcp:42:") {
-		t.Errorf("session key should be tabID-prefixed; got %q", out.SessionKey)
-	}
-	if out.StartedAt == "" {
-		t.Errorf("started_at should be populated")
-	}
-	if len(*captured) != 1 {
-		t.Fatalf("expected 1 dispatch, got %d", len(*captured))
-	}
-	msg := (*captured)[0]
-	if msg.OriginTabID != 42 {
-		t.Errorf("OriginTabID: got %d want 42", msg.OriginTabID)
-	}
-	if msg.Cwd != cwd {
-		t.Errorf("Cwd: got %q want %q", msg.Cwd, cwd)
-	}
-	if msg.Workflow.Name != "alpha" {
-		t.Errorf("Workflow.Name: got %q want alpha", msg.Workflow.Name)
-	}
-	if msg.Source.Kind != workflowSourceText {
-		t.Errorf("Source.Kind: got %v want workflowSourceText", msg.Source.Kind)
-	}
-	if msg.Source.TextAppend != "extra context" {
-		t.Errorf("Source.TextAppend: got %q want extra context", msg.Source.TextAppend)
-	}
-	if msg.Source.Key() != out.SessionKey {
-		t.Errorf("Source.Key %q != output SessionKey %q", msg.Source.Key(), out.SessionKey)
-	}
-}
-
-func TestWorkflowRun_RejectsEmptyAppend(t *testing.T) {
-	b, cwd := newWorkflowMCPTestBridge(t, 1)
-	seedWorkflows(t, cwd, []workflowDef{{
-		Name:  "alpha",
-		Steps: []workflowStep{{Name: "s1", Provider: "fake"}},
-	}})
-	captured := installSpawnCaptor(t)
-	// append is the only context channel into the fresh workflow session,
-	// so an empty/whitespace value is rejected before dispatch — the model
-	// must submit the full plan.
-	for _, append := range []string{"", "   \n\t "} {
-		res, _, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "alpha", Append: append})
-		if err != nil {
-			t.Fatalf("err: %v", err)
-		}
-		if !res.IsError {
-			t.Errorf("empty append %q must yield IsError", append)
-		}
-		if !strings.Contains(mcpResultText(res), "append is required") {
-			t.Errorf("error must mention append is required; got %q", mcpResultText(res))
-		}
-	}
-	if len(*captured) != 0 {
-		t.Errorf("rejected run must not dispatch; got %d", len(*captured))
-	}
-}
-
-func TestWorkflowRun_NotFound(t *testing.T) {
-	b, _ := newWorkflowMCPTestBridge(t, 1)
-	captured := installSpawnCaptor(t)
-	res, _, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "ghost", Append: "plan"})
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if !res.IsError {
-		t.Errorf("missing workflow must yield IsError")
-	}
-	if len(*captured) != 0 {
-		t.Errorf("rejected run must not dispatch; got %d", len(*captured))
-	}
-}
-
-func TestWorkflowRun_RejectsEmptyStepWorkflow(t *testing.T) {
-	b, cwd := newWorkflowMCPTestBridge(t, 1)
-	seedWorkflows(t, cwd, []workflowDef{{Name: "stub"}})
-	captured := installSpawnCaptor(t)
-	res, _, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "stub", Append: "plan"})
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if !res.IsError {
-		t.Errorf("empty-step workflow must not run; got %+v", res)
-	}
-	if len(*captured) != 0 {
-		t.Errorf("must not dispatch; got %d", len(*captured))
-	}
-}
-
-func TestWorkflowRun_RejectsBadProviderInSteps(t *testing.T) {
-	b, cwd := newWorkflowMCPTestBridge(t, 1)
-	// Seed a workflow with an unregistered provider — simulates a
-	// disk file that survived a refactor that removed the provider.
-	seedWorkflows(t, cwd, []workflowDef{{
-		Name:  "bad",
-		Steps: []workflowStep{{Name: "s1", Provider: "ghost"}},
-	}})
-	captured := installSpawnCaptor(t)
-	res, _, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "bad", Append: "plan"})
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if !res.IsError {
-		t.Errorf("bad provider on disk must yield IsError; got %+v", res)
-	}
-	if len(*captured) != 0 {
-		t.Errorf("must not dispatch; got %d", len(*captured))
-	}
-}
-
-func TestWorkflowRun_AskUINotReady(t *testing.T) {
-	b, cwd := newWorkflowMCPTestBridge(t, 1)
-	seedWorkflows(t, cwd, []workflowDef{{
-		Name:  "alpha",
-		Steps: []workflowStep{{Name: "s1", Provider: "fake"}},
-	}})
-	installFailingSpawn(t, "ask UI not ready")
-	res, _, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "alpha", Append: "plan"})
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if !res.IsError {
-		t.Errorf("UI-not-ready must yield IsError")
-	}
-}
-
 // ----- Concurrency -----
 
 // TestWorkflowMCP_ConcurrentEditsAreSerialized fires N goroutines
@@ -1202,10 +1049,6 @@ func TestWorkflowTools_ScopedLifecycle(t *testing.T) {
 	if res == nil || !res.IsError {
 		t.Error("ambiguous delete must demand scope")
 	}
-	res, _, _ = b.workflowRunTool(ctx, newCallToolReq(), workflowRunInput{Name: "review", Append: "plan"})
-	if res == nil || !res.IsError {
-		t.Error("ambiguous run must demand scope")
-	}
 
 	// Scoped edit touches only its copy.
 	res, editOut, err := b.workflowEditTool(ctx, newCallToolReq(), workflowEditInput{
@@ -1255,28 +1098,6 @@ func TestWorkflowTools_ScopedLifecycle(t *testing.T) {
 	}
 	if _, ok := findWorkflow(cwd, "review", workflowScopeUser); !ok {
 		t.Error("user copy must survive a repo-scope delete")
-	}
-}
-
-// TestWorkflowRun_RepoScopedWorkflowDispatches pins that a workflow
-// living only in repo scope (a committed file, no ask.json entry) is
-// runnable end to end through workflow_run.
-func TestWorkflowRun_RepoScopedWorkflowDispatches(t *testing.T) {
-	b, cwd := newWorkflowMCPTestBridge(t, 7)
-	resetWorkflowTrackerForTest()
-	captured := installSpawnCaptor(t)
-	if err := saveAllWorkflows(cwd, []workflowDef{{
-		Name: "shared", Scope: workflowScopeRepo,
-		Steps: []workflowStep{{Name: "s", Provider: "fake"}},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	res, out, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{Name: "shared", Append: "plan"})
-	if err != nil || res.IsError {
-		t.Fatalf("run: err=%v res=%v", err, mcpResultText(res))
-	}
-	if out.Workflow != "shared" || len(*captured) != 1 || (*captured)[0].Workflow.Name != "shared" {
-		t.Errorf("dispatch wrong: out=%+v captured=%+v", out, *captured)
 	}
 }
 
@@ -1427,40 +1248,6 @@ func TestWorkflowCopyCore_GlobalTarget(t *testing.T) {
 	// Source survives.
 	if _, ok := findWorkflow(cwd, "src", workflowScopeUser); !ok {
 		t.Error("source must survive a copy")
-	}
-}
-
-// TestWorkflowRunCore_GlobalScope: workflow_run with scope: "global"
-// dispatches a global-scope workflow via spawnWorkflowTabMsg.
-func TestWorkflowRunCore_GlobalScope(t *testing.T) {
-	b, cwd := newWorkflowMCPTestBridge(t, 11)
-	resetWorkflowTrackerForTest()
-	captured := installSpawnCaptor(t)
-	if err := saveAllWorkflows(cwd, []workflowDef{
-		{Name: "global-wf", Scope: workflowScopeGlobal, Steps: []workflowStep{{Name: "s", Provider: "fake"}}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	res, out, err := b.workflowRunTool(context.Background(), newCallToolReq(), workflowRunInput{
-		Name:   "global-wf",
-		Scope:  "global",
-		Append: "plan",
-	})
-	if err != nil || res.IsError {
-		t.Fatalf("run: err=%v res=%v", err, mcpResultText(res))
-	}
-	if out.Workflow != "global-wf" {
-		t.Errorf("output workflow: got %q want global-wf", out.Workflow)
-	}
-	if len(*captured) != 1 {
-		t.Fatalf("expected 1 dispatch, got %d", len(*captured))
-	}
-	msg := (*captured)[0]
-	if msg.Workflow.Name != "global-wf" || msg.Workflow.Scope != workflowScopeGlobal {
-		t.Errorf("dispatched wrong: %+v", msg.Workflow)
-	}
-	if msg.Cwd != cwd {
-		t.Errorf("dispatched cwd: got %q want %q", msg.Cwd, cwd)
 	}
 }
 
