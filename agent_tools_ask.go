@@ -179,7 +179,7 @@ type agentFinalizedPlanParams struct {
 func agentFinalizedPlanTool(env *agentToolEnv) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		"finalized_plan",
-		"Present a finalized implementation plan to the user for confirmation and execution choice.",
+		"Present a finalized implementation plan to the user for confirmation and execution choice. Invoking this tool MUST be your absolute final action in the turn. Once called, do not generate any further text or perform any more planning, as the user will be presented with a modal to launch a workflow or execute the plan directly.",
 		func(ctx context.Context, p agentFinalizedPlanParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			plan := strings.TrimSpace(p.Plan)
 			explanation := strings.TrimSpace(p.Explanation)

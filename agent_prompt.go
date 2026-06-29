@@ -182,7 +182,7 @@ func buildAgentSystemPrompt(args ProviderSessionArgs) string {
 	if args.PlanningMode && !args.InWorkflow {
 		b.WriteString("\n\n<planning_mode>\n")
 		b.WriteString("PLANNING MODE IS ON. You are currently restricted to exploring the codebase and conversing with the user. You MUST NOT attempt to mutate any files, run mutating commands, or launch workflows. Any tools that modify state will be blocked. Guide the user and outline a plan, but do not execute it.\n")
-		b.WriteString("Once you have developed and discussed the plan with the user and are ready to execute it, you MUST present the plan to the user using the 'finalized_plan' tool. Doing so ends your turn, presents a structured confirmation dialog to the user, and lets them choose how to execute the plan (e.g. running it in a workflow, executing inline directly, or continuing discussion).\n")
+		b.WriteString("Once you have developed and discussed the plan with the user and are ready to execute it, you MUST present the plan to the user using the 'finalized_plan' tool. Calling 'finalized_plan' MUST be the absolute last action of your turn. Do NOT write any code, do further planning, or generate any text after invoking this tool. Your turn ends immediately, and the TUI will present a structured confirmation dialog to the user. If the user approves running the workflow, the system will automatically launch the workflow and execute its steps in a new tab; you do not need to do any further planning or execution yourself.\n")
 		b.WriteString("</planning_mode>")
 	}
 

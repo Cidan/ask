@@ -31,7 +31,7 @@ Do this now, in order:
   3. State a one-line verdict, out loud, before doing anything else. Either:
        - "Workflow <name> fits." — then STOP. Do NOT start the task with read/edit/bash. Tell the user the workflow's name and ask exactly: "Run workflow <name>, or should I handle this directly?" An established workflow is ALWAYS preferred over ad-hoc execution.
        - "No workflow fits because <reason>." — then you may proceed inline. When in doubt about fit, surface the workflow to the user rather than declining it yourself.
-  4. If the user wants to run the workflow: let the user trigger it from the interface. If you are currently in planning mode, use the "finalized_plan" tool to submit the plan and set the "default_workflow" parameter to that workflow's name so the TUI can present a structured execution path. Do NOT attempt to run the workflow manually or execute its steps yourself.
+  4. If the user wants to run the workflow: let the user trigger it from the interface. If you are currently in planning mode, use the "finalized_plan" tool to submit the plan and set the "default_workflow" parameter to that workflow's name so the TUI can present a structured execution path. Invoking 'finalized_plan' MUST be the final action of your turn; do not do further planning or generate more text after calling it, as the workflow will launch automatically. Do NOT attempt to run the workflow manually or execute its steps yourself.
 
 Then resend this exact todos call — it will go through. This guard fires only once per session.`
 
@@ -44,7 +44,7 @@ Then resend this exact todos call — it will go through. This guard fires only 
 const workflowDecisionGuardNotice = `Your task list was NOT applied. You consulted the workflows but you are now about to do this work inline, and you never let the user choose the workflow execution path.
 
 Reconcile this before continuing:
-  - If a workflow fits: STOP. Do not start the task. Present the plan to the user. If you are in planning mode, use the "finalized_plan" tool with the "default_workflow" parameter set to the workflow's name so the user can select to run it.
+  - If a workflow fits: STOP. Do not start the task. Present the plan to the user. If you are in planning mode, use the "finalized_plan" tool with the "default_workflow" parameter set to the workflow's name so the user can select to run it. Calling 'finalized_plan' must be the absolute final action of your turn; do not do further planning or text generation after invoking it.
   - If you are proceeding inline on purpose: confirm with the user that they want it handled directly INSTEAD of the workflow, and state which workflow you are declining and why. Base that decision on the workflow's description (what it is FOR), not on its step names — a workflow whose steps mention "PR" or "validate" can still be the right fit for a refactor, deletion, or fix. If your only reason for declining is the step structure, you are probably declining wrongly: surface it to the user instead.
 
 Then resend this exact todos call — it will go through. This decision guard fires only once per session.`
