@@ -222,7 +222,6 @@ func braveSearch(ctx context.Context, apiKey, query string, count int) ([]braveR
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("X-Subscription-Token", apiKey)
 	req.Header.Set("User-Agent", "ask-agent/1.0")
 	resp, err := braveSearchClient.Do(req)
