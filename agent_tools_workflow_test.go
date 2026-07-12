@@ -242,7 +242,7 @@ func TestAgentWorkflowTools_DisarmHooksFire(t *testing.T) {
 	}
 	// env must point at the seeded cwd so workflow lookup resolves
 	// "ship-it" (env.cwd is the only place workflow tools look).
-	env := newAgentToolEnv(cwd, 1, true, true, false, func(tea.Msg) {})
+	env := newAgentToolEnv(cwd, 1, true, true, func(tea.Msg) {})
 
 	list := workflowToolByName(t, env, "workflow_list")
 	if r, _ := list.Run(context.Background(), fantasy.ToolCall{ID: "1", Name: "workflow_list", Input: `{}`}); r.IsError {

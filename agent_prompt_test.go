@@ -75,7 +75,6 @@ func TestBuildAgentSystemPrompt_InWorkflow(t *testing.T) {
 	args := ProviderSessionArgs{
 		Cwd:          cwd,
 		InWorkflow:   true,
-		PlanningMode: true,
 	}
 	prompt := buildAgentSystemPrompt(args)
 

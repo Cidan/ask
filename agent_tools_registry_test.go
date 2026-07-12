@@ -327,7 +327,7 @@ func toolNames(tools []fantasy.AgentTool) []string {
 func TestSetupAgentSessionTools_RegistrySurface(t *testing.T) {
 	isolateHome(t)
 	s := &agentSession{args: ProviderSessionArgs{Cwd: t.TempDir(), TabID: 1}}
-	s.env = newAgentToolEnv(s.args.Cwd, 1, true, true, false, func(tea.Msg) {})
+	s.env = newAgentToolEnv(s.args.Cwd, 1, true, true, func(tea.Msg) {})
 	setupAgentSessionTools(s, askConfig{})
 
 	wire := map[string]bool{}
@@ -381,7 +381,7 @@ func TestSetupAgentSessionTools_WebSearchSelection(t *testing.T) {
 
 	// No native search → Brave core tool on the wire, no provider tool.
 	noNative := &agentSession{args: ProviderSessionArgs{Cwd: t.TempDir(), TabID: 1}}
-	noNative.env = newAgentToolEnv(noNative.args.Cwd, 1, true, true, false, func(tea.Msg) {})
+	noNative.env = newAgentToolEnv(noNative.args.Cwd, 1, true, true, func(tea.Msg) {})
 	setupAgentSessionTools(noNative, askConfig{})
 	wire := map[string]bool{}
 	for _, name := range toolNames(noNative.currentTools()) {
@@ -402,7 +402,7 @@ func TestSetupAgentSessionTools_WebSearchSelection(t *testing.T) {
 		},
 	}
 	native := &agentSession{args: ProviderSessionArgs{Cwd: t.TempDir(), TabID: 2}, spec: spec}
-	native.env = newAgentToolEnv(native.args.Cwd, 2, true, true, false, func(tea.Msg) {})
+	native.env = newAgentToolEnv(native.args.Cwd, 2, true, true, func(tea.Msg) {})
 	setupAgentSessionTools(native, askConfig{})
 	for _, name := range toolNames(native.currentTools()) {
 		if name == "web_search" {
@@ -423,7 +423,7 @@ func TestSetupAgentSessionTools_WorkflowRestrictions(t *testing.T) {
 			InWorkflow: true,
 		},
 	}
-	s.env = newAgentToolEnv(s.args.Cwd, 1, true, true, false, func(tea.Msg) {})
+	s.env = newAgentToolEnv(s.args.Cwd, 1, true, true, func(tea.Msg) {})
 	setupAgentSessionTools(s, askConfig{})
 
 	wire := map[string]bool{}

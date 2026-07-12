@@ -177,7 +177,7 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 		session.sessionID = newUUIDv4()
 	}
 
-	session.env = newAgentToolEnv(args.Cwd, args.TabID, args.SkipAllPermissions, cfg.UI.GateTodosBeforeMutate != nil && *cfg.UI.GateTodosBeforeMutate, args.PlanningMode && !args.InWorkflow, session.emit)
+	session.env = newAgentToolEnv(args.Cwd, args.TabID, args.SkipAllPermissions, cfg.UI.GateTodosBeforeMutate != nil && *cfg.UI.GateTodosBeforeMutate, session.emit)
 	setupAgentSessionTools(session, cfg)
 
 	proc := &providerProc{
@@ -233,7 +233,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		agentSearchToolsTool(s.deferredTools),
 		agentInvokeToolTool(s.deferredTools, s.isCoreToolName, env),
 	}
-	if s.args.PlanningMode && !s.args.InWorkflow {
+	if !s.args.InWorkflow {
 		s.coreTools = append(s.coreTools, agentFinalizedPlanTool(env))
 	}
 	if s.args.IsWorkflowFinalStep {

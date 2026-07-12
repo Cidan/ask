@@ -1449,9 +1449,6 @@ func (m model) statusChipHeight() int {
 // upward and never recovered.
 func (m model) worktreeChip() string {
 	var parts []string
-	if m.planningMode {
-		parts = append(parts, planningChipStyle.Render("[ planning ]"))
-	}
 	if m.worktreeName != "" {
 		parts = append(parts, dimStyle.Render("[🌳 "+m.worktreeName+"]"))
 	}

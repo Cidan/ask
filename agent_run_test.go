@@ -117,7 +117,7 @@ func newTestAgentSession(t *testing.T, lm *fakeLM, store *agentSessionStore) *ag
 		sessionID:     "ses-test",
 		store:         store,
 	}
-	s.env = newAgentToolEnv(s.args.Cwd, 1, true, true, false, s.emit)
+	s.env = newAgentToolEnv(s.args.Cwd, 1, true, true, s.emit)
 	s.tools = []fantasy.AgentTool{
 		fantasy.NewAgentTool("ping", "test echo tool",
 			func(_ context.Context, in struct {
@@ -889,67 +889,4 @@ func TestAgentSession_CompactRetries(t *testing.T) {
 	}
 }
 
-func TestAgentSession_SetPlanningMode(t *testing.T) {
-	s := &agentSession{
-		args:   ProviderSessionArgs{Cwd: t.TempDir(), TabID: 1},
-		closed: make(chan struct{}),
-	}
-	s.env = newAgentToolEnv(s.args.Cwd, 1, true, true, false, s.emit)
-	s.coreTools = []fantasy.AgentTool{
-		fantasy.NewAgentTool("ping", "test", func(_ context.Context, in struct{}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			return fantasy.NewTextResponse("pong"), nil
-		}),
-	}
 
-	// 1. Enabling planning mode should add finalized_plan tool
-	s.SetPlanningMode(true)
-
-	if !s.args.PlanningMode {
-		t.Error("expected s.args.PlanningMode to be true")
-	}
-	if !s.env.planningMode.Load() {
-		t.Error("expected s.env.planningMode to be true")
-	}
-
-	hasFinalizedPlan := func(tools []fantasy.AgentTool) bool {
-		for _, tool := range tools {
-			if tool.Info().Name == "finalized_plan" {
-				return true
-			}
-		}
-		return false
-	}
-
-	if !hasFinalizedPlan(s.coreTools) {
-		t.Error("expected finalized_plan to be in coreTools when planning mode enabled")
-	}
-	if !hasFinalizedPlan(s.currentTools()) {
-		t.Error("expected finalized_plan to be in currentTools() when planning mode enabled")
-	}
-
-	// 2. Disabling planning mode should remove finalized_plan tool
-	s.SetPlanningMode(false)
-
-	if s.args.PlanningMode {
-		t.Error("expected s.args.PlanningMode to be false")
-	}
-	if s.env.planningMode.Load() {
-		t.Error("expected s.env.planningMode to be false")
-	}
-	if hasFinalizedPlan(s.coreTools) {
-		t.Error("expected finalized_plan to be removed from coreTools when planning mode disabled")
-	}
-	if hasFinalizedPlan(s.currentTools()) {
-		t.Error("expected finalized_plan to be removed from currentTools() when planning mode disabled")
-	}
-
-	// 3. Planning mode inside workflow should not register finalized_plan
-	s.args.InWorkflow = true
-	s.SetPlanningMode(true)
-	if s.env.planningMode.Load() {
-		t.Error("expected env.planningMode to be false when InWorkflow is true")
-	}
-	if hasFinalizedPlan(s.coreTools) {
-		t.Error("expected finalized_plan not to be registered when InWorkflow is true")
-	}
-}
