@@ -1,12 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"math"
 	"path/filepath"
 	"strings"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -56,24 +55,23 @@ func (m model) workflowTabHandleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			r.failed = false
 			r.failedReason = ""
 			workflowTracker().markWorking(m.cwd, r.Source.Key(), r.Workflow.Name, m.id)
-			return m, workflowStartStepCmd(m.id)
+			// Trigger rerun via Coordinator
+			runWF := func() tea.Msg {
+				go func() {
+					_, _ = globalCoordinator.RunWorkflow(context.Background(), m.id, r.Workflow, r.Source)
+				}()
+				return nil
+			}
+			return m, runWF
 		}
 	}
 	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
-		// Ctrl+C on a running workflow tab cancels the chain — the
-		// proc is killed and the tab flips to the failed banner.
-		// Once cancelled (or naturally finished), Ctrl+C is a no-op
-		// (the user can read the output; close with Ctrl+D). This is
-		// also the manual escape for a loop whose tail step refuses to
-		// register a decision (the runner re-prompts it indefinitely).
 		if m.workflowRun != nil && !m.workflowRun.done && !m.workflowRun.failed {
-			return m.workflowFinalize(false, "cancelled by user")
+			globalCoordinator.CancelWorkflow(m.id)
+			return m, nil
 		}
 		return m, nil
 	}
-	// Allow viewport navigation keys through so the user can scroll
-	// the chat history while the agent runs. Everything else is
-	// absorbed.
 	switch msg.Code {
 	case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown,
 		tea.KeyHome, tea.KeyEnd, 'k', 'j', 'g', 'G':
@@ -89,9 +87,7 @@ func (m model) workflowTabHandleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // workflow supplanted: the pre-run provider /
 // session snapshot is reinstated, the run state is dropped, and the
 // input area returns. The step summaries stay in the transcript as a
-// permanent record of the run. The proc is already dead — finalize
-// killed it — so the next user turn relaunches with --resume on the
-// restored session id.
+// permanent record of the run.
 func (m model) restoreSupplantedTab() (tea.Model, tea.Cmd) {
 	r := m.workflowRun
 	if r == nil || r.supplanted == nil || (!r.done && !r.failed) {
@@ -110,7 +106,6 @@ func (m model) restoreSupplantedTab() (tea.Model, tea.Cmd) {
 	m.worktreeName = snap.worktreeName
 	m.skipAllPermissions = snap.skipAllPermissions
 	m.screen = snap.screen
-	m.busy = false
 	m.status = ""
 	m.todos = nil
 	m.appendHistory(outputStyle.Render(dimStyle.Render(
@@ -123,526 +118,60 @@ func (m model) restoreSupplantedTab() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// startWorkflowStep dispatches the agent step the cursor currently
-// points at. For the linear portion of the chain that is
-// Workflow.Steps[StepIdx]; inside a loop it is the loop's inner step at
-// loop.innerIdx. The cursor is advanced by advanceWorkflowStep before
-// this fires (via workflowRunStartStepMsg), so this function only reads
-// the cursor and dispatches — it never decides what runs next.
-//
-// Swaps m.provider / m.providerModel for the step, clears session
-// state (workflow steps are one-shots, no resume), forces
-// skip-permissions on, and routes through the standard sendToProvider
-// path so the existing proc/spawn/wire plumbing runs unchanged.
-func (m model) startWorkflowStep() (tea.Model, tea.Cmd) {
-	r := m.workflowRun
-	if r == nil || r.done || r.failed {
-		return m, nil
-	}
-	if r.StepIdx < 0 || r.StepIdx >= len(r.Workflow.Steps) {
-		return m.workflowFinalize(true, "")
-	}
-	top := r.Workflow.Steps[r.StepIdx]
-
-	// Enter a loop step the first time the cursor lands on it.
-	if top.isLoop() && r.loop == nil {
-		if len(top.Steps) == 0 {
-			// Defensive: an empty loop is only reachable via the TUI
-			// path (which doesn't pre-validate like the MCP path does).
-			// Skip it rather than spin on nothing.
-			r.StepIdx++
-			return m.startWorkflowStep()
-		}
-		r.loop = &loopRunFrame{innerIdx: 0, iteration: 1}
-		m.appendHistory(loopNoteLine(top.Name, "started",
-			fmt.Sprintf("max %d iteration(s)", top.effectiveMaxIterations())))
-	}
-
-	// Resolve the agent step to dispatch and assemble its prompt context.
-	// Every step carries the end_turn contract; inside a loop the context
-	// also carries the loop framing injected into the prompt. r.remind is
-	// set by advanceWorkflowStep when the prior turn skipped end_turn (or
-	// a loop tail omitted its decision) so the re-prompt explains itself.
-	step := top
-	if r.loop != nil {
-		step = top.Steps[r.loop.innerIdx]
-	}
-
-	if r.remind == remindNone {
-		header := "   " + workflowMarginStyle.Render("|") + " " +
-			promptStyle.Render("▸ "+nonEmpty(step.Name, "step"))
-		if meta := providerMeta(step.Provider, step.Model); meta != "" {
-			header += dimStyle.Render(" (" + meta + ")")
-		}
-		m.appendHistory(header)
-	}
-
-	if m.worktreeName == "" && m.worktree && worktreeBackendAt(m.cwd) != workspaceBackendNone {
-		m.worktreeName = newWorktreeName(m.cwd)
-	}
-
-	isStartStep := r.StepIdx == 0 && r.loop == nil
-	// When the first step is a loop, the first inner step of
-	// iteration 1 acts as the start step — it writes to
-	// ask/plans/start/ instead of ask/plans/<loop>/<iter>/.
-	isLoopStartStep := r.StepIdx == 0 && r.loop != nil && r.loop.iteration == 1 && r.loop.innerIdx == 0
-	var notesDir string
+// providerMeta renders the "provider/model" suffix shown next to a step
+// name, collapsing to just one side when the other is empty.
+func providerMeta(provider, model string) string {
 	switch {
-	case isStartStep, isLoopStartStep:
-		notesDir = startPlanDir(m.cwd, m.worktreeName)
-	case r.loop != nil:
-		notesDir = stepNotesDir(m.cwd, m.worktreeName, step.Name, top.Name, r.loop.iteration)
+	case provider == "":
+		return model
+	case model == "":
+		return provider
 	default:
-		notesDir = stepNotesDir(m.cwd, m.worktreeName, step.Name, "", 0)
+		return provider + "/" + model
 	}
-	r.currentNotesDir = notesDir
-	pc := &stepPromptCtx{
-		remind:              r.remind,
-		remindDetail:        r.remindDetail,
-		notesDir:            notesDir,
-		prevNotesDir:        r.prevNotesDir,
-		isStartStep:         isStartStep || isLoopStartStep,
-		isWorkflowFinalStep: r.StepIdx == len(r.Workflow.Steps)-1,
-	}
-	if r.loop != nil {
-		pc.loop = &loopPromptCtx{
-			name:          top.Name,
-			iteration:     r.loop.iteration,
-			maxIterations: top.effectiveMaxIterations(),
-			exitCondition: top.ExitCondition,
-			isTail:        r.loop.innerIdx == len(top.Steps)-1,
-		}
-	}
-
-	// Validate the notes directory shape. The start directory must already
-	// exist as a directory with at least one file; all other step notes
-	// directories are auto-created when missing. If any directory exists as
-	// a regular file, kick the problem back to the current step instead of
-	// failing the run.
-	if pc.isStartStep {
-		if err := ensureStartPlanExists(m.cwd, m.worktreeName); err != nil {
-			r.remind = remindFixPlanDir
-			r.remindDetail = err.Error()
-			return m.sendToProvider(buildWorkflowStepPrompt(step, r.Source, r.contextForDispatch(), pc))
-		}
-	} else if err := ensureStepNotesDir(notesDir); err != nil {
-		r.remind = remindFixPlanDir
-		r.remindDetail = err.Error()
-		return m.sendToProvider(buildWorkflowStepPrompt(step, r.Source, r.contextForDispatch(), pc))
-	}
-
-	prov := providerByID(step.Provider)
-	if prov == nil {
-		return m.workflowFinalize(false, "provider not registered: "+step.Provider)
-	}
-	// providerByID falls back to the first registered provider on an
-	// unknown id, so a step authored against a provider that isn't
-	// registered in this build would silently run on the wrong agent.
-	// Reject mismatches explicitly so the user sees a clear failure.
-	if step.Provider != "" && prov.ID() != step.Provider {
-		return m.workflowFinalize(false, "provider not registered: "+step.Provider)
-	}
-	// Reset everything that pins the model to a previous step so the
-	// next StartSession runs clean. sessionID/sessionMinted/resumeCwd
-	// stay empty — workflow steps are one-shots, no resume.
-	m.provider = prov
-	m.providerModel = step.Model
-	settings := prov.LoadSettings()
-	if m.providerModel == "" {
-		m.providerModel = settings.Model
-	}
-	m.providerEffort = settings.Effort
-	m.providerSlashCmds = settings.SlashCommands
-	m.sessionID = ""
-	m.sessionMinted = false
-	m.resumeCwd = ""
-	m.todos = nil
-	// Force skip-permissions on for workflow steps; the user opted
-	// into the workflow, and a permission modal would freeze the
-	// chain (the tab can't surface ask/approval modals — see the
-	// askToolRequestMsg headless reply / approvalRequestMsg auto-deny
-	// branches).
-	m.skipAllPermissions = true
-	workflowTracker().markStep(r.Source.Key(), r.StepIdx)
-	// Each turn starts with no registered end_turn report; the step's
-	// end_turn call sets it, advanceWorkflowStep consumes it at turn end.
-	r.pendingEndTurn = nil
-	prompt := buildWorkflowStepPrompt(step, r.Source, r.contextForDispatch(), pc)
-	return m.sendToProvider(prompt)
 }
 
-// workflowFinalize records the terminal outcome and stops the chain.
-// ok=true marks the run done; ok=false marks failed with `reason`.
-// Always kills the proc so a runaway agent can't keep streaming
-// after the chain is over. Idempotent: a second call after the run
-// already finalised is a no-op.
-func (m model) workflowFinalize(ok bool, reason string) (tea.Model, tea.Cmd) {
-	r := m.workflowRun
-	if r == nil || r.done || r.failed {
-		return m, nil
+// lastOf returns the final element of s, or "" when empty.
+func lastOf(s []string) string {
+	if len(s) == 0 {
+		return ""
 	}
-	m.killProc()
-	if ok {
-		r.done = true
-		workflowTracker().markFinal(m.cwd, r.Source.Key(), r.Workflow.Name, workflowStatusDone, r.StepIdx)
-		
-		var out strings.Builder
-		out.WriteString(promptStyle.Render("✓ workflow complete: " + r.Workflow.Name))
-		if r.finishData != nil {
-			out.WriteString("\n  Outcome: " + r.finishData.Description)
-			if len(r.finishData.Artifacts) > 0 {
-				out.WriteString("\n  Artifacts:")
-				for _, art := range r.finishData.Artifacts {
-					out.WriteString("\n  • " + art)
-				}
-			}
-		}
-		m.appendHistory(outputStyle.Render(out.String()))
-
-		if err := removeAllWorkflowPlans(m.cwd, m.worktreeName); err != nil {
-			debugLog("workflow cleanup: %v", err)
-		}
-	} else {
-		r.failed = true
-		r.failedReason = reason
-		workflowTracker().markFinal(m.cwd, r.Source.Key(), r.Workflow.Name, workflowStatusFailed, r.StepIdx)
-		out := "✗ workflow failed: " + r.Workflow.Name
-		if reason != "" {
-			out += " — " + reason
-		}
-		m.appendHistory(outputStyle.Render(errStyle.Render(out)))
-	}
-	return m, nil
+	return s[len(s)-1]
 }
 
-// advanceWorkflowStep is called when the current step has finished
-// (turnCompleteMsg arrived, or an error fired). It reads the step's
-// end_turn report (pendingEndTurn — recorded by the end_turn tool during
-// the turn; nil if the step never called it), appends the step's summary
-// to the visible log, rolls the captured text into the appropriate
-// context log, kills the proc, mutates the cursor, and either finalises
-// or hands off to startWorkflowStep through a deferred
-// workflowRunStartStepMsg (so the next proc spawn happens at a clean
-// Update boundary rather than chaining inside this branch).
-//
-// Every step must call end_turn. A step that ends its turn without it is
-// re-prompted ("hammered" until it registers; Ctrl+C is the manual
-// escape). Decision table, evaluated against the just-finished step:
-//
-//	any step      · no end_turn → re-prompt the same step (need a summary)
-//	linear        · summary     → record, advance the top-level cursor
-//	loop non-tail · break       → ignored (advances to next inner step)
-//	loop non-tail · else        → run the next inner step (same iteration)
-//	loop tail     · no decision → re-prompt the tail (need continue/break)
-//	loop tail     · break       → exit loop now
-//	loop tail     · continue    → next iteration, or soft-exit on the cap
-func (m model) advanceWorkflowStep(stepErr error) (tea.Model, tea.Cmd) {
-	r := m.workflowRun
-	if r == nil || r.done || r.failed {
-		return m, nil
+// workflowAssistantText accumulates assistant text into the
+// in-flight step's buffer. Called from the assistantTextMsg handler
+// when m.workflowRun != nil so the next step's prompt can carry the
+// "Previous step output:" block.
+func (m *model) workflowAssistantText(text string) {
+	if m.workflowRun == nil {
+		return
 	}
-	txt := strings.TrimSpace(r.currentStep.String())
-	r.currentStep.Reset()
-	if stepErr != nil {
-		m.killProc()
-		cfg, _ := loadConfig()
-		maxRetries, initialDelay, backoffFactor := agentRetryOptions(cfg)
-
-		if r.stepErrorRetry < maxRetries {
-			r.stepErrorRetry++
-			wait := time.Duration(float64(initialDelay) * math.Pow(backoffFactor, float64(r.stepErrorRetry-1)))
-
-			stepName, _, _ := currentWorkflowStepMeta(r)
-			var note string
-			if r.loop != nil {
-				note = loopNoteLine(r.Workflow.Steps[r.StepIdx].Name, "failed", fmt.Sprintf("step %q: %v — retrying in %s (attempt %d of %d)", stepName, stepErr, humanDuration(wait), r.stepErrorRetry, maxRetries))
-			} else {
-				note = workflowNoteLine(fmt.Sprintf("step %q failed: %v", stepName, stepErr), fmt.Sprintf("retrying in %s (attempt %d of %d)", humanDuration(wait), r.stepErrorRetry, maxRetries))
-			}
-			m.appendHistory(note)
-
-			return m, tea.Tick(wait, func(t time.Time) tea.Msg {
-				return workflowRunStartStepMsg{tabID: m.id}
-			})
-		}
-		return m.workflowFinalize(false, stepErr.Error())
+	if m.workflowRun.currentStep.Len() > 0 {
+		m.workflowRun.currentStep.WriteString("\n")
 	}
-	r.stepErrorRetry = 0
-	m.killProc()
-	sig := r.pendingEndTurn
-	r.pendingEndTurn = nil
-	r.remind = remindNone
-	r.remindDetail = ""
-
-	// Linear (non-loop) step.
-	if r.loop == nil {
-		step := r.Workflow.Steps[r.StepIdx]
-		// No end_turn report: re-prompt the same step, feeding its own
-		// output back so it doesn't redo the work.
-		if sig == nil {
-			r.linearRetry++
-			r.linearText = txt
-			r.remind = remindNoSummary
-			m.appendHistory(workflowNoteLine(
-				fmt.Sprintf("re-prompting %q for end_turn (attempt %d)", nonEmpty(step.Name, "step"), r.linearRetry+1), ""))
-			return m.dispatchOrFinalize()
-		}
-		// Got the summary: render the step's line, record output, advance.
-		m.appendWorkflowStepDone(step.Name, step.Provider, step.Model, sig.summary)
-
-		if r.StepIdx == len(r.Workflow.Steps)-1 && r.finishData == nil {
-			r.linearRetry++
-			r.linearText = txt
-			r.remind = remindNoFinishTool
-			m.appendHistory(workflowNoteLine(
-				fmt.Sprintf("re-prompting %q for finish_workflow (attempt %d)", nonEmpty(step.Name, "step"), r.linearRetry+1), ""))
-			return m.dispatchOrFinalize()
-		}
-
-		if err := revalidateWorkflowNotesDir(m.cwd, m.worktreeName, r); err != nil {
-			r.remind = remindFixPlanDir
-			r.remindDetail = err.Error()
-			return m.dispatchOrFinalize()
-		}
-		r.prevNotesDir = r.currentNotesDir
-		if txt != "" {
-			r.stepLog = append(r.stepLog, txt)
-		}
-		r.linearRetry = 0
-		r.linearText = ""
-		r.StepIdx++
-		return m.dispatchOrFinalize()
-	}
-
-	// Inside a loop: apply the decision table to the inner step that just
-	// finished.
-	top := r.Workflow.Steps[r.StepIdx]
-	inner := top.Steps[r.loop.innerIdx]
-	isTail := r.loop.innerIdx == len(top.Steps)-1
-
-	// No end_turn report from this inner step: re-prompt it in place,
-	// feeding its own output back so it doesn't redo the work.
-	if sig == nil {
-		r.loop.retry++
-		r.loop.retryText = txt
-		r.remind = remindNoSummary
-		m.appendHistory(loopNoteLine(top.Name,
-			fmt.Sprintf("re-prompting %q for end_turn (attempt %d)", nonEmpty(inner.Name, "step"), r.loop.retry+1), ""))
-		return m.dispatchOrFinalize()
-	}
-
-	// We have a summary: render the inner step's line.
-	m.appendWorkflowStepDone(inner.Name, inner.Provider, inner.Model, sig.summary)
-
-	// Break from the tail step exits the loop immediately. Non-tail steps
-	// cannot break the loop; if they pass a decision, it is ignored.
-	if isTail && sig.decision == workflowLoopBreak {
-		if r.StepIdx == len(r.Workflow.Steps)-1 && r.finishData == nil {
-			r.loop.retry++
-			r.loop.retryText = txt
-			r.remind = remindNoFinishTool
-			m.appendHistory(loopNoteLine(top.Name,
-				fmt.Sprintf("re-prompting %q for finish_workflow (attempt %d)", nonEmpty(inner.Name, "step"), r.loop.retry+1), ""))
-			return m.dispatchOrFinalize()
-		}
-		r.prevNotesDir = r.currentNotesDir
-		if txt != "" {
-			r.loop.iterationLog = append(r.loop.iterationLog, txt)
-		}
-		m.appendHistory(loopNoteLine(top.Name, "break", ""))
-		r.exitLoop()
-		return m.dispatchOrFinalize()
-	}
-
-	// Non-tail step with no break: proceed to the next inner step in the
-	// same iteration. (A "continue" and an omitted decision are equivalent
-	// here — only the tail's continue advances the iteration.)
-	if !isTail {
-		if err := revalidateWorkflowNotesDir(m.cwd, m.worktreeName, r); err != nil {
-			r.remind = remindFixPlanDir
-			r.remindDetail = err.Error()
-			return m.dispatchOrFinalize()
-		}
-		r.prevNotesDir = r.currentNotesDir
-		if txt != "" {
-			r.loop.iterationLog = append(r.loop.iterationLog, txt)
-		}
-		r.loop.retry = 0
-		r.loop.retryText = ""
-		r.loop.innerIdx++
-		return m.dispatchOrFinalize()
-	}
-
-	// Tail summarised but registered no (valid) decision: re-prompt for
-	// the decision. No retry cap — Ctrl+C is the escape.
-	if sig.decision != workflowLoopContinue {
-		r.loop.retry++
-		r.loop.retryText = txt
-		r.remind = remindNoDecision
-		m.appendHistory(loopNoteLine(top.Name,
-			fmt.Sprintf("re-prompting final step for a decision (attempt %d)", r.loop.retry+1), ""))
-		return m.dispatchOrFinalize()
-	}
-
-	// Tail registered continue: record output, then start the next
-	// iteration or soft-exit if the iteration cap is reached.
-	if err := revalidateWorkflowNotesDir(m.cwd, m.worktreeName, r); err != nil {
-		r.remind = remindFixPlanDir
-		r.remindDetail = err.Error()
-		return m.dispatchOrFinalize()
-	}
-	r.prevNotesDir = r.currentNotesDir
-	if txt != "" {
-		r.loop.iterationLog = append(r.loop.iterationLog, txt)
-	}
-	if r.loop.iteration >= top.effectiveMaxIterations() {
-		if r.StepIdx == len(r.Workflow.Steps)-1 && r.finishData == nil {
-			r.loop.retry++
-			r.loop.retryText = txt
-			r.remind = remindNoFinishTool
-			m.appendHistory(loopNoteLine(top.Name,
-				fmt.Sprintf("re-prompting %q for finish_workflow (attempt %d)", nonEmpty(inner.Name, "step"), r.loop.retry+1), ""))
-			return m.dispatchOrFinalize()
-		}
-		m.appendHistory(loopNoteLine(top.Name, "hit iteration limit",
-			fmt.Sprintf("%d iteration(s)", r.loop.iteration)))
-		r.exitLoop()
-		return m.dispatchOrFinalize()
-	}
-	m.appendHistory(loopNoteLine(top.Name,
-		fmt.Sprintf("iteration %d complete → continue", r.loop.iteration), ""))
-	r.loop.prevTail = lastOf(r.loop.iterationLog)
-	r.loop.iterationLog = nil
-	r.loop.iteration++
-	r.loop.innerIdx = 0
-	r.loop.retry = 0
-	r.loop.retryText = ""
-	return m.dispatchOrFinalize()
+	m.workflowRun.currentStep.WriteString(text)
 }
 
-// revalidateWorkflowNotesDir re-checks the current step's notes
-// directory. It is called at turn end before advancing the cursor so a
-// step that was fixing its directory gets another chance if the shape
-// is still wrong. The start directory must contain files; other
-// directories are auto-created when missing.
-func revalidateWorkflowNotesDir(cwd, worktreeName string, r *workflowRunState) error {
-	if r.currentNotesDir == "" {
-		return nil
+// errStepError is the canonical error wrapping a step's reported
+// failure (msg.res.Result on a providerDoneMsg with IsError set, or
+// the underlying error). Pulled into a helper so the wording is
+// consistent across the three error paths that converge on
+// advanceWorkflowStep.
+func errStepError(detail string) error {
+	if detail == "" {
+		return errors.New("step error")
 	}
-	if r.currentNotesDir == startPlanDir(cwd, worktreeName) {
-		return ensureStartPlanExists(cwd, worktreeName)
-	}
-	return ensureStepNotesDir(r.currentNotesDir)
+	return fmt.Errorf("step error: %s", detail)
 }
 
-// dispatchOrFinalize is the shared tail of advanceWorkflowStep: when
-// the linear cursor has run off the end of the chain the run is done;
-// otherwise hand off to startWorkflowStep via a deferred message. While
-// inside a loop the cursor is never "past the end" (StepIdx points at
-// the loop step), so this always defers in that case.
-func (m model) dispatchOrFinalize() (tea.Model, tea.Cmd) {
-	r := m.workflowRun
-	if r.loop == nil && r.StepIdx >= len(r.Workflow.Steps) {
-		return m.workflowFinalize(true, "")
-	}
-	return m, workflowStartStepCmd(m.id)
+func (m *model) appendWorkflowStepDone(name, provider, mdl, summary string) {
+	m.history = append(m.history, historyEntry{
+		kind:           histWorkflowDone,
+		text:           summary,
+		workflowHeader: "",
+	})
 }
-
-// workflowStartStepCmd produces a tea.Cmd that re-enters the runner for
-// the current cursor on a fresh Update cycle.
-func workflowStartStepCmd(tabID int) tea.Cmd {
-	return func() tea.Msg { return workflowRunStartStepMsg{tabID: tabID} }
-}
-
-// contextForDispatch returns the "Previous step output" slice for the
-// step about to run, implementing the bounded-context policy:
-//
-//   - Linear steps see the full linear log (every completed top-level
-//     step's output), matching pre-loop behaviour. A re-prompted linear
-//     step also sees its own prior output so it doesn't redo the work.
-//   - Inside a loop, the linear log is frozen (it only grows on loop
-//     exit). The head inner step additionally sees the previous
-//     iteration's tail output (so a kick-back reaches the next pass);
-//     downstream inner steps see the current iteration's prior outputs.
-//   - A re-prompted inner step additionally carries its own prior output
-//     so it can register without the work being lost.
-func (r *workflowRunState) contextForDispatch() []string {
-	if r.loop == nil {
-		if r.linearRetry > 0 && r.linearText != "" {
-			return append(append([]string(nil), r.stepLog...), r.linearText)
-		}
-		return r.stepLog
-	}
-	ctx := append([]string(nil), r.stepLog...)
-	if r.loop.innerIdx == 0 {
-		if r.loop.prevTail != "" {
-			ctx = append(ctx, r.loop.prevTail)
-		}
-	} else {
-		ctx = append(ctx, r.loop.iterationLog...)
-	}
-	if r.loop.retry > 0 && r.loop.retryText != "" {
-		ctx = append(ctx, r.loop.retryText)
-	}
-	return ctx
-}
-
-// exitLoop commits the loop's final iteration outputs to the linear log
-// (so the step after the loop sees the last pass) and clears the frame,
-// advancing the top-level cursor past the loop step.
-func (r *workflowRunState) exitLoop() {
-	if r.loop != nil {
-		r.stepLog = append(r.stepLog, r.loop.iterationLog...)
-	}
-	r.loop = nil
-	r.StepIdx++
-}
-
-// handleEndTurnSignal records the current step's end_turn report (the
-// summary plus, in a loop, the optional decision) on the run state and
-// acks the blocking end_turn tool. The tool only records — the runner
-// acts on it at turn end (see advanceWorkflowStep), which is why this
-// never changes the cursor. A signal arriving when no workflow step is
-// live is answered with a "no effect" note so the agent knows it did
-// nothing.
-func (m model) handleEndTurnSignal(msg endTurnSignalMsg) (tea.Model, tea.Cmd) {
-	if msg.tabID != m.id {
-		return m, nil
-	}
-	r := m.workflowRun
-	if r == nil || r.done || r.failed {
-		if msg.reply != nil {
-			msg.reply <- endTurnReply{
-				registered: false,
-				note:       "no active workflow step; end_turn has no effect here",
-			}
-		}
-		return m, nil
-	}
-	r.pendingEndTurn = &endTurnSignal{decision: msg.decision, summary: msg.summary}
-	if msg.reply != nil {
-		note := "end_turn recorded"
-		if msg.decision != "" {
-			note += " (decision: " + msg.decision + ")"
-		}
-		note += ". Finish your turn normally; the workflow acts on it when your turn ends."
-		msg.reply <- endTurnReply{registered: true, note: note}
-	}
-	return m, nil
-}
-
-// remindKind says why the current dispatch is a re-prompt, selecting the
-// reminder buildWorkflowStepPrompt appends. remindNone is a normal first
-// dispatch.
-type remindKind int
-
-const (
-	remindNone       remindKind = iota
-	remindNoSummary             // the prior turn ended without calling end_turn
-	remindNoDecision            // a loop tail called end_turn but omitted its decision
-	remindFixPlanDir            // a workflow notes directory is missing or is a file
-	remindNoFinishTool          // the prior turn ended the workflow without calling finish_workflow
-)
 
 // stepPromptCtx carries the per-dispatch facts buildWorkflowStepPrompt
 // needs beyond the step itself: the loop framing (nil outside a loop),
@@ -669,27 +198,6 @@ type loopPromptCtx struct {
 }
 
 // buildWorkflowStepPrompt assembles the user-message text for one step.
-// Format:
-//
-//	<step.Prompt>
-//
-//	<source.RefBlock()>          (skipped when RefBlock is empty)
-//
-//	Previous step output:        (only when prevOutputs is non-empty)
-//	<prevOutputs[0]>
-//	---
-//	<prevOutputs[1]>
-//	...
-//
-//	<end_turn contract>          (always — every step must call end_turn)
-//
-//	<re-prompt reminder>         (only when pc.remind != remindNone)
-//
-// Issue sources produce a single "Reference: <project>#<n>" line; chat
-// sources produce a multi-line "Reference (chat transcript):" block. The
-// end_turn contract is position-aware (a loop tail must also register a
-// decision). Whitespace at the head and tail is trimmed; the body is left
-// as the user wrote it.
 func buildWorkflowStepPrompt(step workflowStep, source workflowSource, prevOutputs []string, pc *stepPromptCtx) string {
 	var b strings.Builder
 	b.WriteString(strings.TrimSpace(step.Prompt))
@@ -723,14 +231,12 @@ func buildWorkflowStepPrompt(step workflowStep, source workflowSource, prevOutpu
 	}
 	var loop *loopPromptCtx
 	remind := remindNone
-	isFinalStep := false
 	if pc != nil {
 		loop = pc.loop
 		remind = pc.remind
-		isFinalStep = pc.isWorkflowFinalStep
 	}
 	b.WriteString("\n\n")
-	b.WriteString(endTurnInstructionBlock(loop, isFinalStep))
+	b.WriteString(endTurnInstructionBlock(loop))
 	if remind != remindNone {
 		b.WriteString("\n\n")
 		b.WriteString(endTurnReminder(remind, pc.remindDetail))
@@ -741,8 +247,10 @@ func buildWorkflowStepPrompt(step workflowStep, source workflowSource, prevOutpu
 // endTurnInstructionBlock renders the auto-injected end_turn contract for
 // a step. Every step is told to call end_turn with a summary; a loop step
 // additionally gets the loop framing, and its tail the "you MUST include a
-// decision" clause (a non-tail step is told to omit decision entirely).
-func endTurnInstructionBlock(loop *loopPromptCtx, isFinalStep bool) string {
+// decision" clause. A non-tail step is told it MUST OMIT `decision`
+// entirely — only the final step of a loop iteration can pass
+// `decision="break"`, and a non-final step's break is silently ignored.
+func endTurnInstructionBlock(loop *loopPromptCtx) string {
 	var b strings.Builder
 	if loop != nil {
 		fmt.Fprintf(&b, "[Workflow loop %q · iteration %d of up to %d]", loop.name, loop.iteration, loop.maxIterations)
@@ -751,16 +259,6 @@ func endTurnInstructionBlock(loop *loopPromptCtx, isFinalStep bool) string {
 			b.WriteString(cond)
 		}
 		b.WriteString("\n")
-	}
-	if isFinalStep {
-		if loop != nil && loop.isTail {
-			b.WriteString("This is the final step of the workflow. If you choose to pass `decision: \"break\"` to `end_turn`, you MUST FIRST call the `finish_workflow` tool to summarize the outcome.\n")
-		} else if loop == nil {
-			b.WriteString("This is the final step of the workflow. You MUST call the `finish_workflow` tool before calling `end_turn`.\n")
-		}
-		if loop != nil && loop.iteration >= loop.maxIterations && loop.isTail {
-			b.WriteString("This is the maximum iteration limit. You MUST break and you MUST call finish_workflow before end_turn.\n")
-		}
 	}
 	b.WriteString("When you have finished this step, you MUST call the end_turn tool as your final action, with " +
 		"a `summary` of 1-3 sentences describing what you did and the outcome. This records your progress in the " +
@@ -771,8 +269,9 @@ func endTurnInstructionBlock(loop *loopPromptCtx, isFinalStep bool) string {
 				"\"continue\" to run another iteration, or \"break\" to end the loop. Use \"break\" only when the " +
 				"loop's exit goal is met — breaking should be exceptional.")
 		} else {
-			b.WriteString(" You are inside a loop but not its final step, so omit `decision` and let the loop " +
-				"proceed.")
+			b.WriteString(" You are inside a loop but not its final step of this loop iteration, so you MUST OMIT `decision` " +
+				"entirely — only the final step of a loop iteration can pass `decision='break'`. If the loop's " +
+				"exit goal appears met, the final step of this iteration will register `break` on its turn.")
 		}
 	}
 	return b.String()
@@ -782,8 +281,6 @@ func endTurnInstructionBlock(loop *loopPromptCtx, isFinalStep bool) string {
 // why it's being asked again without making it redo the work shown above.
 func endTurnReminder(k remindKind, detail string) string {
 	switch k {
-	case remindNoFinishTool:
-		return "REMINDER: You ended the workflow but forgot to call the `finish_workflow` tool. Call it with your description and artifacts, then call `end_turn` again."
 	case remindNoDecision:
 		return "REMINDER: you called end_turn without a `decision`, which is required for the final step of a " +
 			"loop iteration. You have already done the work shown above — do NOT repeat it. Call end_turn again now " +
@@ -818,90 +315,55 @@ func loopNoteLine(loopName, action, detail string) string {
 	return workflowNoteLine(fmt.Sprintf("⟳ loop %q %s", loopName, action), detail)
 }
 
-// appendWorkflowStepDone renders a completed step's entry in the workflow log.
-// The summary is not pre-wrapped; the viewport soft-wraps it at render time.
-// The step title (header) is emitted exactly once when the step starts.
-func (m *model) appendWorkflowStepDone(name, provider, mdl, summary string) {
-	m.history = append(m.history, historyEntry{
-		kind:           histWorkflowDone,
-		text:           summary,
-		workflowHeader: "",
-	})
-}
-
-// providerMeta renders the "provider/model" suffix shown next to a step
-// name, collapsing to just one side when the other is empty.
-func providerMeta(provider, model string) string {
-	switch {
-	case provider == "":
-		return model
-	case model == "":
-		return provider
-	default:
-		return provider + "/" + model
+// stepSummaryLine renders a completed step's entry in the workflow log: a
+// styled "▸ name (provider/model)" header with the agent's end_turn
+// summary beneath it. This per-step content is what replaces the raw
+// transcript on a workflow tab. The summary is not pre-wrapped; the
+// viewport soft-wraps it at render time.
+func stepSummaryLine(name, provider, model, summary string) string {
+	header := promptStyle.Render("▸ " + nonEmpty(name, "step"))
+	if meta := providerMeta(provider, model); meta != "" {
+		header += dimStyle.Render(" (" + meta + ")")
 	}
-}
-
-// lastOf returns the final element of s, or "" when empty.
-func lastOf(s []string) string {
-	if len(s) == 0 {
-		return ""
+	if s := strings.TrimSpace(summary); s != "" {
+		header += "\n" + outputStyle.Render("  " + s)
 	}
-	return s[len(s)-1]
+	return header
 }
 
-// workflowRunHandleStartStep is the tea.Msg dispatcher for
-// workflowRunStartStepMsg. The app layer routes the message to the
-// right tab via dispatchByTabID; the model handler validates the
-// tab id and runs startWorkflowStep.
-func (m model) workflowRunHandleStartStep(msg workflowRunStartStepMsg) (tea.Model, tea.Cmd) {
+func (m model) handleEndTurnSignal(msg endTurnSignalMsg) (tea.Model, tea.Cmd) {
 	if msg.tabID != m.id {
 		return m, nil
 	}
-	return m.startWorkflowStep()
-}
-
-// workflowRunHandleStepDone is the tea.Msg dispatcher for
-// workflowRunStepDoneMsg. Same routing pattern as the start
-// dispatcher.
-func (m model) workflowRunHandleStepDone(msg workflowRunStepDoneMsg) (tea.Model, tea.Cmd) {
-	if msg.tabID != m.id {
+	r := m.workflowRun
+	if r == nil || r.done || r.failed {
+		if msg.reply != nil {
+			msg.reply <- endTurnReply{
+				registered: false,
+				note:       "no active workflow step; end_turn has no effect here",
+			}
+		}
 		return m, nil
 	}
-	return m.advanceWorkflowStep(msg.err)
+	r.pendingEndTurn = &endTurnSignal{decision: msg.decision, summary: msg.summary}
+	if msg.reply != nil {
+		note := "end_turn recorded"
+		if msg.decision != "" {
+			note += " (decision: " + msg.decision + ")"
+		}
+		if msg.decision == workflowLoopBreak && r.loop != nil &&
+			r.StepIdx >= 0 && r.StepIdx < len(r.Workflow.Steps) {
+			top := r.Workflow.Steps[r.StepIdx]
+			if top.isLoop() {
+				isTail := r.loop.innerIdx == len(top.Steps)-1
+				if !isTail {
+					note += " (non-final step: break will be ignored — only the final step of a loop iteration can break the loop)"
+				}
+			}
+		}
+		note += ". Finish your turn normally; the workflow acts on it when your turn ends."
+		msg.reply <- endTurnReply{registered: true, note: note}
+	}
+	return m, nil
 }
 
-// workflowAdvanceCmd produces a tea.Cmd that emits a
-// workflowRunStepDoneMsg targeting the matching tab. Used by the
-// turnCompleteMsg / providerDoneMsg / providerExitedMsg handlers to
-// hand off into the workflow runner without baking the runner into
-// every error path.
-func workflowAdvanceCmd(tabID int, err error) tea.Cmd {
-	return func() tea.Msg { return workflowRunStepDoneMsg{tabID: tabID, err: err} }
-}
-
-// workflowAssistantText accumulates assistant text into the
-// in-flight step's buffer. Called from the assistantTextMsg handler
-// when m.workflowRun != nil so the next step's prompt can carry the
-// "Previous step output:" block.
-func (m *model) workflowAssistantText(text string) {
-	if m.workflowRun == nil {
-		return
-	}
-	if m.workflowRun.currentStep.Len() > 0 {
-		m.workflowRun.currentStep.WriteString("\n")
-	}
-	m.workflowRun.currentStep.WriteString(text)
-}
-
-// errStepError is the canonical error wrapping a step's reported
-// failure (msg.res.Result on a providerDoneMsg with IsError set, or
-// the underlying error). Pulled into a helper so the wording is
-// consistent across the three error paths that converge on
-// advanceWorkflowStep.
-func errStepError(detail string) error {
-	if detail == "" {
-		return errors.New("step error")
-	}
-	return fmt.Errorf("step error: %s", detail)
-}

@@ -59,7 +59,7 @@ func TestRefreshHistoryCmd(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m := model{busy: tc.busy, sessionID: tc.sessionID, id: 1}
+			m := model{testBusy: tc.busy, sessionID: tc.sessionID, id: 1}
 			cmd := m.refreshHistoryCmd()
 			if tc.wantNil && cmd != nil {
 				t.Errorf("expected nil cmd, got %T", cmd)

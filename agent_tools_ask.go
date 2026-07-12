@@ -111,15 +111,15 @@ func agentFinishWorkflowTool(env *agentToolEnv) fantasy.AgentTool {
 				return fantasy.NewTextErrorResponse("description is required: provide a summary of the workflow outcome"), nil
 			}
 
-			if !agentSendToProgram(finishWorkflowSignalMsg{
-				tabID: env.tabID,
-				data: &finishWorkflowData{
-					Description: desc,
-					Artifacts:   p.Artifacts,
-				},
-			}) {
-				return fantasy.NewTextErrorResponse("ask UI not ready"), nil
+			env.pendingFinishData = &finishWorkflowData{
+				Description: desc,
+				Artifacts:   p.Artifacts,
 			}
+
+			_ = agentSendToProgram(finishWorkflowSignalMsg{
+				tabID: env.tabID,
+				data:  env.pendingFinishData,
+			})
 
 			return fantasy.NewTextResponse("finish_workflow recorded. Now call end_turn to complete the step."), nil
 		},
@@ -148,6 +148,7 @@ func agentEndTurnTool(env *agentToolEnv) fantasy.AgentTool {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf(
 					"decision, when provided, must be %q or %q", workflowLoopContinue, workflowLoopBreak)), nil
 			}
+			env.pendingEndTurn = &endTurnSignal{decision: decision, summary: summary}
 			reply := make(chan endTurnReply, 1)
 			if !agentSendToProgram(endTurnSignalMsg{
 				tabID:    env.tabID,
@@ -217,7 +218,32 @@ func agentFinalizedPlanTool(env *agentToolEnv) fantasy.AgentTool {
 					env.markWorkflowRunDispatched()
 					return fantasy.NewTextResponse("Plan approved for inline execution. Planning mode has been turned OFF and todos guards have been disarmed. You can now execute your plan directly using write/edit/bash/etc."), nil
 				}
-				return fantasy.NewTextResponse(fmt.Sprintf("Plan approved. Executing in workflow %q.", resp.workflowName)), nil
+				if resp.workflowName != "" {
+					env.markWorkflowsChecked()
+					env.markWorkflowRunDispatched()
+
+					// Resolve the workflow definition by name
+					def, err := resolveWorkflowByName(env.cwd, resp.workflowName, "")
+					if err != nil {
+						return fantasy.NewTextErrorResponse("could not resolve workflow: " + err.Error()), nil
+					}
+
+					src := resp.source
+
+					// Run the workflow synchronously!
+					outResp, err := globalCoordinator.RunWorkflow(ctx, env.tabID, def, src)
+					if err != nil {
+						return fantasy.NewTextErrorResponse("workflow execution failed: " + err.Error()), nil
+					}
+
+					var sb strings.Builder
+					fmt.Fprintf(&sb, "Workflow %q completed successfully.\n", resp.workflowName)
+					if outResp.outcome != "" {
+						fmt.Fprintf(&sb, "Outcome: %s\n", outResp.outcome)
+					}
+					return fantasy.NewTextResponse(sb.String()), nil
+				}
+				return fantasy.NewTextResponse("Plan approved."), nil
 			case <-ctx.Done():
 				return fantasy.NewTextErrorResponse("cancelled while waiting for user confirmation"), nil
 			}

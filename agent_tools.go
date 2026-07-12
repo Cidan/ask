@@ -69,6 +69,9 @@ type agentToolEnv struct {
 	// editing. When the gate is false (default), this flag is unused.
 	// Guarded by wfMu.
 	todosApplied bool
+
+	pendingEndTurn    *endTurnSignal
+	pendingFinishData *finishWorkflowData
 }
 
 func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, gateTodosBeforeMutate bool, emit func(tea.Msg)) *agentToolEnv {

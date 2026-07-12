@@ -1059,7 +1059,7 @@ func TestStartWorkflowStep_RePromptsMissingStartPlan(t *testing.T) {
 	if !strings.Contains(mm.workflowRun.remindDetail, "start plan is missing") {
 		t.Errorf("remindDetail must mention missing start plan; got %q", mm.workflowRun.remindDetail)
 	}
-	if !mm.busy {
+	if !mm.busy() {
 		t.Error("expected a provider dispatch (busy=true) for the re-prompt")
 	}
 	if cmd == nil {
@@ -1105,7 +1105,7 @@ func TestStartWorkflowStep_RePromptsStartPlanAsFile(t *testing.T) {
 	if !strings.Contains(mm.workflowRun.remindDetail, "directory") {
 		t.Errorf("remindDetail must direct the LLM to use a directory; got %q", mm.workflowRun.remindDetail)
 	}
-	if !mm.busy {
+	if !mm.busy() {
 		t.Error("expected a provider dispatch (busy=true) for the re-prompt")
 	}
 	if cmd == nil {
@@ -1141,7 +1141,7 @@ func TestStartWorkflowStep_RePromptsEmptyStartPlan(t *testing.T) {
 	if !strings.Contains(mm.workflowRun.remindDetail, "start plan is empty") {
 		t.Errorf("remindDetail must mention empty start plan; got %q", mm.workflowRun.remindDetail)
 	}
-	if !mm.busy {
+	if !mm.busy() {
 		t.Error("expected a provider dispatch (busy=true) for the re-prompt")
 	}
 	if cmd == nil {
@@ -1194,7 +1194,7 @@ func TestStartWorkflowStep_RePromptsStepNotesDirAsFile(t *testing.T) {
 	if !strings.Contains(mm.workflowRun.remindDetail, "FILE") {
 		t.Errorf("remindDetail must say the path is a file; got %q", mm.workflowRun.remindDetail)
 	}
-	if !mm.busy {
+	if !mm.busy() {
 		t.Error("expected a provider dispatch (busy=true) for the re-prompt")
 	}
 	if cmd == nil {
@@ -1235,7 +1235,7 @@ func TestStartWorkflowStep_CreatesMissingStepNotesDir(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(cwd, "ask", "plans", "second")); err != nil {
 		t.Errorf("missing notes dir should be created; stat err=%v", err)
 	}
-	if !mm.busy {
+	if !mm.busy() {
 		t.Error("expected a provider dispatch (busy=true)")
 	}
 	if cmd == nil {

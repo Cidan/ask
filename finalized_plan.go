@@ -174,6 +174,12 @@ func (m model) updateFinalizedPlan(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			picked := m.finalizedPlanWorkflows[m.finalizedPlanWorkflowCursor]
 			src := chatWorkflowSource(m.id, m.history)
+			if m.finalizedPlanReply != nil {
+				m.finalizedPlanReply <- finalizedPlanReply{workflowName: picked.Name, source: src}
+				m.mode = modeInput
+				m.clearFinalizedPlan()
+				return m, nil
+			}
 			cmd := func() tea.Msg {
 				return spawnWorkflowTabMsg{
 					OriginTabID:  m.id,
@@ -182,9 +188,6 @@ func (m model) updateFinalizedPlan(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					Workflow:     picked,
 					Source:       src,
 				}
-			}
-			if m.finalizedPlanReply != nil {
-				m.finalizedPlanReply <- finalizedPlanReply{workflowName: picked.Name}
 			}
 			m.mode = modeInput
 			m.clearFinalizedPlan()
@@ -241,6 +244,12 @@ func (m model) updateFinalizedPlan(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					}
 				}
 				src := chatWorkflowSource(m.id, m.history)
+				if m.finalizedPlanReply != nil {
+					m.finalizedPlanReply <- finalizedPlanReply{workflowName: m.finalizedPlanWorkflow, source: src}
+					m.mode = modeInput
+					m.clearFinalizedPlan()
+					return m, nil
+				}
 				cmd := func() tea.Msg {
 					return spawnWorkflowTabMsg{
 						OriginTabID:  m.id,
@@ -249,9 +258,6 @@ func (m model) updateFinalizedPlan(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 						Workflow:     pickedDef,
 						Source:       src,
 					}
-				}
-				if m.finalizedPlanReply != nil {
-					m.finalizedPlanReply <- finalizedPlanReply{workflowName: m.finalizedPlanWorkflow}
 				}
 				m.mode = modeInput
 				m.clearFinalizedPlan()

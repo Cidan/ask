@@ -150,7 +150,7 @@ func TestPopoverOpen_AskPopoversOnlyWhenVisible(t *testing.T) {
 		t.Errorf("slash menu should not count as a popover in shell mode")
 	}
 	m.shellMode = false
-	m.busy = true
+	m.testBusy = true
 	if m.popoverOpen() {
 		t.Errorf("slash menu should not count as a popover while busy")
 	}

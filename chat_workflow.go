@@ -17,7 +17,7 @@ func (m model) dispatchChatWorkflow() (tea.Model, tea.Cmd) {
 	if m.workflowRun != nil {
 		return m, nil
 	}
-	if m.busy {
+	if m.busy() {
 		return m, m.toast.show("can't run a workflow while a turn is in flight")
 	}
 	source := chatWorkflowSource(m.id, m.history)

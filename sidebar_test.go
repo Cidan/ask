@@ -313,7 +313,7 @@ func TestSidebarActivityAndBadge(t *testing.T) {
 		t.Errorf("idle badge = %q", glyph)
 	}
 
-	m.busy = true
+	m.testBusy = true
 	m.status = "thinking…"
 	if got, _ := m.sidebarActivity(); got != "thinking…" {
 		t.Errorf("busy activity = %q", got)
@@ -470,7 +470,7 @@ func TestWorkflowSupplantDefersWhenBusy(t *testing.T) {
 	resetWorkflowTrackerForTest()
 	a := newSidebarTestApp(t, 1)
 	a.tabs[0].toast = NewToastModel(80, 0)
-	a.tabs[0].busy = true
+	a.tabs[0].testBusy = true
 
 	msg := supplantTestMsg(a)
 	m1, cmd := a.Update(msg)
@@ -514,7 +514,7 @@ func TestPendingWorkflowFiresOnTurnComplete(t *testing.T) {
 	a.tabs[0].provider = prov
 	proc := &providerProc{}
 	a.tabs[0].proc = proc
-	a.tabs[0].busy = true
+	a.tabs[0].testBusy = true
 
 	m1, cmd := a.tabs[0].Update(turnCompleteMsg{proc: proc})
 	got := m1.(model)
@@ -542,7 +542,7 @@ func TestPendingWorkflowDiscardedOnProviderExited(t *testing.T) {
 	prov := newFakeProvider()
 	m := newTestModel(t, prov)
 	m.proc = &providerProc{}
-	m.busy = true
+	m.testBusy = true
 	m.pendingWorkflow = &spawnWorkflowTabMsg{
 		OriginTabID: m.id,
 		Workflow:    workflowDef{Name: "wf"},

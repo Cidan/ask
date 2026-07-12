@@ -198,9 +198,14 @@ func (s *agentSession) interruptTurn() bool {
 	return true
 }
 
-// emit tags a provider-protocol message with the session's proc and
-// pushes it onto the stream channel. Messages are dropped once the
-// session is closed so tool goroutines can never wedge on a dead tab.
+func (s *agentSession) isBusy() bool {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	return s.turnCancel != nil
+}
+
+// emit tags a provider-protocol message with the session's proc and tabID,
+// and pushes it onto the Event Bus (agentSendToProgram).
 func (s *agentSession) emit(msg tea.Msg) {
 	switch m := msg.(type) {
 	case streamStatusMsg:
@@ -246,21 +251,13 @@ func (s *agentSession) emit(msg tea.Msg) {
 		m.proc = s.proc
 		msg = m
 	}
-	// Buffer-first: when the channel has room the message always lands,
-	// even mid-shutdown (s.closed closed) — a bare two-case select would
-	// pick pseudo-randomly and could drop the final providerExitedMsg.
-	// Only when the buffer is full do we block, bailing on shutdown so a
-	// tool goroutine can never wedge on a dead tab (killProc's drain
-	// resolves the block in every live path).
+	msg = injectTabID(msg, s.args.TabID)
+	// Write non-blockingly to s.ch for backward compatibility in tests
 	select {
 	case s.ch <- msg:
-		return
 	default:
 	}
-	select {
-	case s.ch <- msg:
-	case <-s.closed:
-	}
+	agentSendToProgram(msg)
 }
 
 // queueTurn enqueues a user turn for the run loop. Errors when the

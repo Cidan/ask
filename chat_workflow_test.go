@@ -300,7 +300,7 @@ func TestDispatchChatWorkflow_BusyToasts(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.cwd = cwd
 	m.toast = NewToastModel(40, 1)
-	m.busy = true
+	m.testBusy = true
 	m.history = []historyEntry{{kind: histUser, text: "hi"}}
 
 	out, cmd := m.dispatchChatWorkflow()

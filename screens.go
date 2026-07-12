@@ -146,7 +146,7 @@ func (m model) popoverOpen() bool {
 	if m.workflowPicker != nil {
 		return m.screen == screenAsk || isIssueScreen(m.screen)
 	}
-	if m.screen == screenAsk && !m.busy && !m.shellMode {
+	if m.screen == screenAsk && !m.busy() && !m.shellMode {
 		if m.pathPickerActive() && len(m.pathMatches) > 0 {
 			return true
 		}

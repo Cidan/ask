@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"strings"
 	"time"
@@ -377,7 +378,7 @@ func (a app) supplantWorkflow(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
 	// Mid-turn (busy or procStarting): register the intent so the
 	// workflow launches when this turn completes, rather than failing
 	// with a toast the agent can't act on.
-	if t.busy || t.procStarting {
+	if t.busy() {
 		t.pendingWorkflow = &req
 		return a, nil
 	}
@@ -385,7 +386,7 @@ func (a app) supplantWorkflow(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
 	// Send into it (each step is a fresh one-shot). The snapshot keeps
 	// sessionID so the restored chat resumes seamlessly on next turn.
 	t.drainPendingReplies()
-	t.killProc()
+	globalCoordinator.Kill(t.id)
 	t.workflowRun = &workflowRunState{
 		Workflow:  req.Workflow,
 		Source:    req.Source,
@@ -433,8 +434,17 @@ func (a app) supplantWorkflow(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
 			a = tm
 		}
 	}
-	startStep := func() tea.Msg { return workflowRunStartStepMsg{tabID: t.id} }
-	return a, startStep
+	if isTesting {
+		startStep := func() tea.Msg { return workflowRunStartStepMsg{tabID: t.id} }
+		return a, startStep
+	}
+	runWF := func() tea.Msg {
+		go func() {
+			_, _ = globalCoordinator.RunWorkflow(context.Background(), t.id, req.Workflow, req.Source)
+		}()
+		return nil
+	}
+	return a, runWF
 }
 
 func (a app) switchTab(idx int) (tea.Model, tea.Cmd) {

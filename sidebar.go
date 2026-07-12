@@ -274,7 +274,7 @@ func (m *model) sidebarBadge() (string, lipgloss.Style) {
 		return "✗", errStyle
 	case m.workflowRun != nil && m.workflowRun.done:
 		return "✓", lipgloss.NewStyle().Foreground(activeTheme.success)
-	case m.busy:
+	case m.busy():
 		return "●", lipgloss.NewStyle().Foreground(activeTheme.accentAlt)
 	}
 	return "", lipgloss.Style{}
@@ -305,7 +305,7 @@ func (m *model) sidebarActivity() (string, lipgloss.Style) {
 	if m.needsUserInput() {
 		return "⚠ waiting for your input", warnStyle
 	}
-	if m.busy {
+	if m.busy() {
 		for _, t := range m.todos {
 			if t.Status == "in_progress" {
 				return "▸ " + nonEmpty(t.ActiveForm, t.Content), todoProgressStyle
@@ -339,10 +339,10 @@ func (m *model) wantsTabKey() bool {
 	if m.workflowPicker != nil || m.cancelTurnConfirming || m.closeTabConfirming || m.mergePRConfirming {
 		return true
 	}
-	if !m.busy && m.pathPickerActive() && len(m.pathMatches) > 0 {
+	if !m.busy() && m.pathPickerActive() && len(m.pathMatches) > 0 {
 		return true
 	}
-	if !m.busy && m.historyIdx < 0 && len(m.filterSlashCmds()) > 0 {
+	if !m.busy() && m.historyIdx < 0 && len(m.filterSlashCmds()) > 0 {
 		return true
 	}
 	return false

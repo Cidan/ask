@@ -469,7 +469,7 @@ func (m model) spinnerLine() string {
 	if m.shellMode {
 		return thinkingStyle.Render(promptStyle.Render("▸ Shell Mode"))
 	}
-	if !m.busy && (m.workflowRun == nil || m.workflowRun.done || m.workflowRun.failed) {
+	if !m.busy() && (m.workflowRun == nil || m.workflowRun.done || m.workflowRun.failed) {
 		return ""
 	}
 	s := m.status
@@ -480,7 +480,7 @@ func (m model) spinnerLine() string {
 }
 
 func (m model) spinnerBlockHeight() int {
-	if m.shellMode || m.busy || (m.workflowRun != nil && !m.workflowRun.done && !m.workflowRun.failed) {
+	if m.shellMode || m.busy() || (m.workflowRun != nil && !m.workflowRun.done && !m.workflowRun.failed) {
 		return 2
 	}
 	return 0
@@ -579,7 +579,7 @@ func (m model) View() tea.View {
 	// Without the screen check, a dirty input value carried into the
 	// issues screen (user typed "/res" then hit Ctrl+I) would float a
 	// menu over the table with no anchor and no way to interact.
-	if m.mode == modeInput && !m.busy && !m.shellMode && m.screen == screenAsk {
+	if m.mode == modeInput && !m.busy() && !m.shellMode && m.screen == screenAsk {
 		switch {
 		case m.pathPickerActive():
 			box = m.renderPathBox()
@@ -1331,7 +1331,7 @@ func (m model) workflowRunningBannerLines(sourceLabel, cancelClause string) (tit
 }
 
 func (m model) todoBlock() string {
-	if !m.busy || len(m.todos) == 0 {
+	if !m.busy() || len(m.todos) == 0 {
 		return ""
 	}
 	target := 0

@@ -291,7 +291,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if !m.busy {
+		if !m.busy() {
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -299,16 +299,13 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, cmd
 
 	case streamStatusMsg:
-		if msg.proc != m.proc {
+		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
-		wasIdle := !m.busy
-		m.busy = true
+		wasIdle := !m.busy()
+		m.testBusy = true
 		m.status = msg.status
 		var cmds []tea.Cmd
-		if m.streamCh != nil {
-			cmds = append(cmds, nextStreamCmd(m.streamCh))
-		}
 		if wasIdle {
 			cmds = append(cmds, m.spinner.Tick)
 		}
@@ -318,17 +315,14 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case todoUpdatedMsg:
-		if msg.proc != m.proc {
+		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
 		m.todos = msg.todos
-		if m.streamCh != nil {
-			return m, nextStreamCmd(m.streamCh)
-		}
 		return m, nil
 
 	case providerCwdMsg:
-		if msg.proc != m.proc {
+		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
 		name := worktreeNameFromCwd(msg.cwd)
@@ -337,23 +331,17 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		m.worktreeName = name
 		m.lastContentFP = ""
-		if m.streamCh != nil {
-			return m, nextStreamCmd(m.streamCh)
-		}
 		return m, nil
 
 	case providerModelMsg:
-		if msg.proc != m.proc {
+		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
 		m.modelForContext = msg.model
-		if m.streamCh != nil {
-			return m, nextStreamCmd(m.streamCh)
-		}
 		return m, nil
 
 	case usageMsg:
-		if msg.proc != m.proc {
+		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
 		m.lastUsageTokens = msg.tokens
@@ -361,24 +349,18 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			m.sessionCostUSD += msg.costUSD
 			m.sessionCostKnown = true
 		}
-		if m.streamCh != nil {
-			return m, nextStreamCmd(m.streamCh)
-		}
 		return m, nil
 
 	case costMsg:
-		if msg.proc != m.proc {
+		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
 		m.sessionCostUSD += msg.costUSD
 		m.sessionCostKnown = true
-		if m.streamCh != nil {
-			return m, nextStreamCmd(m.streamCh)
-		}
 		return m, nil
 
 	case bgTaskStartedMsg:
-		if msg.proc != m.proc {
+		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
 		if m.bgTasks == nil {
@@ -387,19 +369,13 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m.bgTasks[msg.taskID] = msg.toolUseID
 		debugLog("bgTaskStartedMsg tab=%d task_id=%s tool_use_id=%s bgTasks=%d",
 			m.id, msg.taskID, msg.toolUseID, len(m.bgTasks))
-		if m.streamCh != nil {
-			return m, nextStreamCmd(m.streamCh)
-		}
 		return m, nil
 
 	case bgTaskEndedMsg:
-		if msg.proc != m.proc {
+		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
 		delete(m.bgTasks, msg.taskID)
-		if m.streamCh != nil {
-			return m, nextStreamCmd(m.streamCh)
-		}
 		return m, nil
 
 	case hookSubagentStartMsg:
@@ -430,38 +406,29 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case toolDiffMsg:
-		if msg.proc != m.proc {
+		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
 		if m.renderDiffs && !m.quietMode && m.workflowRun == nil {
 			m.appendHistory(renderDiffBlock(msg.filePath, msg.hunks))
 		}
-		if m.streamCh != nil {
-			return m, nextStreamCmd(m.streamCh)
-		}
 		return m, nil
 
 	case toolCallMsg:
-		if msg.proc != m.proc {
+		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
 		if m.shouldRenderToolCall(msg) {
 			m.appendHistory(renderToolCallBlock(msg.name, msg.input, m.toolOutputMode))
 		}
-		if m.streamCh != nil {
-			return m, nextStreamCmd(m.streamCh)
-		}
 		return m, nil
 
 	case toolResultMsg:
-		if msg.proc != m.proc {
+		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
 		if m.shouldRenderToolResult(msg) {
 			m.appendHistory(renderToolResultBlock(msg.output, msg.isError))
-		}
-		if m.streamCh != nil {
-			return m, nextStreamCmd(m.streamCh)
 		}
 		return m, nil
 
@@ -480,42 +447,25 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 	case providerStartDoneMsg:
 		return m.handleProviderStartDone(msg)
 
-	case cancelWatchdogMsg:
-		// Cooperative cancel never completed within the grace window.
-		// If the same proc is still running and still busy, kill it
-		// as a fallback so the UI doesn't sit in "cancelling…"
-		// forever. If the proc has already exited (nil m.proc) or
-		// the turn wound down normally (not busy), we silently drop.
-		if msg.proc != m.proc || !m.busy || m.proc == nil {
+	case providerExitedMsg:
+		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
-		debugLog("cancel watchdog fired; force-killing proc")
-		m.killProc()
-		m.appendHistory(outputStyle.Render(dimStyle.Render(
-			"✗ cancelled (force-killed after interrupt timed out)")))
-		return m, nil
-
-	case providerExitedMsg:
-		if msg.proc != m.proc {
-			return m, nil
+		m.testBusy = false
+		if isTesting {
+			m.proc = nil
+			m.streamCh = nil
 		}
 		var stderrTail string
-		if m.proc != nil && m.proc.stderr != nil {
-			stderrTail = strings.TrimSpace(m.proc.stderr.String())
+		if msg.proc != nil && msg.proc.stderr != nil {
+			stderrTail = strings.TrimSpace(msg.proc.stderr.String())
 		}
 		debugLog("providerExitedMsg err=%v stderrLen=%d", msg.err, len(stderrTail))
 		m.flushTurnBuffer()
-		m.busy = false
 		m.pendingWorkflow = nil
 		m.status = ""
 		m.todos = nil
 		m.bgTasks = nil
-		m.streamCh = nil
-		m.proc = nil
-		// Keep m.worktreeName across proc exits — the directory still
-		// exists on disk and the next turn (or a provider swap) reuses
-		// it. /new, /clear, and the worktree-off toggle clear it
-		// explicitly; prune reaps it on shutdown.
 		m.dismissCancelTurnConfirmIfIdle()
 		if m.mode == modeApproval {
 			// Unblock any codex approval responder still waiting on
@@ -539,25 +489,13 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			m.appendHistory(outputStyle.Render(errStyle.Render(out)))
 		}
-		// Workflow tabs: the proc dying on its own (without
-		// turnCompleteMsg arriving first) is a fatal step error.
-		// turnCompleteMsg's success path already kills the proc
-		// itself, so by the time providerExitedMsg lands on a
-		// healthy step the runner has already moved on; the guard
-		// against `done`/`failed` ensures we don't double-finalise.
-		if m.workflowRun != nil && !m.workflowRun.done && !m.workflowRun.failed {
-			detail := stderrTail
-			if msg.err != nil {
-				detail = msg.err.Error()
-			}
-			return m, workflowAdvanceCmd(m.id, errStepError(detail))
-		}
 		return m, nil
 
 	case providerDoneMsg:
-		if msg.proc != m.proc {
+		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
+		m.testBusy = false
 		debugLog("providerDoneMsg err=%v isError=%v resultLen=%d",
 			msg.err, msg.res.IsError, len(msg.res.Result))
 		m.dismissCancelTurnConfirmIfIdle()
@@ -568,7 +506,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			m.sessionID = msg.res.SessionID
 			m.recordVirtualSession(msg.res.SessionID)
 		}
-		var workflowErr error
 		switch {
 		case msg.err != nil:
 			out := errStyle.Render(fmt.Sprintf("error: %v", msg.err))
@@ -576,47 +513,28 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 				out += "\n" + dimStyle.Render(msg.raw)
 			}
 			m.appendHistory(outputStyle.Render(out))
-			m.busy = false
 			m.status = ""
 			m.pendingWorkflow = nil
 			m.todos = nil
-			workflowErr = msg.err
 		case msg.res.IsError:
 			m.appendHistory(outputStyle.Render(errStyle.Render("error: " + msg.res.Result)))
-			m.busy = false
 			m.status = ""
 			m.pendingWorkflow = nil
 			m.todos = nil
-			workflowErr = errStepError(msg.res.Result)
-		}
-		var cmd tea.Cmd
-		if m.streamCh != nil {
-			cmd = nextStreamCmd(m.streamCh)
 		}
 		m.refreshPathMatches()
-		// Workflow error: hand off to the runner so the chain
-		// finalises with `failed`. Success paths are routed by
-		// turnCompleteMsg instead — providerDoneMsg fires for both
-		// paths and we don't want to double-advance.
-		if workflowErr != nil && m.workflowRun != nil && !m.workflowRun.done && !m.workflowRun.failed {
-			advance := workflowAdvanceCmd(m.id, workflowErr)
-			if cmd != nil {
-				return m, tea.Batch(cmd, advance)
-			}
-			return m, advance
-		}
-		return m, cmd
+		return m, nil
 
 	case assistantTextMsg:
-		if msg.proc != m.proc {
+		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
 		// Workflow capture: feed the per-step output buffer so
 		// step N+1's prompt can carry "Previous step output:". No-op
 		// off a workflow tab.
 		(&m).workflowAssistantText(msg.text)
-		wasIdle := !m.busy
-		m.busy = true
+		wasIdle := !m.busy()
+		m.testBusy = true
 		switch {
 		case m.workflowRun != nil:
 			// Workflow tabs show the clean per-step summary list, not the
@@ -627,9 +545,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			m.appendResponse(msg.text)
 		}
 		var cmds []tea.Cmd
-		if m.streamCh != nil {
-			cmds = append(cmds, nextStreamCmd(m.streamCh))
-		}
 		if wasIdle {
 			cmds = append(cmds, m.spinner.Tick)
 		}
@@ -639,56 +554,106 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case turnCompleteMsg:
-		if msg.proc != m.proc {
+		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
 		m.flushTurnBuffer()
-		m.busy = false
+		m.testBusy = false
 		m.status = ""
 		m.todos = nil
 		m.dismissCancelTurnConfirmIfIdle()
-		// Workflow tabs: a clean turn completion is the signal to
-		// advance to the next step. The runner kills the proc,
-		// rolls the captured text into the step log, and either
-		// fires the next step or finalises the run. The advance
-		// cmd runs as a fresh tea.Cmd so any next-step proc spawn
-		// happens at a clean Update boundary.
-		var workflowCmd tea.Cmd
-		if m.workflowRun != nil && !m.workflowRun.done && !m.workflowRun.failed {
-			workflowCmd = workflowAdvanceCmd(m.id, nil)
-		}
-		// Deferred workflow launch: the agent approved a finalized plan
-		// mid-turn; fire it now that the turn is complete and the
-		// tab is no longer busy. Emit the stored spawnWorkflowTabMsg
-		// so the app handler processes it as if it arrived fresh.
 		var pendingWFCmd tea.Cmd
 		if m.pendingWorkflow != nil {
 			pw := *m.pendingWorkflow
 			m.pendingWorkflow = nil
 			pendingWFCmd = func() tea.Msg { return pw }
 		}
-		var streamCmd tea.Cmd
-		if m.streamCh != nil {
-			streamCmd = nextStreamCmd(m.streamCh)
-		}
-		var cmds []tea.Cmd
-		if streamCmd != nil {
-			cmds = append(cmds, streamCmd)
-		}
-		if workflowCmd != nil {
-			cmds = append(cmds, workflowCmd)
-		}
-		if pendingWFCmd != nil {
-			cmds = append(cmds, pendingWFCmd)
-		}
-		switch len(cmds) {
-		case 0:
+		return m, pendingWFCmd
+
+	case WorkflowStartedMsg:
+		if msg.TabID != m.id {
 			return m, nil
-		case 1:
-			return m, cmds[0]
-		default:
-			return m, tea.Batch(cmds...)
 		}
+		m.workflowRun = &workflowRunState{
+			Workflow:  msg.Workflow,
+			Source:    msg.Source,
+			startedAt: time.Now().UTC(),
+			StepIdx:   0,
+		}
+		return m, nil
+
+	case WorkflowStepStartedMsg:
+		if msg.TabID != m.id {
+			return m, nil
+		}
+		if m.workflowRun != nil {
+			m.workflowRun.StepIdx = msg.StepIdx
+			header := "   " + workflowMarginStyle.Render("|") + " " +
+				promptStyle.Render("▸ "+nonEmpty(msg.StepName, "step"))
+			if meta := providerMeta(msg.Provider, msg.Model); meta != "" {
+				header += dimStyle.Render(" (" + meta + ")")
+			}
+			m.appendHistory(header)
+		}
+		return m, nil
+
+	case WorkflowStepDoneMsg:
+		if msg.TabID != m.id {
+			return m, nil
+		}
+		if m.workflowRun != nil {
+			step := m.workflowRun.Workflow.Steps[msg.StepIdx]
+			m.appendWorkflowStepDone(step.Name, step.Provider, step.Model, msg.Summary)
+		}
+		return m, nil
+
+	case WorkflowDoneMsg:
+		if msg.TabID != m.id {
+			return m, nil
+		}
+		if m.workflowRun != nil {
+			m.workflowRun.done = true
+			m.workflowRun.finishData = &finishWorkflowData{
+				Description: msg.Description,
+				Artifacts:   msg.Artifacts,
+			}
+			
+			var out strings.Builder
+			out.WriteString(promptStyle.Render("✓ workflow complete: " + m.workflowRun.Workflow.Name))
+			if msg.Description != "" {
+				out.WriteString("\n  Outcome: " + msg.Description)
+				if len(msg.Artifacts) > 0 {
+					out.WriteString("\n  Artifacts:")
+					for _, art := range msg.Artifacts {
+						out.WriteString("\n  • " + art)
+					}
+				}
+			}
+			m.appendHistory(outputStyle.Render(out.String()))
+		}
+		return m, nil
+
+	case WorkflowFailedMsg:
+		if msg.TabID != m.id {
+			return m, nil
+		}
+		if m.workflowRun != nil {
+			m.workflowRun.failed = true
+			m.workflowRun.failedReason = msg.Reason
+			out := "✗ workflow failed: " + m.workflowRun.Workflow.Name
+			if msg.Reason != "" {
+				out += " — " + msg.Reason
+			}
+			m.appendHistory(outputStyle.Render(errStyle.Render(out)))
+		}
+		return m, nil
+
+	case AppendHistoryMsg:
+		if msg.TabID != m.id {
+			return m, nil
+		}
+		m.appendHistory(msg.Text)
+		return m, nil
 
 	case historyLoadedMsg:
 		if msg.tabID != m.id {
@@ -734,7 +699,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if msg.vsID != m.virtualSessionID {
 			return m, nil
 		}
-		m.busy = false
+		m.testBusy = false
 		m.status = ""
 		if msg.err != nil {
 			m.appendHistory(outputStyle.Render(errStyle.Render(
@@ -844,12 +809,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		m = m.startApproval(msg)
 		return m, nil
-
-	case workflowRunStartStepMsg:
-		return m.workflowRunHandleStartStep(msg)
-
-	case workflowRunStepDoneMsg:
-		return m.workflowRunHandleStepDone(msg)
 
 	case finishWorkflowSignalMsg:
 		if msg.tabID != m.id {
@@ -1067,7 +1026,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.cancelTurnConfirming || m.closeTabConfirming || m.mergePRConfirming {
 			return m, nil
 		}
-		// No !m.busy gate: typed keys, image pastes, and shell-mode
+		// No !m.busy() gate: typed keys, image pastes, and shell-mode
 		// keystrokes all reach the textarea while a turn (or shell
 		// command) is in flight so the user can stage a follow-up.
 		// Bracketed paste is the same input modality and must match.
@@ -1276,7 +1235,7 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.shellMode {
 		return m.updateShellInput(msg)
 	}
-	if msg.Text == "!" && m.input.Value() == "" && len(m.pending) == 0 && !m.busy {
+	if msg.Text == "!" && m.input.Value() == "" && len(m.pending) == 0 && !m.busy() {
 		m.shellMode = true
 		m.shellBsArmed = false
 		m.resetHistoryNav()
@@ -1297,7 +1256,7 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.exitArmed = false
 	}
 	if isCtrlC {
-		if m.busy {
+		if m.busy() {
 			m.cancelTurnConfirming = true
 			m.cancelTurnChoice = 0
 			return m, nil
@@ -1321,7 +1280,7 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	km := currentKeyMap()
 	if km.Matches(ActionProviderSwitch, msg) {
-		if m.busy {
+		if m.busy() {
 			// Don't allow swapping mid-turn — the stream reader is
 			// tied to the current proc and the session id is about to
 			// be wiped.
@@ -1346,7 +1305,7 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.dispatchChatWorkflow()
 	}
 	if msg.Mod == 0 && msg.Code == tea.KeyEsc {
-		if m.busy {
+		if m.busy() {
 			m.cancelTurnConfirming = true
 			m.cancelTurnChoice = 0
 			return m, nil
@@ -1364,8 +1323,8 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	items := m.filterSlashCmds()
-	menuOpen := !m.busy && m.historyIdx < 0 && len(items) > 0
-	pickOpen := !m.busy && m.pathPickerActive() && len(m.pathMatches) > 0
+	menuOpen := !m.busy() && m.historyIdx < 0 && len(items) > 0
+	pickOpen := !m.busy() && m.pathPickerActive() && len(m.pathMatches) > 0
 
 	if (pickOpen || menuOpen) && isCtrlListNav(msg) {
 		if pickOpen {
@@ -1442,7 +1401,7 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			val := m.input.Value()
 			line := strings.TrimSpace(val)
 			debugLog("Enter line=%q valLen=%d busy=%v pending=%d pathCmd=%q bare=%q",
-				line, len(val), m.busy, len(m.pending), m.pathPickerCmd(), bareCommand(line))
+				line, len(val), m.busy(), len(m.pending), m.pathPickerCmd(), bareCommand(line))
 			// Slash menu open + the typed value is not yet a registered
 			// command exactly: Enter completes the highlighted entry
 			// instead of submitting (mirrors Tab). When the value IS an
@@ -1459,7 +1418,7 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if line == "" && len(m.pending) == 0 {
 				return m, nil
 			}
-			if m.busy && (strings.HasPrefix(line, "/") || m.pathPickerCmd() != "" || bareCommand(line) != "") {
+			if m.busy() && (strings.HasPrefix(line, "/") || m.pathPickerCmd() != "" || bareCommand(line) != "") {
 				return m, nil
 			}
 			m.recordInputHistory(val)
@@ -1498,7 +1457,7 @@ func (m *model) updateComposer(msg tea.Msg) tea.Cmd {
 	if items := m.filterSlashCmds(); m.menuIdx >= len(items) {
 		m.menuIdx = 0
 	}
-	if !m.busy {
+	if !m.busy() {
 		m.refreshPathMatches()
 	} else {
 		m.pathMatches = nil
@@ -1680,8 +1639,35 @@ func (m model) applyCancelTurnConfirm() (tea.Model, tea.Cmd) {
 	return mm, cmd
 }
 
+func (m model) cancelTurn() (model, tea.Cmd) {
+	if isTesting {
+		if !m.busy() && m.proc == nil {
+			return m, nil
+		}
+		m.flushTurnBuffer()
+		if m.provider != nil && m.proc != nil {
+			handled, err := m.provider.Interrupt(m.proc)
+			if err != nil {
+				debugLog("provider.Interrupt err: %v", err)
+			}
+			if handled && err == nil {
+				m.status = "cancelling…"
+				m.appendHistory(outputStyle.Render(dimStyle.Render("✗ cancelling…")))
+				return m, cancelWatchdogCmd(m.proc)
+			}
+		}
+		m.killProc()
+		m.appendHistory(outputStyle.Render(dimStyle.Render("✗ cancelled")))
+		return m, nil
+	}
+
+	globalCoordinator.CancelWorkflow(m.id)
+	m.appendHistory(outputStyle.Render(dimStyle.Render("✗ cancelled")))
+	return m, nil
+}
+
 func (m *model) dismissCancelTurnConfirmIfIdle() {
-	if !m.busy {
+	if !m.busy() {
 		m.cancelTurnConfirming = false
 		m.cancelTurnChoice = 0
 	}
@@ -1909,7 +1895,7 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 		worktreeName = worktreeNameFromVS(vs, sourceProv.ID())
 	}
 	m.worktreeName = worktreeName
-	m.busy = true
+	m.testBusy = true
 	m.status = "translating session…"
 	m.appendHistory(outputStyle.Render(dimStyle.Render(
 		fmt.Sprintf("translating %s from %s → %s…",
@@ -2172,4 +2158,99 @@ func reapBgTaskByAgentID(bgTasks map[string]string, agentID string) string {
 		}
 	}
 	return ""
+}
+
+func (m model) sendToProvider(line string) (tea.Model, tea.Cmd) {
+	titleCmd := (&m).maybeStartTabTitle(line)
+	newM, cmd := m.dispatchProviderTurn(line)
+	if titleCmd == nil {
+		return newM, cmd
+	}
+	if cmd == nil {
+		return newM, titleCmd
+	}
+	return newM, tea.Batch(cmd, titleCmd)
+}
+
+func (m model) dispatchProviderTurn(line string) (tea.Model, tea.Cmd) {
+	nAtt := len(m.pending)
+	(&m).clearSelection()
+	if m.workflowRun == nil {
+		m.appendUser(userBarText(line, nAtt))
+	}
+	if invalid := validateAskCwd(m.cwd); invalid.Msg != "" {
+		m.pending = nil
+		m.appendHistory(outputStyle.Render(errStyle.Render(invalid.Msg)))
+		return m, nil
+	}
+
+	if isTesting {
+		turn := providerQueuedTurn{
+			text:        line,
+			attachments: append([]pendingAttachment(nil), m.pending...),
+		}
+		wasIdle := !m.busy()
+
+		if m.procStarting && m.proc == nil {
+			m.queuedTurns = append(m.queuedTurns, turn)
+			m.pending = nil
+			m.testBusy = true
+			if m.status == "" {
+				m.status = "starting " + m.provider.DisplayName() + "..."
+			}
+			return m, nil
+		}
+
+		if m.proc == nil {
+			m.procStartSeq++
+			seq := m.procStartSeq
+			m.procStarting = true
+			m.pending = nil
+			m.testBusy = true
+			m.status = "starting " + m.provider.DisplayName() + "..."
+			(&m).preMintNativeSessionIfNeeded()
+			cmd := startAndSendProviderCmd(m.provider, m.sessionArgs(), m.worktreeName, turn, seq)
+			m.sessionMinted = false
+			if wasIdle {
+				return m, tea.Batch(cmd, m.spinner.Tick)
+			}
+			return m, cmd
+		}
+
+		if err := m.provider.Send(m.proc, line, m.pending); err != nil {
+			m.appendHistory(outputStyle.Render(errStyle.Render("write to " + m.provider.DisplayName() + " failed: " + err.Error())))
+			m.killProc()
+			return m, nil
+		}
+		m.pending = nil
+		m.testBusy = true
+		m.status = "thinking…"
+		var cmds []tea.Cmd
+		if wasIdle {
+			cmds = append(cmds, m.spinner.Tick)
+		}
+		if len(cmds) == 0 {
+			return m, nil
+		}
+		return m, tea.Batch(cmds...)
+	}
+
+	// Production: Coordinator background Dispatch!
+	args := m.sessionArgs()
+	p := m.provider
+	pending := append([]pendingAttachment(nil), m.pending...)
+	m.pending = nil
+
+	cmd := func() tea.Msg {
+		err := globalCoordinator.Dispatch(m.id, p, args, line, pending)
+		if err != nil {
+			return providerDoneMsg{
+				tabID: m.id,
+				err:   err,
+			}
+		}
+		return nil
+	}
+
+	return m, tea.Batch(cmd, m.spinner.Tick)
 }

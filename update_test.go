@@ -49,7 +49,7 @@ func TestUpdate_AssistantTextMsgIgnoredForStaleProc(t *testing.T) {
 	m.proc = &providerProc{}
 	stale := &providerProc{}
 	m2, _ := runUpdate(t, m, assistantTextMsg{text: "late", proc: stale})
-	if m2.busy {
+	if m2.busy() {
 		t.Errorf("busy should remain false for stale proc")
 	}
 	if len(m2.history) != 0 {
@@ -68,7 +68,7 @@ func TestUpdate_AssistantTextMsgAppendsResponseWhenNotQuiet(t *testing.T) {
 	if m2.history[0].kind != histResponse || m2.history[0].text != "hello" {
 		t.Errorf("history entry wrong: %+v", m2.history[0])
 	}
-	if !m2.busy {
+	if !m2.busy() {
 		t.Errorf("busy should be set")
 	}
 }
@@ -90,7 +90,7 @@ func TestUpdate_AssistantTextMsgBuffersInQuietMode(t *testing.T) {
 	if len(m3.history) != 1 || m3.history[0].kind != histResponse || m3.history[0].text != "second" {
 		t.Errorf("flush should emit last text as response; got %+v", m3.history)
 	}
-	if m3.busy {
+	if m3.busy() {
 		t.Errorf("turnCompleteMsg should clear busy")
 	}
 }
@@ -98,11 +98,11 @@ func TestUpdate_AssistantTextMsgBuffersInQuietMode(t *testing.T) {
 func TestUpdate_TurnCompleteMsgClearsStatus(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}
-	m.busy = true
+	m.testBusy = true
 	m.status = "thinking…"
 	m.todos = []todoItem{{Content: "x"}}
 	m2, _ := runUpdate(t, m, turnCompleteMsg{proc: m.proc})
-	if m2.busy {
+	if m2.busy() {
 		t.Errorf("busy should be cleared")
 	}
 	if m2.status != "" {
@@ -117,7 +117,7 @@ func TestUpdate_ProviderExitedMsgResetsState(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{stderr: &stderrBuf{}}
 	m.streamCh = make(chan tea.Msg, 1)
-	m.busy = true
+	m.testBusy = true
 	m.bgTasks = map[string]string{"a": ""}
 	m.todos = []todoItem{{Content: "x"}}
 	m.worktreeName = "w1"
@@ -128,7 +128,7 @@ func TestUpdate_ProviderExitedMsgResetsState(t *testing.T) {
 	if m2.streamCh != nil {
 		t.Errorf("streamCh should be nil after exited")
 	}
-	if m2.busy {
+	if m2.busy() {
 		t.Error("busy should be false")
 	}
 	if m2.todos != nil {
@@ -148,9 +148,9 @@ func TestUpdate_ProviderExitedMsgResetsState(t *testing.T) {
 func TestUpdate_ProviderDoneMsgWithErrorAppendsError(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}
-	m.busy = true
+	m.testBusy = true
 	m2, _ := runUpdate(t, m, providerDoneMsg{err: errMarker{}, proc: m.proc})
-	if m2.busy {
+	if m2.busy() {
 		t.Error("err should clear busy")
 	}
 	if len(m2.history) == 0 {
@@ -161,7 +161,7 @@ func TestUpdate_ProviderDoneMsgWithErrorAppendsError(t *testing.T) {
 func TestUpdate_ProviderDoneMsgUpdatesSessionID(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}
-	m.busy = true
+	m.testBusy = true
 	m2, _ := runUpdate(t, m, providerDoneMsg{
 		proc: m.proc,
 		res:  providerResult{SessionID: "S-42", Result: "ok"},
@@ -174,12 +174,12 @@ func TestUpdate_ProviderDoneMsgUpdatesSessionID(t *testing.T) {
 func TestUpdate_ProviderDoneIsErrorAppendsError(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}
-	m.busy = true
+	m.testBusy = true
 	m2, _ := runUpdate(t, m, providerDoneMsg{
 		proc: m.proc,
 		res:  providerResult{IsError: true, Result: "boom"},
 	})
-	if m2.busy {
+	if m2.busy() {
 		t.Error("IsError should clear busy")
 	}
 	if len(m2.history) == 0 {
@@ -673,12 +673,12 @@ func TestCancelTurn_DoesNothingWhenIdle(t *testing.T) {
 func TestCancelTurn_KillsProcAndAppendsMarker(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}
-	m.busy = true
+	m.testBusy = true
 	out, _ := m.cancelTurn()
 	if out.proc != nil {
 		t.Errorf("proc should be killed")
 	}
-	if out.busy {
+	if out.busy() {
 		t.Errorf("busy should be false")
 	}
 	if len(out.history) == 0 {
@@ -722,7 +722,7 @@ func TestSendToProvider_WiresProcAndStream(t *testing.T) {
 	if !m2.procStarting {
 		t.Error("sendToProvider should mark procStarting")
 	}
-	if !m2.busy {
+	if !m2.busy() {
 		t.Error("busy should be true")
 	}
 	if m2.status != "starting Fake..." {
@@ -746,7 +746,7 @@ func TestSendToProvider_WiresProcAndStream(t *testing.T) {
 	if m3.procStarting {
 		t.Error("procStarting should clear after start completes")
 	}
-	if !m3.busy {
+	if !m3.busy() {
 		t.Error("busy should remain true")
 	}
 	if m3.status != "thinking…" {
@@ -768,7 +768,7 @@ func TestSendToProvider_QueuesWhileProcStarting(t *testing.T) {
 	m := newTestModel(t, fp)
 	m.procStarting = true
 	m.procStartSeq = 7
-	m.busy = true
+	m.testBusy = true
 	m.status = "starting Fake..."
 
 	m2any, cmd := m.sendToProvider("second")
@@ -790,7 +790,7 @@ func TestProviderStartDone_SendsQueuedTurns(t *testing.T) {
 	m := newTestModel(t, fp)
 	m.procStarting = true
 	m.procStartSeq = 3
-	m.busy = true
+	m.testBusy = true
 	m.queuedTurns = []providerQueuedTurn{{text: "queued"}}
 
 	proc := &providerProc{stdin: &bufferCloser{Buffer: &bytes.Buffer{}}}
@@ -1141,7 +1141,7 @@ func TestUpdate_ProviderExitedIncludesStderrTail(t *testing.T) {
 	stderr := &stderrBuf{}
 	_, _ = stderr.Write([]byte("boom boom boom"))
 	m.proc = &providerProc{stderr: stderr}
-	m.busy = true
+	m.testBusy = true
 	m2, _ := runUpdate(t, m, providerExitedMsg{proc: m.proc})
 	if len(m2.history) == 0 {
 		t.Fatalf("stderr tail should append an entry; history=%+v", m2.history)
@@ -1211,7 +1211,7 @@ func TestProviderStartDone_CapturesNativeSessionID(t *testing.T) {
 	m := newTestModel(t, fp)
 	m.procStarting = true
 	m.procStartSeq = 1
-	m.busy = true
+	m.testBusy = true
 
 	proc := &providerProc{stdin: &bufferCloser{Buffer: &bytes.Buffer{}}}
 	ch := make(chan tea.Msg, 1)
@@ -1233,7 +1233,7 @@ func TestProviderStartDone_PreMintedSessionIDNotOverwritten(t *testing.T) {
 	m := newTestModel(t, fp)
 	m.procStarting = true
 	m.procStartSeq = 1
-	m.busy = true
+	m.testBusy = true
 	m.sessionID = "pre-minted"
 
 	proc := &providerProc{stdin: &bufferCloser{Buffer: &bytes.Buffer{}}}
@@ -1273,7 +1273,7 @@ func TestPersistSlashCmdsCmd_CallsSaveSettings(t *testing.T) {
 func TestUpdate_PasteMsgWhileBusyAppendsToInput(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}
-	m.busy = true
+	m.testBusy = true
 	m.input.SetValue("draft ")
 
 	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "tail"})
@@ -1282,7 +1282,7 @@ func TestUpdate_PasteMsgWhileBusyAppendsToInput(t *testing.T) {
 		t.Errorf("paste during busy turn must reach the textarea: got %q want %q",
 			m2.input.Value(), "draft tail")
 	}
-	if !m2.busy {
+	if !m2.busy() {
 		t.Errorf("paste must not flip busy off, got busy=false")
 	}
 }
@@ -1349,7 +1349,7 @@ func TestUpdate_PasteMsgRefreshesPathMatches(t *testing.T) {
 func TestUpdate_PasteMsgWhileBusyClearsPathMatchesLikeTypedInput(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}
-	m.busy = true
+	m.testBusy = true
 	m.input.SetValue("cd ")
 	m.pathMatches = []string{"stale"}
 	m.pathIdx = 3
@@ -1417,7 +1417,7 @@ func TestUpdate_PasteMsgInShellModeWhileRunningAppendsToInput(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.shellMode = true
 	m.shellCh = make(chan tea.Msg, 1)
-	m.busy = true
+	m.testBusy = true
 	m.input.SetValue("ls -")
 
 	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "la"})
@@ -1450,7 +1450,7 @@ func TestUpdate_PasteMsgOnWorkflowTabIsAbsorbed(t *testing.T) {
 				Source:   issueWorkflowSource(issueRef{Provider: "github", Project: "Cidan/ask", Number: 1}),
 				done:     c.done,
 			}
-			m.busy = c.busy
+			m.testBusy = c.busy
 			m.input.SetValue("staged ")
 
 			m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "tail"})
@@ -1472,7 +1472,7 @@ func TestUpdate_PasteMsgOnWorkflowTabIsAbsorbed(t *testing.T) {
 func TestUpdate_PasteMsgDuringCancelTurnConfirmIsAbsorbed(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}
-	m.busy = true
+	m.testBusy = true
 	m.cancelTurnConfirming = true
 	m.input.SetValue("hi ")
 

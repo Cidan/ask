@@ -91,7 +91,7 @@ func TestModelPicker_CtrlMOpensSeededOnCurrentModel(t *testing.T) {
 
 func TestModelPicker_CtrlMIgnoredWhileBusy(t *testing.T) {
 	m, _, _ := modelPickerFixture(t)
-	m.busy = true
+	m.testBusy = true
 	m = stepKey(t, m, pressKey('m', tea.ModCtrl))
 	if m.mode == modeModelPicker {
 		t.Errorf("Ctrl+M should be a no-op while busy")

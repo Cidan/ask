@@ -90,7 +90,7 @@ func (m model) globalConfigItems() []configItem {
 }
 
 func (m model) refreshHistoryCmd() tea.Cmd {
-	if m.busy || m.sessionID == "" {
+	if m.busy() || m.sessionID == "" {
 		return nil
 	}
 	return loadHistoryCmd(m.id, m.provider, m.sessionID, m.virtualSessionID,
@@ -380,10 +380,8 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 		}); err != nil {
 			debugLog("saveConfig err: %v", err)
 		}
-		if m.proc != nil {
-			if s, ok := m.proc.payload.(*agentSession); ok {
-				s.env.gateTodosBeforeMutate = m.gateTodosBeforeMutate
-			}
+		if s := globalCoordinator.GetSession(m.id); s != nil {
+			s.env.gateTodosBeforeMutate = m.gateTodosBeforeMutate
 		}
 		m.killProc()
 		return m, nil

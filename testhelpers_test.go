@@ -13,6 +13,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+func init() {
+	isTesting = true
+}
+
 // fakeProvider is an instrumentable Provider for tests. Every method has an
 // overridable *Fn hook; the zero value picks safe defaults so most tests can
 // use newFakeProvider() verbatim.

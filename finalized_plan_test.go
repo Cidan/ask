@@ -284,3 +284,51 @@ func TestFinalizedPlan_DrainPendingReplies(t *testing.T) {
 		t.Errorf("drainPendingReplies did not set finalizedPlanReply to nil")
 	}
 }
+
+func TestFinalizedPlan_WorkflowSelectionToolNoCmd(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.finalizedPlan = "plan content"
+	m.finalizedPlanExplanation = "expl"
+	m.finalizedPlanReply = make(chan finalizedPlanReply, 1)
+	m.finalizedPlanFocusBottom = true
+
+	// Since we need "ship" to exist in listAllWorkflows, let's create a temporary config or mock it.
+	// But listAllWorkflows looks at config / disk, let's see. If no workflows exist, finalizedPlanWorkflow won't be valid.
+	// Wait, is "ship" already in global workflows on this machine? Yes, .config/ask/workflows/ship.json exists!
+	// So listAllWorkflows(m.cwd) will indeed find "ship"!
+	m.finalizedPlanWorkflow = "ship"
+	opts := m.finalizedPlanOptions()
+	for idx, o := range opts {
+		if strings.HasPrefix(o, "Execute in workflow") {
+			m.finalizedPlanCursor = idx
+			break
+		}
+	}
+
+	m.history = []historyEntry{
+		{kind: histUser, text: "hello"},
+		{kind: histResponse, text: "hi"},
+	}
+
+	m2, cmd := m.updateFinalizedPlan(tea.KeyPressMsg{Code: tea.KeyEnter})
+	_ = m2.(model)
+
+	if cmd != nil {
+		t.Errorf("expected cmd to be nil when finalizedPlanReply is active (tool context)")
+	}
+
+	select {
+	case reply := <-m.finalizedPlanReply:
+		if reply.workflowName != "ship" {
+			t.Errorf("expected workflowName 'ship', got %q", reply.workflowName)
+		}
+		if len(reply.source.ChatTranscript) != 2 {
+			t.Errorf("expected 2 turns in chat transcript, got %d", len(reply.source.ChatTranscript))
+		}
+		if reply.source.ChatTranscript[0].Text != "hello" {
+			t.Errorf("expected first turn text 'hello', got %q", reply.source.ChatTranscript[0].Text)
+		}
+	default:
+		t.Errorf("expected reply on channel")
+	}
+}

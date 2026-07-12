@@ -220,6 +220,11 @@ type finalizedPlanReply struct {
 	talkMore      bool
 	executeInline bool
 	workflowName  string
+	workflowDone  bool
+	failedReason  string
+	outcome       string
+	artifacts     []string
+	source        workflowSource
 }
 
 type finalizedPlanRequestMsg struct {

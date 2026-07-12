@@ -46,6 +46,7 @@ const (
 
 type streamStatusMsg struct {
 	status string
+	tabID  int
 	proc   *providerProc
 }
 
@@ -59,6 +60,7 @@ type usageMsg struct {
 	tokens    int
 	costUSD   float64
 	costKnown bool
+	tabID     int
 	proc      *providerProc
 }
 
@@ -68,6 +70,7 @@ type usageMsg struct {
 // emitted when the catalog could price the call.
 type costMsg struct {
 	costUSD float64
+	tabID   int
 	proc    *providerProc
 }
 
@@ -78,16 +81,19 @@ type costMsg struct {
 // right context-window denominator.
 type providerModelMsg struct {
 	model string
+	tabID int
 	proc  *providerProc
 }
 
 type assistantTextMsg struct {
-	text string
-	proc *providerProc
+	text  string
+	tabID int
+	proc  *providerProc
 }
 
 type turnCompleteMsg struct {
-	proc *providerProc
+	tabID int
+	proc  *providerProc
 }
 
 type todoItem struct {
@@ -98,6 +104,7 @@ type todoItem struct {
 
 type todoUpdatedMsg struct {
 	todos []todoItem
+	tabID int
 	proc  *providerProc
 }
 
@@ -110,11 +117,13 @@ type bgTaskStartedMsg struct {
 	// even when its agent_id is the tool_use_id rather than the task_id
 	// (claude's CLI uses different identifier namespaces for the two).
 	toolUseID string
+	tabID     int
 	proc      *providerProc
 }
 
 type bgTaskEndedMsg struct {
 	taskID string
+	tabID  int
 	proc   *providerProc
 }
 
@@ -147,12 +156,14 @@ type hookSubagentStopMsg struct {
 // and kills the subprocess as a fallback so the user never gets
 // stuck staring at "cancelling…" forever.
 type cancelWatchdogMsg struct {
-	proc *providerProc
+	tabID int
+	proc  *providerProc
 }
 
 type toolDiffMsg struct {
 	filePath string
 	hunks    []diff.Hunk
+	tabID    int
 	proc     *providerProc
 }
 
@@ -168,6 +179,7 @@ type toolCallMsg struct {
 	name       string
 	input      map[string]any
 	background bool
+	tabID      int
 	proc       *providerProc
 }
 
@@ -183,8 +195,11 @@ type toolResultMsg struct {
 	output     string
 	isError    bool
 	background bool
+	tabID      int
 	proc       *providerProc
 }
+
+
 
 type stderrBuf struct {
 	mu   sync.Mutex
@@ -380,7 +395,6 @@ type model struct {
 	// ids under one id across providers. Set on /resume or first
 	// providerDoneMsg; cleared by /new and /clear.
 	virtualSessionID string
-	busy             bool
 	width            int
 	height           int
 
@@ -436,9 +450,12 @@ type model struct {
 	pathIdx     int
 
 	status   string
-	streamCh chan tea.Msg
-	proc     *providerProc
 
+	// Preserved solely for backward-compatibility in tests.
+	// Unused and unreferenced in the main application code.
+	proc         *providerProc
+	streamCh     chan tea.Msg
+	testBusy     bool
 	procStarting bool
 	procStartSeq uint64
 	queuedTurns  []providerQueuedTurn
@@ -887,3 +904,173 @@ const (
 	pathBoxMinWidth = 32
 	boxChromeW      = 4 // rounded border (2) + horizontal padding (2)
 )
+
+// Event Bus Messages for Rearchitecture
+type RunStartedMsg struct {
+	TabID int
+}
+
+type StreamTextMsg struct {
+	TabID int
+	Text  string
+}
+
+type ToolStartedMsg struct {
+	TabID int
+	Name  string
+	Input string
+}
+
+type ToolFinishedMsg struct {
+	TabID   int
+	Output  string
+	IsError bool
+}
+
+type RunCompletedMsg struct {
+	TabID int
+	Err   error
+}
+
+type WorkflowStartedMsg struct {
+	TabID    int
+	Workflow workflowDef
+	Source   workflowSource
+}
+
+type WorkflowStepStartedMsg struct {
+	TabID    int
+	StepIdx  int
+	StepName string
+	Provider string
+	Model    string
+}
+
+type WorkflowStepDoneMsg struct {
+	TabID   int
+	StepIdx int
+	Summary string
+}
+
+type WorkflowDoneMsg struct {
+	TabID       int
+	Description string
+	Artifacts   []string
+}
+
+type WorkflowFailedMsg struct {
+	TabID  int
+	Reason string
+}
+
+type remindKind int
+
+const (
+	remindNone       remindKind = iota
+	remindNoSummary             // the prior turn ended without calling end_turn
+	remindNoDecision            // a loop tail called end_turn but omitted its decision
+	remindFixPlanDir            // a workflow notes directory is missing or is a file
+	remindNoFinishTool          // the prior turn ended the workflow without calling finish_workflow
+)
+
+var isTesting = false
+
+type AppendHistoryMsg struct {
+	TabID int
+	Text  string
+}
+
+func (m model) busy() bool {
+	if m.testBusy {
+		return true
+	}
+	return globalCoordinator.IsBusy(m.id)
+}
+
+func (m *model) killProc() {
+	if isTesting {
+		if m.procStarting {
+			m.procStarting = false
+			m.procStartSeq++
+			m.queuedTurns = nil
+		}
+		m.sessionMinted = false
+		if m.proc == nil {
+			m.testBusy = false
+			m.status = ""
+			m.todos = nil
+			m.bgTasks = nil
+			return
+		}
+		m.proc.kill()
+		drainProviderStream(m.streamCh)
+		m.proc = nil
+		m.streamCh = nil
+		m.testBusy = false
+		m.status = ""
+		m.todos = nil
+		m.bgTasks = nil
+		return
+	}
+
+	globalCoordinator.Kill(m.id)
+	m.proc = nil
+	m.streamCh = nil
+	m.testBusy = false
+}
+
+func (m *model) preMintNativeSessionIfNeeded() {
+	if m.sessionID != "" || m.provider == nil {
+		return
+	}
+	id := m.provider.PreMintSessionID(m.sessionArgs())
+	if id == "" {
+		return
+	}
+	m.sessionID = id
+	m.sessionMinted = true
+	m.recordVirtualSession(id)
+}
+
+func (m *model) drainPendingReplies() {
+	if m.askReply != nil {
+		select {
+		case m.askReply <- askReply{cancelled: true}:
+		default:
+		}
+		m.askReply = nil
+	}
+	if m.approvalReply != nil {
+		select {
+		case m.approvalReply <- approvalReply{allow: false}:
+		default:
+		}
+		m.approvalReply = nil
+	}
+	if m.finalizedPlanReply != nil {
+		select {
+		case m.finalizedPlanReply <- finalizedPlanReply{cancelled: true}:
+		default:
+		}
+		m.finalizedPlanReply = nil
+	}
+}
+
+func (m *model) flushTurnBuffer() {
+	if len(m.turnBuffer) == 0 {
+		return
+	}
+	last := m.turnBuffer[len(m.turnBuffer)-1]
+	m.turnBuffer = nil
+	m.appendResponse(last)
+}
+
+func drainProviderStream(ch chan tea.Msg) {
+	if ch == nil {
+		return
+	}
+	go func() {
+		for range ch {
+		}
+	}()
+}

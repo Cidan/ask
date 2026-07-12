@@ -506,7 +506,7 @@ func TestResumeVirtualSession_NoMappingForCurrentProviderTranslatesFromSource(t 
 	if mm.virtualSessionID != vsID {
 		t.Errorf("virtualSessionID not set: %q", mm.virtualSessionID)
 	}
-	if !mm.busy {
+	if !mm.busy() {
 		t.Error("busy must be true while translation runs")
 	}
 	if cmd == nil {
@@ -533,7 +533,7 @@ func TestResumeVirtualSession_NoMappingForCurrentProviderTranslatesFromSource(t 
 	if mm2.sessionID != "codex-synth" {
 		t.Errorf("m.sessionID=%q want codex-synth after translate", mm2.sessionID)
 	}
-	if mm2.busy {
+	if mm2.busy() {
 		t.Error("busy must clear after translate completes")
 	}
 	if len(mm2.history) == 0 {
@@ -714,7 +714,7 @@ func TestResumeVirtualSession_StaleMappingForCurrentProviderTriggersTranslate(t 
 	if mm.sessionID != "" {
 		t.Errorf("sessionID=%q — must be empty until translation completes (cannot reuse stale claude mapping)", mm.sessionID)
 	}
-	if !mm.busy {
+	if !mm.busy() {
 		t.Error("busy must be true during translation")
 	}
 	if cmd == nil {
@@ -789,7 +789,7 @@ func TestApplyProviderSwitch_StaleMappingTriggersTranslate(t *testing.T) {
 	if mm.sessionID != "" {
 		t.Errorf("sessionID=%q — must be empty during translation (stale mapping cannot be reused)", mm.sessionID)
 	}
-	if !mm.busy {
+	if !mm.busy() {
 		t.Error("busy should be true while translation runs")
 	}
 	// Drain the batched cmd and find the materialize msg.
@@ -929,7 +929,7 @@ func TestApplyProviderSwitch_SkipsErroredTrailingUserTurn(t *testing.T) {
 	if materializeCalls != 0 {
 		t.Fatalf("target Materialize called %d times; failed trailing user turn must not become a resume session", materializeCalls)
 	}
-	if mm.busy {
+	if mm.busy() {
 		t.Error("switch with no completed turns should leave the tab idle")
 	}
 	if mm.sessionID != "" {
@@ -1034,7 +1034,7 @@ func TestApplyProviderSwitch_CrossProviderWithoutMappingMaterializes(t *testing.
 	}
 	newM, cmd := m.applyProviderModelSwitch(providerRegistry[1], "")
 	mm := newM.(model)
-	if !mm.busy {
+	if !mm.busy() {
 		t.Error("busy should be true while translation runs")
 	}
 	if mm.virtualSessionID != vsID {
@@ -1069,7 +1069,7 @@ func TestApplyProviderSwitch_CrossProviderWithoutMappingMaterializes(t *testing.
 	if mm2.sessionID != "synth-B" {
 		t.Errorf("sessionID not set post-materialize: %q", mm2.sessionID)
 	}
-	if mm2.busy {
+	if mm2.busy() {
 		t.Error("busy should clear after materialize completes")
 	}
 }

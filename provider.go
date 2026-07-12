@@ -327,16 +327,18 @@ type providerSlashEntry struct {
 // providerDoneMsg fires at end-of-turn with the provider's result
 // summary (session id, final text, error flag).
 type providerDoneMsg struct {
-	res  providerResult
-	err  error
-	raw  string
-	proc *providerProc
+	res   providerResult
+	err   error
+	raw   string
+	tabID int
+	proc  *providerProc
 }
 
 // providerExitedMsg fires after the subprocess reaper collects Wait().
 type providerExitedMsg struct {
-	err  error
-	proc *providerProc
+	err   error
+	tabID int
+	proc  *providerProc
 }
 
 // providerInitLoadedMsg carries the discovered slash commands from a
@@ -351,8 +353,9 @@ type providerInitLoadedMsg struct {
 // this session (providers that switch cwd — e.g., claude --worktree —
 // emit this once at init so ask can surface the worktree chip).
 type providerCwdMsg struct {
-	cwd  string
-	proc *providerProc
+	cwd   string
+	tabID int
+	proc  *providerProc
 }
 
 type providerQueuedTurn struct {

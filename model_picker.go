@@ -705,7 +705,7 @@ func (m *model) applyVSProviderSwap(oldProvName string, newProv Provider) tea.Cm
 	if len(turns) == 0 {
 		return nil
 	}
-	m.busy = true
+	m.testBusy = true
 	m.status = "translating session…"
 	// Recover a worktree name from the last-writer ref in the VS so
 	// the translated session lands where the canonical conversation

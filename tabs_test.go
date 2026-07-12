@@ -229,9 +229,9 @@ func TestApp_ViewPinsSidebarToRightDuringIssuesLoad(t *testing.T) {
 func TestApp_VirtualSessionMaterializedStaysOnOwningTab(t *testing.T) {
 	a := testAppWithTwoTabs(t)
 	a.tabs[0].virtualSessionID = "vs-shared"
-	a.tabs[0].busy = true
+	a.tabs[0].testBusy = true
 	a.tabs[1].virtualSessionID = "vs-shared"
-	a.tabs[1].busy = true
+	a.tabs[1].testBusy = true
 	a.tabs[1].sessionID = "keep"
 
 	newA, _ := a.Update(virtualSessionMaterializedMsg{
@@ -243,11 +243,11 @@ func TestApp_VirtualSessionMaterializedStaysOnOwningTab(t *testing.T) {
 	})
 	a2 := newA.(app)
 
-	if a2.tabs[0].sessionID != "owner-session" || a2.tabs[0].resumeCwd != "/owner" || a2.tabs[0].busy {
+	if a2.tabs[0].sessionID != "owner-session" || a2.tabs[0].resumeCwd != "/owner" || a2.tabs[0].busy() {
 		t.Errorf("tab 1 translate state=%+v want owner session applied and busy cleared", *a2.tabs[0])
 	}
-	if a2.tabs[1].sessionID != "keep" || !a2.tabs[1].busy {
-		t.Errorf("tab 2 state mutated unexpectedly: session=%q busy=%v", a2.tabs[1].sessionID, a2.tabs[1].busy)
+	if a2.tabs[1].sessionID != "keep" || !a2.tabs[1].busy() {
+		t.Errorf("tab 2 state mutated unexpectedly: session=%q busy=%v", a2.tabs[1].sessionID, a2.tabs[1].busy())
 	}
 }
 
