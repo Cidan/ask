@@ -389,7 +389,8 @@ func (c *Coordinator) RunWorkflow(ctx context.Context, tabID int, def workflowDe
 		if dirErr != nil {
 			remind = remindFixPlanDir
 			remindDetail = dirErr.Error()
-			continue
+			pc.remind = remind
+			pc.remindDetail = remindDetail
 		}
 
 		prompt := buildWorkflowStepPrompt(step, src, prevOutputs, pc)

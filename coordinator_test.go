@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -200,5 +201,93 @@ func TestCoordinator_RunWorkflowCancellationStopRetries(t *testing.T) {
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatalf("workflow took too long to exit - likely retrying indefinitely")
+	}
+}
+
+func TestCoordinator_RunWorkflowMissingPlanDirReminder(t *testing.T) {
+	isolateHome(t)
+
+	prov := newFakeProvider()
+	prov.id = "fake-prov"
+
+	var receivedPrompt string
+	prov.startSessionFn = func(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
+		ch := make(chan tea.Msg, 8)
+		proc := &providerProc{
+			stdin: &bufferCloser{Buffer: nil},
+		}
+
+		env := newAgentToolEnv(args.Cwd, args.TabID, true, true, func(msg tea.Msg) {})
+		env.pendingEndTurn = &endTurnSignal{summary: "step completed", decision: "break"}
+		env.pendingFinishData = &finishWorkflowData{Description: "completed successfully", Artifacts: []string{"art1"}}
+		sess := &agentSession{
+			args:   args,
+			env:    env,
+			sendCh: make(chan agentTurn, 8),
+			closed: make(chan struct{}),
+		}
+		proc.payload = sess
+
+		go func() {
+			select {
+			case turn := <-sess.sendCh:
+				receivedPrompt = turn.text
+			case <-time.After(500 * time.Millisecond):
+			}
+		}()
+
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			ch <- assistantTextMsg{text: "step result"}
+			ch <- providerDoneMsg{
+				res: providerResult{
+					Result: "done",
+				},
+			}
+			close(ch)
+		}()
+
+		return proc, ch, nil
+	}
+
+	withRegisteredProviders(t, prov)
+
+	cwd := t.TempDir()
+
+	parentSess := &agentSession{
+		args: ProviderSessionArgs{TabID: 43, Cwd: cwd},
+	}
+	parentSess.env = newAgentToolEnv(parentSess.args.Cwd, 43, true, true, func(msg tea.Msg) {})
+
+	c := globalCoordinator
+	c.SetSession(43, parentSess)
+
+	def := workflowDef{
+		Name: "test-wf",
+		Steps: []workflowStep{
+			{
+				Name:     "step-1",
+				Provider: "fake-prov",
+				Model:    "fake-model",
+				Prompt:   "do something",
+			},
+		},
+	}
+	src := workflowSource{Kind: workflowSourceChat}
+
+	reply, err := c.RunWorkflow(context.Background(), 43, def, src)
+	if err != nil {
+		t.Fatalf("expected workflow to complete, got err: %v", err)
+	}
+
+	if !reply.workflowDone {
+		t.Errorf("expected workflow to be marked done")
+	}
+
+	wantSub := "REMINDER: the workflow notes directory is not usable"
+	if receivedPrompt == "" {
+		t.Errorf("did not receive any prompt")
+	} else if !strings.Contains(receivedPrompt, wantSub) {
+		t.Errorf("expected prompt to contain %q, but got:\n%s", wantSub, receivedPrompt)
 	}
 }
