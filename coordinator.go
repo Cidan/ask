@@ -82,6 +82,10 @@ func (c *Coordinator) Dispatch(tabID int, p Provider, args ProviderSessionArgs, 
 				c.sessions[tabID] = session
 				c.mu.Unlock()
 			}
+		} else if proc != nil {
+			// For testing / fake providers that don't return an in-process agentSession payload:
+			// forward the turn to the provider directly!
+			return p.Send(proc, text, attachments)
 		}
 	} else {
 		c.mu.Unlock()

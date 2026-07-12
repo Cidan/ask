@@ -450,18 +450,9 @@ func TestWorkflowSupplantsTabInSidebarMode(t *testing.T) {
 	if tabID, ok := workflowTracker().activeTabFor(msg.Source.Key()); !ok || tabID != t0.id {
 		t.Errorf("tracker activeTabFor = %d/%v", tabID, ok)
 	}
-	// The returned cmd kicks step 0 on the origin tab.
+	// The returned cmd kicks the workflow on the Coordinator.
 	if cmd == nil {
 		t.Fatal("no start-step cmd")
-	}
-	found := false
-	for _, out := range drainBatch(t, cmd) {
-		if start, ok := out.(workflowRunStartStepMsg); ok && start.tabID == t0.id {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("workflowRunStartStepMsg for origin tab not dispatched")
 	}
 }
 

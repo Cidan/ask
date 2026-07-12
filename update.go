@@ -444,18 +444,13 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m.providerSlashCmds = msg.slashCmds
 		return m, persistSlashCmdsCmd(m.provider, msg.slashCmds)
 
-	case providerStartDoneMsg:
-		return m.handleProviderStartDone(msg)
-
 	case providerExitedMsg:
 		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
 		m.testBusy = false
-		if isTesting {
-			m.proc = nil
-			m.streamCh = nil
-		}
+		m.proc = nil
+		m.streamCh = nil
 		var stderrTail string
 		if msg.proc != nil && msg.proc.stderr != nil {
 			stderrTail = strings.TrimSpace(msg.proc.stderr.String())
@@ -1640,27 +1635,9 @@ func (m model) applyCancelTurnConfirm() (tea.Model, tea.Cmd) {
 }
 
 func (m model) cancelTurn() (model, tea.Cmd) {
-	if isTesting {
-		if !m.busy() && m.proc == nil {
-			return m, nil
-		}
-		m.flushTurnBuffer()
-		if m.provider != nil && m.proc != nil {
-			handled, err := m.provider.Interrupt(m.proc)
-			if err != nil {
-				debugLog("provider.Interrupt err: %v", err)
-			}
-			if handled && err == nil {
-				m.status = "cancelling…"
-				m.appendHistory(outputStyle.Render(dimStyle.Render("✗ cancelling…")))
-				return m, cancelWatchdogCmd(m.proc)
-			}
-		}
-		m.killProc()
-		m.appendHistory(outputStyle.Render(dimStyle.Render("✗ cancelled")))
+	if !m.busy() {
 		return m, nil
 	}
-
 	globalCoordinator.CancelWorkflow(m.id)
 	m.appendHistory(outputStyle.Render(dimStyle.Render("✗ cancelled")))
 	return m, nil
@@ -2182,57 +2159,6 @@ func (m model) dispatchProviderTurn(line string) (tea.Model, tea.Cmd) {
 		m.pending = nil
 		m.appendHistory(outputStyle.Render(errStyle.Render(invalid.Msg)))
 		return m, nil
-	}
-
-	if isTesting {
-		turn := providerQueuedTurn{
-			text:        line,
-			attachments: append([]pendingAttachment(nil), m.pending...),
-		}
-		wasIdle := !m.busy()
-
-		if m.procStarting && m.proc == nil {
-			m.queuedTurns = append(m.queuedTurns, turn)
-			m.pending = nil
-			m.testBusy = true
-			if m.status == "" {
-				m.status = "starting " + m.provider.DisplayName() + "..."
-			}
-			return m, nil
-		}
-
-		if m.proc == nil {
-			m.procStartSeq++
-			seq := m.procStartSeq
-			m.procStarting = true
-			m.pending = nil
-			m.testBusy = true
-			m.status = "starting " + m.provider.DisplayName() + "..."
-			(&m).preMintNativeSessionIfNeeded()
-			cmd := startAndSendProviderCmd(m.provider, m.sessionArgs(), m.worktreeName, turn, seq)
-			m.sessionMinted = false
-			if wasIdle {
-				return m, tea.Batch(cmd, m.spinner.Tick)
-			}
-			return m, cmd
-		}
-
-		if err := m.provider.Send(m.proc, line, m.pending); err != nil {
-			m.appendHistory(outputStyle.Render(errStyle.Render("write to " + m.provider.DisplayName() + " failed: " + err.Error())))
-			m.killProc()
-			return m, nil
-		}
-		m.pending = nil
-		m.testBusy = true
-		m.status = "thinking…"
-		var cmds []tea.Cmd
-		if wasIdle {
-			cmds = append(cmds, m.spinner.Tick)
-		}
-		if len(cmds) == 0 {
-			return m, nil
-		}
-		return m, tea.Batch(cmds...)
 	}
 
 	// Production: Coordinator background Dispatch!

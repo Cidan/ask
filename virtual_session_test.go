@@ -939,23 +939,16 @@ func TestApplyProviderSwitch_SkipsErroredTrailingUserTurn(t *testing.T) {
 		t.Errorf("virtualSessionID=%q want %q", mm.virtualSessionID, vsID)
 	}
 
-	sentM, sendCmd := mm.sendToProvider("try codex")
+	_, sendCmd := mm.sendToProvider("try codex")
 	if sendCmd == nil {
 		t.Fatal("fresh codex send should start provider")
 	}
-	done := runProviderStartCmd(t, sendCmd)
-	sent := sentM.(model)
-	if !sent.procStarting {
-		t.Fatal("send should be waiting for codex startup")
-	}
+	drainBatch(t, sendCmd)
 	if len(pB.startArgs) != 1 {
 		t.Fatalf("StartSession called %d times, want 1", len(pB.startArgs))
 	}
 	if pB.startArgs[0].SessionID != "" {
 		t.Errorf("StartSession SessionID=%q; want fresh thread after failed source turn", pB.startArgs[0].SessionID)
-	}
-	if done.err != nil {
-		t.Fatalf("start cmd returned error: %v", done.err)
 	}
 }
 

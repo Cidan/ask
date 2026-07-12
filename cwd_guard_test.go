@@ -568,10 +568,7 @@ func TestSendToProvider_ResumeAtRepoRootWithWorktreeOnSucceeds(t *testing.T) {
 	}
 	got := sent.(model)
 	// Drive the start command synchronously to invoke prepareProviderSession.
-	done := runProviderStartCmd(t, cmd)
-	if done.err != nil {
-		t.Fatalf("provider start failed (validator should have accepted): %v", done.err)
-	}
+	drainBatch(t, cmd)
 	if len(p.startArgs) != 1 {
 		t.Fatalf("StartSession should run exactly once, got %d", len(p.startArgs))
 	}

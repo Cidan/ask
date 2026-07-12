@@ -13,10 +13,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-func init() {
-	isTesting = true
-}
-
 // fakeProvider is an instrumentable Provider for tests. Every method has an
 // overridable *Fn hook; the zero value picks safe defaults so most tests can
 // use newFakeProvider() verbatim.
@@ -266,6 +262,14 @@ func runJJ(t *testing.T, dir string, args ...string) string {
 // they want specific fake behavior.
 func newTestModel(t *testing.T, prov Provider) model {
 	t.Helper()
+	// Reset package-global coordinator to avoid test pollution
+	globalCoordinator.RemoveSession(1)
+	globalCoordinator.CancelWorkflow(1)
+	t.Cleanup(func() {
+		globalCoordinator.RemoveSession(1)
+		globalCoordinator.CancelWorkflow(1)
+	})
+
 	ta := textarea.New()
 	ta.SetHeight(3)
 	ta.DynamicHeight = true

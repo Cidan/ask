@@ -973,8 +973,6 @@ const (
 	remindNoFinishTool          // the prior turn ended the workflow without calling finish_workflow
 )
 
-var isTesting = false
-
 type AppendHistoryMsg struct {
 	TabID int
 	Text  string
@@ -988,35 +986,17 @@ func (m model) busy() bool {
 }
 
 func (m *model) killProc() {
-	if isTesting {
-		if m.procStarting {
-			m.procStarting = false
-			m.procStartSeq++
-			m.queuedTurns = nil
-		}
-		m.sessionMinted = false
-		if m.proc == nil {
-			m.testBusy = false
-			m.status = ""
-			m.todos = nil
-			m.bgTasks = nil
-			return
-		}
+	if m.proc != nil {
 		m.proc.kill()
-		drainProviderStream(m.streamCh)
-		m.proc = nil
-		m.streamCh = nil
-		m.testBusy = false
-		m.status = ""
-		m.todos = nil
-		m.bgTasks = nil
-		return
 	}
-
+	if m.streamCh != nil {
+		drainProviderStream(m.streamCh)
+	}
 	globalCoordinator.Kill(m.id)
 	m.proc = nil
 	m.streamCh = nil
 	m.testBusy = false
+	m.sessionMinted = false
 }
 
 func (m *model) preMintNativeSessionIfNeeded() {

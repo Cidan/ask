@@ -185,8 +185,6 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.dispatchByTabID(m.tabID, msg)
 	case providerInitLoadedMsg:
 		return a.dispatchByTabID(m.tabID, msg)
-	case providerStartDoneMsg:
-		return a.dispatchByTabID(m.tabID, msg)
 	case sessionsLoadedMsg:
 		return a.dispatchByTabID(m.tabID, msg)
 	case startupResumeMsg:
@@ -274,10 +272,6 @@ func (a app) dispatchByTabID(tabID int, msg tea.Msg) (tea.Model, tea.Cmd) {
 		case approvalRequestMsg:
 			if m.reply != nil {
 				m.reply <- approvalReply{allow: false}
-			}
-		case providerStartDoneMsg:
-			if m.proc != nil {
-				m.proc.kill()
 			}
 		}
 		return a, nil
@@ -433,10 +427,6 @@ func (a app) supplantWorkflow(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
 		if tm, ok := a.focusTab(idx); ok {
 			a = tm
 		}
-	}
-	if isTesting {
-		startStep := func() tea.Msg { return workflowRunStartStepMsg{tabID: t.id} }
-		return a, startStep
 	}
 	runWF := func() tea.Msg {
 		go func() {

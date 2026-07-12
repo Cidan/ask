@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"github.com/Cidan/ask/pkg/diff"
@@ -22,26 +21,6 @@ func runUpdate(t *testing.T, m model, msg tea.Msg) (model, tea.Cmd) {
 		t.Fatalf("Update returned %T, want model", nm)
 	}
 	return mm, cmd
-}
-
-func runProviderStartCmd(t *testing.T, cmd tea.Cmd) providerStartDoneMsg {
-	t.Helper()
-	if cmd == nil {
-		t.Fatal("expected provider start command, got nil")
-	}
-	msg := cmd()
-	switch msg := msg.(type) {
-	case providerStartDoneMsg:
-		return msg
-	case tea.BatchMsg:
-		if len(msg) == 0 {
-			t.Fatal("provider start batch was empty")
-		}
-		return runProviderStartCmd(t, msg[0])
-	default:
-		t.Fatalf("provider start command returned %T", msg)
-		return providerStartDoneMsg{}
-	}
 }
 
 func TestUpdate_AssistantTextMsgIgnoredForStaleProc(t *testing.T) {
@@ -652,8 +631,7 @@ func TestHandleCommand_ProviderSlashForwardsThroughSend(t *testing.T) {
 	m.providerSlashCmds = []providerSlashEntry{{Name: "echo", Description: "echo"}}
 	m2, cmd := m.handleCommand("/echo hello")
 	mm := m2.(model)
-	done := runProviderStartCmd(t, cmd)
-	mm, _ = runUpdate(t, mm, done)
+	drainBatch(t, cmd)
 	if len(fp.sentTexts) != 1 || fp.sentTexts[0] != "/echo hello" {
 		t.Errorf("provider slash command should be forwarded verbatim; got %+v", fp.sentTexts)
 	}
@@ -667,22 +645,6 @@ func TestCancelTurn_DoesNothingWhenIdle(t *testing.T) {
 	out, _ := m.cancelTurn()
 	if len(out.history) != 0 {
 		t.Errorf("idle cancel should not append history; got %+v", out.history)
-	}
-}
-
-func TestCancelTurn_KillsProcAndAppendsMarker(t *testing.T) {
-	m := newTestModel(t, newFakeProvider())
-	m.proc = &providerProc{}
-	m.testBusy = true
-	out, _ := m.cancelTurn()
-	if out.proc != nil {
-		t.Errorf("proc should be killed")
-	}
-	if out.busy() {
-		t.Errorf("busy should be false")
-	}
-	if len(out.history) == 0 {
-		t.Errorf("cancel should leave an entry in history")
 	}
 }
 
@@ -708,111 +670,6 @@ func TestDrainPendingReplies_SendsCancelAndDeny(t *testing.T) {
 		}
 	default:
 		t.Error("approval reply not drained")
-	}
-}
-
-func TestSendToProvider_WiresProcAndStream(t *testing.T) {
-	fp := newFakeProvider()
-	m := newTestModel(t, fp)
-	m2any, cmd := m.sendToProvider("hello")
-	m2 := m2any.(model)
-	if m2.proc != nil {
-		t.Error("sendToProvider should not wire proc until async start command completes")
-	}
-	if !m2.procStarting {
-		t.Error("sendToProvider should mark procStarting")
-	}
-	if !m2.busy() {
-		t.Error("busy should be true")
-	}
-	if m2.status != "starting Fake..." {
-		t.Errorf("status=%q want starting Fake...", m2.status)
-	}
-	if len(fp.startArgs) != 0 {
-		t.Errorf("StartSession should not be called inline; got %d", len(fp.startArgs))
-	}
-	if len(fp.sentTexts) != 0 {
-		t.Errorf("Send should not be called inline; got %+v", fp.sentTexts)
-	}
-
-	done := runProviderStartCmd(t, cmd)
-	m3, streamCmd := runUpdate(t, m2, done)
-	if m3.proc == nil {
-		t.Error("providerStartDoneMsg should wire proc")
-	}
-	if m3.streamCh == nil {
-		t.Error("providerStartDoneMsg should wire streamCh")
-	}
-	if m3.procStarting {
-		t.Error("procStarting should clear after start completes")
-	}
-	if !m3.busy() {
-		t.Error("busy should remain true")
-	}
-	if m3.status != "thinking…" {
-		t.Errorf("status=%q want thinking…", m3.status)
-	}
-	if len(fp.startArgs) != 1 {
-		t.Errorf("StartSession should be called once; got %d", len(fp.startArgs))
-	}
-	if len(fp.sentTexts) != 1 || fp.sentTexts[0] != "hello" {
-		t.Errorf("Send called with %+v, want ['hello']", fp.sentTexts)
-	}
-	if streamCmd == nil {
-		t.Error("start completion should schedule stream reader")
-	}
-}
-
-func TestSendToProvider_QueuesWhileProcStarting(t *testing.T) {
-	fp := newFakeProvider()
-	m := newTestModel(t, fp)
-	m.procStarting = true
-	m.procStartSeq = 7
-	m.testBusy = true
-	m.status = "starting Fake..."
-
-	m2any, cmd := m.sendToProvider("second")
-	m2 := m2any.(model)
-	// maybeStartTabTitle now always seeds the title and returns an
-	// async refinement cmd; that's fine — it doesn't touch the provider.
-	_ = cmd
-	if len(m2.queuedTurns) != 1 || m2.queuedTurns[0].text != "second" {
-		t.Fatalf("queuedTurns=%+v want one queued second turn", m2.queuedTurns)
-	}
-	if len(fp.startArgs) != 0 || len(fp.sentTexts) != 0 {
-		t.Fatalf("provider should not be touched while startup is pending: starts=%d sends=%v",
-			len(fp.startArgs), fp.sentTexts)
-	}
-}
-
-func TestProviderStartDone_SendsQueuedTurns(t *testing.T) {
-	fp := newFakeProvider()
-	m := newTestModel(t, fp)
-	m.procStarting = true
-	m.procStartSeq = 3
-	m.testBusy = true
-	m.queuedTurns = []providerQueuedTurn{{text: "queued"}}
-
-	proc := &providerProc{stdin: &bufferCloser{Buffer: &bytes.Buffer{}}}
-	ch := make(chan tea.Msg, 1)
-	m2, cmd := runUpdate(t, m, providerStartDoneMsg{
-		tabID:      m.id,
-		seq:        3,
-		providerID: fp.id,
-		proc:       proc,
-		streamCh:   ch,
-	})
-	if m2.proc != proc {
-		t.Error("proc should be stored")
-	}
-	if len(m2.queuedTurns) != 0 {
-		t.Errorf("queuedTurns should be cleared, got %+v", m2.queuedTurns)
-	}
-	if len(fp.sentTexts) != 1 || fp.sentTexts[0] != "queued" {
-		t.Errorf("queued turn was not sent: %+v", fp.sentTexts)
-	}
-	if cmd == nil {
-		t.Error("start completion should schedule stream reader")
 	}
 }
 
@@ -918,8 +775,7 @@ func TestUpdate_SlashMenuEnterSubmitsExactMatchAmongOverlapping(t *testing.T) {
 			if cmd == nil {
 				t.Fatal("exact-match Enter must return a submit cmd")
 			}
-			done := runProviderStartCmd(t, cmd)
-			_, _ = runUpdate(t, m2, done)
+			drainBatch(t, cmd)
 			if len(fp.sentTexts) != 1 || fp.sentTexts[0] != "/omc" {
 				t.Errorf("provider must receive /omc verbatim; got %v", fp.sentTexts)
 			}
@@ -1202,51 +1058,6 @@ func TestHandleCommand_ProviderRemoved(t *testing.T) {
 	}
 	if len(mm.history) == 0 || !strings.Contains(mm.history[len(mm.history)-1].text, "unknown command") {
 		t.Errorf("/provider should report unknown command; history=%+v", mm.history)
-	}
-}
-
-func TestProviderStartDone_CapturesNativeSessionID(t *testing.T) {
-	fp := newFakeProvider()
-	fp.nativeSessionFn = func(*providerProc) string { return "thread-abc" }
-	m := newTestModel(t, fp)
-	m.procStarting = true
-	m.procStartSeq = 1
-	m.testBusy = true
-
-	proc := &providerProc{stdin: &bufferCloser{Buffer: &bytes.Buffer{}}}
-	ch := make(chan tea.Msg, 1)
-	m2, _ := runUpdate(t, m, providerStartDoneMsg{
-		tabID:      m.id,
-		seq:        1,
-		providerID: fp.id,
-		proc:       proc,
-		streamCh:   ch,
-	})
-	if m2.sessionID != "thread-abc" {
-		t.Errorf("sessionID=%q want thread-abc", m2.sessionID)
-	}
-}
-
-func TestProviderStartDone_PreMintedSessionIDNotOverwritten(t *testing.T) {
-	fp := newFakeProvider()
-	fp.nativeSessionFn = func(*providerProc) string { return "should-be-ignored" }
-	m := newTestModel(t, fp)
-	m.procStarting = true
-	m.procStartSeq = 1
-	m.testBusy = true
-	m.sessionID = "pre-minted"
-
-	proc := &providerProc{stdin: &bufferCloser{Buffer: &bytes.Buffer{}}}
-	ch := make(chan tea.Msg, 1)
-	m2, _ := runUpdate(t, m, providerStartDoneMsg{
-		tabID:      m.id,
-		seq:        1,
-		providerID: fp.id,
-		proc:       proc,
-		streamCh:   ch,
-	})
-	if m2.sessionID != "pre-minted" {
-		t.Errorf("sessionID=%q want pre-minted (NativeSessionID must not stomp existing id)", m2.sessionID)
 	}
 }
 

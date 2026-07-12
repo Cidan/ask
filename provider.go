@@ -363,17 +363,6 @@ type providerQueuedTurn struct {
 	attachments []pendingAttachment
 }
 
-type providerStartDoneMsg struct {
-	tabID        int
-	seq          uint64
-	providerID   string
-	proc         *providerProc
-	streamCh     chan tea.Msg
-	worktreeName string
-	err          error
-	turn         providerQueuedTurn
-}
-
 var providerRegistry []Provider
 
 // registerProvider appends to the registry. First registered wins when
