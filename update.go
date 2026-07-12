@@ -1255,19 +1255,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			return m.switchScreen(screenAsk), nil
 		}
-		if km.Matches(ActionPlanningMode, msg) && !m.modalOpen() && !deferToPopover {
-			m.planningMode = !m.planningMode
-			state := "OFF"
-			if m.planningMode {
-				state = "ON"
-			}
-			if m.proc != nil {
-				if s, ok := m.proc.payload.(*agentSession); ok {
-					s.SetPlanningMode(m.planningMode)
-				}
-			}
-			return m, m.toast.show("Planning mode: " + state)
-		}
+
 		newM, cmd, _ := m.activeScreen().updateKey(m, msg)
 		return newM, cmd
 

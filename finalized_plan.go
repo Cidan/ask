@@ -264,12 +264,6 @@ func (m model) updateFinalizedPlan(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case pickedOpt == "Execute without a workflow":
-				m.planningMode = false
-				if m.proc != nil {
-					if s, ok := m.proc.payload.(*agentSession); ok {
-						s.SetPlanningMode(false)
-					}
-				}
 				if m.finalizedPlanReply != nil {
 					m.finalizedPlanReply <- finalizedPlanReply{executeInline: true}
 				}

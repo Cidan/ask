@@ -206,7 +206,6 @@ func TestFinalizedPlan_ExecuteInlineSelection(t *testing.T) {
 	m.finalizedPlanExplanation = "expl"
 	m.finalizedPlanReply = make(chan finalizedPlanReply, 1)
 	m.finalizedPlanFocusBottom = true
-	m.planningMode = true
 
 	// Navigate to "Execute without a workflow"
 	opts := m.finalizedPlanOptions()
@@ -218,7 +217,7 @@ func TestFinalizedPlan_ExecuteInlineSelection(t *testing.T) {
 	}
 
 	m2, _ := m.updateFinalizedPlan(tea.KeyPressMsg{Code: tea.KeyEnter})
-	mm := m2.(model)
+	_ = m2.(model)
 	select {
 	case reply := <-m.finalizedPlanReply:
 		if !reply.executeInline {
@@ -227,14 +226,11 @@ func TestFinalizedPlan_ExecuteInlineSelection(t *testing.T) {
 	default:
 		t.Errorf("expected reply on channel")
 	}
-	if mm.planningMode {
-		t.Errorf("expected planningMode to be false")
-	}
 }
 
 func TestFinalizedPlan_ToolGoroutineInlineDisarm(t *testing.T) {
 	// Verify that finalized_plan tool disarms todos guards on executeInline
-	env := newAgentToolEnv(t.TempDir(), 1, true, false, true, func(tea.Msg) {})
+	env := newAgentToolEnv(t.TempDir(), 1, true, false, func(tea.Msg) {})
 	env.workflowsAvailable = true
 
 	tool := agentFinalizedPlanTool(env)

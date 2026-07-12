@@ -168,7 +168,7 @@ func agentEndTurnTool(env *agentToolEnv) fantasy.AgentTool {
 }
 
 type agentFinalizedPlanParams struct {
-	Plan            string `json:"plan" description:"required: the full markdown plan covering the necessary file changes, tests, and verification steps"`
+	Plan            string `json:"plan" description:"required: the full markdown plan covering the necessary file changes, tests, and verification steps. MUST include detailed rationale explaining what will be changed and why, not just a list of steps."`
 	Explanation     string `json:"explanation" description:"required: one or two sentences explaining why this plan is optimal"`
 	DefaultWorkflow string `json:"default_workflow,omitempty" description:"optional: the matched/suggested workflow name (e.g. 'ship') if any matches the plan"`
 }

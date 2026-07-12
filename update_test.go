@@ -1709,21 +1709,4 @@ func TestUpdate_PasteMsgInConfigWithoutEditorIsAbsorbed(t *testing.T) {
 	}
 }
 
-func TestUpdate_ActionPlanningModePreservesSession(t *testing.T) {
-	m := newTestModel(t, newFakeProvider())
-	m.sessionID = "test-session-123"
-	m.sessionMinted = true
-	m.planningMode = false
 
-	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'l'})
-
-	if m2.sessionID != "test-session-123" {
-		t.Errorf("expected sessionID to be preserved, got %q", m2.sessionID)
-	}
-	if !m2.sessionMinted {
-		t.Errorf("expected sessionMinted to remain true")
-	}
-	if !m2.planningMode {
-		t.Errorf("expected planningMode to be true")
-	}
-}

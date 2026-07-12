@@ -55,7 +55,6 @@ const (
 	// model.wantsTabKey.
 	ActionSidebarFocus Action = "sidebar.focus"
 	ActionAppSuspend   Action = "app.suspend"
-	ActionPlanningMode Action = "app.planningMode"
 )
 
 // KeyBinding is a parsed Mod+Code pair. The zero value (Mod==0,
@@ -254,7 +253,6 @@ var defaultKeyBindings = map[Action]KeyBinding{
 	ActionTabNextAlt:   {Mod: tea.ModCtrl, Code: tea.KeyDown},
 	ActionSidebarFocus: {Code: tea.KeyTab},
 	ActionAppSuspend:   {Mod: tea.ModCtrl, Code: 'z'},
-	ActionPlanningMode: {Mod: tea.ModCtrl, Code: 'l'},
 }
 
 func init() {
@@ -373,7 +371,6 @@ var actionGroups = []actionMetaGroup{
 	}},
 	{Heading: "App", Items: []actionMetaItem{
 		{ActionAppSuspend, "Suspend ask"},
-		{ActionPlanningMode, "Planning mode"},
 	}},
 }
 

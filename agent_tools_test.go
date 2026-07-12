@@ -25,7 +25,7 @@ func newTestToolEnv(t *testing.T) (*agentToolEnv, *[]tea.Msg) {
 	t.Helper()
 	var mu sync.Mutex
 	msgs := &[]tea.Msg{}
-	env := newAgentToolEnv(t.TempDir(), 1, true, true, false, func(m tea.Msg) {
+	env := newAgentToolEnv(t.TempDir(), 1, true, true, func(m tea.Msg) {
 		mu.Lock()
 		defer mu.Unlock()
 		*msgs = append(*msgs, m)
@@ -854,7 +854,7 @@ func TestAgentTodosWorkflowGuard(t *testing.T) {
 	}
 
 	var msgs []tea.Msg
-	env := newAgentToolEnv(cwd, 1, true, true, false, func(m tea.Msg) { msgs = append(msgs, m) })
+	env := newAgentToolEnv(cwd, 1, true, true, func(m tea.Msg) { msgs = append(msgs, m) })
 	if !env.workflowsAvailable {
 		t.Fatal("env.workflowsAvailable should be true when the project defines a workflow")
 	}
@@ -907,7 +907,7 @@ func TestAgentTodosWorkflowGuard_DisarmedByCheck(t *testing.T) {
 		t.Fatalf("saveAllWorkflows: %v", err)
 	}
 	var msgs []tea.Msg
-	env := newAgentToolEnv(cwd, 1, true, true, false, func(m tea.Msg) { msgs = append(msgs, m) })
+	env := newAgentToolEnv(cwd, 1, true, true, func(m tea.Msg) { msgs = append(msgs, m) })
 
 	// Calling the workflow_list core tool disarms the first-stage
 	// guard. After the workflow tools were promoted to the core wire
@@ -973,7 +973,7 @@ func TestAgentTodosWorkflowGuard_DisarmedByRun(t *testing.T) {
 		t.Fatalf("saveAllWorkflows: %v", err)
 	}
 	var msgs []tea.Msg
-	env := newAgentToolEnv(cwd, 1, true, true, false, func(m tea.Msg) { msgs = append(msgs, m) })
+	env := newAgentToolEnv(cwd, 1, true, true, func(m tea.Msg) { msgs = append(msgs, m) })
 
 	// workflow execution dispatches into a fresh tab via the swap, so the
 	// test runs without a real tea.Program wired.
@@ -1308,7 +1308,7 @@ func TestWorkflowGuard_GateOff_Inert(t *testing.T) {
 		t.Fatalf("saveAllWorkflows: %v", err)
 	}
 	var msgs []tea.Msg
-	env := newAgentToolEnv(cwd, 1, true, true, false, func(m tea.Msg) { msgs = append(msgs, m) })
+	env := newAgentToolEnv(cwd, 1, true, true, func(m tea.Msg) { msgs = append(msgs, m) })
 	env.gateTodosBeforeMutate = false
 	if !env.workflowsAvailable {
 		t.Fatal("env.workflowsAvailable should be true when project defines workflows")
@@ -1345,7 +1345,7 @@ func TestWorkflowGuard_GateOn_Fires(t *testing.T) {
 		t.Fatalf("saveAllWorkflows: %v", err)
 	}
 	var msgs []tea.Msg
-	env := newAgentToolEnv(cwd, 1, true, true, false, func(m tea.Msg) { msgs = append(msgs, m) })
+	env := newAgentToolEnv(cwd, 1, true, true, func(m tea.Msg) { msgs = append(msgs, m) })
 	env.gateTodosBeforeMutate = true
 	if !env.workflowsAvailable {
 		t.Fatal("env.workflowsAvailable should be true")
@@ -1370,7 +1370,7 @@ func TestWorkflowGuard_GateOn_Fires(t *testing.T) {
 func TestGateTodosBeforeMutate_EnvDefaultFalse(t *testing.T) {
 	cwd := t.TempDir()
 	var msgs []tea.Msg
-	env := newAgentToolEnv(cwd, 1, true, false, false, func(m tea.Msg) { msgs = append(msgs, m) })
+	env := newAgentToolEnv(cwd, 1, true, false, func(m tea.Msg) { msgs = append(msgs, m) })
 	if env.gateTodosBeforeMutate {
 		t.Error("gateTodosBeforeMutate should default to false")
 	}
@@ -1458,21 +1458,4 @@ func TestAgentJobAppendOutput(t *testing.T) {
 	}
 }
 
-func TestPlanningMode_AgentTools(t *testing.T) {
-	isolateHome(t)
-	env, _ := newTestToolEnv(t)
-	env.planningMode.Store(true)
 
-	write := agentWriteTool(env)
-	resp := runTool(t, write, agentWriteParams{FilePath: "x.txt", Content: "data"})
-	if resp.IsError || !strings.Contains(resp.Content, "Planning mode is ON") {
-		t.Errorf("write in planning mode: %q", resp.Content)
-	}
-
-	edit := agentEditTool(env)
-	resp = runTool(t, edit, agentEditParams{FilePath: "x.txt", OldString: "a", NewString: "b"})
-	if resp.IsError || !strings.Contains(resp.Content, "Planning mode is ON") {
-		t.Errorf("edit in planning mode: %q", resp.Content)
-	}
-
-}

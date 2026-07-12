@@ -177,43 +177,6 @@ func (s *agentSession) setTurnCancel(fn context.CancelFunc) {
 	s.turnCancel = fn
 }
 
-// SetPlanningMode updates the session's planning mode toggle and regenerates
-// the system prompt in-place.
-func (s *agentSession) SetPlanningMode(enabled bool) {
-	s.args.PlanningMode = enabled
-	s.env.planningMode.Store(enabled && !s.args.InWorkflow)
-
-	s.toolsMu.Lock()
-	if enabled {
-		found := false
-		for _, t := range s.coreTools {
-			if t.Info().Name == "finalized_plan" {
-				found = true
-				break
-			}
-		}
-		if !found && !s.args.InWorkflow {
-			s.coreTools = append(s.coreTools, agentFinalizedPlanTool(s.env))
-		}
-	} else {
-		var filtered []fantasy.AgentTool
-		for _, t := range s.coreTools {
-			if t.Info().Name != "finalized_plan" {
-				filtered = append(filtered, t)
-			}
-		}
-		s.coreTools = filtered
-	}
-	s.toolsMu.Unlock()
-
-	s.refreshToolset()
-
-	newSystem := buildAgentSystemPrompt(s.args)
-	s.sysMu.Lock()
-	s.system = newSystem
-	s.sysMu.Unlock()
-}
-
 // stepCost prices one API call of this session's model. Safe on
 // spec-less sessions (tests): unknown spec means unpriceable.
 func (s *agentSession) stepCost(u fantasy.Usage) (float64, bool) {
