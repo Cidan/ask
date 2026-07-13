@@ -218,6 +218,7 @@ func agentFinalizedPlanTool(env *agentToolEnv) fantasy.AgentTool {
 
 					// Run the workflow synchronously!
 					outResp, err := globalCoordinator.RunWorkflow(ctx, env.tabID, def, src)
+					agentSendToProgram(ClearWorkflowStateMsg{TabID: env.tabID})
 					if err != nil {
 						return fantasy.NewTextErrorResponse("workflow execution failed: " + err.Error()), nil
 					}

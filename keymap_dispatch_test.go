@@ -487,9 +487,17 @@ func TestUpdate_TabCloseHonoursKeyMapOverride(t *testing.T) {
 		}
 	}
 
-	_, cmd = runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModAlt, Code: 'x'})
+	newM, cmd := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModAlt, Code: 'x'})
+	if !newM.exitArmed {
+		t.Fatal("first rebound ActionTabClose key press should arm exit")
+	}
+	if cmd != nil {
+		t.Fatal("first rebound ActionTabClose key press should not produce a cmd")
+	}
+
+	_, cmd = runUpdate(t, newM, tea.KeyPressMsg{Mod: tea.ModAlt, Code: 'x'})
 	if cmd == nil {
-		t.Fatal("rebound ActionTabClose key should produce a cmd")
+		t.Fatal("rebound ActionTabClose key should produce a cmd on second press")
 	}
 	msg := cmd()
 	cm, ok := msg.(closeTabMsg)
@@ -512,9 +520,17 @@ func TestUpdate_TabCloseDefaultStillWorks(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.id = 7
 
-	_, cmd := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'd'})
+	newM, cmd := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'd'})
+	if !newM.exitArmed {
+		t.Fatal("first ctrl+d press should arm exit")
+	}
+	if cmd != nil {
+		t.Fatal("first ctrl+d press should not produce a cmd")
+	}
+
+	_, cmd = runUpdate(t, newM, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'd'})
 	if cmd == nil {
-		t.Fatal("ctrl+d should still close under default keymap")
+		t.Fatal("ctrl+d should still close under default keymap on second press")
 	}
 	msg := cmd()
 	cm, ok := msg.(closeTabMsg)

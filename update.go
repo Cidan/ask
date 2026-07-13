@@ -643,6 +643,17 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		return m, nil
 
+	case ClearWorkflowStateMsg:
+		if msg.TabID != m.id {
+			return m, nil
+		}
+		if m.workflowRun != nil {
+			m.workflowRun = nil
+			m.status = ""
+			m.appendHistory(outputStyle.Render(dimStyle.Render("returned to chat")))
+		}
+		return m, nil
+
 	case AppendHistoryMsg:
 		if msg.TabID != m.id {
 			return m, nil
@@ -1212,9 +1223,6 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.workflowPicker != nil {
 		return m.updateWorkflowPicker(msg)
 	}
-	if currentKeyMap().Matches(ActionTabClose, msg) {
-		return m, closeTabCmd(m.id)
-	}
 	if m.shellMode {
 		return m.updateShellInput(msg)
 	}
@@ -1235,11 +1243,13 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.updateMergePRConfirm(msg)
 	}
 	isCtrlC := msg.Mod == tea.ModCtrl && msg.Code == 'c'
-	if !isCtrlC {
+	isCtrlD := currentKeyMap().Matches(ActionTabClose, msg)
+	isExitKey := isCtrlC || (isCtrlD && m.input.Value() == "" && len(m.pending) == 0)
+	if !isExitKey {
 		m.exitArmed = false
 	}
-	if isCtrlC {
-		if m.busy() {
+	if isExitKey {
+		if isCtrlC && m.busy() {
 			m.cancelTurnConfirming = true
 			m.cancelTurnChoice = 0
 			return m, nil
@@ -1249,14 +1259,20 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, closeTabCmd(m.id)
 			}
 			m.exitArmed = true
-			m.appendHistory(outputStyle.Render(dimStyle.Render("Press ctrl+c again to exit")))
+			hint := "Press ctrl+c again to exit"
+			if isCtrlD {
+				hint = "Press ctrl+d again to exit"
+			}
+			m.appendHistory(outputStyle.Render(dimStyle.Render(hint)))
 			return m, nil
 		}
-		m.input.Reset()
-		m.pending = nil
-		m.resetHistoryNav()
-		m.refreshPathMatches()
-		return m, nil
+		if isCtrlC {
+			m.input.Reset()
+			m.pending = nil
+			m.resetHistoryNav()
+			m.refreshPathMatches()
+			return m, nil
+		}
 	}
 	if msg.Mod == tea.ModCtrl && msg.Code == 'v' {
 		return m, pasteImageCmd()
