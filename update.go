@@ -302,7 +302,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
-		wasIdle := !m.busy()
+		wasIdle := m.status == "" && !m.testBusy
 		m.testBusy = true
 		m.status = msg.status
 		var cmds []tea.Cmd
@@ -575,7 +575,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			startedAt: time.Now().UTC(),
 			StepIdx:   0,
 		}
-		return m, nil
+		return m, m.spinner.Tick
 
 	case WorkflowStepStartedMsg:
 		if msg.TabID != m.id {
@@ -590,7 +590,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			m.appendHistory(header)
 		}
-		return m, nil
+		return m, m.spinner.Tick
 
 	case WorkflowStepDoneMsg:
 		if msg.TabID != m.id {
@@ -804,18 +804,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		m = m.startApproval(msg)
 		return m, nil
-
-	case finishWorkflowSignalMsg:
-		if msg.tabID != m.id {
-			return m, nil
-		}
-		if r := m.workflowRun; r != nil && !r.done && !r.failed {
-			r.finishData = msg.data
-		}
-		return m, nil
-
-	case endTurnSignalMsg:
-		return m.handleEndTurnSignal(msg)
 
 	case workflowStatusChangedMsg:
 		// Status changed somewhere — invalidate cached frame so the

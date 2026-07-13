@@ -331,39 +331,4 @@ func stepSummaryLine(name, provider, model, summary string) string {
 	return header
 }
 
-func (m model) handleEndTurnSignal(msg endTurnSignalMsg) (tea.Model, tea.Cmd) {
-	if msg.tabID != m.id {
-		return m, nil
-	}
-	r := m.workflowRun
-	if r == nil || r.done || r.failed {
-		if msg.reply != nil {
-			msg.reply <- endTurnReply{
-				registered: false,
-				note:       "no active workflow step; end_turn has no effect here",
-			}
-		}
-		return m, nil
-	}
-	r.pendingEndTurn = &endTurnSignal{decision: msg.decision, summary: msg.summary}
-	if msg.reply != nil {
-		note := "end_turn recorded"
-		if msg.decision != "" {
-			note += " (decision: " + msg.decision + ")"
-		}
-		if msg.decision == workflowLoopBreak && r.loop != nil &&
-			r.StepIdx >= 0 && r.StepIdx < len(r.Workflow.Steps) {
-			top := r.Workflow.Steps[r.StepIdx]
-			if top.isLoop() {
-				isTail := r.loop.innerIdx == len(top.Steps)-1
-				if !isTail {
-					note += " (non-final step: break will be ignored — only the final step of a loop iteration can break the loop)"
-				}
-			}
-		}
-		note += ". Finish your turn normally; the workflow acts on it when your turn ends."
-		msg.reply <- endTurnReply{registered: true, note: note}
-	}
-	return m, nil
-}
 

@@ -83,22 +83,16 @@ func TestAgentEndTurnTool(t *testing.T) {
 	env.tabID = 3
 	tool := agentEndTurnTool(env)
 
-	captured := swapProgramSend(t, func(msg tea.Msg) bool {
-		sig, ok := msg.(endTurnSignalMsg)
-		if !ok {
-			t.Fatalf("unexpected msg type %T", msg)
-		}
-		sig.reply <- endTurnReply{registered: true, note: "registered"}
-		return true
-	})
-
 	resp := runTool(t, tool, agentEndTurnParams{Summary: "did the thing", Decision: "continue"})
-	if resp.IsError || resp.Content != "registered" {
+	if resp.IsError || !strings.Contains(resp.Content, "end_turn recorded") {
 		t.Fatalf("end_turn: %+v", resp)
 	}
-	sig := (*captured)[0].(endTurnSignalMsg)
-	if sig.tabID != 3 || sig.summary != "did the thing" || sig.decision != "continue" {
-		t.Errorf("endTurnSignalMsg wrong: %+v", sig)
+
+	if env.pendingEndTurn == nil {
+		t.Fatalf("pendingEndTurn not set")
+	}
+	if env.pendingEndTurn.summary != "did the thing" || env.pendingEndTurn.decision != "continue" {
+		t.Errorf("pendingEndTurn wrong: %+v", env.pendingEndTurn)
 	}
 
 	if resp = runTool(t, tool, agentEndTurnParams{Summary: "  "}); !resp.IsError || !strings.Contains(resp.Content, "summary is required") {
@@ -114,23 +108,6 @@ func TestAgentFinishWorkflowTool(t *testing.T) {
 	env.tabID = 4
 	tool := agentFinishWorkflowTool(env)
 
-	captured := swapProgramSend(t, func(msg tea.Msg) bool {
-		sig, ok := msg.(finishWorkflowSignalMsg)
-		if !ok {
-			t.Fatalf("unexpected msg type %T", msg)
-		}
-		if sig.tabID != 4 {
-			t.Errorf("tabID=%d want 4", sig.tabID)
-		}
-		if sig.data.Description != "done" {
-			t.Errorf("Description=%q want done", sig.data.Description)
-		}
-		if len(sig.data.Artifacts) != 1 || sig.data.Artifacts[0] != "PR: #123" {
-			t.Errorf("Artifacts=%+v want [PR: #123]", sig.data.Artifacts)
-		}
-		return true
-	})
-
 	resp := runTool(t, tool, agentFinishWorkflowParams{
 		Description: "done",
 		Artifacts:   []string{"PR: #123"},
@@ -141,8 +118,15 @@ func TestAgentFinishWorkflowTool(t *testing.T) {
 	if !strings.Contains(resp.Content, "finish_workflow recorded. Now call end_turn to complete the step.") {
 		t.Errorf("unexpected success reply: %q", resp.Content)
 	}
-	if len(*captured) != 1 {
-		t.Errorf("expected 1 message, got %d", len(*captured))
+
+	if env.pendingFinishData == nil {
+		t.Fatalf("pendingFinishData not set")
+	}
+	if env.pendingFinishData.Description != "done" {
+		t.Errorf("Description=%q want done", env.pendingFinishData.Description)
+	}
+	if len(env.pendingFinishData.Artifacts) != 1 || env.pendingFinishData.Artifacts[0] != "PR: #123" {
+		t.Errorf("Artifacts=%+v want [PR: #123]", env.pendingFinishData.Artifacts)
 	}
 
 	// Test missing description validation

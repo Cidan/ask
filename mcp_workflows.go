@@ -146,23 +146,6 @@ type workflowCopyOutput struct {
 	Workflow workflowDefView `json:"workflow" jsonschema:"the new copy, in its destination scope"`
 }
 
-type endTurnReply struct {
-	registered bool
-	note       string
-}
-
-// endTurnSignalMsg carries an end_turn tool call from the MCP bridge to
-// the owning workflow tab. The tool blocks on `reply` (like
-// askToolRequestMsg) so the summary/decision is guaranteed recorded
-// before the agent's turn ends — the runner reads it at turnComplete.
-// tabID routes the message to the right tab via dispatchByTabID.
-type endTurnSignalMsg struct {
-	tabID    int
-	summary  string
-	decision string
-	reply    chan endTurnReply
-}
-
 // ----- Tool descriptions -----
 
 const (

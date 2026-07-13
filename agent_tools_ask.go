@@ -116,11 +116,6 @@ func agentFinishWorkflowTool(env *agentToolEnv) fantasy.AgentTool {
 				Artifacts:   p.Artifacts,
 			}
 
-			_ = agentSendToProgram(finishWorkflowSignalMsg{
-				tabID: env.tabID,
-				data:  env.pendingFinishData,
-			})
-
 			return fantasy.NewTextResponse("finish_workflow recorded. Now call end_turn to complete the step."), nil
 		},
 	)
@@ -149,21 +144,12 @@ func agentEndTurnTool(env *agentToolEnv) fantasy.AgentTool {
 					"decision, when provided, must be %q or %q", workflowLoopContinue, workflowLoopBreak)), nil
 			}
 			env.pendingEndTurn = &endTurnSignal{decision: decision, summary: summary}
-			reply := make(chan endTurnReply, 1)
-			if !agentSendToProgram(endTurnSignalMsg{
-				tabID:    env.tabID,
-				summary:  summary,
-				decision: decision,
-				reply:    reply,
-			}) {
-				return fantasy.NewTextErrorResponse("ask UI not ready"), nil
+			note := "end_turn recorded"
+			if decision != "" {
+				note += " (decision: " + decision + ")"
 			}
-			select {
-			case resp := <-reply:
-				return fantasy.NewTextResponse(resp.note), nil
-			case <-ctx.Done():
-				return fantasy.NewTextErrorResponse("cancelled while registering end_turn"), nil
-			}
+			note += ". Finish your turn normally; the workflow acts on it when your turn ends."
+			return fantasy.NewTextResponse(note), nil
 		},
 	)
 }

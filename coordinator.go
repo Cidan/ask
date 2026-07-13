@@ -50,6 +50,14 @@ func (c *Coordinator) IsBusy(tabID int) bool {
 	return session.isBusy()
 }
 
+// IsWorkflowRunning reports whether a workflow is actively running on the tab.
+func (c *Coordinator) IsWorkflowRunning(tabID int) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	_, ok := c.workflowCancels[tabID]
+	return ok
+}
+
 // SetSession sets the active session for a tab.
 func (c *Coordinator) SetSession(tabID int, s *agentSession) {
 	c.mu.Lock()
@@ -448,6 +456,7 @@ func (c *Coordinator) RunWorkflow(ctx context.Context, tabID int, def workflowDe
 
 		var stepResult string
 		var stepErr error
+	stepLoop:
 		for msg := range ch {
 			switch m := msg.(type) {
 			case assistantTextMsg:
@@ -460,6 +469,8 @@ func (c *Coordinator) RunWorkflow(ctx context.Context, tabID int, def workflowDe
 				} else {
 					stepResult = m.res.Result
 				}
+			case turnCompleteMsg:
+				break stepLoop
 			}
 		}
 

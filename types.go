@@ -354,11 +354,6 @@ type finishWorkflowData struct {
 	Artifacts   []string `json:"artifacts"`
 }
 
-type finishWorkflowSignalMsg struct {
-	tabID int
-	data  *finishWorkflowData
-}
-
 // startupResumeMsg is fired by Init when the model was pre-seeded with
 // a virtualSessionID by `ask resume <vid>` on the CLI. It's the same
 // trigger as picking the row from the /resume picker — Update routes it
@@ -982,7 +977,7 @@ func (m model) busy() bool {
 	if m.testBusy {
 		return true
 	}
-	return globalCoordinator.IsBusy(m.id)
+	return globalCoordinator.IsBusy(m.id) || globalCoordinator.IsWorkflowRunning(m.id)
 }
 
 func (m *model) killProc() {
