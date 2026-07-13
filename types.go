@@ -958,6 +958,10 @@ type WorkflowFailedMsg struct {
 	Reason string
 }
 
+type ClearWorkflowStateMsg struct {
+	TabID int
+}
+
 type remindKind int
 
 const (

@@ -598,14 +598,14 @@ func TestRestoreRequiresFinishedRun(t *testing.T) {
 	}
 }
 
-func TestDedicatedWorkflowTabIgnoresEnter(t *testing.T) {
+func TestDedicatedWorkflowTabClearsWorkflowRun(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.workflowRun = &workflowRunState{
 		Workflow: workflowDef{Name: "p"},
 		done:     true,
 	}
 	newM, _ := m.workflowTabHandleKey(keyPress(tea.KeyEnter, 0, ""))
-	if newM.(model).workflowRun == nil {
-		t.Fatal("Enter cleared the run on a dedicated workflow tab")
+	if newM.(model).workflowRun != nil {
+		t.Fatal("Enter should have cleared the run on a dedicated workflow tab")
 	}
 }

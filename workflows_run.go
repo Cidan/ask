@@ -30,11 +30,17 @@ func currentWorkflowStepMeta(r *workflowRunState) (name, provider, model string)
 // press can't bleed into the chain.
 func (m model) workflowTabHandleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if currentKeyMap().Matches(ActionTabClose, msg) {
-		if r := m.workflowRun; r != nil && (r.done || r.failed) {
-			if r.supplanted != nil {
-				return m.restoreSupplantedTab()
+		if r := m.workflowRun; r != nil {
+			if r.done || r.failed {
+				if r.supplanted != nil {
+					return m.restoreSupplantedTab()
+				}
+				m.workflowRun = nil
+				m.status = ""
+				return m, nil
 			}
-			return m, closeTabCmd(m.id)
+			// If the workflow is still running, ignore the close command entirely.
+			return m, nil
 		}
 		return m, closeTabCmd(m.id)
 	}
@@ -46,7 +52,9 @@ func (m model) workflowTabHandleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if r.supplanted != nil {
 				return m.restoreSupplantedTab()
 			}
-			return m, closeTabCmd(m.id)
+			m.workflowRun = nil
+			m.status = ""
+			return m, nil
 		}
 		return m, nil
 	}
