@@ -155,7 +155,7 @@ func agentEndTurnTool(env *agentToolEnv) fantasy.AgentTool {
 }
 
 type agentFinalizedPlanParams struct {
-	Plan            string `json:"plan" description:"required: the full markdown plan covering the necessary file changes, tests, and verification steps. MUST include detailed rationale explaining what will be changed and why, not just a list of steps."`
+	Plan            string `json:"plan" description:"required: the full markdown plan covering the necessary file changes, tests, and verification steps. MUST include detailed rationale explaining what will be changed and why, not just a list of steps. Note that workflow execution runs as a separate subagent context that CANNOT read the current chat history; your plan MUST be completely self-contained, including all necessary context, code locations, reasoning, and intent."`
 	Explanation     string `json:"explanation" description:"required: one or two sentences explaining why this plan is optimal"`
 	DefaultWorkflow string `json:"default_workflow,omitempty" description:"optional: the matched/suggested workflow name (e.g. 'ship') if any matches the plan"`
 }
@@ -166,7 +166,7 @@ type agentFinalizedPlanParams struct {
 func agentFinalizedPlanTool(env *agentToolEnv) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		"finalized_plan",
-		"Present a finalized implementation plan to the user for confirmation and execution choice. Invoking this tool MUST be your absolute final action in the turn. Once called, do not generate any further text or perform any more planning, as the user will be presented with a modal to launch a workflow or execute the plan directly.",
+		"Present a finalized implementation plan to the user for confirmation and execution choice. Invoking this tool MUST be your absolute final action in the turn. Once called, do not generate any further text or perform any more planning, as the user will be presented with a modal to launch a workflow or execute the plan directly. The workflow runs in a separate, isolated subagent context without access to this chat's history, so the plan must be completely self-contained.",
 		func(ctx context.Context, p agentFinalizedPlanParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			plan := strings.TrimSpace(p.Plan)
 			explanation := strings.TrimSpace(p.Explanation)
