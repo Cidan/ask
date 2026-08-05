@@ -237,7 +237,7 @@ func resolveStartupProvider(resumeProviderID, savedDefault string, warn io.Write
 }
 
 func main() {
-	if os.Getenv("ASK_INTERNAL_SUDO_ASKPASS") == "1" {
+	if os.Getenv("ASK_SUDO_SOCKET") != "" && os.Getenv("ASK_SUDO_TOKEN") != "" {
 		if err := runAskPassHelper(); err != nil {
 			fmt.Fprintln(os.Stderr, "ask askpass:", err)
 			os.Exit(1)

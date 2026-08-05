@@ -226,11 +226,18 @@ func agentBashTool(env *agentToolEnv) fantasy.AgentTool {
 				}
 			}
 
-			wrapperPath, cleanupWrapper, _ := createSudoWrapperScript(env.tabID)
 			var extraEnv []string
-			if wrapperPath != "" {
-				defer cleanupWrapper()
-				extraEnv = append(extraEnv, "SUDO_ASKPASS="+wrapperPath)
+			if server := ensureSudoIPCServer(); server != nil {
+				askExe, err := os.Executable()
+				if err != nil || askExe == "" {
+					askExe = "ask"
+				}
+				extraEnv = append(extraEnv,
+					"SUDO_ASKPASS="+askExe,
+					"ASK_SUDO_SOCKET="+server.socketPath,
+					"ASK_SUDO_TOKEN="+server.token,
+					fmt.Sprintf("ASK_SUDO_TABID=%d", env.tabID),
+				)
 			}
 
 			handle, err := agentRunShell(env.cwd, command, extraEnv...)

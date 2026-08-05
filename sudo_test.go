@@ -2,14 +2,15 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
+	"charm.land/bubbletea/v2"
+	"charm.land/fantasy"
 )
 
 func TestSudoIPCServer_HandshakeAndTokenValidation(t *testing.T) {
@@ -171,38 +172,82 @@ func (m testSudoHandlerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 func (m testSudoHandlerModel) View() tea.View { return tea.View{Content: ""} }
 
-func TestCreateSudoWrapperScript(t *testing.T) {
+func TestSudoEnv_AgentBashToolAndAskPassHelper(t *testing.T) {
 	isolateHome(t)
 
-	wrapperPath, cleanup, err := createSudoWrapperScript(42)
-	if err != nil {
-		t.Fatalf("createSudoWrapperScript failed: %v", err)
-	}
-	defer cleanup()
-
-	info, err := os.Stat(wrapperPath)
-	if err != nil {
-		t.Fatalf("wrapper script file stat failed: %v", err)
-	}
-	if info.Mode().Perm()&0077 != 0 {
-		t.Errorf("expected wrapper script permissions 0700, got: %o", info.Mode().Perm())
+	server := ensureSudoIPCServer()
+	if server == nil {
+		t.Fatalf("ensureSudoIPCServer returned nil")
 	}
 
-	content, err := os.ReadFile(wrapperPath)
-	if err != nil {
-		t.Fatalf("read wrapper script: %v", err)
-	}
-	str := string(content)
-	if !strings.Contains(str, "ASK_INTERNAL_SUDO_ASKPASS=1") {
-		t.Errorf("wrapper missing ASK_INTERNAL_SUDO_ASKPASS=1: %s", str)
-	}
-	if !strings.Contains(str, "ASK_SUDO_TABID=\"42\"") {
-		t.Errorf("wrapper missing ASK_SUDO_TABID=42: %s", str)
+	var capturedExtraEnv []string
+	prevRunShell := agentRunShell
+	t.Cleanup(func() { agentRunShell = prevRunShell })
+	agentRunShell = func(dir, command string, extraEnv ...string) (*shellHandle, error) {
+		capturedExtraEnv = extraEnv
+		out := make(chan string)
+		close(out)
+		done := make(chan shellResult, 1)
+		done <- shellResult{exitCode: 0}
+		return &shellHandle{output: out, done: done, kill: func() {}}, nil
 	}
 
-	cleanup()
-	if _, err := os.Stat(wrapperPath); !os.IsNotExist(err) {
-		t.Errorf("expected wrapper file to be removed after cleanup")
+	env := &agentToolEnv{
+		cwd:   t.TempDir(),
+		tabID: 42,
+		jobs:  newAgentJobManager(),
+	}
+
+	tool := agentBashTool(env)
+	ctx := context.Background()
+	_, err := tool.Run(ctx, fantasy.ToolCall{ID: "t", Name: "bash", Input: `{"command": "echo test", "description": "test"}`})
+	if err != nil {
+		t.Fatalf("tool.Run failed: %v", err)
+	}
+
+	hasSudoAskpass := false
+	hasSocket := false
+	hasToken := false
+	hasTabID := false
+
+	for _, e := range capturedExtraEnv {
+		if strings.HasPrefix(e, "SUDO_ASKPASS=") {
+			hasSudoAskpass = true
+		}
+		if strings.HasPrefix(e, "ASK_SUDO_SOCKET=") {
+			hasSocket = true
+		}
+		if strings.HasPrefix(e, "ASK_SUDO_TOKEN=") {
+			hasToken = true
+		}
+		if e == "ASK_SUDO_TABID=42" {
+			hasTabID = true
+		}
+	}
+
+	if !hasSudoAskpass || !hasSocket || !hasToken || !hasTabID {
+		t.Errorf("agentBashTool extraEnv missing expected variables: %v", capturedExtraEnv)
+	}
+
+	// Test runAskPassHelper when env vars are configured
+	t.Setenv("ASK_SUDO_SOCKET", server.socketPath)
+	t.Setenv("ASK_SUDO_TOKEN", server.token)
+	t.Setenv("ASK_SUDO_TABID", "42")
+
+	prevSend := agentSendToProgram
+	t.Cleanup(func() { agentSendToProgram = prevSend })
+	agentSendToProgram = func(msg tea.Msg) bool {
+		if req, ok := msg.(sudoPasswordRequestedMsg); ok {
+			go func() {
+				req.reply <- sudoPasswordReply{password: "pass123"}
+			}()
+			return true
+		}
+		return false
+	}
+
+	if err := runAskPassHelper(); err != nil {
+		t.Errorf("runAskPassHelper failed: %v", err)
 	}
 }
 
