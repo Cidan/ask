@@ -591,6 +591,7 @@ func (m model) View() tea.View {
 	needBox := box != ""
 	needModal := m.mode == modeAskQuestion
 	needApproval := m.mode == modeApproval
+	needSudoPassword := m.mode == modeSudoPassword
 	needConfig := m.mode == modeConfig
 	needSwitch := m.mode == modeModelPicker
 	needCancelConfirm := m.cancelTurnConfirming && m.mode == modeInput
@@ -598,7 +599,7 @@ func (m model) View() tea.View {
 	needMergeConfirm := m.mergePRConfirming && m.mode == modeInput
 	needFinalizedPlan := m.mode == modeFinalizedPlan
 
-	if (needBox || needModal || needApproval || needConfig || needSwitch || needCancelConfirm || needCloseTabConfirm || needMergeConfirm || needFinalizedPlan) && m.width > 0 && m.height > 0 {
+	if (needBox || needModal || needApproval || needSudoPassword || needConfig || needSwitch || needCancelConfirm || needCloseTabConfirm || needMergeConfirm || needFinalizedPlan) && m.width > 0 && m.height > 0 {
 		cbStart := time.Now()
 		canvas := uv.NewScreenBuffer(m.width, m.height)
 		uv.NewStyledString(body).Draw(canvas, image.Rectangle{
@@ -667,6 +668,23 @@ func (m model) View() tea.View {
 		}
 		if needApproval {
 			modal := m.viewApproval()
+			mW := lipgloss.Width(modal)
+			mH := lipgloss.Height(modal)
+			mX := (m.width - mW) / 2
+			mY := (m.height - mH) / 2
+			if mX < 0 {
+				mX = 0
+			}
+			if mY < 0 {
+				mY = 0
+			}
+			uv.NewStyledString(modal).Draw(canvas, image.Rectangle{
+				Min: image.Pt(mX, mY),
+				Max: image.Pt(mX+mW, mY+mH),
+			})
+		}
+		if needSudoPassword {
+			modal := m.viewSudoPassword()
 			mW := lipgloss.Width(modal)
 			mH := lipgloss.Height(modal)
 			mX := (m.width - mW) / 2

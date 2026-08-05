@@ -111,7 +111,7 @@ func newTestAgentSession(t *testing.T, lm *fakeLM, store *agentSessionStore) *ag
 		system:        "test system prompt",
 		contextWindow: deepseekContextWindow,
 		modelID:       "fake-model",
-		ch:            make(chan tea.Msg, 32),
+		ch:            make(chan tea.Msg, 256),
 		sendCh:        make(chan agentTurn, 8),
 		closed:        make(chan struct{}),
 		sessionID:     "ses-test",

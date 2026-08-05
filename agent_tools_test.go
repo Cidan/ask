@@ -373,7 +373,7 @@ func swapShellRunner(t *testing.T, fn func(dir, command string) (*shellHandle, e
 	var mu sync.Mutex
 	commands := &[]string{}
 	prev := agentRunShell
-	agentRunShell = func(dir, command string) (*shellHandle, error) {
+	agentRunShell = func(dir, command string, _ ...string) (*shellHandle, error) {
 		mu.Lock()
 		*commands = append(*commands, command)
 		mu.Unlock()
@@ -410,16 +410,10 @@ func TestAgentBashTool(t *testing.T) {
 		t.Errorf("silent success: %q", resp.Content)
 	}
 
-	// Test direct sudo command rejection
+	// Test sudo command is allowed
 	resp = runTool(t, tool, agentBashParams{Command: "sudo apt-get update"})
-	if !resp.IsError || !strings.Contains(resp.Content, "sudo: command not allowed") {
-		t.Errorf("expected sudo command to be rejected, got: %+v", resp)
-	}
-
-	// Test substring/piped sudo command rejection
-	resp = runTool(t, tool, agentBashParams{Command: "echo 'hello' | sudo tee /etc/foo"})
-	if !resp.IsError || !strings.Contains(resp.Content, "sudo: command not allowed") {
-		t.Errorf("expected piped sudo command to be rejected, got: %+v", resp)
+	if resp.IsError && strings.Contains(resp.Content, "sudo: command not allowed") {
+		t.Errorf("expected sudo command to be allowed, got hard rejection: %+v", resp)
 	}
 }
 
