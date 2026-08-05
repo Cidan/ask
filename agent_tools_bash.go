@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -216,6 +217,9 @@ func agentBashTool(env *agentToolEnv) fantasy.AgentTool {
 			command := strings.TrimSpace(p.Command)
 			if command == "" {
 				return fantasy.NewTextErrorResponse("command is required"), nil
+			}
+			if err := validateSudoCommand(command); err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
 			if !agentSafeShellCommand(command) {
 				if denied := env.requestApproval(ctx, "bash", map[string]any{
@@ -467,4 +471,336 @@ func agentSafeShellCommand(command string) bool {
 		}
 	}
 	return false
+}
+
+var errSudoRequiresAskpass = fmt.Errorf("sudo: commands invoking sudo must use -A as the first argument (e.g., 'sudo -A <command>'). Plain sudo without -A is blocked because ask requires -A to trigger the secure password prompt modal.")
+
+// validateSudoCommand checks if command invokes sudo and verifies that -A or --askpass is passed as its first argument.
+func validateSudoCommand(command string) error {
+	return parseAndValidateSudo(command)
+}
+
+func parseAndValidateSudo(input string) error {
+	var (
+		foundCmd      bool
+		isSudo        bool
+		sudoValidated bool
+		skipNext      bool
+		i             int
+		n             = len(input)
+	)
+
+	checkReset := func() error {
+		if isSudo && !sudoValidated {
+			return errSudoRequiresAskpass
+		}
+		foundCmd = false
+		isSudo = false
+		sudoValidated = false
+		skipNext = false
+		return nil
+	}
+
+	for i < n {
+		for i < n && (input[i] == ' ' || input[i] == '\t' || input[i] == '\r') {
+			i++
+		}
+		if i >= n {
+			break
+		}
+
+		ch := input[i]
+
+		if ch == '\n' || ch == ';' {
+			if err := checkReset(); err != nil {
+				return err
+			}
+			i++
+			continue
+		}
+
+		if ch == '|' || ch == '&' {
+			if err := checkReset(); err != nil {
+				return err
+			}
+			i++
+			if i < n && (input[i] == '|' || input[i] == '&') {
+				i++
+			}
+			continue
+		}
+
+		if ch == '(' || ch == ')' {
+			if err := checkReset(); err != nil {
+				return err
+			}
+			i++
+			continue
+		}
+
+		wordStart := i
+		var unquoted strings.Builder
+
+		for i < n {
+			c := input[i]
+
+			if c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == ';' || c == '|' || c == '&' || c == '(' || c == ')' {
+				break
+			}
+
+			if c == '\\' {
+				i++
+				if i < n {
+					unquoted.WriteByte(input[i])
+					i++
+				}
+				continue
+			}
+
+			if c == '\'' {
+				i++
+				for i < n && input[i] != '\'' {
+					unquoted.WriteByte(input[i])
+					i++
+				}
+				if i < n {
+					i++
+				}
+				continue
+			}
+
+			if c == '"' {
+				i++
+				for i < n && input[i] != '"' {
+					dc := input[i]
+					if dc == '\\' {
+						i++
+						if i < n {
+							unquoted.WriteByte(input[i])
+							i++
+						}
+						continue
+					}
+					if dc == '$' && i+1 < n && input[i+1] == '(' {
+						inner, endIdx, err := extractMatchingParen(input, i+2)
+						if err == nil {
+							if err := parseAndValidateSudo(inner); err != nil {
+								return err
+							}
+							i = endIdx
+							continue
+						}
+					}
+					if dc == '`' {
+						inner, endIdx := extractBacktick(input, i+1)
+						if err := parseAndValidateSudo(inner); err != nil {
+							return err
+						}
+						i = endIdx
+						continue
+					}
+					unquoted.WriteByte(dc)
+					i++
+				}
+				if i < n {
+					i++
+				}
+				continue
+			}
+
+			if c == '$' && i+1 < n && input[i+1] == '(' {
+				inner, endIdx, err := extractMatchingParen(input, i+2)
+				if err == nil {
+					if err := parseAndValidateSudo(inner); err != nil {
+						return err
+					}
+					i = endIdx
+					continue
+				}
+			}
+
+			if c == '`' {
+				inner, endIdx := extractBacktick(input, i+1)
+				if err := parseAndValidateSudo(inner); err != nil {
+					return err
+				}
+				i = endIdx
+				continue
+			}
+
+			unquoted.WriteByte(c)
+			i++
+		}
+
+		rawWord := input[wordStart:i]
+		unquotedStr := unquoted.String()
+
+		if rawWord == "" && unquotedStr == "" {
+			i++
+			continue
+		}
+
+		if skipNext {
+			skipNext = false
+			continue
+		}
+
+		if isRedirectionOp(unquotedStr) || isRedirectionOp(rawWord) {
+			skipNext = true
+			continue
+		}
+
+		if isSelfContainedRedirect(unquotedStr) || isSelfContainedRedirect(rawWord) {
+			continue
+		}
+
+		if !foundCmd {
+			if isEnvAssignment(unquotedStr) || isEnvAssignment(rawWord) {
+				continue
+			}
+			foundCmd = true
+			base := filepath.Base(unquotedStr)
+			if base == "sudo" || unquotedStr == "sudo" || strings.HasSuffix(unquotedStr, "/sudo") {
+				isSudo = true
+			}
+			continue
+		}
+
+		if isSudo && !sudoValidated {
+			if unquotedStr == "-A" || unquotedStr == "--askpass" || rawWord == "-A" || rawWord == "--askpass" {
+				sudoValidated = true
+			} else {
+				return errSudoRequiresAskpass
+			}
+		}
+	}
+
+	if err := checkReset(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func isEnvAssignment(s string) bool {
+	idx := strings.IndexByte(s, '=')
+	if idx <= 0 {
+		return false
+	}
+	return isValidShellIdentifier(s[:idx])
+}
+
+func isValidShellIdentifier(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if i == 0 {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') {
+				return false
+			}
+		} else {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isRedirectionOp(s string) bool {
+	switch s {
+	case ">", "<", ">>", "<<", "<<<", ">&", "<&", "1>", "2>", "1>>", "2>>", "&>", "&>>":
+		return true
+	}
+	return false
+}
+
+func isSelfContainedRedirect(s string) bool {
+	if isRedirectionOp(s) {
+		return false
+	}
+	if strings.HasPrefix(s, ">") || strings.HasPrefix(s, "<") || strings.HasPrefix(s, "1>") || strings.HasPrefix(s, "2>") || strings.HasPrefix(s, "&>") {
+		return true
+	}
+	return false
+}
+
+func extractMatchingParen(input string, start int) (string, int, error) {
+	depth := 1
+	i := start
+	n := len(input)
+	inSingle := false
+	inDouble := false
+
+	for i < n && depth > 0 {
+		c := input[i]
+		if inSingle {
+			if c == '\'' {
+				inSingle = false
+			}
+			i++
+			continue
+		}
+		if inDouble {
+			if c == '\\' {
+				i += 2
+				continue
+			}
+			if c == '"' {
+				inDouble = false
+			}
+			i++
+			continue
+		}
+		if c == '\\' {
+			i += 2
+			continue
+		}
+		if c == '\'' {
+			inSingle = true
+			i++
+			continue
+		}
+		if c == '"' {
+			inDouble = true
+			i++
+			continue
+		}
+		if c == '(' {
+			depth++
+			i++
+			continue
+		}
+		if c == ')' {
+			depth--
+			if depth == 0 {
+				return input[start:i], i + 1, nil
+			}
+			i++
+			continue
+		}
+		i++
+	}
+	if depth != 0 {
+		return "", start, fmt.Errorf("unmatched paren")
+	}
+	return input[start:i], i, nil
+}
+
+func extractBacktick(input string, start int) (string, int) {
+	i := start
+	n := len(input)
+	for i < n {
+		if input[i] == '\\' {
+			i += 2
+			continue
+		}
+		if input[i] == '`' {
+			return input[start:i], i + 1
+		}
+		i++
+	}
+	return input[start:], n
 }
