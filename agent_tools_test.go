@@ -410,10 +410,57 @@ func TestAgentBashTool(t *testing.T) {
 		t.Errorf("silent success: %q", resp.Content)
 	}
 
-	// Test sudo command is allowed
+	// Test sudo command without -A is rejected
 	resp = runTool(t, tool, agentBashParams{Command: "sudo apt-get update"})
-	if resp.IsError && strings.Contains(resp.Content, "sudo: command not allowed") {
-		t.Errorf("expected sudo command to be allowed, got hard rejection: %+v", resp)
+	if !resp.IsError || !strings.Contains(resp.Content, "sudo: commands invoking sudo must use -A as the first argument") {
+		t.Errorf("expected sudo command without -A to be rejected, got: %+v", resp)
+	}
+
+	// Test sudo command with -A is permitted
+	resp = runTool(t, tool, agentBashParams{Command: "sudo -A apt-get update"})
+	if resp.IsError {
+		t.Errorf("expected sudo -A command to be permitted, got error: %+v", resp)
+	}
+}
+
+func TestValidateSudoCommand(t *testing.T) {
+	tests := []struct {
+		cmd     string
+		wantErr bool
+	}{
+		{"sudo apt-get update", true},
+		{"sudo -A apt-get update", false},
+		{"sudo --askpass apt-get update", false},
+		{"/usr/bin/sudo apt-get update", true},
+		{"/usr/bin/sudo -A apt-get update", false},
+		{"echo 'hello' | sudo tee /etc/foo", true},
+		{"echo 'hello' | sudo -A tee /etc/foo", false},
+		{"grep sudo /etc/passwd", false},
+		{"echo \"sudo\"", false},
+		{"git commit -m \"add sudo support\"", false},
+		{"VAR=1 sudo apt update", true},
+		{"VAR=1 sudo -A apt update", false},
+		{"(sudo apt update)", true},
+		{"(sudo -A apt update)", false},
+		{"FOO=$(sudo apt update)", true},
+		{"FOO=$(sudo -A apt update)", false},
+		{"sudo -u root apt update", true},
+		{"sudo -A -u root apt update", false},
+		{"sudo", true},
+		{"sudo -A", false},
+	}
+
+	for _, tt := range tests {
+		err := validateSudoCommand(tt.cmd)
+		if tt.wantErr && err == nil {
+			t.Errorf("validateSudoCommand(%q) expected error, got nil", tt.cmd)
+		}
+		if !tt.wantErr && err != nil {
+			t.Errorf("validateSudoCommand(%q) unexpected error: %v", tt.cmd, err)
+		}
+		if tt.wantErr && err != nil && !strings.Contains(err.Error(), "sudo: commands invoking sudo must use -A as the first argument") {
+			t.Errorf("validateSudoCommand(%q) got error %v, want error containing message", tt.cmd, err)
+		}
 	}
 }
 
