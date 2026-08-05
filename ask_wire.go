@@ -74,6 +74,17 @@ type approvalRequestMsg struct {
 	reply     chan approvalReply
 }
 
+type sudoPasswordReply struct {
+	password  string
+	cancelled bool
+}
+
+type sudoPasswordRequestedMsg struct {
+	tabID  int
+	prompt string
+	reply  chan sudoPasswordReply
+}
+
 const askToolDescription = `Ask the user one or more questions through a tabbed modal in the ask terminal UI.
 
 Use this tool when a decision is best made by the user and you cannot reasonably infer the answer from context, prior turns, or project conventions. Do not use it for trivia you can answer yourself, and do not use it as a substitute for a plan or a todo list.

@@ -816,6 +816,16 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m = m.startApproval(msg)
 		return m, nil
 
+	case sudoPasswordRequestedMsg:
+		if m.workflowRun != nil {
+			if msg.reply != nil {
+				msg.reply <- sudoPasswordReply{cancelled: true}
+			}
+			return m, nil
+		}
+		m = m.startSudoPassword(msg)
+		return m, nil
+
 	case workflowStatusChangedMsg:
 		// Status changed somewhere — invalidate cached frame so the
 		// kanban (if visible) repaints with the new icon. The
@@ -1100,6 +1110,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m.updateModelPicker(msg)
 		case modeFinalizedPlan:
 			return m.updateFinalizedPlan(msg)
+		case modeSudoPassword:
+			return m.updateSudoPassword(msg)
 		}
 		// Workflow tabs are read-only: the input area is replaced
 		// with a status banner and the user has no way to type a

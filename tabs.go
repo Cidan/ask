@@ -179,6 +179,8 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.dispatchByTabID(m.tabID, msg)
 	case approvalRequestMsg:
 		return a.dispatchByTabID(m.tabID, msg)
+	case sudoPasswordRequestedMsg:
+		return a.dispatchByTabID(m.tabID, msg)
 	case shellBatchMsg:
 		return a.dispatchByTabID(m.tabID, msg)
 	case providerInitLoadedMsg:
@@ -270,6 +272,10 @@ func (a app) dispatchByTabID(tabID int, msg tea.Msg) (tea.Model, tea.Cmd) {
 		case approvalRequestMsg:
 			if m.reply != nil {
 				m.reply <- approvalReply{allow: false}
+			}
+		case sudoPasswordRequestedMsg:
+			if m.reply != nil {
+				m.reply <- sudoPasswordReply{cancelled: true}
 			}
 		}
 		return a, nil

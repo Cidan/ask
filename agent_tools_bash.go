@@ -45,13 +45,16 @@ var agentRunShell = runShellProcess
 // process group (same conventions as shell.go: Setpgid without Setsid
 // — combining them makes setpgid fail with EPERM). stdout and stderr
 // are interleaved as they arrive.
-func runShellProcess(dir, command string) (*shellHandle, error) {
+func runShellProcess(dir, command string, extraEnv ...string) (*shellHandle, error) {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/sh"
 	}
 	cmd := exec.Command(shell, "-c", command)
 	cmd.Dir = dir
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -214,9 +217,6 @@ func agentBashTool(env *agentToolEnv) fantasy.AgentTool {
 			if command == "" {
 				return fantasy.NewTextErrorResponse("command is required"), nil
 			}
-			if strings.Contains(command, "sudo ") {
-				return fantasy.NewTextErrorResponse("sudo: command not allowed. ask does not permit running commands with sudo."), nil
-			}
 			if !agentSafeShellCommand(command) {
 				if denied := env.requestApproval(ctx, "bash", map[string]any{
 					"command":     command,
@@ -226,7 +226,21 @@ func agentBashTool(env *agentToolEnv) fantasy.AgentTool {
 				}
 			}
 
-			handle, err := agentRunShell(env.cwd, command)
+			var extraEnv []string
+			if server := ensureSudoIPCServer(); server != nil {
+				askExe, err := os.Executable()
+				if err != nil || askExe == "" {
+					askExe = "ask"
+				}
+				extraEnv = append(extraEnv,
+					"SUDO_ASKPASS="+askExe,
+					"ASK_SUDO_SOCKET="+server.socketPath,
+					"ASK_SUDO_TOKEN="+server.token,
+					fmt.Sprintf("ASK_SUDO_TABID=%d", env.tabID),
+				)
+			}
+
+			handle, err := agentRunShell(env.cwd, command, extraEnv...)
 			if err != nil {
 				return fantasy.NewTextErrorResponse("could not start shell: " + err.Error()), nil
 			}

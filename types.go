@@ -10,6 +10,7 @@ import (
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	glamour "charm.land/glamour/v2"
 )
@@ -42,6 +43,7 @@ const (
 	modeConfig
 	modeModelPicker
 	modeFinalizedPlan
+	modeSudoPassword
 )
 
 type streamStatusMsg struct {
@@ -493,6 +495,11 @@ type model struct {
 	approvalInput  map[string]any
 	approvalReply  chan approvalReply
 	approvalChoice int
+
+	sudoPrompt           string
+	sudoReply            chan sudoPasswordReply
+	sudoInput            textinput.Model
+	sudoIncorrectAttempt bool
 
 	cancelTurnConfirming bool
 	cancelTurnChoice     int
@@ -1032,6 +1039,13 @@ func (m *model) drainPendingReplies() {
 		default:
 		}
 		m.finalizedPlanReply = nil
+	}
+	if m.sudoReply != nil {
+		select {
+		case m.sudoReply <- sudoPasswordReply{cancelled: true}:
+		default:
+		}
+		m.sudoReply = nil
 	}
 }
 
