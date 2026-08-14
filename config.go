@@ -9,6 +9,8 @@ import (
 	"time"
 
 	lipgloss "charm.land/lipgloss/v2"
+	"github.com/Cidan/ask/pkg/config"
+	"github.com/Cidan/ask/pkg/providers"
 )
 
 // configFileMu serialises read-modify-write cycles against the on-disk
@@ -467,17 +469,12 @@ func isProjectConfigEmpty(pc projectConfig) bool {
 // falls back to the provider's conventional environment variable at
 // session start; an empty BaseURL means the provider's default
 // endpoint.
-type apiProviderConfig struct {
-	SlashCommands []providerSlashEntry `json:"slashCommands,omitempty"`
-	Model         string               `json:"model,omitempty"`
-	APIKey        string               `json:"apiKey,omitempty"`
-	BaseURL       string               `json:"baseURL,omitempty"`
-}
+type apiProviderConfig = config.APIProviderConfig
 
 // deepseekDefaultBaseURL is the OpenAI-compatible endpoint. The /v1
 // suffix is path-compatibility only (unrelated to model versions) and
 // is what the OpenAI-style SDK expects to prefix /chat/completions.
-const deepseekDefaultBaseURL = "https://api.deepseek.com/v1"
+const deepseekDefaultBaseURL = providers.DeepSeekDefaultBaseURL
 
 // The default is the international platform (platform.kimi.ai /
 // platform.moonshot.ai) that issues the kimi-k2.x models ask ships as
@@ -485,20 +482,20 @@ const deepseekDefaultBaseURL = "https://api.deepseek.com/v1"
 // with its own keys — an international key sent to .cn 401s as
 // "invalid authentication". China-platform users override base_url in
 // their kimi config block.
-const moonshotDefaultBaseURL = "https://api.moonshot.ai/v1"
+const moonshotDefaultBaseURL = providers.MoonshotDefaultBaseURL
 
-const minimaxDefaultBaseURL = "https://api.minimax.io/v1"
+const minimaxDefaultBaseURL = providers.MiniMaxDefaultBaseURL
 
 // Conventional environment fallbacks consulted when the config field
 // is empty.
 const (
-	deepseekEnvAPIKey  = "DEEPSEEK_API_KEY"
-	moonshotEnvAPIKey  = "MOONSHOT_API_KEY"
-	anthropicEnvAPIKey = "ANTHROPIC_API_KEY"
-	openaiEnvAPIKey    = "OPENAI_API_KEY"
-	braveEnvAPIKey     = "BRAVE_API_KEY"
-	minimaxEnvAPIKey   = "MINIMAX_API_KEY"
-	googleaiEnvAPIKey  = "GOOGLE_API_KEY"
+	deepseekEnvAPIKey  = providers.DeepSeekEnvAPIKey
+	moonshotEnvAPIKey  = providers.MoonshotEnvAPIKey
+	anthropicEnvAPIKey = providers.AnthropicEnvAPIKey
+	openaiEnvAPIKey    = providers.OpenAIEnvAPIKey
+	braveEnvAPIKey     = providers.BraveEnvAPIKey
+	minimaxEnvAPIKey   = providers.MiniMaxEnvAPIKey
+	googleaiEnvAPIKey  = providers.GoogleAIEnvAPIKey
 )
 
 // resolveAPIProviderKey returns the API key to use: an explicit config
@@ -506,49 +503,35 @@ const (
 // means unconfigured — session start surfaces a pointed error instead
 // of a cryptic 401.
 func resolveAPIProviderKey(c apiProviderConfig, envKey string) string {
-	if c.APIKey != "" {
-		return c.APIKey
-	}
-	return os.Getenv(envKey)
+	return providers.ResolveAPIProviderKey(c, envKey)
 }
 
 func resolveDeepSeekAPIKey(c apiProviderConfig) string {
-	return resolveAPIProviderKey(c, deepseekEnvAPIKey)
+	return providers.ResolveDeepSeekAPIKey(c)
 }
 
 func resolveKimiAPIKey(c apiProviderConfig) string {
-	return resolveAPIProviderKey(c, moonshotEnvAPIKey)
+	return providers.ResolveKimiAPIKey(c)
 }
 
 func resolveAnthropicAPIKey(c apiProviderConfig) string {
-	return resolveAPIProviderKey(c, anthropicEnvAPIKey)
+	return providers.ResolveAnthropicAPIKey(c)
 }
 
 func resolveOpenAIAPIKey(c apiProviderConfig) string {
-	return resolveAPIProviderKey(c, openaiEnvAPIKey)
+	return providers.ResolveOpenAIAPIKey(c)
 }
 
 func resolveMiniMaxAPIKey(c apiProviderConfig) string {
-	return resolveAPIProviderKey(c, minimaxEnvAPIKey)
+	return providers.ResolveMiniMaxAPIKey(c)
 }
 
 func resolveGoogleAIAPIKey(c apiProviderConfig) string {
-	return resolveAPIProviderKey(c, googleaiEnvAPIKey)
+	return providers.ResolveGoogleAIAPIKey(c)
 }
 
-// vertexConfig holds the per-provider settings for the Vertex AI
-// backend. Vertex uses Google Cloud Application Default Credentials
-// (env-var SA key → gcloud login → GCE metadata) plus a project +
-// location, so it does NOT use apiProviderConfig — there's no API key
-// to store. The apiProviderConfig embed carries the model / effort /
-// slash-commands settings the spec's loadSettings/saveSettings
-// accessors need without duplicating JSON tags.
-type vertexConfig struct {
-	Project           string `json:"project,omitempty"`
-	Location          string `json:"location,omitempty"`
-	ServiceAccountKey string `json:"serviceAccountKey,omitempty"`
-	apiProviderConfig
-}
+// vertexConfig holds the per-provider settings for the Vertex AI backend.
+type vertexConfig = config.VertexConfig
 
 // webSearchConfig holds the generic web-search settings. Today the only
 // knob is the Brave Search API key, used by the native Brave-backed

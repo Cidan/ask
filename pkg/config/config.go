@@ -36,16 +36,26 @@ type Config struct {
 	Projects     map[string]ProjectConfig   `json:"projects,omitempty"`
 }
 
+type ProviderSlashEntry struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
 type APIProviderConfig struct {
-	APIKey string `json:"apiKey,omitempty"`
-	Model  string `json:"model,omitempty"`
+	APIKey        string               `json:"apiKey,omitempty"`
+	Model         string               `json:"model,omitempty"`
+	BaseURL       string               `json:"baseURL,omitempty"`
+	SlashCommands []ProviderSlashEntry `json:"slashCommands,omitempty"`
 }
 
 type VertexConfig struct {
-	Project        string `json:"project,omitempty"`
-	Location       string `json:"location,omitempty"`
-	ServiceAccount string `json:"serviceAccount,omitempty"`
-	Model          string `json:"model,omitempty"`
+	Project           string               `json:"project,omitempty"`
+	Location          string               `json:"location,omitempty"`
+	ServiceAccountKey string               `json:"serviceAccountKey,omitempty"`
+	ServiceAccount    string               `json:"serviceAccount,omitempty"`
+	Model             string               `json:"model,omitempty"`
+	BaseURL           string               `json:"baseURL,omitempty"`
+	SlashCommands     []ProviderSlashEntry `json:"slashCommands,omitempty"`
 }
 
 type UIConfig struct {

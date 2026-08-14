@@ -57,13 +57,22 @@ type Spec struct {
 var (
 	registryMu sync.RWMutex
 	specs      = map[string]Spec{
-		"anthropic": {ID: "anthropic", Name: "Anthropic", DefaultModel: "claude-3-7-sonnet-latest"},
-		"openai":    {ID: "openai", Name: "OpenAI", DefaultModel: "gpt-4o"},
-		"deepseek":  {ID: "deepseek", Name: "DeepSeek", DefaultModel: "deepseek-chat"},
-		"googleai":  {ID: "googleai", Name: "Google AI", DefaultModel: "gemini-2.5-pro"},
-		"vertex":    {ID: "vertex", Name: "Vertex AI", DefaultModel: "gemini-2.5-pro"},
-		"kimi":      {ID: "kimi", Name: "Kimi", DefaultModel: "moonshot-v1-8k"},
-		"minimax":   {ID: "minimax", Name: "MiniMax", DefaultModel: "MiniMax-Text-01"},
+		"anthropic": {ID: "anthropic", Name: "Anthropic", DefaultModel: AnthropicDefaultModel},
+		"openai":    {ID: "openai", Name: "OpenAI", DefaultModel: OpenAIDefaultModel},
+		"deepseek":  {ID: "deepseek", Name: "DeepSeek", DefaultModel: DeepSeekDefaultModel},
+		"googleai":  {ID: "googleai", Name: "Google AI", DefaultModel: GoogleAIDefaultModel},
+		"vertex":    {ID: "vertex", Name: "Vertex AI", DefaultModel: VertexDefaultModel},
+		"kimi":      {ID: "kimi", Name: "Kimi", DefaultModel: KimiDefaultModel},
+		"minimax":   {ID: "minimax", Name: "MiniMax", DefaultModel: MiniMaxDefaultModel},
+	}
+	agentSpecs = map[string]*AgentProviderSpec{
+		"anthropic": &AnthropicSpec,
+		"openai":    &OpenAISpec,
+		"deepseek":  &DeepSeekSpec,
+		"googleai":  &GoogleAISpec,
+		"vertex":    &VertexSpec,
+		"kimi":      &KimiSpec,
+		"minimax":   &MiniMaxSpec,
 	}
 )
 
@@ -72,4 +81,25 @@ func GetSpec(id string) (Spec, bool) {
 	defer registryMu.RUnlock()
 	s, ok := specs[id]
 	return s, ok
+}
+
+func GetAgentProviderSpec(id string) (*AgentProviderSpec, bool) {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	s, ok := agentSpecs[id]
+	return s, ok
+}
+
+func AllAgentProviderSpecs() []*AgentProviderSpec {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	return []*AgentProviderSpec{
+		&AnthropicSpec,
+		&OpenAISpec,
+		&DeepSeekSpec,
+		&GoogleAISpec,
+		&VertexSpec,
+		&KimiSpec,
+		&MiniMaxSpec,
+	}
 }

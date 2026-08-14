@@ -154,28 +154,28 @@ func TestOpenAIProvider_SessionLifecycle(t *testing.T) {
 }
 
 func TestOpenAIContextWindow(t *testing.T) {
-	if got := openaiSpec.contextWindow("gpt-5"); got != 400_000 {
+	if got := openaiSpec.ContextWindow("gpt-5"); got != 400_000 {
 		t.Errorf("gpt-5 window = %d want 400k", got)
 	}
-	if got := openaiSpec.contextWindow("custom-model"); got != openaiFallbackContextWindow {
+	if got := openaiSpec.ContextWindow("custom-model"); got != openaiFallbackContextWindow {
 		t.Errorf("unknown model must use the conservative fallback: %d", got)
 	}
 }
 
 func TestOpenAIMaxOutputTokens(t *testing.T) {
-	if got := openaiSpec.maxOutputTokens("gpt-5.5"); got != 128_000 {
+	if got := openaiSpec.MaxOutputTokens("gpt-5.5"); got != 128_000 {
 		t.Errorf("gpt-5.5 budget = %d want 128k", got)
 	}
-	if got := openaiSpec.maxOutputTokens("custom-model"); got != openaiFallbackMaxOutputTokens {
+	if got := openaiSpec.MaxOutputTokens("custom-model"); got != openaiFallbackMaxOutputTokens {
 		t.Errorf("unknown model must use the fallback budget: %d", got)
 	}
 }
 
 func TestOpenAINativeWebSearch(t *testing.T) {
-	if openaiSpec.nativeWebSearch == nil {
+	if openaiSpec.NativeWebSearch == nil {
 		t.Fatal("openai must provide a native web_search tool")
 	}
-	tool := openaiSpec.nativeWebSearch("gpt-5.5")
+	tool := openaiSpec.NativeWebSearch("gpt-5.5")
 	if tool == nil {
 		t.Fatal("nativeWebSearch returned nil")
 	}

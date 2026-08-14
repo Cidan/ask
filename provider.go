@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Cidan/ask/pkg/config"
+	"github.com/Cidan/ask/pkg/providers"
 )
 
 // askSteeringPromptP1 is the first paragraph of the steering prompt, defining machine pace.
@@ -176,11 +178,7 @@ type Provider interface {
 // ProviderSettings is the per-provider slice of askConfig the UI
 // reads/writes through Provider.LoadSettings / SaveSettings. Each
 // provider decides where these values live on disk.
-type ProviderSettings struct {
-	Model         string
-	Effort        string
-	SlashCommands []providerSlashEntry
-}
+type ProviderSettings = providers.ProviderSettings
 
 // ProviderCapabilities flags optional features a provider supports. The
 // app consults these to decide whether to engage ask-side fallbacks
@@ -319,10 +317,7 @@ type deferredToolUse struct {
 // providerSlashEntry is a dynamically-discovered slash command entry
 // (name + description) cached in config so the first render doesn't
 // block on discovery.
-type providerSlashEntry struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-}
+type providerSlashEntry = config.ProviderSlashEntry
 
 // providerDoneMsg fires at end-of-turn with the provider's result
 // summary (session id, final text, error flag).

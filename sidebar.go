@@ -250,7 +250,7 @@ func (m *model) effectiveModelID() string {
 	}
 	if m.provider != nil {
 		if spec, ok := agentSpecByID(m.provider.ID()); ok {
-			return spec.defaultModel
+			return spec.DefaultModel
 		}
 	}
 	return ""

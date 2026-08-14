@@ -351,7 +351,7 @@ func TestVertexProvider_SessionLifecycle(t *testing.T) {
 	if len(calls) == 0 || calls[0].Prompt[0].Role != fantasy.MessageRoleSystem {
 		t.Fatal("first wire message must be the system prompt")
 	}
-	if want := vertexSpec.maxOutputTokens(vertexDefaultModel); calls[0].MaxOutputTokens == nil ||
+	if want := vertexSpec.MaxOutputTokens(vertexDefaultModel); calls[0].MaxOutputTokens == nil ||
 		*calls[0].MaxOutputTokens != want {
 		t.Errorf("wire MaxOutputTokens = %v want %d", calls[0].MaxOutputTokens, want)
 	}
@@ -461,20 +461,20 @@ func TestVertexStoreUsesHome(t *testing.T) {
 func TestVertexMaxOutputTokens(t *testing.T) {
 	// The default model is in the catwalk catalog; the published
 	// default_max_tokens (64000) wins over the fallback.
-	if got := vertexSpec.maxOutputTokens(vertexDefaultModel); got == vertexFallbackMaxOutputTokens {
+	if got := vertexSpec.MaxOutputTokens(vertexDefaultModel); got == vertexFallbackMaxOutputTokens {
 		t.Errorf("default model should use the catwalk value, not the fallback: got %d", got)
 	}
 	// Unknown models fall back to the conservative default.
-	if got := vertexSpec.maxOutputTokens("custom-unknown"); got != vertexFallbackMaxOutputTokens {
+	if got := vertexSpec.MaxOutputTokens("custom-unknown"); got != vertexFallbackMaxOutputTokens {
 		t.Errorf("unknown model must use the fallback budget: %d", got)
 	}
 }
 
 func TestVertexSupportsImages(t *testing.T) {
-	if !vertexSpec.supportsImages(vertexDefaultModel) {
+	if !vertexSpec.SupportsImages(vertexDefaultModel) {
 		t.Error("default model must support images")
 	}
-	if !vertexSpec.supportsImages("unknown-model") {
+	if !vertexSpec.SupportsImages("unknown-model") {
 		t.Error("unknown model should default to image-capable")
 	}
 }

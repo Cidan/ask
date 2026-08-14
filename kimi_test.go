@@ -164,7 +164,7 @@ func TestKimiProvider_SessionLifecycle(t *testing.T) {
 		t.Error("system prompt must include coder rules and ask steering")
 	}
 	// Kimi always uses the fallback max output tokens.
-	if want := kimiSpec.maxOutputTokens("kimi-k2.7-code"); calls[0].MaxOutputTokens == nil ||
+	if want := kimiSpec.MaxOutputTokens("kimi-k2.7-code"); calls[0].MaxOutputTokens == nil ||
 		*calls[0].MaxOutputTokens != want {
 		t.Errorf("wire MaxOutputTokens = %v want %d", calls[0].MaxOutputTokens, want)
 	}
@@ -271,35 +271,35 @@ func TestKimiStoreUsesHome(t *testing.T) {
 }
 
 func TestKimiMaxOutputTokens(t *testing.T) {
-	if got := kimiSpec.maxOutputTokens("kimi-k2.7-code"); got != kimiFallbackMaxOutputTokens {
+	if got := kimiSpec.MaxOutputTokens("kimi-k2.7-code"); got != kimiFallbackMaxOutputTokens {
 		t.Errorf("kimi-k2.7-code budget = %d want %d", got, kimiFallbackMaxOutputTokens)
 	}
-	if got := kimiSpec.maxOutputTokens("kimi-k2.5"); got != kimiFallbackMaxOutputTokens {
+	if got := kimiSpec.MaxOutputTokens("kimi-k2.5"); got != kimiFallbackMaxOutputTokens {
 		t.Errorf("kimi-k2.5 budget = %d want %d", got, kimiFallbackMaxOutputTokens)
 	}
-	if got := kimiSpec.maxOutputTokens("kimi-k2-thinking"); got != kimiFallbackMaxOutputTokens {
+	if got := kimiSpec.MaxOutputTokens("kimi-k2-thinking"); got != kimiFallbackMaxOutputTokens {
 		t.Errorf("kimi-k2-thinking budget = %d want %d", got, kimiFallbackMaxOutputTokens)
 	}
-	if got := kimiSpec.maxOutputTokens("custom-model"); got != kimiFallbackMaxOutputTokens {
+	if got := kimiSpec.MaxOutputTokens("custom-model"); got != kimiFallbackMaxOutputTokens {
 		t.Errorf("unknown model must use the fallback budget: %d", got)
 	}
 }
 
 func TestKimiSupportsImages(t *testing.T) {
 	// kimi-k2.7-code supports vision.
-	if !kimiSpec.supportsImages("kimi-k2.7-code") {
+	if !kimiSpec.SupportsImages("kimi-k2.7-code") {
 		t.Error("kimi-k2.7-code must support images")
 	}
 	// kimi-k2.5 supports vision.
-	if !kimiSpec.supportsImages("kimi-k2.5") {
+	if !kimiSpec.SupportsImages("kimi-k2.5") {
 		t.Error("kimi-k2.5 must support images")
 	}
 	// kimi-k2-thinking does not support vision.
-	if kimiSpec.supportsImages("kimi-k2-thinking") {
+	if kimiSpec.SupportsImages("kimi-k2-thinking") {
 		t.Error("kimi-k2-thinking must NOT support images")
 	}
 	// Unknown models fall back to true.
-	if !kimiSpec.supportsImages("unknown-model") {
+	if !kimiSpec.SupportsImages("unknown-model") {
 		t.Error("unknown model should default to image-capable")
 	}
 }
