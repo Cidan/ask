@@ -231,7 +231,7 @@ func TestFinalizedPlan_ExecuteInlineSelection(t *testing.T) {
 func TestFinalizedPlan_ToolGoroutineInlineDisarm(t *testing.T) {
 	// Verify that finalized_plan tool disarms todos guards on executeInline
 	env := newAgentToolEnv(t.TempDir(), 1, true, false, func(tea.Msg) {})
-	env.workflowsAvailable = true
+	env.WorkflowsAvailable = true
 
 	tool := agentFinalizedPlanTool(env)
 
@@ -264,10 +264,8 @@ func TestFinalizedPlan_ToolGoroutineInlineDisarm(t *testing.T) {
 		t.Fatalf("tool response error: %s", resp.Content)
 	}
 
-	env.wfMu.Lock()
-	checked := env.workflowsChecked
-	runDispatched := env.workflowRunDispatched
-	env.wfMu.Unlock()
+	checked := env.WorkflowsChecked
+	runDispatched := env.WorkflowRunDispatched
 
 	if !checked || !runDispatched {
 		t.Errorf("executeInline did not disarm workflow checked/dispatched guards: checked=%v, run=%v", checked, runDispatched)
@@ -292,10 +290,7 @@ func TestFinalizedPlan_WorkflowSelectionToolNoCmd(t *testing.T) {
 	m.finalizedPlanReply = make(chan finalizedPlanReply, 1)
 	m.finalizedPlanFocusBottom = true
 
-	// Since we need "ship" to exist in listAllWorkflows, let's create a temporary config or mock it.
-	// But listAllWorkflows looks at config / disk, let's see. If no workflows exist, finalizedPlanWorkflow won't be valid.
-	// Wait, is "ship" already in global workflows on this machine? Yes, .config/ask/workflows/ship.json exists!
-	// So listAllWorkflows(m.cwd) will indeed find "ship"!
+	_ = saveAllWorkflows(m.cwd, []workflowDef{{Name: "ship", Scope: workflowScopeRepo, Steps: []workflowStep{{Name: "s1", Provider: "anthropic"}}}})
 	m.finalizedPlanWorkflow = "ship"
 	opts := m.finalizedPlanOptions()
 	for idx, o := range opts {

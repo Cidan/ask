@@ -274,7 +274,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		},
 		s.refreshToolset,
 	)
-	s.mcp.attachAll(context.Background(), agentSessionMCPServers(s.args, cfg))
+	s.mcp.AttachAll(context.Background(), agentSessionMCPServers(s.args, cfg))
 	s.refreshToolset()
 }
 
@@ -286,8 +286,8 @@ func agentSessionMCPServers(args ProviderSessionArgs, cfg askConfig) []agentMCPS
 	var servers []agentMCPServer
 	if args.ProjectMCP != nil {
 		servers = append(servers, agentMCPServer{
-			name: args.ProjectMCP.Name,
-			cfg: mcpServerConfig{
+			Name: args.ProjectMCP.Name,
+			Cfg: mcpServerConfig{
 				Type:    mcpServerTypeHTTP,
 				URL:     args.ProjectMCP.URL,
 				Headers: args.ProjectMCP.Headers,
@@ -295,7 +295,7 @@ func agentSessionMCPServers(args ProviderSessionArgs, cfg askConfig) []agentMCPS
 		})
 	}
 	for _, named := range resolveMCPServers(cfg, args.Cwd) {
-		servers = append(servers, agentMCPServer{name: named.Name, cfg: named.Config})
+		servers = append(servers, agentMCPServer{Name: named.Name, Cfg: named.Config})
 	}
 	return servers
 }

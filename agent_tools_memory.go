@@ -22,14 +22,14 @@ func agentMemoryIndexTool(env *agentToolEnv) fantasy.AgentTool {
 				return fantasy.NewTextErrorResponse("text cannot be empty"), nil
 			}
 
-			if denied := env.requestApproval(ctx, "memory_index", map[string]any{
+			if denied := env.RequestApproval(ctx, "memory_index", map[string]any{
 				"text":        p.Text,
 				"description": p.Description,
 			}); denied != nil {
 				return *denied, nil
 			}
 
-			if err := memoryIndex(ctx, env.cwd, text); err != nil {
+			if err := memoryIndex(ctx, env.Cwd, text); err != nil {
 				return fantasy.NewTextErrorResponse("error: " + err.Error()), nil
 			}
 

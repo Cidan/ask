@@ -29,8 +29,8 @@ func TestCoordinator_RunWorkflowRestoreSession(t *testing.T) {
 		
 		// Create a session and set it as payload so the coordinator can set/remove it
 		env := newAgentToolEnv(args.Cwd, args.TabID, true, true, func(msg tea.Msg) {})
-		env.pendingEndTurn = &endTurnSignal{summary: "step completed", decision: "break"}
-		env.pendingFinishData = &finishWorkflowData{Description: "completed successfully", Artifacts: []string{"art1"}}
+		env.PendingEndTurn = &endTurnSignal{Summary: "step completed", Decision: "break"}
+		env.PendingFinishData = &finishWorkflowData{Description: "completed successfully", Artifacts: []string{"art1"}}
 		sess := &agentSession{
 			args:   args,
 			env:    env,
@@ -219,8 +219,8 @@ func TestCoordinator_RunWorkflowMissingPlanDirReminder(t *testing.T) {
 		}
 
 		env := newAgentToolEnv(args.Cwd, args.TabID, true, true, func(msg tea.Msg) {})
-		env.pendingEndTurn = &endTurnSignal{summary: "step completed", decision: "break"}
-		env.pendingFinishData = &finishWorkflowData{Description: "completed successfully", Artifacts: []string{"art1"}}
+		env.PendingEndTurn = &endTurnSignal{Summary: "step completed", Decision: "break"}
+		env.PendingFinishData = &finishWorkflowData{Description: "completed successfully", Artifacts: []string{"art1"}}
 		sess := &agentSession{
 			args:   args,
 			env:    env,

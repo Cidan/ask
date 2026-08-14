@@ -381,7 +381,7 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 			debugLog("saveConfig err: %v", err)
 		}
 		if s := globalCoordinator.GetSession(m.id); s != nil {
-			s.env.gateTodosBeforeMutate = m.gateTodosBeforeMutate
+			s.env.GateTodosBeforeMutate = m.gateTodosBeforeMutate
 		}
 		m.killProc()
 		return m, nil

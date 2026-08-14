@@ -164,8 +164,8 @@ func TestHeadlessToolApproval_CustomHandlerAllowsAndDenies(t *testing.T) {
 		textTurn("done allow", fantasy.Usage{}),
 	}}
 	sAllow := newTestAgentSession(t, lmAllow, nil)
-	sAllow.env.skipPermissions = false
-	sAllow.env.approve = func(ctx context.Context, toolName string, input map[string]any) (bool, error) {
+	sAllow.env.SkipPermissions = false
+	sAllow.env.Approve = func(ctx context.Context, toolName string, input map[string]any) (bool, error) {
 		allowCalled = true
 		if toolName != "mutating_ping" {
 			t.Errorf("expected toolName 'mutating_ping', got %s", toolName)
@@ -177,7 +177,7 @@ func TestHeadlessToolApproval_CustomHandlerAllowsAndDenies(t *testing.T) {
 			func(ctx context.Context, in struct {
 				V string `json:"v"`
 			}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-				if resp := sAllow.env.requestApproval(ctx, "mutating_ping", map[string]any{"v": in.V}); resp != nil {
+				if resp := sAllow.env.RequestApproval(ctx, "mutating_ping", map[string]any{"v": in.V}); resp != nil {
 					return *resp, nil
 				}
 				return fantasy.NewTextResponse("pong:" + in.V), nil
@@ -199,8 +199,8 @@ func TestHeadlessToolApproval_CustomHandlerAllowsAndDenies(t *testing.T) {
 		textTurn("done deny", fantasy.Usage{}),
 	}}
 	sDeny := newTestAgentSession(t, lmDeny, nil)
-	sDeny.env.skipPermissions = false
-	sDeny.env.approve = func(ctx context.Context, toolName string, input map[string]any) (bool, error) {
+	sDeny.env.SkipPermissions = false
+	sDeny.env.Approve = func(ctx context.Context, toolName string, input map[string]any) (bool, error) {
 		denyCalled = true
 		return false, nil // Deny
 	}
@@ -209,7 +209,7 @@ func TestHeadlessToolApproval_CustomHandlerAllowsAndDenies(t *testing.T) {
 			func(ctx context.Context, in struct {
 				V string `json:"v"`
 			}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-				if resp := sDeny.env.requestApproval(ctx, "mutating_ping", map[string]any{"v": in.V}); resp != nil {
+				if resp := sDeny.env.RequestApproval(ctx, "mutating_ping", map[string]any{"v": in.V}); resp != nil {
 					return *resp, nil
 				}
 				return fantasy.NewTextResponse("pong:" + in.V), nil

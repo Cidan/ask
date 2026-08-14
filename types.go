@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Cidan/ask/pkg/diff"
+	"github.com/Cidan/ask/pkg/tools"
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
@@ -351,10 +352,7 @@ type workflowRunStepDoneMsg struct {
 	err   error
 }
 
-type finishWorkflowData struct {
-	Description string   `json:"description"`
-	Artifacts   []string `json:"artifacts"`
-}
+type finishWorkflowData = tools.FinishWorkflowData
 
 // startupResumeMsg is fired by Init when the model was pre-seeded with
 // a virtualSessionID by `ask resume <vid>` on the CLI. It's the same
@@ -870,10 +868,7 @@ type loopRunFrame struct {
 // workflow log. decision is empty outside a loop (and ignored there);
 // inside a loop it is workflowLoopContinue / workflowLoopBreak, required
 // from the tail and an exceptional early break from any other inner step.
-type endTurnSignal struct {
-	decision string
-	summary  string
-}
+type endTurnSignal = tools.EndTurnSignal
 
 // workflowPickerState is the small centered modal that lets the user
 // pick a pipeline to run. Always shown — even with one pipeline —
