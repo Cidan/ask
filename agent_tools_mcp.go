@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/engine"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -352,39 +353,51 @@ func (c *mcpServerConn) handleElicitation(ctx context.Context, req *mcp.ElicitRe
 		questions = append(questions, elicitationQuestion(c.srv.name, params.Message, name, props[name], required[name]))
 	}
 
-	reply := make(chan askReply, 1)
-	if !agentSendToProgram(askToolRequestMsg{
-		tabID:     c.mgr.tabID,
-		questions: convertMCPQuestions(questions),
-		reply:     reply,
-	}) {
+	engineQs := make([]engine.Question, len(questions))
+	for i, q := range questions {
+		opts := make([]engine.QuestionOption, len(q.Options))
+		for j, o := range q.Options {
+			opts[j] = engine.QuestionOption{Label: o.Label, Diagram: o.Diagram}
+		}
+		engineQs[i] = engine.Question{
+			Kind:        q.Kind,
+			Prompt:      q.Prompt,
+			Options:     opts,
+			AllowCustom: q.AllowCustom,
+		}
+	}
+
+	resp, err := globalTUIInteractionHandler.AskQuestion(ctx, c.mgr.tabID, engineQs)
+	if err != nil {
 		return &mcp.ElicitResult{Action: "decline"}, nil
 	}
-	select {
-	case resp := <-reply:
-		switch {
-		case resp.headless:
-			return &mcp.ElicitResult{Action: "decline"}, nil
-		case resp.cancelled:
-			return &mcp.ElicitResult{Action: "cancel"}, nil
-		}
-		answers := convertMCPAnswers(questions, resp.answers)
-		if len(names) == 0 {
-			if len(answers) > 0 && len(answers[0].Picks) > 0 && answers[0].Picks[0] == "Accept" {
-				return &mcp.ElicitResult{Action: "accept", Content: map[string]any{}}, nil
-			}
-			return &mcp.ElicitResult{Action: "decline"}, nil
-		}
-		content := map[string]any{}
-		for i, name := range names {
-			if v, ok := elicitationAnswerValue(props[name], answers[i]); ok {
-				content[name] = v
-			}
-		}
-		return &mcp.ElicitResult{Action: "accept", Content: content}, nil
-	case <-ctx.Done():
+	if resp.Headless {
+		return &mcp.ElicitResult{Action: "decline"}, nil
+	}
+	if resp.Cancelled {
 		return &mcp.ElicitResult{Action: "cancel"}, nil
 	}
+	answers := make([]mcpAnswer, len(resp.Answers))
+	for i, a := range resp.Answers {
+		answers[i] = mcpAnswer{
+			Picks:  a.Picks,
+			Custom: a.Custom,
+			Note:   a.Note,
+		}
+	}
+	if len(names) == 0 {
+		if len(answers) > 0 && len(answers[0].Picks) > 0 && answers[0].Picks[0] == "Accept" {
+			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{}}, nil
+		}
+		return &mcp.ElicitResult{Action: "decline"}, nil
+	}
+	content := map[string]any{}
+	for i, name := range names {
+		if v, ok := elicitationAnswerValue(props[name], answers[i]); ok {
+			content[name] = v
+		}
+	}
+	return &mcp.ElicitResult{Action: "accept", Content: content}, nil
 }
 
 // elicitationSchemaProperties extracts the flat property map and the
