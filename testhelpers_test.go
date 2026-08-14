@@ -2,15 +2,19 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/fantasy"
 )
 
 // fakeProvider is an instrumentable Provider for tests. Every method has an
@@ -297,6 +301,55 @@ func newTestModel(t *testing.T, prov Provider) model {
 	}
 }
 
+func writeTestFile(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func runTool(t *testing.T, tool fantasy.AgentTool, input any) fantasy.ToolResponse {
+	t.Helper()
+	b, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshal input: %v", err)
+	}
+	resp, err := tool.Run(context.Background(), fantasy.ToolCall{ID: "t1", Name: tool.Info().Name, Input: string(b)})
+	if err != nil {
+		t.Fatalf("tool.Run returned hard error: %v", err)
+	}
+	return resp
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("condition never became true")
+}
+
+func newTestToolEnv(t *testing.T) (*agentToolEnv, *[]tea.Msg) {
+	t.Helper()
+	var mu sync.Mutex
+	msgs := &[]tea.Msg{}
+	env := newAgentToolEnv(t.TempDir(), 1, true, true, func(m tea.Msg) {
+		mu.Lock()
+		defer mu.Unlock()
+		*msgs = append(*msgs, m)
+	})
+	return env, msgs
+}
+
 func drainCh(ch <-chan tea.Msg) []tea.Msg {
 	var out []tea.Msg
 	for msg := range ch {
@@ -310,6 +363,31 @@ func drainCh(ch <-chan tea.Msg) []tea.Msg {
 // the batched commands produced. Used by tests that fire compound
 // commands (e.g. probe + loadHistory + translate) and need to pick
 // specific messages out.
+func walkForItemsAnyOfConflict(t *testing.T, toolName string, node any) {
+	t.Helper()
+	switch n := node.(type) {
+	case map[string]any:
+		if anyOf, ok := n["anyOf"].([]any); ok {
+			for _, branch := range anyOf {
+				if bm, ok := branch.(map[string]any); ok {
+					if _, hasItems := bm["items"]; hasItems {
+						if _, parentHasItems := n["items"]; parentHasItems {
+							t.Errorf("tool %s has conflicting items in anyOf branch and parent", toolName)
+						}
+					}
+				}
+			}
+		}
+		for _, child := range n {
+			walkForItemsAnyOfConflict(t, toolName, child)
+		}
+	case []any:
+		for _, child := range n {
+			walkForItemsAnyOfConflict(t, toolName, child)
+		}
+	}
+}
+
 func drainBatch(t *testing.T, cmd tea.Cmd) []tea.Msg {
 	t.Helper()
 	if cmd == nil {

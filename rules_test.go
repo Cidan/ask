@@ -174,17 +174,17 @@ func TestRulesPromptBlock_EagerOnly(t *testing.T) {
 
 func TestWrapContextAwareTools_JITInjectionAndDedup(t *testing.T) {
 	env, _ := newTestToolEnv(t)
-	// projectRoot(env.cwd) needs a .git dir to anchor on env.cwd; the
+	// projectRoot(env.Cwd) needs a .git dir to anchor on env.Cwd; the
 	// temp dir isn't a checkout, so projectRoot falls back to cwd —
 	// which is exactly what we want here.
-	writeTestFile(t, env.cwd, "src/api/handler.go", "package api\n")
-	writeTestFile(t, env.cwd, "README.md", "# readme\n")
+	writeTestFile(t, env.Cwd, "src/api/handler.go", "package api\n")
+	writeTestFile(t, env.Cwd, "README.md", "# readme\n")
 
 	rules := []askRule{
 		{Path: "/r/api.md", Rel: "api.md", Paths: []string{"src/api/**/*.go"}, Body: "API rule body."},
 		{Path: "/r/eager.md", Rel: "eager.md", Body: "Eager body."}, // must be ignored by the wrapper
 	}
-	tools := wrapContextAwareTools([]fantasy.AgentTool{agentReadTool(env)}, env.cwd, rules)
+	tools := wrapContextAwareTools([]fantasy.AgentTool{agentReadTool(env)}, env.Cwd, rules)
 	read := tools[0]
 
 	// Matching read → rule injected.
@@ -212,7 +212,7 @@ func TestWrapContextAwareTools_JITInjectionAndDedup(t *testing.T) {
 func TestWrapContextAwareTools_AlwaysWrapsForContext(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 	orig := agentReadTool(env)
-	got := wrapContextAwareTools([]fantasy.AgentTool{orig}, env.cwd, []askRule{{Body: "eager"}})
+	got := wrapContextAwareTools([]fantasy.AgentTool{orig}, env.Cwd, []askRule{{Body: "eager"}})
 	if got[0] == orig {
 		t.Error("tools must be wrapped even with no scoped rules to support context walk")
 	}
@@ -233,17 +233,17 @@ func TestRuleAwareTool_RelPathRejectsOutsideRoot(t *testing.T) {
 
 func TestRuleAwareTool_LinkedDocs(t *testing.T) {
 	env, _ := newTestToolEnv(t)
-	writeTestFile(t, env.cwd, "src/api/handler.go", "package api\n")
-	writeTestFile(t, env.cwd, "docs/ref.md", "# Reference\nLinked body here.\n")
+	writeTestFile(t, env.Cwd, "src/api/handler.go", "package api\n")
+	writeTestFile(t, env.Cwd, "docs/ref.md", "# Reference\nLinked body here.\n")
 
 	rules := []askRule{
-		{Path: filepath.Join(env.cwd, ".claude", "rules", "api.md"),
+		{Path: filepath.Join(env.Cwd, ".claude", "rules", "api.md"),
 			Rel:  "api.md",
 			Paths: []string{"src/api/**/*.go"},
 			Body: "API rule body. See @docs/ref.md for details.\n",
 		},
 	}
-	tools := wrapContextAwareTools([]fantasy.AgentTool{agentReadTool(env)}, env.cwd, rules)
+	tools := wrapContextAwareTools([]fantasy.AgentTool{agentReadTool(env)}, env.Cwd, rules)
 	read := tools[0]
 
 	resp := runTool(t, read, agentReadParams{FilePath: "src/api/handler.go"})
@@ -254,7 +254,7 @@ func TestRuleAwareTool_LinkedDocs(t *testing.T) {
 	if !strings.Contains(resp.Content, "Linked body here.") {
 		t.Errorf("linked doc body must be injected: %q", resp.Content)
 	}
-	if !strings.Contains(resp.Content, "### Included from "+filepath.Join(env.cwd, "docs", "ref.md")) {
+	if !strings.Contains(resp.Content, "### Included from "+filepath.Join(env.Cwd, "docs", "ref.md")) {
 		t.Errorf("linked doc header missing: %q", resp.Content)
 	}
 
@@ -269,12 +269,12 @@ func TestRuleAwareTool_LinkedDocs(t *testing.T) {
 func TestContextAwareTool_DirectoryWalk(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 	// Create a nested file structure
-	writeTestFile(t, env.cwd, "src/api/deep/handler.go", "package deep\n")
+	writeTestFile(t, env.Cwd, "src/api/deep/handler.go", "package deep\n")
 	// Create context files
-	writeTestFile(t, env.cwd, "CLAUDE.md", "Root instructions\n")
-	writeTestFile(t, env.cwd, "src/api/AGENTS.md", "API instructions\n")
+	writeTestFile(t, env.Cwd, "CLAUDE.md", "Root instructions\n")
+	writeTestFile(t, env.Cwd, "src/api/AGENTS.md", "API instructions\n")
 
-	tools := wrapContextAwareTools([]fantasy.AgentTool{agentReadTool(env)}, env.cwd, nil)
+	tools := wrapContextAwareTools([]fantasy.AgentTool{agentReadTool(env)}, env.Cwd, nil)
 	read := tools[0]
 
 	// Reading the deep file should discover both context files
@@ -299,7 +299,7 @@ func TestContextAwareTool_DirectoryWalk(t *testing.T) {
 	}
 
 	// Reading a different file in the same directory should also not re-inject
-	writeTestFile(t, env.cwd, "src/api/deep/other.go", "package deep\n")
+	writeTestFile(t, env.Cwd, "src/api/deep/other.go", "package deep\n")
 	resp = runTool(t, read, agentReadParams{FilePath: "src/api/deep/other.go"})
 	if strings.Contains(resp.Content, "Root instructions") || strings.Contains(resp.Content, "API instructions") {
 		t.Error("context files must inject at most once per session even for different files in visited directories")

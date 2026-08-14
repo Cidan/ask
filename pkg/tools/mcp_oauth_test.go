@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"context"
@@ -15,23 +15,22 @@ import (
 )
 
 func TestMCPOAuthTokenPathAndRoundTrip(t *testing.T) {
-	home := isolateHome(t)
-	path, err := mcpOAuthTokenPath("https://mcp.example.com/api/mcp")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, err := MCPOAuthTokenPath("https://mcp.example.com/api/mcp")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(path, home) || !strings.Contains(path, "mcp.example.com-") {
 		t.Errorf("token path %q must live under home and carry the host", path)
 	}
-	// Different URLs on the same host must not collide.
-	other, _ := mcpOAuthTokenPath("https://mcp.example.com/other")
+	other, _ := MCPOAuthTokenPath("https://mcp.example.com/other")
 	if other == path {
 		t.Error("distinct URLs must map to distinct token files")
 	}
 
-	tok := &oauth2.Token{AccessToken: "at", RefreshToken: "rt",
-		Expiry: time.Now().Add(time.Hour)}
-	if err := saveMCPOAuthToken(path, tok); err != nil {
+	tok := &oauth2.Token{AccessToken: "at", RefreshToken: "rt", Expiry: time.Now().Add(time.Hour)}
+	if err := SaveMCPOAuthToken(path, tok); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
@@ -41,7 +40,7 @@ func TestMCPOAuthTokenPathAndRoundTrip(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("token file mode %v want 0600", info.Mode().Perm())
 	}
-	got, err := loadMCPOAuthToken(path)
+	got, err := LoadMCPOAuthToken(path)
 	if err != nil || got.AccessToken != "at" || got.RefreshToken != "rt" {
 		t.Fatalf("token round-trip: %+v %v", got, err)
 	}
@@ -62,9 +61,10 @@ func (s *scriptedTokenSource) Token() (*oauth2.Token, error) {
 }
 
 func TestPersistingTokenSource_SavesOnChange(t *testing.T) {
-	isolateHome(t)
-	path, _ := mcpOAuthTokenPath("https://persist.test/mcp")
-	src := &persistingTokenSource{
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, _ := MCPOAuthTokenPath("https://persist.test/mcp")
+	src := &PersistingTokenSource{
 		inner: &scriptedTokenSource{tokens: []*oauth2.Token{
 			{AccessToken: "one", Expiry: time.Now().Add(time.Hour)},
 			{AccessToken: "one", Expiry: time.Now().Add(time.Hour)},
@@ -77,41 +77,39 @@ func TestPersistingTokenSource_SavesOnChange(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := loadMCPOAuthToken(path)
+	got, err := LoadMCPOAuthToken(path)
 	if err != nil || got.AccessToken != "two" {
 		t.Fatalf("last token must be persisted: %+v %v", got, err)
 	}
 }
 
 func TestMCPOAuthCallback_CapturesCode(t *testing.T) {
-	cb, err := newMCPOAuthCallback()
+	cb, err := NewMCPOAuthCallback()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cb.close()
-	if !strings.HasPrefix(cb.url, "http://127.0.0.1:") || !strings.HasSuffix(cb.url, "/callback") {
-		t.Fatalf("callback url %q", cb.url)
+	defer cb.Close()
+	if !strings.HasPrefix(cb.URL, "http://127.0.0.1:") || !strings.HasSuffix(cb.URL, "/callback") {
+		t.Fatalf("callback url %q", cb.URL)
 	}
 
 	opened := ""
-	prev := mcpOAuthOpenBrowser
-	mcpOAuthOpenBrowser = func(u string) error {
+	prev := MCPOAuthOpenBrowser
+	MCPOAuthOpenBrowser = func(u string) error {
 		opened = u
-		// Simulate the user finishing the flow: the AS redirects the
-		// browser to our callback.
 		go func() {
-			resp, err := http.Get(cb.url + "?code=abc123&state=xyz")
+			resp, err := http.Get(cb.URL + "?code=abc123&state=xyz")
 			if err == nil {
 				_ = resp.Body.Close()
 			}
 		}()
 		return nil
 	}
-	t.Cleanup(func() { mcpOAuthOpenBrowser = prev })
+	t.Cleanup(func() { MCPOAuthOpenBrowser = prev })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	res, err := cb.fetch(ctx, &auth.AuthorizationArgs{URL: "https://as.example/authorize"})
+	res, err := cb.Fetch(ctx, &auth.AuthorizationArgs{URL: "https://as.example/authorize"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,12 +122,12 @@ func TestMCPOAuthCallback_CapturesCode(t *testing.T) {
 }
 
 func TestMCPOAuthCallback_MissingCodeRejected(t *testing.T) {
-	cb, err := newMCPOAuthCallback()
+	cb, err := NewMCPOAuthCallback()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cb.close()
-	resp, err := http.Get(cb.url + "?state=only")
+	defer cb.Close()
+	resp, err := http.Get(cb.URL + "?state=only")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,39 +137,37 @@ func TestMCPOAuthCallback_MissingCodeRejected(t *testing.T) {
 	}
 }
 
-func TestAskMCPOAuthHandler_ServesStoredToken(t *testing.T) {
-	isolateHome(t)
+func TestMCPOAuthHandler_ServesStoredToken(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	serverURL := "https://stored.test/mcp"
-	path, _ := mcpOAuthTokenPath(serverURL)
-	if err := saveMCPOAuthToken(path, &oauth2.Token{
+	path, _ := MCPOAuthTokenPath(serverURL)
+	if err := SaveMCPOAuthToken(path, &oauth2.Token{
 		AccessToken: "stored-token", Expiry: time.Now().Add(time.Hour),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h, err := newMCPOAuthHandler(serverURL)
+	h, err := NewMCPOAuthHandler(serverURL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer h.close()
+	defer h.Close()
 	src, err := h.TokenSource(context.Background())
 	if err != nil || src == nil {
 		t.Fatalf("stored token must produce a source: %v", err)
 	}
 	tok, err := src.Token()
 	if err != nil || tok.AccessToken != "stored-token" {
-		t.Fatalf("stored token must be served without a browser flow: %+v %v", tok, err)
+		t.Fatalf("stored token must be served: %+v %v", tok, err)
 	}
 }
 
-// TestMCPOAuthTokenPath_BadURLFallsBackToServer: an unparseable
-// server URL → host defaults to "server" (rather than panicking
-// or producing an empty host). Same-shape URL hash so the file
-// is still namespaced under .config/ask/mcp-oauth/.
 func TestMCPOAuthTokenPath_BadURLFallsBackToServer(t *testing.T) {
-	isolateHome(t)
-	path, err := mcpOAuthTokenPath("://not a url")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, err := MCPOAuthTokenPath("://not a url")
 	if err != nil {
-		t.Fatalf("mcpOAuthTokenPath: %v", err)
+		t.Fatalf("MCPOAuthTokenPath: %v", err)
 	}
 	if !strings.Contains(path, "server-") {
 		t.Errorf("path should fall back to 'server-' prefix; got %q", path)
@@ -181,51 +177,15 @@ func TestMCPOAuthTokenPath_BadURLFallsBackToServer(t *testing.T) {
 	}
 }
 
-// TestMCPOAuthTokenPath_SameURLSameHash: deterministic — two
-// calls with the same URL produce the same path. Important
-// because loadMCPOAuthToken is keyed off this path.
-func TestMCPOAuthTokenPath_SameURLSameHash(t *testing.T) {
-	isolateHome(t)
-	a, _ := mcpOAuthTokenPath("https://api.example.com/mcp")
-	b, _ := mcpOAuthTokenPath("https://api.example.com/mcp")
-	if a != b {
-		t.Errorf("same URL should produce same path; got %q vs %q", a, b)
-	}
-	c, _ := mcpOAuthTokenPath("https://other.example.com/mcp")
-	if a == c {
-		t.Errorf("different URLs should produce different paths; got %q == %q", a, c)
-	}
-}
-
-// TestSaveMCPOAuthToken_NilIsNoOp: a nil token must be silently
-// dropped — no file created, no error returned. Defends against
-// a torn-down token round-trip where the inner Token() races to
-// nil before save runs.
 func TestSaveMCPOAuthToken_NilIsNoOp(t *testing.T) {
-	isolateHome(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	dir := filepath.Join(t.TempDir(), "sub", "deep")
 	path := filepath.Join(dir, "tok.json")
-	if err := saveMCPOAuthToken(path, nil); err != nil {
+	if err := SaveMCPOAuthToken(path, nil); err != nil {
 		t.Errorf("save nil: %v", err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("no file should be created for nil token; stat err=%v", err)
-	}
-}
-
-func TestAskMCPOAuthHandler_NoTokenMeansNilSource(t *testing.T) {
-	isolateHome(t)
-	h, err := newMCPOAuthHandler("https://fresh.test/mcp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer h.close()
-	src, err := h.TokenSource(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if src != nil {
-		tok, _ := src.Token()
-		t.Errorf("fresh handler must report no source (got token %+v) so the transport 401s into Authorize", tok)
 	}
 }

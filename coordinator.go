@@ -501,8 +501,8 @@ func (c *Coordinator) RunWorkflow(ctx context.Context, tabID int, def workflowDe
 
 		stepErrorRetry = 0
 
-		sig := session.env.pendingEndTurn
-		finishData := session.env.pendingFinishData
+		sig := session.env.PendingEndTurn
+		finishData := session.env.PendingFinishData
 
 		remind = remindNone
 		remindDetail = ""
@@ -522,7 +522,7 @@ func (c *Coordinator) RunWorkflow(ctx context.Context, tabID int, def workflowDe
 			agentSendToProgram(WorkflowStepDoneMsg{
 				TabID:   tabID,
 				StepIdx: runState.StepIdx,
-				Summary: sig.summary,
+				Summary: sig.Summary,
 			})
 
 			if runState.StepIdx == len(def.Steps)-1 && finishData == nil {
@@ -565,10 +565,10 @@ func (c *Coordinator) RunWorkflow(ctx context.Context, tabID int, def workflowDe
 		agentSendToProgram(WorkflowStepDoneMsg{
 			TabID:   tabID,
 			StepIdx: runState.StepIdx,
-			Summary: sig.summary,
+			Summary: sig.Summary,
 		})
 
-		if isTail && sig.decision == workflowLoopBreak {
+		if isTail && sig.Decision == workflowLoopBreak {
 			if runState.StepIdx == len(def.Steps)-1 && finishData == nil {
 				loopFrame.retry++
 				loopFrame.retryText = stepResult
@@ -610,7 +610,7 @@ func (c *Coordinator) RunWorkflow(ctx context.Context, tabID int, def workflowDe
 			continue
 		}
 
-		if sig.decision != workflowLoopContinue {
+		if sig.Decision != workflowLoopContinue {
 			loopFrame.retry++
 			loopFrame.retryText = stepResult
 			remind = remindNoDecision

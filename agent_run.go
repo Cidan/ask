@@ -114,7 +114,7 @@ func (s *agentSession) refreshToolset() {
 	deferred := append([]fantasy.AgentTool(nil), s.deferredBase...)
 	s.toolsMu.Unlock()
 	if s.mcp != nil {
-		deferred = append(deferred, s.mcp.tools()...)
+		deferred = append(deferred, s.mcp.Tools()...)
 	}
 	if s.spec != nil && s.spec.decorateTools != nil {
 		s.spec.decorateTools(tools)
@@ -295,9 +295,11 @@ func (s *agentSession) run() {
 			}
 			s.runTurn(turn)
 		case <-s.closed:
-			s.env.jobs.killAll()
+			if s.env != nil && s.env.Jobs != nil {
+				s.env.Jobs.KillAll()
+			}
 			if s.mcp != nil {
-				s.mcp.close()
+				s.mcp.Close()
 			}
 			s.emit(providerExitedMsg{})
 			return

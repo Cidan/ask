@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/tools"
 )
 
 const agentTaskToolDescription = `Launch a sub-agent with its own context window and collect its final report.
@@ -17,15 +19,10 @@ const agentTaskSystemPrompt = `You are a read-only research sub-agent inside a c
 
 Investigate the task you are given thoroughly: search broadly, read the relevant files, and chase cross-references until you can answer with confidence. Your final message is returned verbatim to the calling agent as data, so make it a complete, self-contained report: state the answer first, then the supporting evidence as file_path:line_number references. Report honestly when something cannot be found.`
 
-// agentSubagentPromptTail is appended to every named subagent's system
-// prompt so the report contract holds regardless of how the definition
-// was written.
 const agentSubagentPromptTail = `
 
 Your final message is returned verbatim to the calling agent as data — make it a complete, self-contained report.`
 
-// agentTaskMaxSteps is a hard backstop on sub-agent looping; loop
-// detection is the primary guard, this just bounds the worst case.
 const agentTaskMaxSteps = 50
 
 type agentTaskParams struct {
@@ -35,13 +32,6 @@ type agentTaskParams struct {
 	Description     string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this sub-agent is doing"`
 }
 
-// agentTaskTool spawns a child fantasy agent. The default is the
-// read-only researcher on the parent's model; a named definition can
-// pin different instructions, tools, and — because every in-process
-// provider is an agentProviderSpec — a different model or provider
-// (cross-provider delegation). Background runs ride the existing job
-// manager, so job_output/job_kill and the bgTask UI signals work
-// unchanged.
 func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel, maxTokens func() int64) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		"task",
@@ -53,11 +43,11 @@ func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel, maxTok
 			}
 
 			system := agentTaskSystemPrompt
-			tools := []fantasy.AgentTool{
-				agentReadTool(env),
-				agentGlobTool(env),
-				agentGrepTool(env),
-				agentLsTool(env),
+			toolsList := []fantasy.AgentTool{
+				tools.ReadTool(env),
+				tools.GlobTool(env),
+				tools.GrepTool(env),
+				tools.LsTool(env),
 			}
 			lm := model()
 			var budget int64
@@ -71,7 +61,7 @@ func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel, maxTok
 
 			if name := strings.TrimSpace(p.Agent); name != "" {
 				var def *subagentDef
-				for _, d := range discoverSubagents(env.cwd) {
+				for _, d := range discoverSubagents(env.Cwd) {
 					if d.Name == name {
 						dd := d
 						def = &dd
@@ -92,27 +82,24 @@ func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel, maxTok
 				if def.Prompt != "" {
 					system = def.Prompt + agentSubagentPromptTail
 				}
-				tools = subagentTools(*def, env)
+				toolsList = subagentTools(*def, env)
 			}
 			if lm == nil {
 				return fantasy.NewTextErrorResponse("sub-agent model unavailable"), nil
 			}
 
 			run := func(runCtx context.Context) (string, error) {
-				tools = wrapContextAwareTools(tools, env.cwd, discoverRules(env.cwd))
+				toolsList = wrapContextAwareTools(toolsList, env.Cwd, discoverRules(env.Cwd))
 				taskCfg, _ := loadConfig()
 				taskMaxRetries, _, _ := agentRetryOptions(taskCfg)
 				sub := fantasy.NewAgent(lm,
 					fantasy.WithSystemPrompt(system),
-					fantasy.WithTools(tools...),
+					fantasy.WithTools(toolsList...),
 					fantasy.WithStopConditions(
 						agentLoopDetectionCondition(),
 						fantasy.StepCountIs(agentTaskMaxSteps),
 					),
 				)
-				// Stream, not Generate: sub-agent turns can run long and
-				// the anthropic SDK refuses non-streaming requests whose
-				// max_tokens budget implies more than ~10 minutes.
 				result, err := sub.Stream(runCtx, fantasy.AgentStreamCall{
 					Prompt:          prompt,
 					MaxOutputTokens: maxOutputTokensPtr(budget),
@@ -121,13 +108,11 @@ func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel, maxTok
 				if err != nil {
 					return "", err
 				}
-				// The sub-agent's calls bill the same account as the
-				// parent — count them on the session meter. lm may be a
-				// different provider/model than the parent (named
-				// subagent pinning), so price against the sub-agent's
-				// own identity.
-				if cost, known := stepCostUSD(lm.Provider(), lm.Model(), result.TotalUsage); known && env.emit != nil {
-					env.emit(costMsg{costUSD: cost})
+				if cost, known := stepCostUSD(lm.Provider(), lm.Model(), result.TotalUsage); known && env.Emit != nil {
+					env.Emit(engine.CostEvent{
+						BaseEvent: engine.BaseEvent{TabID: env.TabID},
+						CostUSD:   cost,
+					})
 				}
 				return strings.TrimSpace(result.Response.Content.Text()), nil
 			}
@@ -138,29 +123,36 @@ func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel, maxTok
 					label = "agent " + p.Agent
 				}
 				jobCtx, cancel := context.WithCancel(context.Background())
-				job := env.jobs.add(label+": "+short(prompt), true, cancel)
+				job := env.Jobs.Add(label+": "+short(prompt), true, cancel)
 				go func() {
 					report, err := run(jobCtx)
 					switch {
 					case err != nil:
-						job.appendOutput("sub-agent failed: " + err.Error())
-						job.finish(shellResult{exitCode: 1})
+						job.AppendOutput("sub-agent failed: " + err.Error())
+						job.Finish(tools.ShellResult{ExitCode: 1})
 					case report == "":
-						job.appendOutput("sub-agent returned no report")
-						job.finish(shellResult{exitCode: 1})
+						job.AppendOutput("sub-agent returned no report")
+						job.Finish(tools.ShellResult{ExitCode: 1})
 					default:
-						job.appendOutput(report)
-						job.finish(shellResult{exitCode: 0})
+						job.AppendOutput(report)
+						job.Finish(tools.ShellResult{ExitCode: 0})
 					}
-					if env.emit != nil {
-						env.emit(bgTaskEndedMsg{taskID: job.id})
+					if env.Emit != nil {
+						env.Emit(engine.BgTaskEndedEvent{
+							BaseEvent: engine.BaseEvent{TabID: env.TabID},
+							JobID:     job.ID,
+						})
 					}
 				}()
-				if env.emit != nil {
-					env.emit(bgTaskStartedMsg{taskID: job.id})
+				if env.Emit != nil {
+					env.Emit(engine.BgTaskStartedEvent{
+						BaseEvent:   engine.BaseEvent{TabID: env.TabID},
+						JobID:       job.ID,
+						Description: p.Description,
+					})
 				}
 				return fantasy.NewTextResponse(
-					"started background " + label + " as " + job.id +
+					"started background " + label + " as " + job.ID +
 						"; poll the report with job_output and stop it with job_kill"), nil
 			}
 

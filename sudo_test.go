@@ -188,14 +188,14 @@ func TestSudoEnv_AgentBashToolAndAskPassHelper(t *testing.T) {
 		out := make(chan string)
 		close(out)
 		done := make(chan shellResult, 1)
-		done <- shellResult{exitCode: 0}
-		return &shellHandle{output: out, done: done, kill: func() {}}, nil
+		done <- shellResult{ExitCode: 0}
+		return &shellHandle{Output: out, Done: done, Kill: func() {}}, nil
 	}
 
 	env := &agentToolEnv{
-		cwd:   t.TempDir(),
-		tabID: 42,
-		jobs:  newAgentJobManager(),
+		Cwd:   t.TempDir(),
+		TabID: 42,
+		Jobs:  newAgentJobManager(),
 	}
 
 	tool := agentBashTool(env)

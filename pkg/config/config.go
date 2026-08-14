@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -97,7 +98,8 @@ type IssuesConfig struct {
 }
 
 type WorkflowsConfig struct {
-	ActiveWorkflow string `json:"activeWorkflow,omitempty"`
+	ActiveWorkflow string            `json:"activeWorkflow,omitempty"`
+	Items          []json.RawMessage `json:"items,omitempty"`
 }
 
 // ConfigPath returns the standard configuration file path.
@@ -150,6 +152,38 @@ func Save(cfg Config) error {
 	return os.Rename(tmp, p)
 }
 
+// ResolveBraveAPIKey returns the Brave Search API key from config or environment.
+func ResolveBraveAPIKey(c WebSearchConfig) string {
+	if k := strings.TrimSpace(c.BraveAPIKey); k != "" {
+		return k
+	}
+	return strings.TrimSpace(os.Getenv("BRAVE_API_KEY"))
+}
+
+// ProjectRoot returns the repository root for cwd, or the cleaned cwd if not in a repository.
+func ProjectRoot(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return filepath.Clean(cwd)
+	}
+	abs = filepath.Clean(abs)
+	dir := abs
+	for {
+		gitPath := filepath.Join(dir, ".git")
+		if info, err := os.Stat(gitPath); err == nil && info.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return abs
+		}
+		dir = parent
+	}
+}
+
 // LoadProject returns the project configuration for the canonical cwd.
 func LoadProject(cwd string) (ProjectConfig, error) {
 	cfg, err := Load()
@@ -169,18 +203,23 @@ func LoadProject(cwd string) (ProjectConfig, error) {
 // SaveProject updates the per-project settings bag for cwd.
 func SaveProject(cwd string, pc ProjectConfig) error {
 	return WithConfigLock(func() error {
-		cfg, err := Load()
-		if err != nil {
-			return err
-		}
-		if cfg.Projects == nil {
-			cfg.Projects = make(map[string]ProjectConfig)
-		}
-		canonical, err := filepath.Abs(cwd)
-		if err != nil {
-			canonical = cwd
-		}
-		cfg.Projects[canonical] = pc
-		return Save(cfg)
+		return SaveProjectLocked(cwd, pc)
 	})
+}
+
+// SaveProjectLocked updates the per-project settings bag for cwd without acquiring the lock.
+func SaveProjectLocked(cwd string, pc ProjectConfig) error {
+	cfg, err := Load()
+	if err != nil {
+		return err
+	}
+	if cfg.Projects == nil {
+		cfg.Projects = make(map[string]ProjectConfig)
+	}
+	canonical, err := filepath.Abs(cwd)
+	if err != nil {
+		canonical = cwd
+	}
+	cfg.Projects[canonical] = pc
+	return Save(cfg)
 }

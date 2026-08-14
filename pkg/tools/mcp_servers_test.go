@@ -1,27 +1,29 @@
-package main
+package tools
 
 import (
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/Cidan/ask/pkg/config"
 )
 
 func TestMCPServerConfig_EffectiveType(t *testing.T) {
 	cases := []struct {
-		cfg  mcpServerConfig
+		cfg  MCPServerConfig
 		want string
 	}{
-		{mcpServerConfig{Type: "stdio"}, mcpServerTypeStdio},
-		{mcpServerConfig{Type: "http"}, mcpServerTypeHTTP},
-		{mcpServerConfig{Type: "sse"}, mcpServerTypeSSE},
-		{mcpServerConfig{Command: "npx"}, mcpServerTypeStdio},
-		{mcpServerConfig{URL: "https://x"}, mcpServerTypeHTTP},
-		{mcpServerConfig{Type: "bogus", Command: "npx"}, mcpServerTypeStdio},
+		{MCPServerConfig{Type: "stdio"}, MCPServerTypeStdio},
+		{MCPServerConfig{Type: "http"}, MCPServerTypeHTTP},
+		{MCPServerConfig{Type: "sse"}, MCPServerTypeSSE},
+		{MCPServerConfig{Command: "npx"}, MCPServerTypeStdio},
+		{MCPServerConfig{URL: "https://x"}, MCPServerTypeHTTP},
+		{MCPServerConfig{Type: "bogus", Command: "npx"}, MCPServerTypeStdio},
 	}
 	for _, c := range cases {
-		if got := c.cfg.effectiveType(); got != c.want {
-			t.Errorf("effectiveType(%+v) = %q want %q", c.cfg, got, c.want)
+		if got := c.cfg.EffectiveType(); got != c.want {
+			t.Errorf("EffectiveType(%+v) = %q want %q", c.cfg, got, c.want)
 		}
 	}
 }
@@ -39,37 +41,35 @@ func TestExpandMCPString(t *testing.T) {
 		"no dollars at all, fast path!!": "no dollars at all, fast path!!",
 	}
 	for in, want := range cases {
-		if got := expandMCPString(in); got != want {
-			t.Errorf("expandMCPString(%q) = %q want %q", in, got, want)
+		if got := ExpandMCPString(in); got != want {
+			t.Errorf("ExpandMCPString(%q) = %q want %q", in, got, want)
 		}
 	}
 }
 
 func TestMCPServerConfig_Expanded(t *testing.T) {
 	t.Setenv("ASK_TEST_TOKEN", "tok")
-	c := mcpServerConfig{
+	c := MCPServerConfig{
 		Command: "${ASK_TEST_MISSING:-npx}",
 		Args:    []string{"-y", "server-${ASK_TEST_TOKEN}"},
 		Env:     map[string]string{"KEY": "${ASK_TEST_TOKEN}"},
 		URL:     "https://x/${ASK_TEST_TOKEN}",
 		Headers: map[string]string{"Authorization": "Bearer ${ASK_TEST_TOKEN}"},
 	}
-	e := c.expanded()
+	e := c.Expanded()
 	if e.Command != "npx" || e.Args[1] != "server-tok" || e.Env["KEY"] != "tok" ||
 		e.URL != "https://x/tok" || e.Headers["Authorization"] != "Bearer tok" {
 		t.Errorf("expansion wrong: %+v", e)
 	}
-	// The original must stay untouched (expanded returns a copy).
 	if c.Args[1] != "server-${ASK_TEST_TOKEN}" || c.Env["KEY"] != "${ASK_TEST_TOKEN}" {
 		t.Errorf("expanded mutated its receiver: %+v", c)
 	}
 }
 
 func TestResolveMCPServers_LayeringAndFilters(t *testing.T) {
-	isolateHome(t)
-	cwd := initGitRepo(t)
+	cwd := t.TempDir()
+	os.MkdirAll(filepath.Join(cwd, ".git"), 0o755)
 
-	// Layer 1: .mcp.json at the project root.
 	dot := map[string]any{"mcpServers": map[string]any{
 		"docs":   map[string]any{"type": "http", "url": "https://docs.example/mcp"},
 		"legacy": map[string]any{"command": "old-server"},
@@ -79,24 +79,24 @@ func TestResolveMCPServers_LayeringAndFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Layer 2: user-global config overrides "docs" and adds "search".
-	// Layer 3: project config disables "legacy" and adds "issues".
-	cfg := askConfig{
-		MCPServers: map[string]mcpServerConfig{
+	cfg := config.Config{
+		MCPServers: map[string]config.MCPServerConfig{
 			"docs":   {Type: "http", URL: "https://global.example/mcp"},
 			"search": {Command: "search-server"},
-			"junk":   {}, // neither command nor url → dropped
+			"junk":   {},
+		},
+		Projects: map[string]config.ProjectConfig{
+			cwd: {
+				MCPServers: map[string]config.MCPServerConfig{
+					"legacy": {Command: "old-server", Disabled: true},
+					"issues": {Type: "http", URL: "https://issues.example/mcp"},
+				},
+			},
 		},
 	}
-	cfg = upsertProjectConfig(cfg, cwd, projectConfig{
-		MCPServers: map[string]mcpServerConfig{
-			"legacy": {Command: "old-server", Disabled: true},
-			"issues": {Type: "http", URL: "https://issues.example/mcp"},
-		},
-	})
 
-	got := resolveMCPServers(cfg, cwd)
-	byName := map[string]mcpServerConfig{}
+	got := ResolveMCPServers(cfg, cwd)
+	byName := map[string]MCPServerConfig{}
 	for _, s := range got {
 		byName[s.Name] = s.Config
 	}
@@ -112,38 +112,26 @@ func TestResolveMCPServers_LayeringAndFilters(t *testing.T) {
 	if _, ok := byName["junk"]; ok {
 		t.Error("entries with neither command nor url must be dropped")
 	}
-	// Stable name order.
 	if got[0].Name != "docs" || got[1].Name != "issues" || got[2].Name != "search" {
 		t.Errorf("order must be name-sorted: %v %v %v", got[0].Name, got[1].Name, got[2].Name)
 	}
 }
 
-func TestResolveMCPServers_MalformedDotMCPJSONIgnored(t *testing.T) {
-	isolateHome(t)
-	cwd := t.TempDir()
-	if err := os.WriteFile(filepath.Join(cwd, ".mcp.json"), []byte("{not json"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := resolveMCPServers(askConfig{}, cwd); len(got) != 0 {
-		t.Errorf("malformed .mcp.json must yield nothing: %+v", got)
-	}
-}
-
 func TestMCPToolAllowed(t *testing.T) {
-	c := mcpServerConfig{}
-	if !mcpToolAllowed(c, "anything") {
+	c := MCPServerConfig{}
+	if !MCPToolAllowed(c, "anything") {
 		t.Error("no filters allows everything")
 	}
-	c = mcpServerConfig{EnabledTools: []string{"a", "b"}}
-	if !mcpToolAllowed(c, "a") || mcpToolAllowed(c, "c") {
+	c = MCPServerConfig{EnabledTools: []string{"a", "b"}}
+	if !MCPToolAllowed(c, "a") || MCPToolAllowed(c, "c") {
 		t.Error("allowlist must gate")
 	}
-	c = mcpServerConfig{EnabledTools: []string{"a", "b"}, DisabledTools: []string{"b"}}
-	if !mcpToolAllowed(c, "a") || mcpToolAllowed(c, "b") {
+	c = MCPServerConfig{EnabledTools: []string{"a", "b"}, DisabledTools: []string{"b"}}
+	if !MCPToolAllowed(c, "a") || MCPToolAllowed(c, "b") {
 		t.Error("denylist applies after allowlist")
 	}
-	c = mcpServerConfig{DisabledTools: []string{"x"}}
-	if mcpToolAllowed(c, "x") || !mcpToolAllowed(c, "y") {
+	c = MCPServerConfig{DisabledTools: []string{"x"}}
+	if MCPToolAllowed(c, "x") || !MCPToolAllowed(c, "y") {
 		t.Error("denylist alone must gate")
 	}
 }

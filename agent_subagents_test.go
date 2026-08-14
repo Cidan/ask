@@ -140,7 +140,7 @@ func TestAgentTaskTool_NamedAgentCrossProvider(t *testing.T) {
 	swapDeepseekLM(t, child)
 
 	env, _ := newTestToolEnv(t)
-	env.cwd = cwd
+	env.Cwd = cwd
 	parent := &fakeLM{}
 	tool := agentTaskTool(env,
 		func() fantasy.LanguageModel { return parent },
@@ -196,18 +196,18 @@ func TestAgentTaskTool_Background(t *testing.T) {
 			break
 		}
 	}
-	job := env.jobs.get(jobID)
+	job := env.Jobs.Get(jobID)
 	if job == nil {
 		t.Fatalf("job %q must be registered", jobID)
 	}
 	select {
-	case <-job.doneCh:
+	case <-job.DoneCh:
 	case <-time.After(5 * time.Second):
 		t.Fatal("background agent must finish")
 	}
-	out, _, done, result := job.snapshot()
-	if !done || result.exitCode != 0 || out != "bg report" {
-		t.Errorf("job result wrong: out=%q done=%v code=%d", out, done, result.exitCode)
+	out, _, done, result := job.Snapshot()
+	if !done || result.ExitCode != 0 || out != "bg report" {
+		t.Errorf("job result wrong: out=%q done=%v code=%d", out, done, result.ExitCode)
 	}
 
 	var started, ended bool
