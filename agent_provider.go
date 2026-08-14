@@ -7,70 +7,33 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/config"
+	"github.com/Cidan/ask/pkg/providers"
 )
 
-// agentProviderSpec describes one fantasy-backed in-process API
-// provider. agentAPIProvider turns a spec into a full Provider
-// implementation: every API provider shares the session runtime
-// (agent_run.go), the tool set, the session store, and the message
-// protocol — a spec contributes only identity, wire construction, and
-// the provider-specific knobs (effort mapping, image capability,
-// prompt-cache breakpoints).
-type agentProviderSpec struct {
-	id            string
-	displayName   string
-	defaultModel  string
-	modelOptions  []string
-	effortOptions []string
+// agentProviderSpec describes one fantasy-backed in-process API provider.
+type agentProviderSpec = providers.AgentProviderSpec
 
-	// buildModel constructs the fantasy LanguageModel for a session.
-	// Each spec routes through a package-level swappable var so tests
-	// can stub the wire (swapDeepseekLM and friends).
-	buildModel func(cfg askConfig, modelID string) (fantasy.LanguageModel, error)
-
-	// callOptions maps ask's effort picker onto per-call provider
-	// options and an optional sampling temperature.
-	callOptions func(modelID, effort string) (fantasy.ProviderOptions, *float64)
-
-	// prepareStep, when non-nil, runs before every agent step.
-	// Anthropic uses it to place prompt-cache breakpoints — without
-	// them the API bills the full prompt at uncached rates each turn.
-	prepareStep fantasy.PrepareStepFunction
-
-	// decorateTools post-processes the assembled tool list once per
-	// session (anthropic marks the last tool definition cacheable so
-	// the whole tool block joins the cached prefix).
-	decorateTools func(tools []fantasy.AgentTool)
-
-	// supportsImages gates image attachments per model.
-	supportsImages func(modelID string) bool
-
-	// nativeWebSearch, when non-nil, returns the provider-executed web
-	// search tool for this provider (anthropic / openai). Sessions whose
-	// spec sets it register the provider-defined tool under the name
-	// "web_search" and DO NOT attach the Brave-backed core tool — the
-	// provider runs the search server-side and bills it directly. Specs
-	// without first-party search (DeepSeek and other openaicompat
-	// backends) leave this nil and get the Brave tool instead.
-	nativeWebSearch func(modelID string) fantasy.ProviderTool
-
-	contextWindow func(modelID string) int64
-
-	// maxOutputTokens is the per-turn output budget sent as max_tokens.
-	// Without it fantasy's anthropic provider defaults to 4096 — with
-	// always-on thinking the model burns that mid-reasoning and the
-	// turn ends silently with a lone empty thinking block.
-	maxOutputTokens func(modelID string) int64
-
-	loadSettings func(askConfig) ProviderSettings
-	saveSettings func(*askConfig, ProviderSettings)
+// toPkgConfig converts askConfig to config.Config.
+func toPkgConfig(c askConfig) config.Config {
+	return config.Config{
+		Provider:  c.Provider,
+		Effort:    c.Effort,
+		DeepSeek:  c.DeepSeek,
+		Moonshot:  c.Moonshot,
+		Anthropic: c.Anthropic,
+		OpenAI:    c.OpenAI,
+		MiniMax:   c.MiniMax,
+		GoogleAI:  c.GoogleAI,
+		Vertex:    c.Vertex,
+	}
 }
 
 // agentAPIProvider implements Provider generically over a spec.
 type agentAPIProvider struct{ spec *agentProviderSpec }
 
-func (p agentAPIProvider) ID() string          { return p.spec.id }
-func (p agentAPIProvider) DisplayName() string { return p.spec.displayName }
+func (p agentAPIProvider) ID() string          { return p.spec.ID }
+func (p agentAPIProvider) DisplayName() string { return p.spec.DisplayName }
 
 func (p agentAPIProvider) Capabilities() ProviderCapabilities {
 	return ProviderCapabilities{
@@ -86,16 +49,16 @@ func (p agentAPIProvider) Capabilities() ProviderCapabilities {
 
 func (p agentAPIProvider) ModelPicker() ProviderPicker {
 	return ProviderPicker{
-		Prompt:      "Select " + p.spec.displayName + " model",
-		Options:     p.spec.modelOptions,
+		Prompt:      "Select " + p.spec.DisplayName + " model",
+		Options:     p.spec.ModelOptions,
 		AllowCustom: true,
 	}
 }
 
-func (p agentAPIProvider) EffortOptions() []string { return p.spec.effortOptions }
+func (p agentAPIProvider) EffortOptions() []string { return p.spec.EffortOptions }
 
 func (p agentAPIProvider) BaseSlashCommands() []slashCmd {
-	name := p.spec.displayName
+	name := p.spec.DisplayName
 	return []slashCmd{
 		{"/resume", "resume a previous " + name + " session"},
 		{"/new", "start a new " + name + " session"},
@@ -128,22 +91,22 @@ func (p agentAPIProvider) PreMintSessionID(_ ProviderSessionArgs) string { retur
 func (p agentAPIProvider) NativeSessionID(_ *providerProc) string { return "" }
 
 func (p agentAPIProvider) store() *agentSessionStore {
-	return &agentSessionStore{provider: p.spec.id}
+	return &agentSessionStore{provider: p.spec.ID}
 }
 
 func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
 	cfg, _ := loadConfig()
 	modelID := args.Model
 	if modelID == "" {
-		modelID = p.spec.defaultModel
+		modelID = p.spec.DefaultModel
 	}
-	lm, err := p.spec.buildModel(cfg, modelID)
+	lm, err := p.spec.BuildModel(toPkgConfig(cfg), modelID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", p.spec.id, err)
+		return nil, nil, fmt.Errorf("%s: %w", p.spec.ID, err)
 	}
 
 	store := p.store()
-	providerOpts, temperature := p.spec.callOptions(modelID, args.Effort)
+	providerOpts, temperature := p.spec.CallOptions(modelID, args.Effort)
 	session := &agentSession{
 		args:          args,
 		spec:          p.spec,
@@ -151,15 +114,15 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 		system:        buildAgentSystemPrompt(args),
 		providerOpts:  providerOpts,
 		temperature:   temperature,
-		contextWindow: p.spec.contextWindow(modelID),
+		contextWindow: p.spec.ContextWindow(modelID),
 		modelID:       modelID,
 		ch:            make(chan tea.Msg, 256),
 		sendCh:        make(chan agentTurn, 8),
 		closed:        make(chan struct{}),
 		store:         store,
 	}
-	if p.spec.maxOutputTokens != nil {
-		session.maxOutputTokens = p.spec.maxOutputTokens(modelID)
+	if p.spec.MaxOutputTokens != nil {
+		session.maxOutputTokens = p.spec.MaxOutputTokens(modelID)
 	}
 	session.retryMaxRetries, session.retryInitialDelay, session.retryBackoffFactor = agentRetryOptions(cfg)
 
@@ -167,7 +130,7 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 	case args.SessionID != "":
 		file, err := store.load(args.SessionID)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s: resume %s: %w", p.spec.id, short(args.SessionID), err)
+			return nil, nil, fmt.Errorf("%s: resume %s: %w", p.spec.ID, short(args.SessionID), err)
 		}
 		session.sessionID = args.SessionID
 		session.messages = repairDanglingToolCalls(file.Messages)
@@ -190,27 +153,7 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 	return proc, session.ch, nil
 }
 
-// setupAgentSessionTools assembles the session's tool surface in two
-// tiers. The CORE tools below are the only tools sent to the model's
-// API tool definitions — every turn, every session. Everything else
-// (the linear_* bridge twins, every MCP server tool) goes into the
-// DEFERRED REGISTRY: registered and callable, but discovered through
-// search_tools and dispatched through invoke_tool instead of riding
-// the wire (agent_tools_registry.go). MCP failures are logged and
-// skipped — a dead remote must not block a coding session.
-//
-// ⚠ DO NOT add new tools to the core list. New tools belong in the
-// deferred registry (s.deferredBase or an MCP server). Every core
-// addition costs context tokens on every call of every session and
-// churns anthropic's cached tool block. A tool earns a core slot only
-// by deliberate, documented exception — the bar is "the agent cannot
-// function without seeing it unprompted" (see "Tool registry vs core
-// tools" in CLAUDE.md). The two documented exceptions today are
-// `web_search` (current information) and the ask-built-in workflow_*
-// tools (the two-stage workflow guard forces the model to call
-// workflow_list as a precondition for multi-step
-// work, and an extra search_tools round-trip per guard interaction
-// would be pure overhead — see agent_tools_workflow.go).
+// setupAgentSessionTools assembles the session's tool surface in two tiers.
 func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	env := s.env
 	s.coreTools = []fantasy.AgentTool{
@@ -239,28 +182,11 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	if s.args.IsWorkflowFinalStep {
 		s.coreTools = append(s.coreTools, agentFinishWorkflowTool(env))
 	}
-	// The ask-built-in workflow tools (workflow_list/get/create/edit/
-	// delete/copy/run + clear_plans) are deliberate core exceptions —
-	// the two-stage workflow guard forces the model to call
-	// workflow_list as a precondition for multi-step
-	// work. Keeping them in the deferred registry would cost an extra
-	// search_tools round-trip on every guard interaction. The disarm
-	// hooks (env.markWorkflowsChecked, env.markWorkflowRunDispatched)
-	// live in the tool closures themselves so the guard clears whether
-	// the model uses the direct or invoke path. See
-	// agent_tools_workflow.go.
 	if !s.args.InWorkflow {
 		s.coreTools = append(s.coreTools, agentWorkflowTools(env)...)
 	}
-	// web_search is the rare second deliberate core exception (alongside
-	// fetch): an agent cannot reach for current information unless it sees
-	// the tool unprompted. Providers with first-party search (anthropic,
-	// openai) run it server-side via WithProviderDefinedTools — registered
-	// under the same name "web_search" so the model's mental model is
-	// uniform. Everyone else gets the Brave-backed native core tool, which
-	// degrades to a graceful "not configured" notice without a key.
-	if s.spec != nil && s.spec.nativeWebSearch != nil {
-		s.providerWebSearch = s.spec.nativeWebSearch(s.modelID)
+	if s.spec != nil && s.spec.NativeWebSearch != nil {
+		s.providerWebSearch = s.spec.NativeWebSearch(s.modelID)
 	} else {
 		s.coreTools = append(s.coreTools, agentWebSearchTool(env))
 	}
@@ -270,7 +196,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	s.deferredBase = append(s.deferredBase, agentMemoryIndexTool(env))
 	s.mcp = newMCPManager(s.args.TabID,
 		func() bool {
-			return s.spec != nil && s.spec.supportsImages != nil && s.spec.supportsImages(s.modelID)
+			return s.spec != nil && s.spec.SupportsImages != nil && s.spec.SupportsImages(s.modelID)
 		},
 		s.refreshToolset,
 	)
@@ -278,10 +204,6 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	s.refreshToolset()
 }
 
-// agentSessionMCPServers resolves every external server one session
-// attaches: the project GitHub MCP slot, then the user-configured map
-// (.mcp.json ← global ← project). The loopback bridge is deliberately
-// absent — its tools are native in-process (agent_tools_bridge.go).
 func agentSessionMCPServers(args ProviderSessionArgs, cfg askConfig) []agentMCPServer {
 	var servers []agentMCPServer
 	if args.ProjectMCP != nil {
@@ -300,22 +222,18 @@ func agentSessionMCPServers(args ProviderSessionArgs, cfg askConfig) []agentMCPS
 	return servers
 }
 
-// Send queues a user turn. Image attachments are gated on the model's
-// capability: silently dropping a paste would be worse than saying so.
 func (p agentAPIProvider) Send(proc *providerProc, text string, attachments []pendingAttachment) error {
 	session, ok := proc.payload.(*agentSession)
 	if !ok {
-		return errors.New(p.spec.id + ": proc payload is not an agent session")
+		return errors.New(p.spec.ID + ": proc payload is not an agent session")
 	}
-	if len(attachments) > 0 && (p.spec.supportsImages == nil || !p.spec.supportsImages(session.modelID)) {
-		return errors.New(p.spec.displayName + " model " + session.modelID +
+	if len(attachments) > 0 && (p.spec.SupportsImages == nil || !p.spec.SupportsImages(session.modelID)) {
+		return errors.New(p.spec.DisplayName + " model " + session.modelID +
 			" does not support image attachments — remove the image and resend")
 	}
 	return session.queueTurn(text, attachmentFileParts(attachments))
 }
 
-// attachmentFileParts converts pasted attachments into fantasy file
-// parts for the user message.
 func attachmentFileParts(attachments []pendingAttachment) []fantasy.FilePart {
 	if len(attachments) == 0 {
 		return nil
@@ -331,9 +249,6 @@ func attachmentFileParts(attachments []pendingAttachment) []fantasy.FilePart {
 	return parts
 }
 
-// Interrupt cancels the in-flight turn cooperatively; the session
-// stays alive and emits its own turn completion, so handled=true keeps
-// killProc out of the picture (same contract as codex).
 func (p agentAPIProvider) Interrupt(proc *providerProc) (bool, error) {
 	session, ok := proc.payload.(*agentSession)
 	if !ok {
@@ -352,13 +267,22 @@ func (p agentAPIProvider) LoadHistory(sessionID string, opts HistoryOpts) ([]his
 
 func (p agentAPIProvider) LoadSettings() ProviderSettings {
 	cfg, _ := loadConfig()
-	return p.spec.loadSettings(cfg)
+	return p.spec.LoadSettings(toPkgConfig(cfg))
 }
 
 func (p agentAPIProvider) SaveSettings(s ProviderSettings) error {
 	return withConfigLock(func() error {
 		cfg, _ := loadConfig()
-		p.spec.saveSettings(&cfg, s)
+		pkgCfg := toPkgConfig(cfg)
+		p.spec.SaveSettings(&pkgCfg, s)
+		cfg.Anthropic = pkgCfg.Anthropic
+		cfg.OpenAI = pkgCfg.OpenAI
+		cfg.DeepSeek = pkgCfg.DeepSeek
+		cfg.Moonshot = pkgCfg.Moonshot
+		cfg.MiniMax = pkgCfg.MiniMax
+		cfg.GoogleAI = pkgCfg.GoogleAI
+		cfg.Vertex = pkgCfg.Vertex
+		cfg.Effort = pkgCfg.Effort
 		return saveConfig(cfg)
 	})
 }

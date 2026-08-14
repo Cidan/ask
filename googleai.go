@@ -1,97 +1,43 @@
 package main
 
 import (
-	"context"
-	"strings"
-
-	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
-	"charm.land/fantasy/providers/google"
+	"github.com/Cidan/ask/pkg/config"
+	"github.com/Cidan/ask/pkg/providers"
 )
 
 const (
-	googleaiProviderID              = "googleai"
-	googleaiDefaultModel            = "gemini-3.1-pro-preview-customtools"
-	googleaiContextWindow           = 1_048_576
-	googleaiFallbackMaxOutputTokens = 32_000
+	googleaiProviderID              = providers.GoogleAIProviderID
+	googleaiDefaultModel            = providers.GoogleAIDefaultModel
+	googleaiContextWindow           = providers.GoogleAIContextWindow
+	googleaiFallbackMaxOutputTokens = providers.GoogleAIFallbackMaxOutputTokens
 )
 
-// googleaiEffortOptions is the picker surface for reasoning effort.
-var googleaiEffortOptions = globalEffortOptions
+var googleaiEffortOptions = providers.GoogleAIEffortOptions
 
-// googleaiLanguageModel builds the fantasy LanguageModel for one
-// session. Swappable in tests so StartSession can run against a fake
-// model with zero network.
 var googleaiLanguageModel = func(cfg apiProviderConfig, modelID string) (fantasy.LanguageModel, error) {
-	key := resolveGoogleAIAPIKey(cfg)
-	if key == "" {
-		return nil, missingAPIKeyError(googleaiEnvAPIKey)
-	}
-	provider, err := google.New(google.WithGeminiAPIKey(key))
-	if err != nil {
-		return nil, err
-	}
-	return provider.LanguageModel(context.Background(), modelID)
+	return providers.GoogleAILanguageModel(cfg, modelID)
 }
 
-// googleaiProviderOptions translates ask's effort picker onto the
-// Gemini wire controls. effort="low"/"medium"/"high" map onto
-// google.ThinkingLevel; "minimal" maps to ThinkingLevelMinimal;
-// anything unmapped (including the empty string) is a no-op so
-// the API default kicks in. catalogClampEffort de-grades a pick
-// the chosen model doesn't support (Gemini 3.1 Pro rejects
-// "minimal", Gemini 2.5 Pro rejects everything).
 func googleaiProviderOptions(modelID, effort string) (fantasy.ProviderOptions, *float64) {
-	if effort == "" || effort == "off" {
-		return nil, nil
-	}
-	resolved := catalogResolveEffort(catwalk.InferenceProviderGemini, modelID, effort)
-	clamped := catalogClampEffort(catwalk.InferenceProviderGemini, modelID, resolved)
-	if clamped == "" || clamped == "off" {
-		return nil, nil
-	}
-	level := google.ThinkingLevel(strings.ToUpper(clamped))
-	opts := &google.ProviderOptions{
-		ThinkingConfig: &google.ThinkingConfig{ThinkingLevel: &level},
-	}
-	return fantasy.ProviderOptions{google.Name: opts}, nil
+	return providers.GoogleAIProviderOptions(modelID, effort)
 }
 
 var googleaiSpec = agentProviderSpec{
-	id:            googleaiProviderID,
-	displayName:   "Google AI Studio",
-	defaultModel:  googleaiDefaultModel,
-	modelOptions:  catalogModelIDs(catwalk.InferenceProviderGemini),
-	effortOptions: googleaiEffortOptions,
-	buildModel: func(cfg askConfig, modelID string) (fantasy.LanguageModel, error) {
+	ID:            providers.GoogleAISpec.ID,
+	DisplayName:   providers.GoogleAISpec.DisplayName,
+	DefaultModel:  providers.GoogleAISpec.DefaultModel,
+	ModelOptions:  providers.GoogleAISpec.ModelOptions,
+	EffortOptions: providers.GoogleAISpec.EffortOptions,
+	BuildModel: func(cfg config.Config, modelID string) (fantasy.LanguageModel, error) {
 		return googleaiLanguageModel(cfg.GoogleAI, modelID)
 	},
-	callOptions: googleaiProviderOptions,
-	// Every Gemini model in catwalk supports image attachments
-	// (supports_attachments=true). Unknown ids default to true —
-	// the alternative is silently dropping a paste which is worse
-	// than saying so.
-	supportsImages: func(modelID string) bool {
-		return catalogSupportsImages(catwalk.InferenceProviderGemini, modelID, true)
-	},
-	contextWindow: func(modelID string) int64 {
-		return catalogContextWindow(catwalk.InferenceProviderGemini, modelID, googleaiContextWindow)
-	},
-	maxOutputTokens: func(modelID string) int64 {
-		return catalogDefaultMaxTokens(catwalk.InferenceProviderGemini, modelID, googleaiFallbackMaxOutputTokens)
-	},
-	loadSettings: func(cfg askConfig) ProviderSettings {
-		return ProviderSettings{
-			Model:         cfg.GoogleAI.Model,
-			Effort:        cfg.Effort,
-			SlashCommands: cfg.GoogleAI.SlashCommands,
-		}
-	},
-	saveSettings: func(cfg *askConfig, s ProviderSettings) {
-		cfg.GoogleAI.Model = s.Model
-		cfg.Effort = s.Effort
-		cfg.GoogleAI.SlashCommands = s.SlashCommands
-	},
+	CallOptions:     providers.GoogleAISpec.CallOptions,
+	SupportsImages:  providers.GoogleAISpec.SupportsImages,
+	ContextWindow:   providers.GoogleAISpec.ContextWindow,
+	MaxOutputTokens: providers.GoogleAISpec.MaxOutputTokens,
+	LoadSettings:    providers.GoogleAISpec.LoadSettings,
+	SaveSettings:    providers.GoogleAISpec.SaveSettings,
 }
 
 func googleaiAgentProvider() agentAPIProvider { return agentAPIProvider{spec: &googleaiSpec} }

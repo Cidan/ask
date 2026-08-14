@@ -81,7 +81,7 @@ func TestSubagentTools_GrantSets(t *testing.T) {
 func TestAgentSpecByID(t *testing.T) {
 	for _, id := range []string{"deepseek", "anthropic", "openai"} {
 		spec, ok := agentSpecByID(id)
-		if !ok || spec.id != id {
+		if !ok || spec.ID != id {
 			t.Errorf("spec %s must resolve", id)
 		}
 	}
@@ -117,7 +117,7 @@ func TestResolveSubagentModel(t *testing.T) {
 	if err != nil || lm != fantasy.LanguageModel(child) {
 		t.Errorf("cross-provider resolve failed: %v %v", lm, err)
 	}
-	if want := deepseekSpec.maxOutputTokens("deepseek-v4-flash"); budget != want {
+	if want := deepseekSpec.MaxOutputTokens("deepseek-v4-flash"); budget != want {
 		t.Errorf("pinned budget = %d want %d", budget, want)
 	}
 
@@ -161,7 +161,7 @@ func TestAgentTaskTool_NamedAgentCrossProvider(t *testing.T) {
 		t.Errorf("def prompt + report tail must form the child system prompt: %q", sys)
 	}
 	// The pinned provider's budget overrides the parent's.
-	if want := deepseekSpec.maxOutputTokens(deepseekDefaultModel); calls[0].MaxOutputTokens == nil ||
+	if want := deepseekSpec.MaxOutputTokens(deepseekDefaultModel); calls[0].MaxOutputTokens == nil ||
 		*calls[0].MaxOutputTokens != want {
 		t.Errorf("pinned sub-agent budget = %v want %d", calls[0].MaxOutputTokens, want)
 	}

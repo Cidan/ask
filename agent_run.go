@@ -116,8 +116,8 @@ func (s *agentSession) refreshToolset() {
 	if s.mcp != nil {
 		deferred = append(deferred, s.mcp.Tools()...)
 	}
-	if s.spec != nil && s.spec.decorateTools != nil {
-		s.spec.decorateTools(tools)
+	if s.spec != nil && s.spec.DecorateTools != nil {
+		s.spec.DecorateTools(tools)
 	}
 	s.toolsMu.Lock()
 	s.tools = tools
@@ -183,7 +183,7 @@ func (s *agentSession) stepCost(u fantasy.Usage) (float64, bool) {
 	if s.spec == nil {
 		return 0, false
 	}
-	return stepCostUSD(s.spec.id, s.modelID, u)
+	return stepCostUSD(s.spec.ID, s.modelID, u)
 }
 
 // interruptTurn cancels the in-flight turn, if any. Returns whether a
@@ -352,7 +352,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 
 	var prepareStep fantasy.PrepareStepFunction
 	if s.spec != nil {
-		prepareStep = s.spec.prepareStep
+		prepareStep = s.spec.PrepareStep
 	}
 
 	// A /skill-name line expands into the full skill invocation before

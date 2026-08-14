@@ -1,105 +1,44 @@
 package main
 
 import (
-	"context"
-
-	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
-	"charm.land/fantasy/providers/openai"
-	"charm.land/fantasy/providers/openaicompat"
+	"github.com/Cidan/ask/pkg/config"
+	"github.com/Cidan/ask/pkg/providers"
 )
 
 const (
-	deepseekProviderID    = "deepseek"
-	deepseekDefaultModel  = "deepseek-v4-pro"
-	deepseekContextWindow = 1_000_000
-	// deepseekFallbackMaxOutputTokens is the per-turn output budget for
-	// model ids the catalog doesn't know. Without an explicit budget the
-	// API's own default caps a turn low enough to truncate long
-	// reasoning mid-thought.
-	deepseekFallbackMaxOutputTokens = 32_000
+	deepseekProviderID              = providers.DeepSeekProviderID
+	deepseekDefaultModel            = providers.DeepSeekDefaultModel
+	deepseekContextWindow           = providers.DeepSeekContextWindow
+	deepseekFallbackMaxOutputTokens = providers.DeepSeekFallbackMaxOutputTokens
 )
 
-// deepseekModelOptions are the API model ids as of the V4 line. The
-// deprecated deepseek-chat/deepseek-reasoner aliases (retired
-// 2026-07-24) are deliberately absent; AllowCustom covers stragglers.
-var deepseekModelOptions = []string{"deepseek-v4-pro", "deepseek-v4-flash"}
+var deepseekModelOptions = providers.DeepSeekModelOptions
+var deepseekEffortOptions = providers.DeepSeekEffortOptions
 
-// deepseekEffortOptions map onto the abstract effort levels.
-var deepseekEffortOptions = globalEffortOptions
-
-// deepseekLanguageModel builds the fantasy LanguageModel for one
-// session. Swappable in tests so StartSession can run against a fake
-// model with zero network.
 var deepseekLanguageModel = func(cfg apiProviderConfig, modelID string) (fantasy.LanguageModel, error) {
-	key := resolveDeepSeekAPIKey(cfg)
-	if key == "" {
-		return nil, missingAPIKeyError(deepseekEnvAPIKey)
-	}
-	provider, err := openaicompat.New(
-		openaicompat.WithName(deepseekProviderID),
-		openaicompat.WithBaseURL(resolveDeepSeekBaseURL(cfg)),
-		openaicompat.WithAPIKey(key),
-	)
-	if err != nil {
-		return nil, err
-	}
-	return provider.LanguageModel(context.Background(), modelID)
+	return providers.DeepSeekLanguageModel(cfg, modelID)
 }
 
-// deepseekProviderOptions translates ask's effort picker onto the wire
-// controls, returning the per-call provider options and the sampling
-// temperature (DeepSeek recommends 0.0 for coding, but thinking mode
-// does not accept sampling params at all, so it only applies to
-// thinking=off). The default (empty effort) is max.
 func deepseekProviderOptions(effort string) (fantasy.ProviderOptions, *float64) {
-	opts := &openaicompat.ProviderOptions{}
-	var temperature *float64
-	switch effort {
-	case "low", "off": // off supported for legacy persistence
-		opts.ExtraBody = map[string]any{"thinking": map[string]any{"type": "disabled"}}
-		t := 0.0
-		temperature = &t
-	case "medium":
-		e := openai.ReasoningEffortHigh
-		opts.ReasoningEffort = &e
-	default: // "high" (or "max" legacy), empty mapping to max effort
-		e := openai.ReasoningEffortXHigh
-		opts.ReasoningEffort = &e
-	}
-	return fantasy.ProviderOptions{deepseekProviderID: opts}, temperature
+	return providers.DeepSeekProviderOptions(effort)
 }
 
 var deepseekSpec = agentProviderSpec{
-	id:            deepseekProviderID,
-	displayName:   "DeepSeek",
-	defaultModel:  deepseekDefaultModel,
-	modelOptions:  deepseekModelOptions,
-	effortOptions: deepseekEffortOptions,
-	buildModel: func(cfg askConfig, modelID string) (fantasy.LanguageModel, error) {
+	ID:            providers.DeepSeekSpec.ID,
+	DisplayName:   providers.DeepSeekSpec.DisplayName,
+	DefaultModel:  providers.DeepSeekSpec.DefaultModel,
+	ModelOptions:  providers.DeepSeekSpec.ModelOptions,
+	EffortOptions: providers.DeepSeekSpec.EffortOptions,
+	BuildModel: func(cfg config.Config, modelID string) (fantasy.LanguageModel, error) {
 		return deepseekLanguageModel(cfg.DeepSeek, modelID)
 	},
-	callOptions: func(_, effort string) (fantasy.ProviderOptions, *float64) {
-		return deepseekProviderOptions(effort)
-	},
-	// The V4 models do not accept image input.
-	supportsImages: func(string) bool { return false },
-	contextWindow:  func(string) int64 { return deepseekContextWindow },
-	maxOutputTokens: func(modelID string) int64 {
-		return catalogDefaultMaxTokens(catwalk.InferenceProviderDeepSeek, modelID, deepseekFallbackMaxOutputTokens)
-	},
-	loadSettings: func(cfg askConfig) ProviderSettings {
-		return ProviderSettings{
-			Model:         cfg.DeepSeek.Model,
-			Effort:        cfg.Effort,
-			SlashCommands: cfg.DeepSeek.SlashCommands,
-		}
-	},
-	saveSettings: func(cfg *askConfig, s ProviderSettings) {
-		cfg.DeepSeek.Model = s.Model
-		cfg.Effort = s.Effort
-		cfg.DeepSeek.SlashCommands = s.SlashCommands
-	},
+	CallOptions:     providers.DeepSeekSpec.CallOptions,
+	SupportsImages:  providers.DeepSeekSpec.SupportsImages,
+	ContextWindow:   providers.DeepSeekSpec.ContextWindow,
+	MaxOutputTokens: providers.DeepSeekSpec.MaxOutputTokens,
+	LoadSettings:    providers.DeepSeekSpec.LoadSettings,
+	SaveSettings:    providers.DeepSeekSpec.SaveSettings,
 }
 
 func deepseekAgentProvider() agentAPIProvider { return agentAPIProvider{spec: &deepseekSpec} }

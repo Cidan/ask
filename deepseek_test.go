@@ -172,7 +172,7 @@ func TestDeepseekProvider_SessionLifecycle(t *testing.T) {
 		t.Error("system prompt must include coder rules and ask steering")
 	}
 	// StartSession resolves the model's output budget onto the wire.
-	if want := deepseekSpec.maxOutputTokens(deepseekDefaultModel); calls[0].MaxOutputTokens == nil ||
+	if want := deepseekSpec.MaxOutputTokens(deepseekDefaultModel); calls[0].MaxOutputTokens == nil ||
 		*calls[0].MaxOutputTokens != want {
 		t.Errorf("wire MaxOutputTokens = %v want %d", calls[0].MaxOutputTokens, want)
 	}
@@ -279,10 +279,10 @@ func TestDeepseekStoreUsesHome(t *testing.T) {
 }
 
 func TestDeepseekMaxOutputTokens(t *testing.T) {
-	if got := deepseekSpec.maxOutputTokens("deepseek-v4-pro"); got != 384_000 {
+	if got := deepseekSpec.MaxOutputTokens("deepseek-v4-pro"); got != 384_000 {
 		t.Errorf("deepseek-v4-pro budget = %d want 384k", got)
 	}
-	if got := deepseekSpec.maxOutputTokens("custom-model"); got != deepseekFallbackMaxOutputTokens {
+	if got := deepseekSpec.MaxOutputTokens("custom-model"); got != deepseekFallbackMaxOutputTokens {
 		t.Errorf("unknown model must use the fallback budget: %d", got)
 	}
 }
@@ -290,10 +290,10 @@ func TestDeepseekMaxOutputTokens(t *testing.T) {
 func TestDeepseekNoNativeWebSearch(t *testing.T) {
 	// openaicompat backends have no first-party search; they fall back to
 	// the Brave-backed core web_search tool, so nativeWebSearch stays nil.
-	if deepseekSpec.nativeWebSearch != nil {
+	if deepseekSpec.NativeWebSearch != nil {
 		t.Error("deepseek must not declare a native web search")
 	}
-	if kimiSpec.nativeWebSearch != nil {
+	if kimiSpec.NativeWebSearch != nil {
 		t.Error("kimi must not declare a native web search")
 	}
 }

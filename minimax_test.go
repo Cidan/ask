@@ -172,7 +172,7 @@ func TestMiniMaxProvider_SessionLifecycle(t *testing.T) {
 		t.Error("system prompt must include coder rules and ask steering")
 	}
 	// StartSession resolves the model's output budget onto the wire.
-	if want := minimaxSpec.maxOutputTokens(minimaxDefaultModel); calls[0].MaxOutputTokens == nil ||
+	if want := minimaxSpec.MaxOutputTokens(minimaxDefaultModel); calls[0].MaxOutputTokens == nil ||
 		*calls[0].MaxOutputTokens != want {
 		t.Errorf("wire MaxOutputTokens = %v want %d", calls[0].MaxOutputTokens, want)
 	}
@@ -279,10 +279,10 @@ func TestMiniMaxStoreUsesHome(t *testing.T) {
 }
 
 func TestMiniMaxMaxOutputTokens(t *testing.T) {
-	if got := minimaxSpec.maxOutputTokens("MiniMax-M3"); got != 512_000 {
+	if got := minimaxSpec.MaxOutputTokens("MiniMax-M3"); got != 512_000 {
 		t.Errorf("MiniMax-M3 budget = %d want 512k", got)
 	}
-	if got := minimaxSpec.maxOutputTokens("custom-model"); got != minimaxFallbackMaxOutputTokens {
+	if got := minimaxSpec.MaxOutputTokens("custom-model"); got != minimaxFallbackMaxOutputTokens {
 		t.Errorf("unknown model must use the fallback budget: %d", got)
 	}
 }
@@ -290,7 +290,7 @@ func TestMiniMaxMaxOutputTokens(t *testing.T) {
 func TestMiniMaxNoNativeWebSearch(t *testing.T) {
 	// openaicompat backends have no first-party search; they fall back to
 	// the Brave-backed core web_search tool, so nativeWebSearch stays nil.
-	if minimaxSpec.nativeWebSearch != nil {
+	if minimaxSpec.NativeWebSearch != nil {
 		t.Error("minimax must not declare a native web search")
 	}
 }

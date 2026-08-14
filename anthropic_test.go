@@ -247,10 +247,10 @@ func TestAnthropicProvider_SessionLifecycleWithImages(t *testing.T) {
 }
 
 func TestAnthropicContextWindow(t *testing.T) {
-	if got := anthropicSpec.contextWindow("claude-fable-5"); got != 1_000_000 {
+	if got := anthropicSpec.ContextWindow("claude-fable-5"); got != 1_000_000 {
 		t.Errorf("claude-fable-5 window = %d want 1M", got)
 	}
-	if got := anthropicSpec.contextWindow("some-custom-model"); got != anthropicFallbackContextWindow {
+	if got := anthropicSpec.ContextWindow("some-custom-model"); got != anthropicFallbackContextWindow {
 		t.Errorf("unknown model must use the conservative fallback: %d", got)
 	}
 	if got := modelContextLimit("claude-fable-5"); got != 1_000_000 {
@@ -261,28 +261,28 @@ func TestAnthropicContextWindow(t *testing.T) {
 func TestAnthropicMaxOutputTokens(t *testing.T) {
 	// Without an explicit budget fantasy sends max_tokens: 4096 — on
 	// always-thinking models the turn dies mid-reasoning, silently.
-	if got := anthropicSpec.maxOutputTokens("claude-fable-5"); got != 128_000 {
+	if got := anthropicSpec.MaxOutputTokens("claude-fable-5"); got != 128_000 {
 		t.Errorf("claude-fable-5 budget = %d want 128k", got)
 	}
-	if got := anthropicSpec.maxOutputTokens("some-custom-model"); got != anthropicFallbackMaxOutputTokens {
+	if got := anthropicSpec.MaxOutputTokens("some-custom-model"); got != anthropicFallbackMaxOutputTokens {
 		t.Errorf("unknown model must use the fallback budget: %d", got)
 	}
 }
 
 func TestAnthropicSupportsImages(t *testing.T) {
-	if !anthropicSpec.supportsImages("claude-fable-5") {
+	if !anthropicSpec.SupportsImages("claude-fable-5") {
 		t.Error("claude-fable-5 must accept images")
 	}
-	if !anthropicSpec.supportsImages("future-claude") {
+	if !anthropicSpec.SupportsImages("future-claude") {
 		t.Error("unknown claude ids default to image-capable")
 	}
 }
 
 func TestAnthropicNativeWebSearch(t *testing.T) {
-	if anthropicSpec.nativeWebSearch == nil {
+	if anthropicSpec.NativeWebSearch == nil {
 		t.Fatal("anthropic must provide a native web_search tool")
 	}
-	tool := anthropicSpec.nativeWebSearch("claude-fable-5")
+	tool := anthropicSpec.NativeWebSearch("claude-fable-5")
 	if tool == nil {
 		t.Fatal("nativeWebSearch returned nil")
 	}

@@ -166,7 +166,7 @@ func TestGoogleAIProvider_SessionLifecycle(t *testing.T) {
 		!strings.Contains(sys, "super human speeds") {
 		t.Error("system prompt must include coder rules and ask steering")
 	}
-	if want := googleaiSpec.maxOutputTokens(googleaiDefaultModel); calls[0].MaxOutputTokens == nil ||
+	if want := googleaiSpec.MaxOutputTokens(googleaiDefaultModel); calls[0].MaxOutputTokens == nil ||
 		*calls[0].MaxOutputTokens != want {
 		t.Errorf("wire MaxOutputTokens = %v want %d", calls[0].MaxOutputTokens, want)
 	}
@@ -269,22 +269,22 @@ func TestGoogleAIStoreUsesHome(t *testing.T) {
 func TestGoogleAIMaxOutputTokens(t *testing.T) {
 	// The default model is in the catwalk catalog; the published
 	// default_max_tokens (64000) wins over the fallback.
-	if got := googleaiSpec.maxOutputTokens(googleaiDefaultModel); got == googleaiFallbackMaxOutputTokens {
+	if got := googleaiSpec.MaxOutputTokens(googleaiDefaultModel); got == googleaiFallbackMaxOutputTokens {
 		t.Errorf("default model should use the catwalk value, not the fallback: got %d", got)
 	}
 	// Unknown models fall back to the conservative default.
-	if got := googleaiSpec.maxOutputTokens("custom-unknown"); got != googleaiFallbackMaxOutputTokens {
+	if got := googleaiSpec.MaxOutputTokens("custom-unknown"); got != googleaiFallbackMaxOutputTokens {
 		t.Errorf("unknown model must use the fallback budget: %d", got)
 	}
 }
 
 func TestGoogleAISupportsImages(t *testing.T) {
 	// gemini-3.1-pro-preview-customtools supports images.
-	if !googleaiSpec.supportsImages(googleaiDefaultModel) {
+	if !googleaiSpec.SupportsImages(googleaiDefaultModel) {
 		t.Error("default model must support images")
 	}
 	// Unknown models fall back to true.
-	if !googleaiSpec.supportsImages("unknown-model") {
+	if !googleaiSpec.SupportsImages("unknown-model") {
 		t.Error("unknown model should default to image-capable")
 	}
 }

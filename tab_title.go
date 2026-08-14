@@ -49,9 +49,9 @@ var generateTabTitleText = func(providerID, modelID, prompt string) (string, fan
 	}
 	cfg, _ := loadConfig()
 	if modelID == "" {
-		modelID = spec.defaultModel
+		modelID = spec.DefaultModel
 	}
-	lm, err := spec.buildModel(cfg, modelID)
+	lm, err := spec.BuildModel(toPkgConfig(cfg), modelID)
 	if err != nil {
 		return "", fantasy.Usage{}, err
 	}
@@ -89,7 +89,7 @@ func generateTabTitleCmd(tabID int, providerID, modelID, prompt string) tea.Cmd 
 		costModel := modelID
 		if costModel == "" {
 			if spec, ok := agentSpecByID(providerID); ok {
-				costModel = spec.defaultModel
+				costModel = spec.DefaultModel
 			}
 		}
 		cost, known := stepCostUSD(providerID, costModel, usage)

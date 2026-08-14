@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/providers"
 )
 
 // agent_subagents.go discovers named subagent definitions — the
@@ -151,7 +152,7 @@ Named agents run through the task tool: pass agent:"<name>" with a self-containe
 // cannot host subagents.
 func agentSpecByID(id string) (*agentProviderSpec, bool) {
 	for _, p := range providerRegistry {
-		if ap, ok := p.(agentAPIProvider); ok && ap.spec.id == id {
+		if ap, ok := p.(agentAPIProvider); ok && ap.spec.ID == id {
 			return ap.spec, true
 		}
 	}
@@ -162,18 +163,7 @@ func agentSpecByID(id string) (*agentProviderSpec, bool) {
 // ids so existing .claude/agents files work unchanged. Non-alias
 // values pass through.
 func anthropicModelAlias(model string) string {
-	alias := strings.ToLower(strings.TrimSpace(model))
-	switch alias {
-	case "sonnet", "opus", "haiku", "fable":
-	default:
-		return model
-	}
-	for _, id := range catalogModelIDs("anthropic") {
-		if strings.Contains(id, alias) {
-			return id
-		}
-	}
-	return model
+	return providers.AnthropicModelAlias(model)
 }
 
 // resolveSubagentModel builds the child LanguageModel for a def:
@@ -195,19 +185,19 @@ func resolveSubagentModel(def subagentDef, parentProviderID string, parent fanta
 	}
 	model := def.Model
 	if model == "" {
-		model = spec.defaultModel
+		model = spec.DefaultModel
 	}
-	if spec.id == anthropicProviderID {
+	if spec.ID == anthropicProviderID {
 		model = anthropicModelAlias(model)
 	}
 	cfg, _ := loadConfig()
-	lm, err := spec.buildModel(cfg, model)
+	lm, err := spec.BuildModel(toPkgConfig(cfg), model)
 	if err != nil {
 		return nil, 0, err
 	}
 	var budget int64
-	if spec.maxOutputTokens != nil {
-		budget = spec.maxOutputTokens(model)
+	if spec.MaxOutputTokens != nil {
+		budget = spec.MaxOutputTokens(model)
 	}
 	return lm, budget, nil
 }
