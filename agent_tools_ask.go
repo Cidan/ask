@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/engine"
 )
 
 // agentSendToProgram routes a tabID-addressed message to the running
@@ -51,6 +52,47 @@ func agentAskUserQuestionTool(env *agentToolEnv) fantasy.AgentTool {
 			if len(p.Questions) == 0 {
 				return fantasy.NewTextErrorResponse("at least one question is required"), nil
 			}
+			engineQs := make([]engine.Question, 0, len(p.Questions))
+			for _, q := range p.Questions {
+				opts := make([]engine.QuestionOption, 0, len(q.Options))
+				for _, o := range q.Options {
+					opts = append(opts, engine.QuestionOption{Label: o.Label, Diagram: o.Diagram})
+				}
+				engineQs = append(engineQs, engine.Question{
+					Kind:        q.Kind,
+					Prompt:      q.Prompt,
+					Options:     opts,
+					AllowCustom: q.AllowCustom,
+				})
+			}
+
+			if env.interaction != nil {
+				resp, err := env.interaction.AskQuestion(ctx, env.tabID, engineQs)
+				if err != nil {
+					return fantasy.NewTextErrorResponse(err.Error()), nil
+				}
+				if resp.Headless {
+					return fantasy.NewTextErrorResponse(workflowHeadlessAskNotice), nil
+				}
+				if resp.Cancelled {
+					return fantasy.NewTextErrorResponse("user cancelled the dialog"), nil
+				}
+				mcpAnswers := make([]mcpAnswer, len(resp.Answers))
+				for i, a := range resp.Answers {
+					mcpAnswers[i] = mcpAnswer{
+						Picks:  a.Picks,
+						Custom: a.Custom,
+						Note:   a.Note,
+					}
+				}
+				out := askOutput{Answers: mcpAnswers}
+				body, err := json.Marshal(out)
+				if err != nil {
+					return fantasy.NewTextErrorResponse("encode answers: " + err.Error()), nil
+				}
+				return fantasy.NewTextResponse(string(body)), nil
+			}
+
 			mcpQs := make([]mcpQuestion, 0, len(p.Questions))
 			for _, q := range p.Questions {
 				opts := make([]mcpOption, 0, len(q.Options))
@@ -175,6 +217,58 @@ func agentFinalizedPlanTool(env *agentToolEnv) fantasy.AgentTool {
 			}
 			if explanation == "" {
 				return fantasy.NewTextErrorResponse("explanation is required"), nil
+			}
+
+			if env.interaction != nil {
+				resp, err := env.interaction.ConfirmPlan(ctx, env.tabID, engine.PlanRequest{
+					Plan:            plan,
+					Explanation:     explanation,
+					DefaultWorkflow: strings.TrimSpace(p.DefaultWorkflow),
+				})
+				if err != nil {
+					return fantasy.NewTextErrorResponse("plan confirmation failed: " + err.Error()), nil
+				}
+				if resp.Headless {
+					return fantasy.NewTextResponse("This step is running headless as part of an automated workflow. Continuing directly."), nil
+				}
+				if resp.Cancelled {
+					return fantasy.NewTextErrorResponse("user cancelled or closed the finalized plan dialog"), nil
+				}
+				if resp.TalkMore {
+					return fantasy.NewTextResponse("The user declined the plan and wants to continue discussing. Re-evaluate your approach based on the user's feedback."), nil
+				}
+				if resp.ExecuteInline {
+					env.markWorkflowsChecked()
+					env.markWorkflowRunDispatched()
+					return fantasy.NewTextResponse("Plan approved for inline execution. Planning mode has been turned OFF and todos guards have been disarmed. You can now execute your plan directly using write/edit/bash/etc."), nil
+				}
+				if resp.WorkflowName != "" {
+					env.markWorkflowsChecked()
+					env.markWorkflowRunDispatched()
+
+					// Resolve the workflow definition by name
+					def, err := resolveWorkflowByName(env.cwd, resp.WorkflowName, "")
+					if err != nil {
+						return fantasy.NewTextErrorResponse("could not resolve workflow: " + err.Error()), nil
+					}
+
+					src := workflowSource{Kind: workflowSourceChat}
+
+					// Run the workflow synchronously!
+					outResp, err := globalCoordinator.RunWorkflow(ctx, env.tabID, def, src)
+					agentSendToProgram(ClearWorkflowStateMsg{TabID: env.tabID})
+					if err != nil {
+						return fantasy.NewTextErrorResponse("workflow execution failed: " + err.Error()), nil
+					}
+
+					var sb strings.Builder
+					fmt.Fprintf(&sb, "Workflow %q completed successfully.\n", resp.WorkflowName)
+					if outResp.outcome != "" {
+						fmt.Fprintf(&sb, "Outcome: %s\n", outResp.outcome)
+					}
+					return fantasy.NewTextResponse(sb.String()), nil
+				}
+				return fantasy.NewTextResponse("Plan approved."), nil
 			}
 
 			reply := make(chan finalizedPlanReply, 1)

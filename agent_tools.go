@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/engine"
 )
 
 // agentToolEnv is the per-session state shared by every harness tool.
@@ -72,6 +73,8 @@ type agentToolEnv struct {
 
 	pendingEndTurn    *endTurnSignal
 	pendingFinishData *finishWorkflowData
+
+	interaction engine.InteractionHandler
 }
 
 func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, gateTodosBeforeMutate bool, emit func(tea.Msg)) *agentToolEnv {
@@ -84,6 +87,7 @@ func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, gateTodosBefor
 		files:                 newAgentFileTracker(),
 		jobs:                  newAgentJobManager(),
 		workflowsAvailable:    len(listAllWorkflows(cwd)) > 0,
+		interaction:           globalTUIInteractionHandler,
 	}
 	env.approve = env.approveViaModal
 	return env
@@ -207,6 +211,16 @@ func (env *agentToolEnv) requireTodosNotice() string {
 // with permissions skipped never get here — callers check
 // skipPermissions through requestApproval.
 func (env *agentToolEnv) approveViaModal(ctx context.Context, toolName string, input map[string]any) (bool, error) {
+	if env.interaction != nil {
+		resp, err := env.interaction.RequestApproval(ctx, env.tabID, engine.ApprovalRequest{
+			ToolName: toolName,
+			Input:    input,
+		})
+		if err != nil {
+			return false, err
+		}
+		return resp.Allow, nil
+	}
 	p := teaProgramPtr.Load()
 	if p == nil {
 		return false, fmt.Errorf("approval required for %s but no UI is available", toolName)

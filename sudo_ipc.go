@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -166,23 +167,13 @@ func (s *sudoIPCServer) handleConn(conn net.Conn) {
 		prompt = "[sudo] password required"
 	}
 
-	replyChan := make(chan sudoPasswordReply, 1)
-	if !agentSendToProgram(sudoPasswordRequestedMsg{
-		tabID:  tabID,
-		prompt: prompt,
-		reply:  replyChan,
-	}) {
-		_, _ = conn.Write([]byte("ERROR: no active UI program\n"))
-		return
-	}
-
-	res, ok := <-replyChan
-	if !ok || res.cancelled || res.password == "" {
+	resp, err := globalTUIInteractionHandler.RequestSudoPassword(context.Background(), tabID, prompt)
+	if err != nil || resp.Cancelled || resp.Password == "" {
 		_, _ = conn.Write([]byte("ERROR: cancelled\n"))
 		return
 	}
 
-	_, _ = conn.Write([]byte("PASSWORD:" + res.password + "\n"))
+	_, _ = conn.Write([]byte("PASSWORD:" + resp.Password + "\n"))
 }
 
 func runAskPassHelper() error {
