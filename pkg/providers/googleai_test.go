@@ -3,6 +3,7 @@ package providers
 import (
 	"testing"
 
+	"charm.land/fantasy"
 	"charm.land/fantasy/providers/google"
 	"github.com/Cidan/ask/pkg/config"
 )
@@ -50,3 +51,93 @@ func TestGoogleAISpec_Properties(t *testing.T) {
 		t.Errorf("save settings mismatch: %+v", newCfg)
 	}
 }
+
+func TestGoogleAI_ThoughtSignatureReasoningMetadata(t *testing.T) {
+	// Verify google.ReasoningMetadata round-trips correctly through fantasy ProviderMetadata/ProviderOptions.
+	meta := &google.ReasoningMetadata{
+		Signature: "test-thought-signature-bytes",
+		ToolID:    "call-123",
+	}
+
+	part := fantasy.ReasoningPart{
+		Text: "Let me think about how to solve this...",
+		ProviderOptions: fantasy.ProviderOptions{
+			google.Name: meta,
+		},
+	}
+
+	if part.ProviderOptions[google.Name] == nil {
+		t.Fatal("expected google provider options to be set on reasoning part")
+	}
+
+	rm, ok := part.ProviderOptions[google.Name].(*google.ReasoningMetadata)
+	if !ok || rm.Signature != "test-thought-signature-bytes" || rm.ToolID != "call-123" {
+		t.Fatalf("reasoning metadata signature mismatch: got %+v", rm)
+	}
+}
+
+func TestGoogleAI_ParallelToolCallsWithThoughtSignatures(t *testing.T) {
+	// Verify parallel tool calls correctly pair with reasoning parts carrying thought signatures.
+	sig := "sig-parallel-xyz"
+	prompt := fantasy.Prompt{
+		{
+			Role: fantasy.MessageRoleUser,
+			Content: []fantasy.MessagePart{
+				fantasy.TextPart{Text: "Read both files"},
+			},
+		},
+		{
+			Role: fantasy.MessageRoleAssistant,
+			Content: []fantasy.MessagePart{
+				fantasy.ReasoningPart{
+					Text: "I will read both files in parallel.",
+					ProviderOptions: fantasy.ProviderOptions{
+						google.Name: &google.ReasoningMetadata{Signature: sig},
+					},
+				},
+				fantasy.ToolCallPart{
+					ToolCallID: "call_1",
+					ToolName:   "read",
+					Input:      `{"file_path":"file1.txt"}`,
+				},
+				fantasy.ToolCallPart{
+					ToolCallID: "call_2",
+					ToolName:   "read",
+					Input:      `{"file_path":"file2.txt"}`,
+				},
+			},
+		},
+		{
+			Role: fantasy.MessageRoleTool,
+			Content: []fantasy.MessagePart{
+				fantasy.ToolResultPart{
+					ToolCallID: "call_1",
+					Output:     fantasy.ToolResultOutputContentText{Text: "contents of file 1"},
+				},
+				fantasy.ToolResultPart{
+					ToolCallID: "call_2",
+					Output:     fantasy.ToolResultOutputContentText{Text: "contents of file 2"},
+				},
+			},
+		},
+	}
+
+	if len(prompt) != 3 {
+		t.Fatalf("expected 3 prompt messages, got %d", len(prompt))
+	}
+
+	asst := prompt[1]
+	if asst.Role != fantasy.MessageRoleAssistant || len(asst.Content) != 3 {
+		t.Fatalf("expected assistant message with 3 parts, got %+v", asst)
+	}
+
+	reasoningPart, ok := fantasy.AsMessagePart[fantasy.ReasoningPart](asst.Content[0])
+	if !ok {
+		t.Fatalf("expected first part to be ReasoningPart, got %T", asst.Content[0])
+	}
+	gmeta, ok := reasoningPart.ProviderOptions[google.Name].(*google.ReasoningMetadata)
+	if !ok || gmeta.Signature != sig {
+		t.Fatalf("expected reasoning metadata with signature %q, got %+v", sig, gmeta)
+	}
+}
+

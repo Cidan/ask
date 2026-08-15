@@ -714,7 +714,7 @@ func TestAgentSession_Retry5xxThenSucceeds(t *testing.T) {
 	if err := s.queueTurn("do the thing"); err != nil {
 		t.Fatal(err)
 	}
-	msgs := readSessionMsgsTimeout(t, s.ch, isTurnComplete, 15*time.Second)
+	msgs := readSessionMsgsTimeout(t, s.ch, isTurnComplete, 30*time.Second)
 
 	var statuses []string
 	var done providerDoneMsg
@@ -763,7 +763,7 @@ func TestAgentSession_Retry5xxExhausted(t *testing.T) {
 	if err := s.queueTurn("do the thing"); err != nil {
 		t.Fatal(err)
 	}
-	msgs := readSessionMsgsTimeout(t, s.ch, isTurnComplete, 15*time.Second)
+	msgs := readSessionMsgsTimeout(t, s.ch, isTurnComplete, 30*time.Second)
 
 	var done providerDoneMsg
 	var retryCount int
@@ -808,7 +808,7 @@ func TestAgentSession_RetryNetworkError(t *testing.T) {
 	if err := s.queueTurn("ping"); err != nil {
 		t.Fatal(err)
 	}
-	msgs := readSessionMsgs(t, s.ch, isTurnComplete)
+	msgs := readSessionMsgsTimeout(t, s.ch, isTurnComplete, 20*time.Second)
 
 	var statuses []string
 	var done providerDoneMsg

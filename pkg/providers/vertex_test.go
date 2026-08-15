@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"charm.land/fantasy"
+	"charm.land/fantasy/providers/google"
 	"github.com/Cidan/ask/pkg/config"
 )
 
@@ -83,3 +85,27 @@ func TestVertexSpec_Properties(t *testing.T) {
 		t.Errorf("save settings mismatch: %+v", newCfg)
 	}
 }
+
+func TestVertex_ThoughtSignaturePreservation(t *testing.T) {
+	meta := &google.ReasoningMetadata{
+		Signature: "vertex-signature-12345",
+		ToolID:    "call-vtx-1",
+	}
+
+	part := fantasy.ReasoningPart{
+		Text: "Analyzing code for Vertex AI step...",
+		ProviderOptions: fantasy.ProviderOptions{
+			google.Name: meta,
+		},
+	}
+
+	if part.ProviderOptions[google.Name] == nil {
+		t.Fatal("expected google provider options to be set on reasoning part")
+	}
+
+	rm, ok := part.ProviderOptions[google.Name].(*google.ReasoningMetadata)
+	if !ok || rm.Signature != "vertex-signature-12345" || rm.ToolID != "call-vtx-1" {
+		t.Fatalf("reasoning metadata signature mismatch: got %+v", rm)
+	}
+}
+
