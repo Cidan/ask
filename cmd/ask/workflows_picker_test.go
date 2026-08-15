@@ -21,8 +21,8 @@ func TestWorkflowPicker_OpenAndClose(t *testing.T) {
 	if got := m.workflowPicker.Cursor; got != 0 {
 		t.Errorf("cursor should start at 0; got %d", got)
 	}
-	if got := m.workflowPicker.Source.Issue; got != issue {
-		t.Errorf("issue should be threaded through source; got %+v", got)
+	if got := m.workflowPicker.Source.IssueKey; got != issue.Key() {
+		t.Errorf("issue key should be threaded through source; got %+v", got)
 	}
 	newM, _ := m.updateWorkflowPicker(tea.KeyPressMsg{Code: tea.KeyEsc})
 	mm, ok := newM.(model)
@@ -78,7 +78,7 @@ func TestWorkflowPicker_NavigateAndEnter(t *testing.T) {
 	if spawn.Workflow.Name != "beta" {
 		t.Errorf("dispatched workflow: got %q want beta", spawn.Workflow.Name)
 	}
-	if spawn.Source.Kind != workflowSourceIssue || spawn.Source.Issue != issue {
+	if spawn.Source.Kind != workflowSourceIssue || spawn.Source.IssueKey != issue.Key() {
 		t.Errorf("dispatched source: got %+v want issue=%+v", spawn.Source, issue)
 	}
 	if spawn.Cwd != m.cwd {
@@ -207,7 +207,7 @@ func TestWorkflowPicker_IncludesGlobals(t *testing.T) {
 	if spawn.Workflow.Name != "toolbox" || spawn.Workflow.Scope != workflowScopeGlobal {
 		t.Errorf("dispatched wrong: %+v", spawn.Workflow)
 	}
-	if spawn.Source.Kind != workflowSourceIssue || spawn.Source.Issue != issue {
+	if spawn.Source.Kind != workflowSourceIssue || spawn.Source.IssueKey != issue.Key() {
 		t.Errorf("dispatched source wrong: %+v", spawn.Source)
 	}
 }

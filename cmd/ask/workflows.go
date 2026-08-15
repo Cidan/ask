@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
@@ -382,4 +383,84 @@ func workflowStatusGlyph(status string) string {
 // either scope.
 func projectWorkflows(cwd string) []workflowDef {
 	return listAllWorkflows(cwd)
+}
+
+func (m *model) workflowAssistantText(text string) {
+	if m.workflowRun == nil {
+		return
+	}
+	if m.workflowRun.currentStep.Len() > 0 {
+		m.workflowRun.currentStep.WriteString("\n")
+	}
+	m.workflowRun.currentStep.WriteString(text)
+}
+
+func (m *model) appendWorkflowStepDone(name, provider, mdl, summary string) {
+	m.history = append(m.history, historyEntry{
+		kind:           histWorkflowDone,
+		text:           summary,
+		workflowHeader: "",
+	})
+}
+
+func (m model) workflowTabHandleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if currentKeyMap().Matches(ActionTabClose, msg) {
+		if r := m.workflowRun; r != nil && (r.done || r.failed) {
+			if r.supplanted != nil {
+				return m.restoreSupplantedTab()
+			}
+			return m, closeTabCmd(m.id)
+		}
+		return m, closeTabCmd(m.id)
+	}
+	if msg.Mod == 0 && msg.Code == tea.KeyEnter {
+		if r := m.workflowRun; r != nil && (r.done || r.failed) {
+			if r.supplanted != nil {
+				return m.restoreSupplantedTab()
+			}
+			m.workflowRun = nil
+			return m, closeTabCmd(m.id)
+		}
+		return m, nil
+	}
+	switch msg.Code {
+	case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown,
+		tea.KeyHome, tea.KeyEnd, 'k', 'j', 'g', 'G':
+		var cmd tea.Cmd
+		m.chat, cmd = m.chat.Update(msg)
+		m.lastContentFP = ""
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m model) restoreSupplantedTab() (tea.Model, tea.Cmd) {
+	r := m.workflowRun
+	if r == nil || r.supplanted == nil || (!r.done && !r.failed) {
+		return m, nil
+	}
+	snap := r.supplanted
+	m.workflowRun = nil
+	m.provider = snap.provider
+	m.providerModel = snap.providerModel
+	m.providerEffort = snap.providerEffort
+	m.providerSlashCmds = snap.providerSlashCmds
+	m.sessionID = snap.sessionID
+	m.sessionMinted = snap.sessionMinted
+	m.virtualSessionID = snap.virtualSessionID
+	m.resumeCwd = snap.resumeCwd
+	m.worktreeName = snap.worktreeName
+	m.skipAllPermissions = snap.skipAllPermissions
+	m.screen = snap.screen
+	m.testBusy = false
+	m.status = ""
+	m.todos = nil
+	m.appendHistory(outputStyle.Render(dimStyle.Render(
+		"returned to chat — workflow log preserved above")))
+	m.lastContentFP = ""
+	if m.fc != nil {
+		m.fc.vpFP = ""
+		m.fc.vbFP = ""
+	}
+	return m, nil
 }

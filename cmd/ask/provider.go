@@ -352,13 +352,9 @@ func registerProvider(p Provider) { providerRegistry = append(providerRegistry, 
 // with it the default provider for an empty config) is explicit
 // instead of an accident of file-name init() ordering.
 func init() {
-	registerProvider(anthropicAgentProvider())
-	registerProvider(openaiAgentProvider())
-	registerProvider(deepseekAgentProvider())
-	registerProvider(kimiAgentProvider())
-	registerProvider(minimaxAgentProvider())
-	registerProvider(googleaiAgentProvider())
-	registerProvider(vertexAgentProvider())
+	for _, spec := range providers.AllAgentProviderSpecs() {
+		registerProvider(agentAPIProvider{spec: spec})
+	}
 }
 
 // providerByID returns the provider with the given ID, or the first

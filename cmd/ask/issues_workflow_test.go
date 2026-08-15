@@ -85,11 +85,11 @@ func TestF_OpensPickerWithConfiguredWorkflows(t *testing.T) {
 	if m2.workflowPicker.Source.Kind != workflowSourceIssue {
 		t.Fatalf("picker source kind: got %d want issue", m2.workflowPicker.Source.Kind)
 	}
-	if m2.workflowPicker.Source.Issue.Number != 99 {
-		t.Errorf("picker source issue number: got %d want 99", m2.workflowPicker.Source.Issue.Number)
+	if m2.workflowPicker.Source.IssueDisplay != "ow/r#99" {
+		t.Errorf("picker source issue display: got %q want ow/r#99", m2.workflowPicker.Source.IssueDisplay)
 	}
-	if m2.workflowPicker.Source.Issue.Project != "ow/r" {
-		t.Errorf("picker source issue project: got %q want ow/r", m2.workflowPicker.Source.Issue.Project)
+	if m2.workflowPicker.Source.IssueKey != "github:ow/r#99" {
+		t.Errorf("picker source issue key: got %q want github:ow/r#99", m2.workflowPicker.Source.IssueKey)
 	}
 }
 

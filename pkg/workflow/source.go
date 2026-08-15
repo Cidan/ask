@@ -107,8 +107,19 @@ func NewTextSource(originTabID int, appendText string) Source {
 	}
 }
 
+func ChatTurnCountLabel(n int) string {
+	switch n {
+	case 0:
+		return "no turns"
+	case 1:
+		return "1 turn"
+	default:
+		return fmt.Sprintf("%d turns", n)
+	}
+}
+
 func NewChatSource(originTabID int, turns []ChatTurn) Source {
-	label := fmt.Sprintf("chat (%d turns)", len(turns))
+	label := fmt.Sprintf("chat (%s)", ChatTurnCountLabel(len(turns)))
 	key := fmt.Sprintf("chat:%d:%d:%d", originTabID, time.Now().UnixNano(), workflowSourceNonce.Add(1))
 	return Source{
 		Kind:           SourceKindChat,

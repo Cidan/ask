@@ -1,0 +1,445 @@
+package main
+
+import (
+	"context"
+	"strings"
+
+	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/memory"
+	"github.com/Cidan/ask/pkg/providers"
+	"github.com/Cidan/ask/pkg/tools"
+	"github.com/Cidan/ask/pkg/workflow"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+// Workflow aliases
+const (
+	workflowSourceIssue = workflow.SourceKindIssue
+	workflowSourceChat  = workflow.SourceKindChat
+	workflowSourceText  = workflow.SourceKindText
+)
+
+type (
+	workflowSource = workflow.Source
+	chatTurn       = workflow.ChatTurn
+	stepPromptCtx  = workflow.StepPromptCtx
+	loopPromptCtx  = workflow.LoopPromptCtx
+)
+
+func toPkgWorkflowDef(d workflowDef) workflow.Def {
+	steps := make([]workflow.Step, len(d.Steps))
+	for i, s := range d.Steps {
+		inner := make([]workflow.Step, len(s.Steps))
+		for j, in := range s.Steps {
+			inner[j] = workflow.Step{
+				Name:          in.Name,
+				Kind:          in.Kind,
+				Provider:      in.Provider,
+				Model:         in.Model,
+				Prompt:        in.Prompt,
+				MaxIterations: in.MaxIterations,
+				ExitCondition: in.ExitCondition,
+			}
+		}
+		steps[i] = workflow.Step{
+			Name:          s.Name,
+			Kind:          s.Kind,
+			Provider:      s.Provider,
+			Model:         s.Model,
+			Prompt:        s.Prompt,
+			Steps:         inner,
+			MaxIterations: s.MaxIterations,
+			ExitCondition: s.ExitCondition,
+		}
+	}
+	return workflow.Def{
+		Name:        d.Name,
+		Description: d.Description,
+		Steps:       steps,
+		Scope:       workflow.Scope(d.Scope),
+	}
+}
+
+func fromPkgWorkflowDef(d workflow.Def) workflowDef {
+	steps := make([]workflowStep, len(d.Steps))
+	for i, s := range d.Steps {
+		inner := make([]workflowStep, len(s.Steps))
+		for j, in := range s.Steps {
+			inner[j] = workflowStep{
+				Name:          in.Name,
+				Kind:          in.Kind,
+				Provider:      in.Provider,
+				Model:         in.Model,
+				Prompt:        in.Prompt,
+				MaxIterations: in.MaxIterations,
+				ExitCondition: in.ExitCondition,
+			}
+		}
+		steps[i] = workflowStep{
+			Name:          s.Name,
+			Kind:          s.Kind,
+			Provider:      s.Provider,
+			Model:         s.Model,
+			Prompt:        s.Prompt,
+			Steps:         inner,
+			MaxIterations: s.MaxIterations,
+			ExitCondition: s.ExitCondition,
+		}
+	}
+	return workflowDef{
+		Name:        d.Name,
+		Description: d.Description,
+		Steps:       steps,
+		Scope:       string(d.Scope),
+	}
+}
+
+func issueWorkflowSource(it issueRef) workflowSource {
+	return workflow.Source{
+		Kind:         workflow.SourceKindIssue,
+		IssueDisplay: it.Display(),
+		IssueKey:     it.Key(),
+	}
+}
+
+func chatWorkflowSource(originTabID int, turns any) workflowSource {
+	switch t := turns.(type) {
+	case []historyEntry:
+		return workflow.NewChatSource(originTabID, chatTurnsFromHistory(t))
+	case []chatTurn:
+		return workflow.NewChatSource(originTabID, t)
+	default:
+		return workflow.NewChatSource(originTabID, nil)
+	}
+}
+
+func textWorkflowSource(originTabID int, appendText string) workflowSource {
+	return workflow.NewTextSource(originTabID, appendText)
+}
+
+func chatTurnsFromHistory(history []historyEntry) []chatTurn {
+	var out []chatTurn
+	for _, e := range history {
+		var role string
+		switch e.kind {
+		case histUser:
+			role = "user"
+		case histResponse:
+			role = "assistant"
+		default:
+			continue
+		}
+		txt := strings.TrimSpace(e.text)
+		if txt == "" {
+			continue
+		}
+		out = append(out, chatTurn{Role: role, Text: txt})
+	}
+	return out
+}
+
+func currentWorkflowStepMeta(r *workflowRunState) (name, provider, model string) {
+	if r == nil || r.StepIdx < 0 || r.StepIdx >= len(r.Workflow.Steps) {
+		return "", "", ""
+	}
+	top := r.Workflow.Steps[r.StepIdx]
+	if r.loop != nil && top.isLoop() && r.loop.innerIdx < len(top.Steps) {
+		inner := top.Steps[r.loop.innerIdx]
+		return inner.Name, inner.Provider, inner.Model
+	}
+	return top.Name, top.Provider, top.Model
+}
+
+func toPkgWorkflowStep(s workflowStep) workflow.Step {
+	inner := make([]workflow.Step, len(s.Steps))
+	for j, in := range s.Steps {
+		inner[j] = workflow.Step{
+			Name:          in.Name,
+			Kind:          in.Kind,
+			Provider:      in.Provider,
+			Model:         in.Model,
+			Prompt:        in.Prompt,
+			MaxIterations: in.MaxIterations,
+			ExitCondition: in.ExitCondition,
+		}
+	}
+	return workflow.Step{
+		Name:          s.Name,
+		Kind:          s.Kind,
+		Provider:      s.Provider,
+		Model:         s.Model,
+		Prompt:        s.Prompt,
+		Steps:         inner,
+		MaxIterations: s.MaxIterations,
+		ExitCondition: s.ExitCondition,
+	}
+}
+
+func buildWorkflowStepPrompt(step workflowStep, source workflowSource, prevOutputs []string, pc *stepPromptCtx) string {
+	return workflow.BuildStepPrompt(toPkgWorkflowStep(step), source, prevOutputs, pc)
+}
+
+var (
+	stepNotesDir           = workflow.StepNotesDir
+	startPlanDir           = workflow.StartPlanDir
+	ensureStartPlanExists  = workflow.EnsureStartPlanExists
+	ensureStepNotesDir     = workflow.EnsureStepNotesDir
+	removeAllWorkflowPlans = workflow.RemoveAllWorkflowPlans
+	clearWorkflowPlans     = workflow.ClearWorkflowPlans
+	workflowPlansDir       = workflow.PlansDir
+	loopNoteLine           = workflow.LoopNoteLine
+	sanitizeStepName       = workflow.SanitizeStepName
+)
+
+func lastOf(s []string) string {
+	if len(s) == 0 {
+		return ""
+	}
+	return s[len(s)-1]
+}
+
+// Tools aliases
+const (
+	mcpServerTypeHTTP  = tools.MCPServerTypeHTTP
+	mcpServerTypeStdio = tools.MCPServerTypeStdio
+	mcpServerTypeSSE   = tools.MCPServerTypeSSE
+)
+
+type (
+	mcpManager               = tools.MCPManager
+	mcpServerConfig          = tools.MCPServerConfig
+	agentMCPServer           = tools.MCPServer
+	agentFinalizedPlanParams = tools.FinalizedPlanParams
+)
+
+func ensureSudoIPCServer(interaction ...engine.InteractionHandler) *tools.SudoIPCServer {
+	var handler engine.InteractionHandler = globalTUIInteractionHandler
+	if len(interaction) > 0 && interaction[0] != nil {
+		handler = interaction[0]
+	}
+	return tools.EnsureSudoIPCServer(handler)
+}
+
+var (
+	newMCPManager            = tools.NewMCPManager
+	resolveMCPServers        = tools.ResolveMCPServers
+	unwrapInvokeToolCall     = tools.UnwrapInvokeToolCall
+	runAskPassHelper         = tools.RunAskPassHelper
+	applyBashFilter          = tools.ApplyBashFilter
+	clearPlansCore           = tools.ClearPlansCore
+	agentAskUserQuestionTool = tools.AskUserQuestionTool
+	agentEndTurnTool         = tools.EndTurnTool
+	agentFinalizedPlanTool   = tools.FinalizedPlanTool
+	agentFinishWorkflowTool  = tools.FinishWorkflowTool
+	agentBashTool            = tools.BashTool
+	agentJobOutputTool       = tools.JobOutputTool
+	agentJobKillTool         = tools.JobKillTool
+	agentReadTool            = tools.ReadTool
+	agentWriteTool           = tools.WriteTool
+	agentEditTool            = tools.EditTool
+	agentGlobTool            = tools.GlobTool
+	agentGrepTool            = tools.GrepTool
+	agentLsTool              = tools.LsTool
+	agentFetchTool           = tools.FetchTool
+	agentTodosTool           = tools.TodosTool
+	agentWorkflowTools       = tools.WorkflowTools
+	agentSearchToolsTool     = tools.SearchToolsTool
+	agentInvokeToolTool      = tools.InvokeToolTool
+	agentWebSearchTool       = tools.WebSearchTool
+)
+
+const (
+	clearPlansToolDescription = tools.ClearPlansToolDescription
+)
+
+type (
+	clearPlansInput  = tools.ClearPlansInput
+	clearPlansOutput = tools.ClearPlansOutput
+)
+
+func errResult(text string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		IsError: true,
+		Content: []mcp.Content{&mcp.TextContent{Text: text}},
+	}
+}
+
+func okResult(text string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: text}},
+	}
+}
+
+// Memory aliases
+func openMemoryService(cfg ...askConfig) error {
+	return memory.Open(memory.Options{})
+}
+
+func closeMemoryService() error {
+	return memory.Close()
+}
+
+func memoryServiceOpen() bool {
+	return memory.IsOpen()
+}
+
+func sweepOldMemories(ctx context.Context) error {
+	return memory.Sweep(ctx)
+}
+
+func agentMemoryPromptContext(cwd, prompt string) string {
+	return memory.PromptContext(context.Background(), cwd, prompt)
+}
+
+func agentMemorySystemBlock(cwd string) string {
+	return memory.SystemBlock(context.Background(), cwd)
+}
+
+func wrapFileToolsWithMemory(ts []fantasy.AgentTool, cwd string) []fantasy.AgentTool {
+	return memory.WrapFileTools(ts, cwd)
+}
+
+func agentMemoryIndexTool(env *agentToolEnv) fantasy.AgentTool {
+	return memory.MemoryIndexTool(env.Cwd, env.RequestApproval)
+}
+
+// Provider aliases
+const (
+	anthropicProviderID   = providers.AnthropicProviderID
+	openaiProviderID      = providers.OpenAIProviderID
+	deepseekProviderID    = providers.DeepSeekProviderID
+	kimiProviderID        = providers.KimiProviderID
+	minimaxProviderID     = providers.MiniMaxProviderID
+	googleaiProviderID    = providers.GoogleAIProviderID
+	vertexProviderID      = providers.VertexProviderID
+	vertexDefaultLocation = providers.VertexDefaultLocation
+	deepseekContextWindow = providers.DeepSeekContextWindow
+	kimiContextWindow     = providers.KimiContextWindow
+
+	anthropicDefaultModel = providers.AnthropicDefaultModel
+	openaiDefaultModel    = providers.OpenAIDefaultModel
+	deepseekDefaultModel  = providers.DeepSeekDefaultModel
+	kimiDefaultModel      = providers.KimiDefaultModel
+	minimaxDefaultModel   = providers.MiniMaxDefaultModel
+	googleaiDefaultModel  = providers.GoogleAIDefaultModel
+	vertexDefaultModel    = providers.VertexDefaultModel
+)
+
+func anthropicAgentProvider() agentAPIProvider {
+	return agentAPIProvider{spec: &providers.AnthropicSpec}
+}
+
+func openaiAgentProvider() agentAPIProvider {
+	return agentAPIProvider{spec: &providers.OpenAISpec}
+}
+
+func deepseekAgentProvider() agentAPIProvider {
+	return agentAPIProvider{spec: &providers.DeepSeekSpec}
+}
+
+func kimiAgentProvider() agentAPIProvider {
+	return agentAPIProvider{spec: &providers.KimiSpec}
+}
+
+func minimaxAgentProvider() agentAPIProvider {
+	return agentAPIProvider{spec: &providers.MiniMaxSpec}
+}
+
+func googleaiAgentProvider() agentAPIProvider {
+	return agentAPIProvider{spec: &providers.GoogleAISpec}
+}
+
+func vertexAgentProvider() agentAPIProvider {
+	return agentAPIProvider{spec: &providers.VertexSpec}
+}
+
+var (
+	catalogModel             = providers.CatalogModel
+	catalogContextWindow     = providers.CatalogContextWindow
+	catalogDefaultMaxTokens  = providers.CatalogDefaultMaxTokens
+	catalogClampEffort       = providers.CatalogClampEffort
+	catalogResolveEffort     = providers.CatalogResolveEffort
+	catalogSupportsImages    = providers.CatalogSupportsImages
+	catalogModelIDs          = providers.CatalogModelIDs
+	catalogProviders         = providers.CatalogProviders
+	agentSpecByID            = providers.GetAgentProviderSpec
+	vertexResolveLocation    = providers.VertexResolveLocation
+	vertexResolveProject     = providers.VertexResolveProject
+	filterVertexModelOptions = providers.FilterVertexModelOptions
+	deepseekModelOptions     = providers.DeepSeekModelOptions
+	deepseekEffortOptions    = providers.DeepSeekEffortOptions
+	anthropicEffortOptions   = providers.AnthropicEffortOptions
+	openaiEffortOptions      = providers.OpenAIEffortOptions
+	kimiEffortOptions        = providers.KimiEffortOptions
+	minimaxEffortOptions     = providers.MiniMaxEffortOptions
+	googleaiEffortOptions    = providers.GoogleAIEffortOptions
+	vertexEffortOptions      = providers.VertexEffortOptions
+	globalEffortOptions      = providers.GlobalEffortOptions
+)
+
+func validateProviderID(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	if _, ok := providers.GetSpec(id); ok {
+		return nil
+	}
+	return nil
+}
+
+func providerMeta(provider, model string) string {
+	switch {
+	case provider == "":
+		return model
+	case model == "":
+		return provider
+	default:
+		return provider + "/" + model
+	}
+}
+
+// Engine aliases
+type (
+	subagentDef = engine.SubagentDef
+)
+
+var (
+	discoverSubagents     = engine.DiscoverSubagents
+	discoverRules         = engine.DiscoverRules
+	discoverSkills        = engine.DiscoverSkills
+	wrapContextAwareTools = engine.WrapContextAwareTools
+	expandSkillInvocation = engine.ExpandSkillInvocation
+	agentGitStatus        = engine.AgentGitStatus
+)
+
+func resolveSubagentModel(def subagentDef, parentProviderID string, parent fantasy.LanguageModel) (fantasy.LanguageModel, int64, error) {
+	cfg, _ := loadConfig()
+	return engine.ResolveSubagentModel(def, parentProviderID, parent, toPkgConfig(cfg))
+}
+
+func subagentTools(def subagentDef, env *agentToolEnv) []fantasy.AgentTool {
+	available := map[string]fantasy.AgentTool{
+		"read":       tools.ReadTool(env),
+		"glob":       tools.GlobTool(env),
+		"grep":       tools.GrepTool(env),
+		"ls":         tools.LsTool(env),
+		"write":      tools.WriteTool(env),
+		"edit":       tools.EditTool(env),
+		"bash":       tools.BashTool(env),
+		"job_output": tools.JobOutputTool(env),
+		"job_kill":   tools.JobKillTool(env),
+		"fetch":      tools.FetchTool(env),
+		"todos":      tools.TodosTool(env),
+	}
+	return engine.SubagentTools(def, available)
+}
+
+func buildAgentSystemPrompt(args ProviderSessionArgs) string {
+	return engine.BuildSystemPrompt(engine.PromptOptions{
+		Cwd:         args.Cwd,
+		InWorkflow:  args.InWorkflow,
+		GitStatusFn: agentGitStatus,
+	})
+}
