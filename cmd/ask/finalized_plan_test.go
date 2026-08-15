@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/fantasy"
 )
 
 func TestFinalizedPlan_ClearPlan(t *testing.T) {
@@ -421,6 +422,110 @@ func TestFinalizedPlan_SelfLaunchWorkflowExecution(t *testing.T) {
 	}
 }
 
+func TestFinalizedPlan_SelfLaunchWorkflowExecution_ClearsUIWorkflowRunState(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+
+	prov := newFakeProvider()
+	prov.id = "fake-prov"
+	prov.startSessionFn = func(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
+		ch := make(chan tea.Msg, 8)
+		proc := &providerProc{
+			stdin: &bufferCloser{Buffer: nil},
+		}
+		env := newAgentToolEnv(args.Cwd, args.TabID, true, true, func(msg tea.Msg) {})
+		env.PendingEndTurn = &endTurnSignal{Summary: "step done", Decision: "break"}
+		env.PendingFinishData = &finishWorkflowData{Description: "completed ship workflow", Artifacts: []string{"pr#1"}}
+		sess := &agentSession{
+			args:   args,
+			env:    env,
+			sendCh: make(chan agentTurn, 8),
+			closed: make(chan struct{}),
+		}
+		proc.payload = sess
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			ch <- assistantTextMsg{text: "step output"}
+			ch <- providerDoneMsg{res: providerResult{Result: "done"}}
+			ch <- turnCompleteMsg{}
+			close(ch)
+		}()
+		return proc, ch, nil
+	}
+	withRegisteredProviders(t, prov)
+
+	// Save workflow "ship"
+	_ = saveAllWorkflows(cwd, []workflowDef{{
+		Name:  "ship",
+		Scope: workflowScopeRepo,
+		Steps: []workflowStep{{
+			Name:     "validate",
+			Provider: "fake-prov",
+			Model:    "fake-model",
+			Prompt:   "validate plan",
+		}},
+	}})
+
+	m := newTestModel(t, prov)
+	m.id = 1
+	m.cwd = cwd
+
+	// Parent session
+	parentSess := &agentSession{
+		args: ProviderSessionArgs{TabID: 1, Cwd: cwd},
+	}
+	parentSess.env = newAgentToolEnv(parentSess.args.Cwd, 1, true, false, func(msg tea.Msg) {})
+	globalCoordinator.SetSession(1, parentSess)
+	defer globalCoordinator.RemoveSession(1)
+
+	tool := agentFinalizedPlanTool(parentSess.env)
+
+	var clearMsgReceived bool
+	var msgs []tea.Msg
+	oldSend := agentSendToProgram
+	defer func() { agentSendToProgram = oldSend }()
+	agentSendToProgram = func(msg tea.Msg) bool {
+		msgs = append(msgs, msg)
+		if cm, ok := msg.(ClearWorkflowStateMsg); ok && cm.TabID == 1 {
+			clearMsgReceived = true
+		}
+		if req, ok := msg.(finalizedPlanRequestMsg); ok {
+			go func() {
+				time.Sleep(10 * time.Millisecond)
+				req.reply <- finalizedPlanReply{
+					workflowName: "ship",
+					source:       chatWorkflowSource(1, nil),
+				}
+			}()
+		}
+		return true
+	}
+
+	resp := runTool(t, tool, agentFinalizedPlanParams{
+		Plan:            "Ship Plan",
+		Explanation:     "Ship Explanation",
+		DefaultWorkflow: "ship",
+	})
+
+	if resp.IsError {
+		t.Fatalf("tool run failed: %s", resp.Content)
+	}
+
+	if !clearMsgReceived {
+		t.Fatalf("expected ClearWorkflowStateMsg to be sent to program, but it was not")
+	}
+
+	// Apply all emitted messages to the test model
+	for _, msg := range msgs {
+		newM, _ := m.Update(msg)
+		m = newM.(model)
+	}
+
+	if m.workflowRun != nil {
+		t.Fatalf("expected m.workflowRun to be nil after workflow completion and ClearWorkflowStateMsg, got %+v", m.workflowRun)
+	}
+}
+
 func TestFinalizedPlan_SelfLaunchWorkflowExecution_Failure(t *testing.T) {
 	isolateHome(t)
 	cwd := t.TempDir()
@@ -437,6 +542,10 @@ func TestFinalizedPlan_SelfLaunchWorkflowExecution_Failure(t *testing.T) {
 		}},
 	}})
 
+	m := newTestModel(t, newFakeProvider())
+	m.id = 1
+	m.cwd = cwd
+
 	// Parent session
 	parentSess := &agentSession{
 		args: ProviderSessionArgs{TabID: 1, Cwd: cwd},
@@ -447,20 +556,24 @@ func TestFinalizedPlan_SelfLaunchWorkflowExecution_Failure(t *testing.T) {
 
 	tool := agentFinalizedPlanTool(parentSess.env)
 
+	var clearMsgReceived bool
+	var msgs []tea.Msg
 	oldSend := agentSendToProgram
 	defer func() { agentSendToProgram = oldSend }()
 	agentSendToProgram = func(msg tea.Msg) bool {
-		req, ok := msg.(finalizedPlanRequestMsg)
-		if !ok {
-			return false
+		msgs = append(msgs, msg)
+		if cm, ok := msg.(ClearWorkflowStateMsg); ok && cm.TabID == 1 {
+			clearMsgReceived = true
 		}
-		go func() {
-			time.Sleep(10 * time.Millisecond)
-			req.reply <- finalizedPlanReply{
-				workflowName: "ship",
-				source:       chatWorkflowSource(1, nil),
-			}
-		}()
+		if req, ok := msg.(finalizedPlanRequestMsg); ok {
+			go func() {
+				time.Sleep(10 * time.Millisecond)
+				req.reply <- finalizedPlanReply{
+					workflowName: "ship",
+					source:       chatWorkflowSource(1, nil),
+				}
+			}()
+		}
 		return true
 	}
 
@@ -476,5 +589,151 @@ func TestFinalizedPlan_SelfLaunchWorkflowExecution_Failure(t *testing.T) {
 
 	if !strings.Contains(resp.Content, "workflow execution failed") {
 		t.Errorf("expected error message to mention workflow execution failed, got: %s", resp.Content)
+	}
+
+	if !clearMsgReceived {
+		t.Fatalf("expected ClearWorkflowStateMsg to be sent to program on failure, but it was not")
+	}
+
+	// Apply all emitted messages to the test model
+	for _, msg := range msgs {
+		newM, _ := m.Update(msg)
+		m = newM.(model)
+	}
+
+	if m.workflowRun != nil {
+		t.Fatalf("expected m.workflowRun to be nil after workflow failure and ClearWorkflowStateMsg, got %+v", m.workflowRun)
+	}
+}
+
+func TestFinalizedPlan_AgentSession_EndToEndWorkflowCompletion(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+
+	prov := newFakeProvider()
+	prov.id = "fake-prov"
+	prov.startSessionFn = func(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
+		ch := make(chan tea.Msg, 8)
+		proc := &providerProc{
+			stdin: &bufferCloser{Buffer: nil},
+		}
+		env := newAgentToolEnv(args.Cwd, args.TabID, true, true, func(msg tea.Msg) {})
+		env.PendingEndTurn = &endTurnSignal{Summary: "workflow step done", Decision: "break"}
+		env.PendingFinishData = &finishWorkflowData{Description: "PR #42 opened", Artifacts: []string{"pr/42"}}
+		sess := &agentSession{
+			args:   args,
+			env:    env,
+			sendCh: make(chan agentTurn, 8),
+			closed: make(chan struct{}),
+		}
+		proc.payload = sess
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			ch <- assistantTextMsg{text: "step complete"}
+			ch <- providerDoneMsg{res: providerResult{Result: "done"}}
+			ch <- turnCompleteMsg{}
+			close(ch)
+		}()
+		return proc, ch, nil
+	}
+	withRegisteredProviders(t, prov)
+
+	// Save workflow "ship"
+	_ = saveAllWorkflows(cwd, []workflowDef{{
+		Name:  "ship",
+		Scope: workflowScopeRepo,
+		Steps: []workflowStep{{
+			Name:     "validate",
+			Provider: "fake-prov",
+			Model:    "fake-model",
+			Prompt:   "validate plan",
+		}},
+	}})
+
+	lm := &fakeLM{turns: [][]fantasy.StreamPart{
+		toolCallTurn("c1", "finalized_plan", `{"plan":"Refactor foo","explanation":"Clean architecture","default_workflow":"ship"}`, fantasy.Usage{InputTokens: 100}),
+		textTurn("Workflow finished! I opened PR #42 for you.", fantasy.Usage{InputTokens: 150}),
+	}}
+
+	m := newTestModel(t, prov)
+	m.id = 1
+	m.cwd = cwd
+
+	s := &agentSession{
+		args:          ProviderSessionArgs{Cwd: cwd, TabID: 1, SkipAllPermissions: true},
+		model:         lm,
+		system:        "test system prompt",
+		contextWindow: deepseekContextWindow,
+		modelID:       "fake-model",
+		ch:            make(chan tea.Msg, 256),
+		sendCh:        make(chan agentTurn, 8),
+		closed:        make(chan struct{}),
+		sessionID:     "ses-test",
+	}
+	s.env = newAgentToolEnv(cwd, 1, true, false, s.emit)
+	s.tools = []fantasy.AgentTool{
+		agentFinalizedPlanTool(s.env),
+	}
+	s.proc = &providerProc{stdin: agentStdin{s: s}, stderr: &stderrBuf{}, payload: s}
+	go s.run()
+	t.Cleanup(func() { s.proc.kill(); drainProviderStream(s.ch) })
+
+	globalCoordinator.SetSession(1, s)
+	defer globalCoordinator.RemoveSession(1)
+
+	var clearMsgReceived bool
+	var capturedMsgs []tea.Msg
+	oldSend := agentSendToProgram
+	defer func() { agentSendToProgram = oldSend }()
+	agentSendToProgram = func(msg tea.Msg) bool {
+		capturedMsgs = append(capturedMsgs, msg)
+		if cm, ok := msg.(ClearWorkflowStateMsg); ok && cm.TabID == 1 {
+			clearMsgReceived = true
+		}
+		if req, ok := msg.(finalizedPlanRequestMsg); ok {
+			go func() {
+				time.Sleep(10 * time.Millisecond)
+				req.reply <- finalizedPlanReply{
+					workflowName: "ship",
+					source:       chatWorkflowSource(1, nil),
+				}
+			}()
+		}
+		return true
+	}
+
+	if err := s.queueTurn("Please run the ship workflow"); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs := readSessionMsgs(t, s.ch, isTurnComplete)
+
+	var finalText string
+	for _, msg := range msgs {
+		if at, ok := msg.(assistantTextMsg); ok {
+			finalText = at.text
+		}
+	}
+
+	if finalText != "Workflow finished! I opened PR #42 for you." {
+		t.Fatalf("expected LLM to finish turn with text after workflow completion, got: %q", finalText)
+	}
+
+	if !clearMsgReceived {
+		t.Fatalf("expected ClearWorkflowStateMsg to be emitted during workflow execution")
+	}
+
+	// Apply all program-bound and session messages to the UI model
+	for _, msg := range capturedMsgs {
+		newM, _ := m.Update(msg)
+		m = newM.(model)
+	}
+	for _, msg := range msgs {
+		newM, _ := m.Update(msg)
+		m = newM.(model)
+	}
+
+	if m.workflowRun != nil {
+		t.Fatalf("expected UI model workflowRun to be nil after workflow finished, got %+v", m.workflowRun)
 	}
 }

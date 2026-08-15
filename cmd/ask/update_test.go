@@ -1520,4 +1520,51 @@ func TestUpdate_PasteMsgInConfigWithoutEditorIsAbsorbed(t *testing.T) {
 	}
 }
 
+func TestUpdate_WorkflowStartedMsgPreservesSupplanted(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.id = 1
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{Name: "initial"},
+		supplanted: &workflowTabSnapshot{
+			sessionID: "sess-123",
+		},
+	}
+
+	m2, _ := runUpdate(t, m, WorkflowStartedMsg{
+		TabID:    1,
+		Workflow: workflowDef{Name: "ship"},
+		Source:   workflowSource{Kind: workflowSourceChat},
+	})
+
+	if m2.workflowRun == nil {
+		t.Fatal("workflowRun should not be nil")
+	}
+	if m2.workflowRun.supplanted == nil {
+		t.Fatal("supplanted snapshot should be preserved across WorkflowStartedMsg")
+	}
+	if m2.workflowRun.supplanted.sessionID != "sess-123" {
+		t.Errorf("expected sessionID sess-123, got %q", m2.workflowRun.supplanted.sessionID)
+	}
+}
+
+func TestUpdate_ClearWorkflowStateMsgResetsWorkflowRun(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.id = 1
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{Name: "ship"},
+		done:     true,
+	}
+
+	m2, _ := runUpdate(t, m, ClearWorkflowStateMsg{TabID: 1})
+	if m2.workflowRun != nil {
+		t.Fatalf("expected workflowRun to be cleared, got %+v", m2.workflowRun)
+	}
+	if len(m2.history) == 0 {
+		t.Fatal("expected history entry indicating returned to chat")
+	}
+	if !strings.Contains(m2.history[len(m2.history)-1].text, "returned to chat") {
+		t.Errorf("expected last history entry to mention returned to chat, got %q", m2.history[len(m2.history)-1].text)
+	}
+}
+
 

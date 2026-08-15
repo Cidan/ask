@@ -45,6 +45,9 @@ func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, gateTodosBefor
 		} else if s, ok := src.(workflow.Source); ok {
 			wfSrc = s
 		}
+		defer func() {
+			agentSendToProgram(ClearWorkflowStateMsg{TabID: tabID})
+		}()
 		reply, err := globalCoordinator.RunWorkflow(ctx, tabID, fromPkgWorkflowDef(def), wfSrc)
 		if err != nil {
 			return "", err

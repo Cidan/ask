@@ -569,11 +569,16 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if msg.TabID != m.id {
 			return m, nil
 		}
+		var supplanted *workflowTabSnapshot
+		if m.workflowRun != nil {
+			supplanted = m.workflowRun.supplanted
+		}
 		m.workflowRun = &workflowRunState{
-			Workflow:  msg.Workflow,
-			Source:    msg.Source,
-			startedAt: time.Now().UTC(),
-			StepIdx:   0,
+			Workflow:   msg.Workflow,
+			Source:     msg.Source,
+			startedAt:  time.Now().UTC(),
+			StepIdx:    0,
+			supplanted: supplanted,
 		}
 		return m, m.spinner.Tick
 
@@ -650,6 +655,11 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.workflowRun != nil {
 			m.workflowRun = nil
 			m.status = ""
+			m.lastContentFP = ""
+			if m.fc != nil {
+				m.fc.vpFP = ""
+				m.fc.vbFP = ""
+			}
 			m.appendHistory(outputStyle.Render(dimStyle.Render("returned to chat")))
 		}
 		return m, nil
