@@ -3,7 +3,6 @@ package main
 import (
 	"io"
 	"os/exec"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Cidan/ask/pkg/config"
@@ -49,25 +48,10 @@ const askSteeringPromptP6 = `End the turn only when the work you committed to in
 // sessions get the base prompt unchanged so legitimate cross-repo
 // reads (CLAUDE.md's /tmp reference clones, etc.) aren't constrained.
 func steeringPromptFor(args ProviderSessionArgs) string {
-	var paragraphs []string
-	paragraphs = append(paragraphs, askSteeringPromptP1)
-	if args.InWorkflow {
-		paragraphs = append(paragraphs, askSteeringPromptInWorkflowSideEffects)
-	} else {
-		paragraphs = append(paragraphs, askSteeringPromptWorkflowCheck, askSteeringPromptSideEffects)
-	}
-	paragraphs = append(paragraphs, askSteeringPromptP4, askSteeringPromptP5, askSteeringPromptP6)
-
-	prompt := strings.Join(paragraphs, "\n\n")
-
-	if worktreeNameFromCwd(args.Cwd) == "" {
-		return prompt
-	}
-	return prompt + "\n\n" +
-		"Your working directory is `" + args.Cwd + "`. " +
-		"This is a dedicated git worktree — treat it as the project root for this session. " +
-		"Do not `cd` outside it, and confine all edits, writes, and file creation to paths inside it. " +
-		"Read-only references to other locations (for example, /tmp clones of upstream repos for documentation) are fine, but never modify anything outside this directory."
+	return providers.SteeringPrompt(providers.SteeringOptions{
+		InWorkflow: args.InWorkflow,
+		Cwd:        args.Cwd,
+	})
 }
 
 // Provider is an agent backend ("anthropic", "openai", "deepseek").
