@@ -28,71 +28,11 @@ type (
 )
 
 func toPkgWorkflowDef(d workflowDef) workflow.Def {
-	steps := make([]workflow.Step, len(d.Steps))
-	for i, s := range d.Steps {
-		inner := make([]workflow.Step, len(s.Steps))
-		for j, in := range s.Steps {
-			inner[j] = workflow.Step{
-				Name:          in.Name,
-				Kind:          in.Kind,
-				Provider:      in.Provider,
-				Model:         in.Model,
-				Prompt:        in.Prompt,
-				MaxIterations: in.MaxIterations,
-				ExitCondition: in.ExitCondition,
-			}
-		}
-		steps[i] = workflow.Step{
-			Name:          s.Name,
-			Kind:          s.Kind,
-			Provider:      s.Provider,
-			Model:         s.Model,
-			Prompt:        s.Prompt,
-			Steps:         inner,
-			MaxIterations: s.MaxIterations,
-			ExitCondition: s.ExitCondition,
-		}
-	}
-	return workflow.Def{
-		Name:        d.Name,
-		Description: d.Description,
-		Steps:       steps,
-		Scope:       workflow.Scope(d.Scope),
-	}
+	return workflow.ConfigDefToDef(d)
 }
 
 func fromPkgWorkflowDef(d workflow.Def) workflowDef {
-	steps := make([]workflowStep, len(d.Steps))
-	for i, s := range d.Steps {
-		inner := make([]workflowStep, len(s.Steps))
-		for j, in := range s.Steps {
-			inner[j] = workflowStep{
-				Name:          in.Name,
-				Kind:          in.Kind,
-				Provider:      in.Provider,
-				Model:         in.Model,
-				Prompt:        in.Prompt,
-				MaxIterations: in.MaxIterations,
-				ExitCondition: in.ExitCondition,
-			}
-		}
-		steps[i] = workflowStep{
-			Name:          s.Name,
-			Kind:          s.Kind,
-			Provider:      s.Provider,
-			Model:         s.Model,
-			Prompt:        s.Prompt,
-			Steps:         inner,
-			MaxIterations: s.MaxIterations,
-			ExitCondition: s.ExitCondition,
-		}
-	}
-	return workflowDef{
-		Name:        d.Name,
-		Description: d.Description,
-		Steps:       steps,
-		Scope:       string(d.Scope),
-	}
+	return workflow.DefToConfigDef(d)
 }
 
 func issueWorkflowSource(it issueRef) workflowSource {
@@ -144,7 +84,7 @@ func currentWorkflowStepMeta(r *workflowRunState) (name, provider, model string)
 		return "", "", ""
 	}
 	top := r.Workflow.Steps[r.StepIdx]
-	if r.loop != nil && top.isLoop() && r.loop.innerIdx < len(top.Steps) {
+	if r.loop != nil && top.IsLoop() && r.loop.innerIdx < len(top.Steps) {
 		inner := top.Steps[r.loop.innerIdx]
 		return inner.Name, inner.Provider, inner.Model
 	}

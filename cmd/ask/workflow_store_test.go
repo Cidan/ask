@@ -346,7 +346,7 @@ func TestWorkflowStore_GlobalRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &onDisk); err != nil {
 		t.Fatalf("global file unparseable: %v", err)
 	}
-	if onDisk.Name != "toolbox" || len(onDisk.Steps) != 2 || !onDisk.Steps[1].isLoop() {
+	if onDisk.Name != "toolbox" || len(onDisk.Steps) != 2 || !onDisk.Steps[1].IsLoop() {
 		t.Errorf("global file content wrong: %+v", onDisk)
 	}
 	if onDisk.Steps[1].MaxIterations != 2 || onDisk.Steps[1].ExitCondition != "done" {

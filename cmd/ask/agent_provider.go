@@ -14,19 +14,9 @@ import (
 // agentProviderSpec describes one fantasy-backed in-process API provider.
 type agentProviderSpec = providers.AgentProviderSpec
 
-// toPkgConfig converts askConfig to config.Config.
+// toPkgConfig returns config.Config (which askConfig is aliased to).
 func toPkgConfig(c askConfig) config.Config {
-	return config.Config{
-		Provider:  c.Provider,
-		Effort:    c.Effort,
-		DeepSeek:  c.DeepSeek,
-		Moonshot:  c.Moonshot,
-		Anthropic: c.Anthropic,
-		OpenAI:    c.OpenAI,
-		MiniMax:   c.MiniMax,
-		GoogleAI:  c.GoogleAI,
-		Vertex:    c.Vertex,
-	}
+	return c
 }
 
 // agentAPIProvider implements Provider generically over a spec.

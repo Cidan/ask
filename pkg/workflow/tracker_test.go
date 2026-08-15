@@ -1,6 +1,9 @@
 package workflow
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -93,5 +96,57 @@ func TestTracker_ResetForTest(t *testing.T) {
 	tr.ResetForTest()
 	if _, ok := tr.ActiveTabFor("k1"); ok {
 		t.Errorf("expected k1 to be cleared after ResetForTest")
+	}
+}
+
+func TestTracker_MarkFinal_PreservesSkipAllPermissions(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	configDir := filepath.Join(tmpHome, ".config", "ask")
+	_ = os.MkdirAll(configDir, 0755)
+	initialConfig := []byte(`{
+  "provider": "openai",
+  "ui": {
+    "skipAllPermissions": true,
+    "quietMode": true,
+    "cursorBlink": false,
+    "renderDiffs": false,
+    "toolOutput": "short"
+  }
+}
+`)
+	configFile := filepath.Join(configDir, "ask.json")
+	if err := os.WriteFile(configFile, initialConfig, 0600); err != nil {
+		t.Fatalf("failed to write initial config: %v", err)
+	}
+
+	tr := NewTracker()
+	cwd := t.TempDir()
+	tr.MarkFinal(cwd, "test-issue", "ship", StatusDone, 1)
+
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatalf("failed to read config file after MarkFinal: %v", err)
+	}
+
+	var parsed struct {
+		UI struct {
+			SkipAllPermissions *bool   `json:"skipAllPermissions"`
+			QuietMode          *bool   `json:"quietMode"`
+			CursorBlink        *bool   `json:"cursorBlink"`
+			RenderDiffs        *bool   `json:"renderDiffs"`
+			ToolOutput         *string `json:"toolOutput"`
+		} `json:"ui"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal saved config: %v", err)
+	}
+
+	if parsed.UI.SkipAllPermissions == nil || !*parsed.UI.SkipAllPermissions {
+		t.Errorf("BUG REPRODUCED: skipAllPermissions was stripped: %s", string(data))
+	}
+	if parsed.UI.QuietMode == nil || !*parsed.UI.QuietMode {
+		t.Errorf("BUG REPRODUCED: quietMode was stripped: %s", string(data))
 	}
 }

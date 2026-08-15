@@ -1322,13 +1322,13 @@ func (m model) workflowRunningBannerLines(sourceLabel, cancelClause string) (tit
 	stepLabel := stepName
 	if r.StepIdx < len(r.Workflow.Steps) {
 		top := r.Workflow.Steps[r.StepIdx]
-		if r.loop != nil && top.isLoop() && r.loop.innerIdx < len(top.Steps) {
+		if r.loop != nil && top.IsLoop() && r.loop.innerIdx < len(top.Steps) {
 			loopName := top.Name
 			if loopName == "" {
 				loopName = "loop"
 			}
 			stepLabel = fmt.Sprintf("⟳ %s · iter %d/%d · %s",
-				loopName, r.loop.iteration, top.effectiveMaxIterations(), stepName)
+				loopName, r.loop.iteration, top.EffectiveMaxIterations(), stepName)
 			if r.loop.retry > 0 {
 				stepLabel += fmt.Sprintf(" · re-prompt #%d", r.loop.retry)
 			}

@@ -288,7 +288,7 @@ func (b *workflowsBuilderState) stepRows() []stepRow {
 	}
 	rows := []stepRow{{kind: stepRowNewStep}}
 	for i, s := range b.items[wIdx].Steps {
-		if s.isLoop() {
+		if s.IsLoop() {
 			rows = append(rows, stepRow{kind: stepRowLoopHeader, topIdx: i})
 			for j := range s.Steps {
 				rows = append(rows, stepRow{kind: stepRowLoopChild, topIdx: i, innerIdx: j})
@@ -1503,7 +1503,7 @@ func (b *workflowsBuilderState) renderStepTreeRow(row stepRow, wf workflowDef, c
 		return renderWorkflowStepRow(wf.Steps[row.topIdx], cols, innerW, selected, activePane)
 	case stepRowLoopHeader:
 		s := wf.Steps[row.topIdx]
-		meta := fmt.Sprintf("max %d", s.effectiveMaxIterations())
+		meta := fmt.Sprintf("max %d", s.EffectiveMaxIterations())
 		return renderWorkflowStepCols("⟳ "+s.Name, "loop", meta, cols, innerW, selected, activePane)
 	case stepRowLoopChild:
 		s := wf.Steps[row.topIdx].Steps[row.innerIdx]

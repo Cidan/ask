@@ -373,23 +373,23 @@ func TestWorkflowLoop_RoundTripsOnDisk(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("loop workflow did not round-trip:\n got=%+v\nwant=%+v", got, want)
 	}
-	if got[0].Steps[0].isLoop() {
+	if got[0].Steps[0].IsLoop() {
 		t.Error("agent step should not report isLoop")
 	}
 	if got[0].Steps[0].Kind != "" {
 		t.Errorf("agent step Kind should stay empty for back-compat; got %q", got[0].Steps[0].Kind)
 	}
-	if !got[0].Steps[1].isLoop() {
+	if !got[0].Steps[1].IsLoop() {
 		t.Error("loop step should report isLoop")
 	}
 }
 
 // TestWorkflowStep_EffectiveMaxIterations covers the 0 ⇒ default mapping.
 func TestWorkflowStep_EffectiveMaxIterations(t *testing.T) {
-	if got := (workflowStep{}).effectiveMaxIterations(); got != workflowLoopDefaultMaxIterations {
+	if got := (workflowStep{}).EffectiveMaxIterations(); got != workflowLoopDefaultMaxIterations {
 		t.Errorf("0 should map to the default cap %d; got %d", workflowLoopDefaultMaxIterations, got)
 	}
-	if got := (workflowStep{MaxIterations: 3}).effectiveMaxIterations(); got != 3 {
+	if got := (workflowStep{MaxIterations: 3}).EffectiveMaxIterations(); got != 3 {
 		t.Errorf("explicit cap should win; got %d", got)
 	}
 }

@@ -595,7 +595,7 @@ func TestWorkflowsBuilder_AddLoopPersists(t *testing.T) {
 		t.Errorf("expected to drop into loop detail; got rightMode=%d", m2.workflowsBuilder.rightMode)
 	}
 	got := projectWorkflows(cwd)
-	if len(got) != 1 || len(got[0].Steps) != 1 || !got[0].Steps[0].isLoop() {
+	if len(got) != 1 || len(got[0].Steps) != 1 || !got[0].Steps[0].IsLoop() {
 		t.Fatalf("expected one loop step persisted; got %+v", got)
 	}
 }

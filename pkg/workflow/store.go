@@ -123,8 +123,8 @@ func LoadUserWorkflows(cwd string) ([]Def, error) {
 	}
 	var out []Def
 	for _, raw := range pc.Workflows.Items {
-		var d Def
-		if err := json.Unmarshal(raw, &d); err == nil && strings.TrimSpace(d.Name) != "" {
+		d := ConfigDefToDef(raw)
+		if strings.TrimSpace(d.Name) != "" {
 			d.Scope = ScopeUser
 			out = append(out, d)
 		}
@@ -251,14 +251,12 @@ func saveAllLocked(cwd string, items []Def) error {
 	if len(user) == 0 {
 		pc.Workflows.Items = nil
 	} else {
-		var rawItems []json.RawMessage
+		var items []config.WorkflowDef
 		for _, w := range user {
 			w.Scope = ""
-			if b, err := json.Marshal(w); err == nil {
-				rawItems = append(rawItems, b)
-			}
+			items = append(items, DefToConfigDef(w))
 		}
-		pc.Workflows.Items = rawItems
+		pc.Workflows.Items = items
 	}
 	if err := config.SaveProjectLocked(cwd, pc); err != nil {
 		return err
@@ -268,6 +266,66 @@ func saveAllLocked(cwd string, items []Def) error {
 		return err
 	}
 	return syncWorkflowFiles(GlobalDir(), global)
+}
+
+// ConfigDefToDef converts a config.WorkflowDef to a workflow.Def.
+func ConfigDefToDef(d config.WorkflowDef) Def {
+	return Def{
+		Name:        d.Name,
+		Description: d.Description,
+		Steps:       configStepsToSteps(d.Steps),
+		Scope:       Scope(d.Scope),
+	}
+}
+
+func configStepsToSteps(steps []config.WorkflowStep) []Step {
+	if steps == nil {
+		return nil
+	}
+	out := make([]Step, len(steps))
+	for i, s := range steps {
+		out[i] = Step{
+			Name:          s.Name,
+			Kind:          s.Kind,
+			Provider:      s.Provider,
+			Model:         s.Model,
+			Prompt:        s.Prompt,
+			Steps:         configStepsToSteps(s.Steps),
+			MaxIterations: s.MaxIterations,
+			ExitCondition: s.ExitCondition,
+		}
+	}
+	return out
+}
+
+// DefToConfigDef converts a workflow.Def to a config.WorkflowDef.
+func DefToConfigDef(d Def) config.WorkflowDef {
+	return config.WorkflowDef{
+		Name:        d.Name,
+		Description: d.Description,
+		Steps:       stepsToConfigSteps(d.Steps),
+		Scope:       string(d.Scope),
+	}
+}
+
+func stepsToConfigSteps(steps []Step) []config.WorkflowStep {
+	if steps == nil {
+		return nil
+	}
+	out := make([]config.WorkflowStep, len(steps))
+	for i, s := range steps {
+		out[i] = config.WorkflowStep{
+			Name:          s.Name,
+			Kind:          s.Kind,
+			Provider:      s.Provider,
+			Model:         s.Model,
+			Prompt:        s.Prompt,
+			Steps:         stepsToConfigSteps(s.Steps),
+			MaxIterations: s.MaxIterations,
+			ExitCondition: s.ExitCondition,
+		}
+	}
+	return out
 }
 
 func syncWorkflowFiles(dir string, defs []Def) error {
