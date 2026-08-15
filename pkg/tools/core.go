@@ -2,7 +2,30 @@ package tools
 
 import (
 	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/engine"
 )
+
+func init() {
+	engine.RegisterToolFactory(func(args engine.ToolFactoryArgs) []fantasy.AgentTool {
+		return BuildCoreTools(args, args.AttachWebSearch)
+	})
+}
+
+// BuildCoreTools constructs standard core wire tools for the provided engine arguments.
+func BuildCoreTools(args engine.ToolFactoryArgs, attachWebSearch bool) []fantasy.AgentTool {
+	env := NewToolEnv(
+		args.Cwd,
+		args.TabID,
+		args.SkipPermissions,
+		args.GateTodosBeforeMutate,
+		args.EventListener,
+		args.InteractionHandler,
+	)
+	registryFunc := func() []fantasy.AgentTool {
+		return nil
+	}
+	return CoreTools(env, registryFunc, attachWebSearch)
+}
 
 // CoreTools returns the standard core wire tools for an agent session.
 func CoreTools(env *ToolEnv, registry func() []fantasy.AgentTool, attachWebSearch bool) []fantasy.AgentTool {
