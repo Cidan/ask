@@ -11,6 +11,7 @@ import (
 
 	"charm.land/bubbletea/v2"
 	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/tools"
 )
 
 func TestSudoIPCServer_HandshakeAndTokenValidation(t *testing.T) {
@@ -22,7 +23,7 @@ func TestSudoIPCServer_HandshakeAndTokenValidation(t *testing.T) {
 	}
 
 	// Case 1: Connect with invalid token -> expect ERROR: invalid token
-	conn, err := net.Dial("unix", server.socketPath)
+	conn, err := net.Dial("unix", server.SocketPath)
 	if err != nil {
 		t.Fatalf("dial socket: %v", err)
 	}
@@ -38,11 +39,11 @@ func TestSudoIPCServer_HandshakeAndTokenValidation(t *testing.T) {
 	conn.Close()
 
 	// Case 2: Connect with valid token but no tea program -> expect ERROR: no active UI program
-	conn, err = net.Dial("unix", server.socketPath)
+	conn, err = net.Dial("unix", server.SocketPath)
 	if err != nil {
 		t.Fatalf("dial socket: %v", err)
 	}
-	req = fmt.Sprintf("TOKEN:%s\nPROMPT:test\n\n", server.token)
+	req = fmt.Sprintf("TOKEN:%s\nPROMPT:test\n\n", server.Token)
 	_, _ = conn.Write([]byte(req))
 	scanner = bufio.NewScanner(conn)
 	if !scanner.Scan() {
@@ -73,13 +74,13 @@ func TestSudoIPCServer_HandshakeSuccessAndCancel(t *testing.T) {
 		return false
 	}
 
-	conn, err := net.Dial("unix", server.socketPath)
+	conn, err := net.Dial("unix", server.SocketPath)
 	if err != nil {
 		t.Fatalf("dial socket: %v", err)
 	}
 	defer conn.Close()
 
-	req := fmt.Sprintf("TOKEN:%s\nTABID:1\nPROMPT:[sudo] password:\n\n", server.token)
+	req := fmt.Sprintf("TOKEN:%s\nTABID:1\nPROMPT:[sudo] password:\n\n", server.Token)
 	_, _ = conn.Write([]byte(req))
 
 	var reqMsg sudoPasswordRequestedMsg
@@ -127,13 +128,13 @@ func TestSudoIPCServer_HandshakeSuccessPassword(t *testing.T) {
 		return false
 	}
 
-	conn, err := net.Dial("unix", server.socketPath)
+	conn, err := net.Dial("unix", server.SocketPath)
 	if err != nil {
 		t.Fatalf("dial socket: %v", err)
 	}
 	defer conn.Close()
 
-	req := fmt.Sprintf("TOKEN:%s\nTABID:2\nPROMPT:[sudo] password:\n\n", server.token)
+	req := fmt.Sprintf("TOKEN:%s\nTABID:2\nPROMPT:[sudo] password:\n\n", server.Token)
 	_, _ = conn.Write([]byte(req))
 
 	var reqMsg sudoPasswordRequestedMsg
@@ -181,15 +182,15 @@ func TestSudoEnv_AgentBashToolAndAskPassHelper(t *testing.T) {
 	}
 
 	var capturedExtraEnv []string
-	prevRunShell := agentRunShell
-	t.Cleanup(func() { agentRunShell = prevRunShell })
-	agentRunShell = func(dir, command string, extraEnv ...string) (*shellHandle, error) {
+	prevRunShell := tools.RunShell
+	t.Cleanup(func() { tools.RunShell = prevRunShell })
+	tools.RunShell = func(dir, command string, extraEnv ...string) (*tools.ShellHandle, error) {
 		capturedExtraEnv = extraEnv
 		out := make(chan string)
 		close(out)
-		done := make(chan shellResult, 1)
-		done <- shellResult{ExitCode: 0}
-		return &shellHandle{Output: out, Done: done, Kill: func() {}}, nil
+		done := make(chan tools.ShellResult, 1)
+		done <- tools.ShellResult{ExitCode: 0}
+		return &tools.ShellHandle{Output: out, Done: done, Kill: func() {}}, nil
 	}
 
 	env := &agentToolEnv{
@@ -230,8 +231,8 @@ func TestSudoEnv_AgentBashToolAndAskPassHelper(t *testing.T) {
 	}
 
 	// Test runAskPassHelper when env vars are configured
-	t.Setenv("ASK_SUDO_SOCKET", server.socketPath)
-	t.Setenv("ASK_SUDO_TOKEN", server.token)
+	t.Setenv("ASK_SUDO_SOCKET", server.SocketPath)
+	t.Setenv("ASK_SUDO_TOKEN", server.Token)
 	t.Setenv("ASK_SUDO_TABID", "42")
 
 	prevSend := agentSendToProgram

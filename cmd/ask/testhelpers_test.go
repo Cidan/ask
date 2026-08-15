@@ -15,7 +15,17 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/config"
+	"github.com/Cidan/ask/pkg/providers"
 )
+
+func swapDeepseekLM(t *testing.T, lm fantasy.LanguageModel) {
+	prev := providers.DeepSeekSpec.BuildModel
+	t.Cleanup(func() { providers.DeepSeekSpec.BuildModel = prev })
+	providers.DeepSeekSpec.BuildModel = func(_ config.Config, _ string) (fantasy.LanguageModel, error) {
+		return lm, nil
+	}
+}
 
 // fakeProvider is an instrumentable Provider for tests. Every method has an
 // overridable *Fn hook; the zero value picks safe defaults so most tests can

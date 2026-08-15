@@ -35,11 +35,11 @@ download-model:
 
 build: setup-llama download-model
 	@echo "Building ask..."
-	go build -o bin/ask .
+	go build -o bin/ask ./cmd/ask
 
 install: setup-llama download-model
 	@echo "Installing ask..."
-	go install .
+	go install ./cmd/ask
 
 test: setup-llama download-model
 	@echo "Testing ask..."

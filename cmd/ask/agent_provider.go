@@ -199,6 +199,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 			return s.spec != nil && s.spec.SupportsImages != nil && s.spec.SupportsImages(s.modelID)
 		},
 		s.refreshToolset,
+		globalTUIInteractionHandler,
 	)
 	s.mcp.AttachAll(context.Background(), agentSessionMCPServers(s.args, cfg))
 	s.refreshToolset()
@@ -216,7 +217,7 @@ func agentSessionMCPServers(args ProviderSessionArgs, cfg askConfig) []agentMCPS
 			},
 		})
 	}
-	for _, named := range resolveMCPServers(cfg, args.Cwd) {
+	for _, named := range resolveMCPServers(toPkgConfig(cfg), args.Cwd) {
 		servers = append(servers, agentMCPServer{Name: named.Name, Cfg: named.Config})
 	}
 	return servers
