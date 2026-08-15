@@ -183,5 +183,51 @@ type TurnCompleteEvent struct {
 
 func (TurnCompleteEvent) Kind() EventKind { return EventKindTurnComplete }
 
+// WorkflowStartedEvent is emitted when a workflow begins execution.
+type WorkflowStartedEvent struct {
+	BaseEvent
+	Workflow string `json:"workflow"`
+	Source   string `json:"source"`
+}
+
+func (WorkflowStartedEvent) Kind() EventKind { return EventKindWorkflowStarted }
+
+// WorkflowStepStartedEvent is emitted when an individual workflow step begins.
+type WorkflowStepStartedEvent struct {
+	BaseEvent
+	StepIdx  int    `json:"step_idx"`
+	StepName string `json:"step_name"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+func (WorkflowStepStartedEvent) Kind() EventKind { return EventKindWorkflowStep }
+
+// WorkflowStepDoneEvent is emitted when an individual step completes.
+type WorkflowStepDoneEvent struct {
+	BaseEvent
+	StepIdx int    `json:"step_idx"`
+	Summary string `json:"summary"`
+}
+
+func (WorkflowStepDoneEvent) Kind() EventKind { return EventKindWorkflowStep }
+
+// WorkflowDoneEvent is emitted when an entire workflow finishes.
+type WorkflowDoneEvent struct {
+	BaseEvent
+	Description string   `json:"description"`
+	Artifacts   []string `json:"artifacts"`
+}
+
+func (WorkflowDoneEvent) Kind() EventKind { return EventKindWorkflowDone }
+
+// WorkflowFailedEvent is emitted when a workflow fails or is cancelled.
+type WorkflowFailedEvent struct {
+	BaseEvent
+	Reason string `json:"reason"`
+}
+
+func (WorkflowFailedEvent) Kind() EventKind { return EventKindWorkflowFailed }
+
 // EventListener is a callback function that handles stream events from the engine.
 type EventListener func(event EngineEvent)

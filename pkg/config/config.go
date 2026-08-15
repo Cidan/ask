@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 var configFileMu sync.Mutex
@@ -108,8 +109,17 @@ type IssuesConfig struct {
 }
 
 type WorkflowsConfig struct {
-	ActiveWorkflow string            `json:"activeWorkflow,omitempty"`
-	Items          []json.RawMessage `json:"items,omitempty"`
+	ActiveWorkflow string                     `json:"activeWorkflow,omitempty"`
+	Items          []json.RawMessage          `json:"items,omitempty"`
+	Sessions       map[string]WorkflowSession `json:"sessions,omitempty"`
+}
+
+type WorkflowSession struct {
+	Workflow  string    `json:"workflow"`
+	StepIndex int       `json:"step_index"`
+	Status    string    `json:"status"`
+	StartedAt time.Time `json:"started_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // ConfigPath returns the standard configuration file path.
