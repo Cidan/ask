@@ -224,7 +224,7 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			Cwd:                   opts.Cwd,
 			TabID:                 0,
 			SkipPermissions:       opts.SkipAllPermissions,
-			GateTodosBeforeMutate: opts.Config.UI.GateTodosBeforeMutate,
+			GateTodosBeforeMutate: opts.Config.UI.GateTodosBeforeMutate != nil && *opts.Config.UI.GateTodosBeforeMutate,
 			EventListener:         opts.EventListener,
 			InteractionHandler:    opts.InteractionHandler,
 			AttachWebSearch:       spec.NativeWebSearch == nil,
