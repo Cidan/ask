@@ -4,8 +4,6 @@ charm.land/bubbletea/v2 v2.0.6 h1:UHN/91OyuhaOFGSrBXQ/hMZD8IO1Uc4BvHlgHXL2WJo=
 charm.land/bubbletea/v2 v2.0.6/go.mod h1:MH/D8ZLlN3op37vQvijKuU29g3rqTp+aQapURFonF9g=
 charm.land/catwalk v0.44.20 h1:9vd0qlaWuP/zgIofP7725WJbDqM56296lt94DnO6ipc=
 charm.land/catwalk v0.44.20/go.mod h1:bw6/oiChsa9Fkr8LgYn84KrbbJY2z1+m7Jmlmmv3B2A=
-charm.land/fantasy v0.41.1 h1:BUZElxFUqvWQ0T26xQHN8EgBqokfcz536CMYNs/nHbc=
-charm.land/fantasy v0.41.1/go.mod h1:8dC1jJpVDAC5alLRn14CAbc5TGZ4dQOD993ZHmo1laY=
 charm.land/glamour/v2 v2.0.0 h1:IDBoqLEy7Hdpb9VOXN+khLP/XSxtJy1VsHuW/yF87+U=
 charm.land/glamour/v2 v2.0.0/go.mod h1:kjq9WB0s8vuUYZNYey2jp4Lgd9f4cKdzAw88FZtpj/w=
 charm.land/lipgloss/v2 v2.0.3 h1:yM2zJ4Cf5Y51b7RHIwioil4ApI/aypFXXVHSwlM6RzU=
@@ -18,6 +16,8 @@ cloud.google.com/go/auth/oauth2adapt v0.2.8 h1:keo8NaayQZ6wimpNSmW5OPc283g65QNIi
 cloud.google.com/go/auth/oauth2adapt v0.2.8/go.mod h1:XQ9y31RkqZCcwJWNSx2Xvric3RrU88hAYYbjDWYDL+c=
 cloud.google.com/go/compute/metadata v0.9.0 h1:pDUj4QMoPejqq20dK0Pg2N4yG9zIkYGdBtwLoEkH9Zs=
 cloud.google.com/go/compute/metadata v0.9.0/go.mod h1:E0bWwX5wTnLPedCKqk3pJmVgCBSM6qQI1yTBdEb3C10=
+github.com/Cidan/fantasy v0.33.3-0.20260815151020-dedb2c0fa7aa h1:iAKxnt8IS3IAC3thsCWvVktsmLu9jVhDtv1ANyq476o=
+github.com/Cidan/fantasy v0.33.3-0.20260815151020-dedb2c0fa7aa/go.mod h1:8dC1jJpVDAC5alLRn14CAbc5TGZ4dQOD993ZHmo1laY=
 github.com/MakeNowJust/heredoc v1.0.0 h1:cXCdzVdstXyiTqTvfqk9SDHpKNjxuom+DOlyEeQ4pzQ=
 github.com/MakeNowJust/heredoc v1.0.0/go.mod h1:mG5amYoWBHf8vpLOuehzbGGw0EHxpZZ6lCpQ4fNJ8LE=
 github.com/alecthomas/assert/v2 v2.7.0 h1:QtqSACNS3tF7oasA8CU6A6sXZSBDqnm7RfpLl9bZqbE=
