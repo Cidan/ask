@@ -1,0 +1,33 @@
+{
+  "name": "ship",
+  "description": "Use this for ANY substantive code change you intend to land in the repo — features, refactors, deletions/cleanups, bugfixes, dependency bumps. Do NOT judge fit by the step names: \"plan\" and \"open PR\" describe HOW it runs, not WHICH tasks qualify. A deletion or cleanup benefits from the plan → implement → validate → PR pipeline just as much as a feature does. The only tasks that should skip it are pure read-only investigation, answering questions, and trivial one-liners with no real risk. When in doubt, prefer running this over ad-hoc edits.",
+  "steps": [
+    {
+      "name": "Validate plan",
+      "provider": "vertex",
+      "model": "gemini-3.7-flash"
+    },
+    {
+      "name": "Implement and validate",
+      "kind": "loop",
+      "steps": [
+        {
+          "name": "Execute work",
+          "provider": "vertex",
+          "model": "gemini-3.7-flash"
+        },
+        {
+          "name": "Validate implementation",
+          "provider": "vertex",
+          "model": "gemini-3.7-flash"
+        }
+      ],
+      "maxIterations": 20
+    },
+    {
+      "name": "Finalize and open PR",
+      "provider": "vertex",
+      "model": "gemini-3.7-flash"
+    }
+  ]
+}
