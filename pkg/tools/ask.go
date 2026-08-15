@@ -244,7 +244,7 @@ func FinalizedPlanTool(env *ToolEnv) fantasy.AgentTool {
 						if err != nil {
 							return fantasy.NewTextErrorResponse("could not resolve workflow: " + err.Error()), nil
 						}
-						out, err := env.WorkflowRunner(ctx, env.TabID, def, nil)
+						out, err := env.WorkflowRunner(ctx, env.TabID, def, resp.Source)
 						if err != nil {
 							return fantasy.NewTextErrorResponse("workflow execution failed: " + err.Error()), nil
 						}

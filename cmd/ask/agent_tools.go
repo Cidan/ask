@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"strings"
+
 	tea "charm.land/bubbletea/v2"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/tools"
+	"github.com/Cidan/ask/pkg/workflow"
 )
 
 type agentToolEnv = tools.ToolEnv
@@ -33,6 +38,26 @@ func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, gateTodosBefor
 		}
 	}
 	env := tools.NewToolEnv(cwd, tabID, skipPermissions, gateTodosBeforeMutate, listener, globalTUIInteractionHandler)
+	env.WorkflowRunner = func(ctx context.Context, tabID int, def workflow.Def, src any) (string, error) {
+		var wfSrc workflowSource
+		if s, ok := src.(workflowSource); ok {
+			wfSrc = s
+		} else if s, ok := src.(workflow.Source); ok {
+			wfSrc = s
+		}
+		reply, err := globalCoordinator.RunWorkflow(ctx, tabID, fromPkgWorkflowDef(def), wfSrc)
+		if err != nil {
+			return "", err
+		}
+		out := fmt.Sprintf("Workflow %q completed successfully.", reply.workflowName)
+		if reply.outcome != "" {
+			out += "\nOutcome: " + reply.outcome
+		}
+		if len(reply.artifacts) > 0 {
+			out += "\nArtifacts: " + strings.Join(reply.artifacts, ", ")
+		}
+		return out, nil
+	}
 	return env
 }
 

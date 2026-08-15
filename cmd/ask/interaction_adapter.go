@@ -113,6 +113,7 @@ func (t *TUIInteractionHandler) ConfirmPlan(ctx context.Context, tabID int, req 
 			FailedReason:  resp.failedReason,
 			Outcome:       resp.outcome,
 			Artifacts:     resp.artifacts,
+			Source:        resp.source,
 		}, nil
 	case <-ctx.Done():
 		return engine.PlanResponse{}, ctx.Err()

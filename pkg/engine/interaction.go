@@ -69,6 +69,7 @@ type PlanResponse struct {
 	FailedReason  string   `json:"failed_reason,omitempty"`
 	Outcome       string   `json:"outcome,omitempty"`
 	Artifacts     []string `json:"artifacts,omitempty"`
+	Source        any      `json:"-"`
 }
 
 // SudoPasswordResponse contains the user's input for a sudo prompt.

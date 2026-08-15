@@ -2,6 +2,7 @@ package main
 
 import (
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -325,5 +326,155 @@ func TestFinalizedPlan_WorkflowSelectionToolNoCmd(t *testing.T) {
 		}
 	default:
 		t.Errorf("expected reply on channel")
+	}
+}
+
+func TestFinalizedPlan_SelfLaunchWorkflowExecution(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+
+	var stepsExecuted int32
+	prov := newFakeProvider()
+	prov.id = "fake-prov"
+	prov.startSessionFn = func(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
+		atomic.AddInt32(&stepsExecuted, 1)
+		ch := make(chan tea.Msg, 8)
+		proc := &providerProc{
+			stdin: &bufferCloser{Buffer: nil},
+		}
+		env := newAgentToolEnv(args.Cwd, args.TabID, true, true, func(msg tea.Msg) {})
+		env.PendingEndTurn = &endTurnSignal{Summary: "step done", Decision: "break"}
+		env.PendingFinishData = &finishWorkflowData{Description: "completed ship workflow", Artifacts: []string{"pr#1"}}
+		sess := &agentSession{
+			args:   args,
+			env:    env,
+			sendCh: make(chan agentTurn, 8),
+			closed: make(chan struct{}),
+		}
+		proc.payload = sess
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			ch <- assistantTextMsg{text: "step output"}
+			ch <- providerDoneMsg{res: providerResult{Result: "done"}}
+			ch <- turnCompleteMsg{}
+			close(ch)
+		}()
+		return proc, ch, nil
+	}
+	withRegisteredProviders(t, prov)
+
+	// Save workflow "ship"
+	_ = saveAllWorkflows(cwd, []workflowDef{{
+		Name:  "ship",
+		Scope: workflowScopeRepo,
+		Steps: []workflowStep{{
+			Name:     "validate",
+			Provider: "fake-prov",
+			Model:    "fake-model",
+			Prompt:   "validate plan",
+		}},
+	}})
+
+	// Parent session
+	parentSess := &agentSession{
+		args: ProviderSessionArgs{TabID: 1, Cwd: cwd},
+	}
+	parentSess.env = newAgentToolEnv(parentSess.args.Cwd, 1, true, false, func(msg tea.Msg) {})
+	globalCoordinator.SetSession(1, parentSess)
+	defer globalCoordinator.RemoveSession(1)
+
+	tool := agentFinalizedPlanTool(parentSess.env)
+
+	oldSend := agentSendToProgram
+	defer func() { agentSendToProgram = oldSend }()
+	agentSendToProgram = func(msg tea.Msg) bool {
+		req, ok := msg.(finalizedPlanRequestMsg)
+		if !ok {
+			return false
+		}
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			req.reply <- finalizedPlanReply{
+				workflowName: "ship",
+				source:       chatWorkflowSource(1, nil),
+			}
+		}()
+		return true
+	}
+
+	resp := runTool(t, tool, agentFinalizedPlanParams{
+		Plan:            "Ship Plan",
+		Explanation:     "Ship Explanation",
+		DefaultWorkflow: "ship",
+	})
+
+	if resp.IsError {
+		t.Fatalf("tool run failed: %s", resp.Content)
+	}
+
+	if atomic.LoadInt32(&stepsExecuted) == 0 {
+		t.Fatalf("expected workflow steps to be executed, but none were run")
+	}
+
+	if !strings.Contains(resp.Content, "completed ship workflow") {
+		t.Errorf("expected response to contain workflow outcome, got: %s", resp.Content)
+	}
+}
+
+func TestFinalizedPlan_SelfLaunchWorkflowExecution_Failure(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+
+	// Save workflow "ship" with unknown provider to test immediate failure propagation
+	_ = saveAllWorkflows(cwd, []workflowDef{{
+		Name:  "ship",
+		Scope: workflowScopeRepo,
+		Steps: []workflowStep{{
+			Name:     "validate",
+			Provider: "unregistered-provider",
+			Model:    "fake-model",
+			Prompt:   "validate plan",
+		}},
+	}})
+
+	// Parent session
+	parentSess := &agentSession{
+		args: ProviderSessionArgs{TabID: 1, Cwd: cwd},
+	}
+	parentSess.env = newAgentToolEnv(parentSess.args.Cwd, 1, true, false, func(msg tea.Msg) {})
+	globalCoordinator.SetSession(1, parentSess)
+	defer globalCoordinator.RemoveSession(1)
+
+	tool := agentFinalizedPlanTool(parentSess.env)
+
+	oldSend := agentSendToProgram
+	defer func() { agentSendToProgram = oldSend }()
+	agentSendToProgram = func(msg tea.Msg) bool {
+		req, ok := msg.(finalizedPlanRequestMsg)
+		if !ok {
+			return false
+		}
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			req.reply <- finalizedPlanReply{
+				workflowName: "ship",
+				source:       chatWorkflowSource(1, nil),
+			}
+		}()
+		return true
+	}
+
+	resp := runTool(t, tool, agentFinalizedPlanParams{
+		Plan:            "Ship Plan",
+		Explanation:     "Ship Explanation",
+		DefaultWorkflow: "ship",
+	})
+
+	if !resp.IsError {
+		t.Fatalf("expected tool response to be an error when workflow fails, got: %s", resp.Content)
+	}
+
+	if !strings.Contains(resp.Content, "workflow execution failed") {
+		t.Errorf("expected error message to mention workflow execution failed, got: %s", resp.Content)
 	}
 }
