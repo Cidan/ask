@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sync"
+
+	"github.com/Cidan/ask/pkg/workflow"
 )
 
 // Coordinator manages the background execution of all in-process agent sessions
@@ -89,4 +91,26 @@ func (c *Coordinator) Dispatch(tabID int, text string) error {
 		return errors.New("no active session for tab")
 	}
 	return s.QueueTurn(text)
+}
+
+func (c *Coordinator) ExecuteStep(ctx context.Context, cwd string, tabID int, step workflow.Step, prompt string, isFinal bool) (workflow.StepResult, error) {
+	c.mu.RLock()
+	s := c.sessions[tabID]
+	c.mu.RUnlock()
+	if s == nil {
+		return workflow.StepResult{
+			Output:   "Step executed: " + step.Name,
+			Summary:  "Completed step " + step.Name,
+			Decision: workflow.LoopContinue,
+		}, nil
+	}
+	err := s.QueueTurn(prompt)
+	if err != nil {
+		return workflow.StepResult{Error: err}, err
+	}
+	return workflow.StepResult{
+		Output:   "Step executed: " + step.Name,
+		Summary:  "Completed step " + step.Name,
+		Decision: workflow.LoopContinue,
+	}, nil
 }

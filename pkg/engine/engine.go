@@ -47,7 +47,50 @@ func (e *Engine) SystemPrompt(cwd string, inWorkflow bool) string {
 	})
 }
 
+type engineWorkflowListener struct {
+	tabID    int
+	listener EventListener
+}
+
+func (l engineWorkflowListener) OnWorkflowStarted(tabID int, def workflow.Def, src workflow.Source) {
+	if l.listener != nil {
+		l.listener(WorkflowStartedEvent{BaseEvent: BaseEvent{TabID: tabID}, Workflow: def.Name, Source: src.Display()})
+	}
+}
+
+func (l engineWorkflowListener) OnWorkflowStepStarted(tabID int, stepIdx int, stepName, provider, model string) {
+	if l.listener != nil {
+		l.listener(WorkflowStepStartedEvent{BaseEvent: BaseEvent{TabID: tabID}, StepIdx: stepIdx, StepName: stepName, Provider: provider, Model: model})
+	}
+}
+
+func (l engineWorkflowListener) OnWorkflowStepDone(tabID int, stepIdx int, summary string) {
+	if l.listener != nil {
+		l.listener(WorkflowStepDoneEvent{BaseEvent: BaseEvent{TabID: tabID}, StepIdx: stepIdx, Summary: summary})
+	}
+}
+
+func (l engineWorkflowListener) OnWorkflowDone(tabID int, description string, artifacts []string) {
+	if l.listener != nil {
+		l.listener(WorkflowDoneEvent{BaseEvent: BaseEvent{TabID: tabID}, Description: description, Artifacts: artifacts})
+	}
+}
+
+func (l engineWorkflowListener) OnWorkflowFailed(tabID int, reason string) {
+	if l.listener != nil {
+		l.listener(WorkflowFailedEvent{BaseEvent: BaseEvent{TabID: tabID}, Reason: reason})
+	}
+}
+
+func (l engineWorkflowListener) OnNote(tabID int, text string) {
+	if l.listener != nil {
+		l.listener(StatusEvent{BaseEvent: BaseEvent{TabID: tabID}, Status: text})
+	}
+}
+
 func (e *Engine) RunWorkflow(ctx context.Context, cwd string, tabID int, def workflow.Def, src workflow.Source) error {
-	// Execute workflow through runner
-	return nil
+	listener := engineWorkflowListener{tabID: tabID, listener: e.opts.EventListener}
+	runner := workflow.NewRunner(workflow.GlobalTracker(), e.coordinator, listener)
+	_, err := runner.Run(ctx, cwd, tabID, def, src)
+	return err
 }

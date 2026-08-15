@@ -16,12 +16,13 @@ const (
 // Step represents a single agent step or a loop of inner steps.
 type Step struct {
 	Name          string `json:"name"`
+	Kind          string `json:"kind,omitempty"` // "loop" or empty/omitted for standard step
 	Provider      string `json:"provider,omitempty"`
 	Model         string `json:"model,omitempty"`
 	Prompt        string `json:"prompt,omitempty"`
-	Kind          string `json:"kind,omitempty"` // "loop" or empty/omitted for standard step
 	Steps         []Step `json:"steps,omitempty"`
-	MaxIterations int    `json:"max_iterations,omitempty"`
+	MaxIterations int    `json:"maxIterations,omitempty"`
+	ExitCondition string `json:"exitCondition,omitempty"`
 }
 
 // Def defines a named sequence of workflow steps.
@@ -30,6 +31,10 @@ type Def struct {
 	Description string `json:"description,omitempty"`
 	Steps       []Step `json:"steps"`
 	Scope       Scope  `json:"-"`
+}
+
+func (s Step) IsLoop() bool {
+	return s.Kind == "loop"
 }
 
 func (d Def) EffectiveMaxIterations(s Step) int {
