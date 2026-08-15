@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,17 +83,17 @@ func TestParseRuleFrontmatter_Forms(t *testing.T) {
 
 func TestAskRule_EagerAndMatch(t *testing.T) {
 	eager := askRule{Body: "x"}
-	if !eager.eager() || eager.matches("anything") {
+	if !eager.Eager() || eager.Matches("anything") {
 		t.Error("rule with no paths must be eager and never path-match")
 	}
 	scoped := askRule{Paths: []string{"src/**/*.{ts,tsx}"}, Body: "x"}
-	if scoped.eager() {
+	if scoped.Eager() {
 		t.Error("rule with paths is not eager")
 	}
-	if !scoped.matches("src/a/b/c.tsx") {
+	if !scoped.Matches("src/a/b/c.tsx") {
 		t.Error("brace+doublestar glob should match nested tsx")
 	}
-	if scoped.matches("lib/x.ts") {
+	if scoped.Matches("lib/x.ts") {
 		t.Error("glob should not match outside src")
 	}
 }
@@ -145,7 +146,7 @@ func TestDiscoverRules_ProjectAndUserPrecedence(t *testing.T) {
 		t.Error("empty-body rule must be skipped")
 	}
 	api := byRel["api.md"]
-	if api.eager() || len(api.Paths) != 1 || api.Paths[0] != "src/**/*.go" {
+	if api.Eager() || len(api.Paths) != 1 || api.Paths[0] != "src/**/*.go" {
 		t.Errorf("api.md should be path-scoped, got %+v", api)
 	}
 }
@@ -219,14 +220,18 @@ func TestWrapContextAwareTools_AlwaysWrapsForContext(t *testing.T) {
 }
 
 func TestRuleAwareTool_RelPathRejectsOutsideRoot(t *testing.T) {
-	rt := &contextAwareTool{root: "/proj", cwd: "/proj"}
-	if got := rt.relPath("/proj/src/a.go"); got != "src/a.go" {
+	fakeTool := fantasy.NewAgentTool("read", "desc", func(ctx context.Context, p map[string]any, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		return fantasy.NewTextResponse(""), nil
+	})
+	wrapped := wrapContextAwareTools([]fantasy.AgentTool{fakeTool}, "/proj", nil)
+	rt := wrapped[0].(*contextAwareTool)
+	if got := rt.RelPath("/proj/src/a.go"); got != "src/a.go" {
 		t.Errorf("relPath abs in-root = %q, want src/a.go", got)
 	}
-	if got := rt.relPath("src/a.go"); got != "src/a.go" {
+	if got := rt.RelPath("src/a.go"); got != "src/a.go" {
 		t.Errorf("relPath rel in-root = %q, want src/a.go", got)
 	}
-	if got := rt.relPath("/etc/passwd"); got != "" {
+	if got := rt.RelPath("/etc/passwd"); got != "" {
 		t.Errorf("relPath outside root must be empty, got %q", got)
 	}
 }
