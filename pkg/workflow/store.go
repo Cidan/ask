@@ -165,16 +165,13 @@ func ListAll(cwd string) []Def {
 		}
 	}
 
-	sort.Slice(merged, func(i, j int) bool {
-		return merged[i].Name < merged[j].Name
-	})
-
 	return merged
 }
 
 var ErrWorkflowAmbiguous = errors.New("workflow exists in multiple scopes; pass scope to pick one")
 
 // ResolveByName resolves a workflow by name and optional scope.
+// With no scope specified, the first matching workflow in global -> repo -> user order is returned (personal-wins).
 func ResolveByName(cwd, name string, scope Scope) (Def, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -193,26 +190,12 @@ func ResolveByName(cwd, name string, scope Scope) (Def, error) {
 		return Def{}, fmt.Errorf("workflow %q not found in %s scope", name, norm)
 	}
 
-	var matches []Def
 	for _, w := range ListAll(cwd) {
 		if w.Name == name {
-			matches = append(matches, w)
+			return w, nil
 		}
 	}
-	switch len(matches) {
-	case 0:
-		return Def{}, fmt.Errorf("workflow %q not found", name)
-	case 1:
-		return matches[0], nil
-	}
-
-	// Prefer global if ambiguous
-	for _, m := range matches {
-		if m.Scope == ScopeGlobal {
-			return m, nil
-		}
-	}
-	return matches[0], nil
+	return Def{}, fmt.Errorf("workflow %q not found", name)
 }
 
 // SaveAll persists workflows across their respective scopes.

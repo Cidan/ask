@@ -108,3 +108,80 @@ func TestWorkflow_StoreListing(t *testing.T) {
 		t.Errorf("expected name 'repo-flow', got %q", resolved.Name)
 	}
 }
+
+func TestWorkflow_ScopeOrderingAndPersonalWins(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	cwd := t.TempDir()
+
+	globalDir := filepath.Join(fakeHome, ".config", "ask", "workflows")
+	if err := os.MkdirAll(globalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	repoDir := filepath.Join(cwd, ".ask", "workflows")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Write global workflow "shared" and "alpha-global"
+	globalShared := `{"name": "shared", "description": "global shared", "steps": [{"name": "g1", "prompt": "prompt-g"}]}`
+	if err := os.WriteFile(filepath.Join(globalDir, "shared.json"), []byte(globalShared), 0644); err != nil {
+		t.Fatal(err)
+	}
+	globalAlpha := `{"name": "alpha-global", "steps": [{"name": "ag1"}]}`
+	if err := os.WriteFile(filepath.Join(globalDir, "alpha-global.json"), []byte(globalAlpha), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Write repo workflow "shared" and "beta-repo"
+	repoShared := `{"name": "shared", "description": "repo shared", "steps": [{"name": "r1", "prompt": "prompt-r"}]}`
+	if err := os.WriteFile(filepath.Join(repoDir, "shared.json"), []byte(repoShared), 0644); err != nil {
+		t.Fatal(err)
+	}
+	repoBeta := `{"name": "beta-repo", "steps": [{"name": "br1"}]}`
+	if err := os.WriteFile(filepath.Join(repoDir, "beta-repo.json"), []byte(repoBeta), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. Check ListAll order: all globals first (alpha-global, shared), then repos (beta-repo, shared)
+	all := ListAll(cwd)
+	if len(all) != 4 {
+		t.Fatalf("expected 4 workflows, got %d: %+v", len(all), all)
+	}
+	if all[0].Scope != ScopeGlobal || all[0].Name != "alpha-global" {
+		t.Errorf("expected global alpha-global first, got %+v", all[0])
+	}
+	if all[1].Scope != ScopeGlobal || all[1].Name != "shared" {
+		t.Errorf("expected global shared second, got %+v", all[1])
+	}
+	if all[2].Scope != ScopeRepo || all[2].Name != "beta-repo" {
+		t.Errorf("expected repo beta-repo third, got %+v", all[2])
+	}
+	if all[3].Scope != ScopeRepo || all[3].Name != "shared" {
+		t.Errorf("expected repo shared fourth, got %+v", all[3])
+	}
+
+	// 4. ResolveByName without scope should pick global "shared" (personal-wins)
+	res, err := ResolveByName(cwd, "shared", "")
+	if err != nil {
+		t.Fatalf("unexpected error resolving shared: %v", err)
+	}
+	if res.Scope != ScopeGlobal || res.Description != "global shared" {
+		t.Errorf("expected global shared on unscoped resolve, got %+v", res)
+	}
+	if len(res.Steps) != 1 || res.Steps[0].Prompt != "prompt-g" {
+		t.Errorf("expected global prompts preserved, got %+v", res.Steps)
+	}
+
+	// 5. Scoped lookup for repo "shared"
+	repoRes, err := ResolveByName(cwd, "shared", ScopeRepo)
+	if err != nil {
+		t.Fatalf("unexpected error resolving repo shared: %v", err)
+	}
+	if repoRes.Scope != ScopeRepo || repoRes.Description != "repo shared" {
+		t.Errorf("expected repo shared, got %+v", repoRes)
+	}
+	if len(repoRes.Steps) != 1 || repoRes.Steps[0].Prompt != "prompt-r" {
+		t.Errorf("expected repo prompts preserved, got %+v", repoRes.Steps)
+	}
+}

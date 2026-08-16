@@ -102,3 +102,144 @@ func TestClearPlansTool(t *testing.T) {
 		t.Errorf("unexpected clear response: %q", resp.Content)
 	}
 }
+
+func TestWorkflowTools_LoopWorkflowPromptAndExitConditionPreservation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	env, _ := newTestToolEnv(t)
+
+	create := workflowToolByName(t, env, "workflow_create")
+	get := workflowToolByName(t, env, "workflow_get")
+	edit := workflowToolByName(t, env, "workflow_edit")
+	copyTool := workflowToolByName(t, env, "workflow_copy")
+
+	// 1. Create a loop workflow
+	createJSON := `{
+		"name": "ship-test",
+		"scope": "global",
+		"description": "Ship code changes safely",
+		"steps": [
+			{
+				"name": "Validate plan",
+				"provider": "vertex",
+				"model": "gemini-3.7-flash",
+				"prompt": "Review task and produce plan"
+			},
+			{
+				"name": "Implement and validate",
+				"kind": "loop",
+				"maxIterations": 15,
+				"exitCondition": "Validation passes completely",
+				"steps": [
+					{
+						"name": "Execute work",
+						"provider": "vertex",
+						"model": "gemini-3.7-flash",
+						"prompt": "Make changes and run tests"
+					},
+					{
+						"name": "Validate implementation",
+						"provider": "vertex",
+						"model": "gemini-3.7-flash",
+						"prompt": "Review changes against plan"
+					}
+				]
+			}
+		]
+	}`
+
+	resp, err := create.Run(context.Background(), fantasy.ToolCall{ID: "c1", Name: "workflow_create", Input: createJSON})
+	if err != nil || resp.IsError {
+		t.Fatalf("create failed: %+v %v", resp, err)
+	}
+
+	// 2. Get the workflow and verify ExitCondition, Prompt, and inner Steps
+	resp, err = get.Run(context.Background(), fantasy.ToolCall{ID: "g1", Name: "workflow_get", Input: `{"name":"ship-test"}`})
+	if err != nil || resp.IsError {
+		t.Fatalf("get failed: %+v %v", resp, err)
+	}
+	// Verify response or parsed output contains the fields
+	listOutput, err := get.Run(context.Background(), fantasy.ToolCall{ID: "g2", Name: "workflow_get", Input: `{"name":"ship-test","scope":"global"}`})
+	if err != nil || listOutput.IsError {
+		t.Fatalf("scoped get failed: %+v %v", listOutput, err)
+	}
+
+	wfs := workflow.ListAll(env.Cwd)
+	if len(wfs) != 1 {
+		t.Fatalf("expected 1 workflow in store, got %d", len(wfs))
+	}
+	wf := wfs[0]
+	if len(wf.Steps) != 2 || wf.Steps[1].Kind != "loop" || wf.Steps[1].ExitCondition != "Validation passes completely" {
+		t.Errorf("expected exit condition to persist in store: %+v", wf.Steps[1])
+	}
+	if len(wf.Steps[1].Steps) != 2 || wf.Steps[1].Steps[0].Prompt != "Make changes and run tests" {
+		t.Errorf("expected inner step prompts to persist: %+v", wf.Steps[1].Steps)
+	}
+
+	// 3. Edit description and steps
+	editJSON := `{
+		"name": "ship-test",
+		"description": "Updated description",
+		"steps": [
+			{
+				"name": "Validate plan updated",
+				"provider": "vertex",
+				"model": "gemini-3.7-flash",
+				"prompt": "Updated plan prompt"
+			},
+			{
+				"name": "Implement and validate updated",
+				"kind": "loop",
+				"maxIterations": 10,
+				"exitCondition": "Updated exit condition",
+				"steps": [
+					{
+						"name": "Execute work updated",
+						"provider": "vertex",
+						"model": "gemini-3.7-flash",
+						"prompt": "Updated execute prompt"
+					}
+				]
+			}
+		]
+	}`
+	resp, err = edit.Run(context.Background(), fantasy.ToolCall{ID: "e1", Name: "workflow_edit", Input: editJSON})
+	if err != nil || resp.IsError {
+		t.Fatalf("edit failed: %+v %v", resp, err)
+	}
+
+	wfs = workflow.ListAll(env.Cwd)
+	if len(wfs) != 1 {
+		t.Fatalf("expected 1 workflow after edit, got %d", len(wfs))
+	}
+	wf = wfs[0]
+	if wf.Description != "Updated description" {
+		t.Errorf("expected updated description, got %q", wf.Description)
+	}
+	if wf.Steps[1].ExitCondition != "Updated exit condition" {
+		t.Errorf("expected updated exit condition, got %q", wf.Steps[1].ExitCondition)
+	}
+	if wf.Steps[1].Steps[0].Prompt != "Updated execute prompt" {
+		t.Errorf("expected updated inner prompt, got %q", wf.Steps[1].Steps[0].Prompt)
+	}
+
+	// 4. Copy to user scope
+	copyJSON := `{"name":"ship-test","scope":"global","to":"user","new_name":"ship-user"}`
+	resp, err = copyTool.Run(context.Background(), fantasy.ToolCall{ID: "cp1", Name: "workflow_copy", Input: copyJSON})
+	if err != nil || resp.IsError {
+		t.Fatalf("copy failed: %+v %v", resp, err)
+	}
+
+	copiedDef, err := workflow.ResolveByName(env.Cwd, "ship-user", workflow.ScopeUser)
+	if err != nil {
+		t.Fatalf("failed to resolve copied user workflow: %v", err)
+	}
+	if copiedDef.Description != "Updated description" {
+		t.Errorf("expected description preserved on copy, got %q", copiedDef.Description)
+	}
+	if len(copiedDef.Steps) != 2 || copiedDef.Steps[1].ExitCondition != "Updated exit condition" {
+		t.Errorf("expected exit condition preserved on copy: %+v", copiedDef.Steps)
+	}
+	if len(copiedDef.Steps[1].Steps) != 1 || copiedDef.Steps[1].Steps[0].Prompt != "Updated execute prompt" {
+		t.Errorf("expected inner prompt preserved on copy: %+v", copiedDef.Steps[1].Steps)
+	}
+}
