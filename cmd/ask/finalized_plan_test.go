@@ -286,6 +286,7 @@ func TestFinalizedPlan_DrainPendingReplies(t *testing.T) {
 }
 
 func TestFinalizedPlan_WorkflowSelectionToolNoCmd(t *testing.T) {
+	isolateHome(t)
 	m := newTestModel(t, newFakeProvider())
 	m.finalizedPlan = "plan content"
 	m.finalizedPlanExplanation = "expl"

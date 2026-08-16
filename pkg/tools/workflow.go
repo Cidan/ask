@@ -222,23 +222,25 @@ func WorkflowListCore(cwd string, in WorkflowListInput) (*mcp.CallToolResult, Wo
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("listed %d workflows", len(out.Workflows))}}}, out, nil
 }
 
-func WorkflowGetCore(cwd string, in WorkflowGetInput) (*mcp.CallToolResult, WorkflowGetOutput, error) {
-	w, err := workflow.ResolveByName(cwd, in.Name, workflow.Scope(in.Scope))
-	if err != nil {
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}, IsError: true}, WorkflowGetOutput{}, nil
+func stepViewsToSteps(views []WorkflowStepView) []workflow.Step {
+	if views == nil {
+		return nil
 	}
-	steps := make([]WorkflowStepView, 0, len(w.Steps))
-	for _, s := range w.Steps {
-		inner := make([]WorkflowInnerStepView, 0, len(s.Steps))
-		for _, is := range s.Steps {
-			inner = append(inner, WorkflowInnerStepView{
-				Name:     is.Name,
-				Provider: is.Provider,
-				Model:    is.Model,
-				Prompt:   is.Prompt,
-			})
+	steps := make([]workflow.Step, 0, len(views))
+	for _, s := range views {
+		var inner []workflow.Step
+		if s.Steps != nil {
+			inner = make([]workflow.Step, 0, len(s.Steps))
+			for _, is := range s.Steps {
+				inner = append(inner, workflow.Step{
+					Name:     is.Name,
+					Provider: is.Provider,
+					Model:    is.Model,
+					Prompt:   is.Prompt,
+				})
+			}
 		}
-		steps = append(steps, WorkflowStepView{
+		steps = append(steps, workflow.Step{
 			Name:          s.Name,
 			Kind:          s.Kind,
 			Provider:      s.Provider,
@@ -246,14 +248,59 @@ func WorkflowGetCore(cwd string, in WorkflowGetInput) (*mcp.CallToolResult, Work
 			Prompt:        s.Prompt,
 			Steps:         inner,
 			MaxIterations: s.MaxIterations,
+			ExitCondition: s.ExitCondition,
 		})
 	}
-	view := WorkflowDefView{
-		Name:        w.Name,
-		Scope:       string(w.Scope),
-		Description: w.Description,
-		Steps:       steps,
+	return steps
+}
+
+func stepsToStepViews(steps []workflow.Step) []WorkflowStepView {
+	if steps == nil {
+		return make([]WorkflowStepView, 0)
 	}
+	views := make([]WorkflowStepView, 0, len(steps))
+	for _, s := range steps {
+		var inner []WorkflowInnerStepView
+		if s.Steps != nil {
+			inner = make([]WorkflowInnerStepView, 0, len(s.Steps))
+			for _, is := range s.Steps {
+				inner = append(inner, WorkflowInnerStepView{
+					Name:     is.Name,
+					Provider: is.Provider,
+					Model:    is.Model,
+					Prompt:   is.Prompt,
+				})
+			}
+		}
+		views = append(views, WorkflowStepView{
+			Name:          s.Name,
+			Kind:          s.Kind,
+			Provider:      s.Provider,
+			Model:         s.Model,
+			Prompt:        s.Prompt,
+			Steps:         inner,
+			MaxIterations: s.MaxIterations,
+			ExitCondition: s.ExitCondition,
+		})
+	}
+	return views
+}
+
+func defToDefView(d workflow.Def) WorkflowDefView {
+	return WorkflowDefView{
+		Name:        d.Name,
+		Scope:       string(d.Scope),
+		Description: d.Description,
+		Steps:       stepsToStepViews(d.Steps),
+	}
+}
+
+func WorkflowGetCore(cwd string, in WorkflowGetInput) (*mcp.CallToolResult, WorkflowGetOutput, error) {
+	w, err := workflow.ResolveByName(cwd, in.Name, workflow.Scope(in.Scope))
+	if err != nil {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}, IsError: true}, WorkflowGetOutput{}, nil
+	}
+	view := defToDefView(w)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("found workflow %s", w.Name)}}}, WorkflowGetOutput{Workflow: view}, nil
 }
 
@@ -266,27 +313,7 @@ func WorkflowCreateCore(cwd string, in WorkflowCreateInput) (*mcp.CallToolResult
 	if err != nil {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}, IsError: true}, WorkflowCreateOutput{}, nil
 	}
-	steps := make([]workflow.Step, 0, len(in.Steps))
-	for _, s := range in.Steps {
-		inner := make([]workflow.Step, 0, len(s.Steps))
-		for _, is := range s.Steps {
-			inner = append(inner, workflow.Step{
-				Name:     is.Name,
-				Provider: is.Provider,
-				Model:    is.Model,
-				Prompt:   is.Prompt,
-			})
-		}
-		steps = append(steps, workflow.Step{
-			Name:          s.Name,
-			Kind:          s.Kind,
-			Provider:      s.Provider,
-			Model:         s.Model,
-			Prompt:        s.Prompt,
-			Steps:         inner,
-			MaxIterations: s.MaxIterations,
-		})
-	}
+	steps := stepViewsToSteps(in.Steps)
 	d := workflow.Def{
 		Name:        name,
 		Scope:       scope,
@@ -304,12 +331,7 @@ func WorkflowCreateCore(cwd string, in WorkflowCreateInput) (*mcp.CallToolResult
 	if err != nil {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}, IsError: true}, WorkflowCreateOutput{}, nil
 	}
-	view := WorkflowDefView{
-		Name:        d.Name,
-		Scope:       string(d.Scope),
-		Description: d.Description,
-		Steps:       in.Steps,
-	}
+	view := defToDefView(d)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("created workflow %s in %s scope", name, scope)}}}, WorkflowCreateOutput{Workflow: view}, nil
 }
 
@@ -342,28 +364,7 @@ func WorkflowEditCore(cwd string, in WorkflowEditInput) (*mcp.CallToolResult, Wo
 			d.Description = *in.Description
 		}
 		if in.Steps != nil {
-			steps := make([]workflow.Step, 0, len(*in.Steps))
-			for _, s := range *in.Steps {
-				inner := make([]workflow.Step, 0, len(s.Steps))
-				for _, is := range s.Steps {
-					inner = append(inner, workflow.Step{
-						Name:     is.Name,
-						Provider: is.Provider,
-						Model:    is.Model,
-						Prompt:   is.Prompt,
-					})
-				}
-				steps = append(steps, workflow.Step{
-					Name:          s.Name,
-					Kind:          s.Kind,
-					Provider:      s.Provider,
-					Model:         s.Model,
-					Prompt:        s.Prompt,
-					Steps:         inner,
-					MaxIterations: s.MaxIterations,
-				})
-			}
-			d.Steps = steps
+			d.Steps = stepViewsToSteps(*in.Steps)
 		}
 		items[foundIdx] = d
 		updatedDef = d
@@ -372,11 +373,7 @@ func WorkflowEditCore(cwd string, in WorkflowEditInput) (*mcp.CallToolResult, Wo
 	if err != nil {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}, IsError: true}, WorkflowEditOutput{}, nil
 	}
-	view := WorkflowDefView{
-		Name:        updatedDef.Name,
-		Scope:       string(updatedDef.Scope),
-		Description: updatedDef.Description,
-	}
+	view := defToDefView(updatedDef)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("updated workflow %s", updatedDef.Name)}}}, WorkflowEditOutput{Workflow: view}, nil
 }
 
@@ -436,7 +433,7 @@ func WorkflowCopyCore(cwd string, in WorkflowCopyInput) (*mcp.CallToolResult, Wo
 	if err != nil {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}, IsError: true}, WorkflowCopyOutput{}, nil
 	}
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("copied workflow %s to %s scope as %s", in.Name, dstScope, dstName)}}}, WorkflowCopyOutput{Workflow: WorkflowDefView{Name: dstName, Scope: string(dstScope)}}, nil
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("copied workflow %s to %s scope as %s", in.Name, dstScope, dstName)}}}, WorkflowCopyOutput{Workflow: defToDefView(copied)}, nil
 }
 
 func ClearPlansCore(cwd string, in ClearPlansInput) (*mcp.CallToolResult, ClearPlansOutput, error) {
