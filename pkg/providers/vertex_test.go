@@ -1,12 +1,11 @@
 package providers
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"charm.land/fantasy"
-	"charm.land/fantasy/providers/google"
 	"github.com/Cidan/ask/pkg/config"
 )
 
@@ -86,26 +85,37 @@ func TestVertexSpec_Properties(t *testing.T) {
 	}
 }
 
-func TestVertex_ThoughtSignaturePreservation(t *testing.T) {
-	meta := &google.ReasoningMetadata{
-		Signature: "vertex-signature-12345",
-		ToolID:    "call-vtx-1",
+func TestVertexProviderOptions(t *testing.T) {
+	cfg, temp := VertexProviderOptions("gemini-2.5-pro", "high")
+	if cfg == nil || cfg.ThinkingConfig == nil {
+		t.Fatal("expected thinking config for high effort")
+	}
+	if !cfg.ThinkingConfig.IncludeThoughts {
+		t.Error("expected IncludeThoughts to be true")
+	}
+	if temp != nil {
+		t.Errorf("expected nil temp, got %v", temp)
 	}
 
-	part := fantasy.ReasoningPart{
-		Text: "Analyzing code for Vertex AI step...",
-		ProviderOptions: fantasy.ProviderOptions{
-			google.Name: meta,
-		},
-	}
-
-	if part.ProviderOptions[google.Name] == nil {
-		t.Fatal("expected google provider options to be set on reasoning part")
-	}
-
-	rm, ok := part.ProviderOptions[google.Name].(*google.ReasoningMetadata)
-	if !ok || rm.Signature != "vertex-signature-12345" || rm.ToolID != "call-vtx-1" {
-		t.Fatalf("reasoning metadata signature mismatch: got %+v", rm)
+	cfgOff, _ := VertexProviderOptions("gemini-2.5-pro", "off")
+	if cfgOff != nil {
+		t.Errorf("expected nil config for off effort, got %+v", cfgOff)
 	}
 }
 
+func TestListVertexModels_Swapped(t *testing.T) {
+	prev := ListVertexModels
+	defer func() { ListVertexModels = prev }()
+
+	ListVertexModels = func(ctx context.Context, vc config.VertexConfig) ([]string, error) {
+		return []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-3.1-pro-preview"}, nil
+	}
+
+	models, err := ListVertexModels(context.Background(), config.VertexConfig{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(models) != 3 || models[0] != "gemini-2.5-pro" {
+		t.Errorf("unexpected models returned: %v", models)
+	}
+}

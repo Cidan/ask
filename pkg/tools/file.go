@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/workflow"
 )
 
@@ -22,39 +21,39 @@ type ReadParams struct {
 }
 
 // ReadTool returns the native read tool.
-func ReadTool(env *ToolEnv) fantasy.AgentTool {
-	return fantasy.NewAgentTool(
+func ReadTool(env *ToolEnv) Tool {
+	return NewTool(
 		"read",
 		ReadToolDescription,
-		func(ctx context.Context, p ReadParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, p ReadParams) (ToolResponse, error) {
 			path := env.AbsPath(p.FilePath)
 			info, err := os.Stat(path)
 			if err != nil {
 				if os.IsNotExist(err) {
-					return fantasy.NewTextErrorResponse("file not found: " + path), nil
+					return NewTextErrorResponse("file not found: " + path), nil
 				}
-				return fantasy.NewTextErrorResponse("stat " + path + ": " + err.Error()), nil
+				return NewTextErrorResponse("stat " + path + ": " + err.Error()), nil
 			}
 			if info.IsDir() {
-				return fantasy.NewTextErrorResponse(path + " is a directory; use the ls tool instead"), nil
+				return NewTextErrorResponse(path + " is a directory; use the ls tool instead"), nil
 			}
 			if ImageExts[strings.ToLower(filepath.Ext(path))] {
-				return fantasy.NewTextErrorResponse("image files are not supported: the deepseek models cannot accept image input"), nil
+				return NewTextErrorResponse("image files are not supported for raw text reading"), nil
 			}
 
 			f, err := os.Open(path)
 			if err != nil {
-				return fantasy.NewTextErrorResponse("open " + path + ": " + err.Error()), nil
+				return NewTextErrorResponse("open " + path + ": " + err.Error()), nil
 			}
 			defer f.Close()
 
 			head := make([]byte, 8192)
 			n, _ := f.Read(head)
 			if LooksBinary(head[:n]) {
-				return fantasy.NewTextErrorResponse(path + " looks like a binary file; reading it would not be useful"), nil
+				return NewTextErrorResponse(path + " looks like a binary file; reading it would not be useful"), nil
 			}
 			if _, err := f.Seek(0, 0); err != nil {
-				return fantasy.NewTextErrorResponse("seek " + path + ": " + err.Error()), nil
+				return NewTextErrorResponse("seek " + path + ": " + err.Error()), nil
 			}
 
 			offset := max(p.Offset, 1)
@@ -87,7 +86,7 @@ func ReadTool(env *ToolEnv) fantasy.AgentTool {
 				}
 			}
 			if err := sc.Err(); err != nil {
-				return fantasy.NewTextErrorResponse("read " + path + ": " + err.Error()), nil
+				return NewTextErrorResponse("read " + path + ": " + err.Error()), nil
 			}
 
 			if env.Files != nil {
@@ -95,9 +94,9 @@ func ReadTool(env *ToolEnv) fantasy.AgentTool {
 			}
 			if emitted == 0 {
 				if offset > 1 {
-					return fantasy.NewTextResponse(fmt.Sprintf("(no lines at offset %d; file has %d lines)", offset, lineNo)), nil
+					return NewTextResponse(fmt.Sprintf("(no lines at offset %d; file has %d lines)", offset, lineNo)), nil
 				}
-				return fantasy.NewTextResponse("(empty file)"), nil
+				return NewTextResponse("(empty file)"), nil
 			}
 			body := out.String()
 			switch {
@@ -106,7 +105,7 @@ func ReadTool(env *ToolEnv) fantasy.AgentTool {
 			case moreLines:
 				body += fmt.Sprintf("(file has more lines; continue with offset %d)\n", offset+emitted)
 			}
-			return fantasy.NewTextResponse(body), nil
+			return NewTextResponse(body), nil
 		},
 	)
 }
@@ -120,37 +119,37 @@ type WriteParams struct {
 }
 
 // WriteTool returns the native write tool.
-func WriteTool(env *ToolEnv) fantasy.AgentTool {
-	return fantasy.NewAgentTool(
+func WriteTool(env *ToolEnv) Tool {
+	return NewTool(
 		"write",
 		WriteToolDescription,
-		func(ctx context.Context, p WriteParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, p WriteParams) (ToolResponse, error) {
 			if strings.TrimSpace(p.FilePath) == "" {
-				return fantasy.NewTextErrorResponse("file_path is required"), nil
+				return NewTextErrorResponse("file_path is required"), nil
 			}
 			path := env.AbsPath(p.FilePath)
 			if !workflow.IsPathUnderWorkflowPlans(env.Cwd, path) {
 				if notice := env.RequireTodosNotice(); notice != "" {
-					return fantasy.NewTextResponse(notice), nil
+					return NewTextResponse(notice), nil
 				}
 			}
 			oldContent := ""
 			mode := os.FileMode(0o644)
 			if info, err := os.Stat(path); err == nil {
 				if info.IsDir() {
-					return fantasy.NewTextErrorResponse(path + " is a directory"), nil
+					return NewTextErrorResponse(path + " is a directory"), nil
 				}
 				if guard := env.CheckReadBeforeMutate(path, info.ModTime()); guard != "" {
-					return fantasy.NewTextErrorResponse(guard), nil
+					return NewTextErrorResponse(guard), nil
 				}
 				mode = info.Mode().Perm()
 				data, err := os.ReadFile(path)
 				if err != nil {
-					return fantasy.NewTextErrorResponse("read " + path + ": " + err.Error()), nil
+					return NewTextErrorResponse("read " + path + ": " + err.Error()), nil
 				}
 				oldContent = string(data)
 				if oldContent == p.Content {
-					return fantasy.NewTextResponse("no change: " + path + " already has that exact content"), nil
+					return NewTextResponse("no change: " + path + " already has that exact content"), nil
 				}
 			}
 
@@ -163,19 +162,19 @@ func WriteTool(env *ToolEnv) fantasy.AgentTool {
 			}
 
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				return fantasy.NewTextErrorResponse("mkdir " + filepath.Dir(path) + ": " + err.Error()), nil
+				return NewTextErrorResponse("mkdir " + filepath.Dir(path) + ": " + err.Error()), nil
 			}
 			if err := os.WriteFile(path, []byte(p.Content), mode); err != nil {
-				return fantasy.NewTextErrorResponse("write " + path + ": " + err.Error()), nil
+				return NewTextErrorResponse("write " + path + ": " + err.Error()), nil
 			}
 			if env.Files != nil {
 				env.Files.RecordRead(path)
 			}
 			env.EmitFileDiff(path, oldContent, p.Content)
 			if oldContent == "" {
-				return fantasy.NewTextResponse("created " + path), nil
+				return NewTextResponse("created " + path), nil
 			}
-			return fantasy.NewTextResponse("updated " + path), nil
+			return NewTextResponse("updated " + path), nil
 		},
 	)
 }
@@ -191,27 +190,27 @@ type EditParams struct {
 }
 
 // EditTool returns the native edit tool.
-func EditTool(env *ToolEnv) fantasy.AgentTool {
-	return fantasy.NewAgentTool(
+func EditTool(env *ToolEnv) Tool {
+	return NewTool(
 		"edit",
 		EditToolDescription,
-		func(ctx context.Context, p EditParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, p EditParams) (ToolResponse, error) {
 			if strings.TrimSpace(p.FilePath) == "" {
-				return fantasy.NewTextErrorResponse("file_path is required"), nil
+				return NewTextErrorResponse("file_path is required"), nil
 			}
 			if p.OldString == p.NewString {
-				return fantasy.NewTextErrorResponse("old_string and new_string are identical — nothing to do"), nil
+				return NewTextErrorResponse("old_string and new_string are identical — nothing to do"), nil
 			}
 			path := env.AbsPath(p.FilePath)
 			if !workflow.IsPathUnderWorkflowPlans(env.Cwd, path) {
 				if notice := env.RequireTodosNotice(); notice != "" {
-					return fantasy.NewTextResponse(notice), nil
+					return NewTextResponse(notice), nil
 				}
 			}
 
 			if p.OldString == "" {
 				if _, err := os.Stat(path); err == nil {
-					return fantasy.NewTextErrorResponse(path + " already exists; read it and edit with a non-empty old_string, or use write to overwrite"), nil
+					return NewTextErrorResponse(path + " already exists; read it and edit with a non-empty old_string, or use write to overwrite"), nil
 				}
 				if denied := env.RequestApproval(ctx, "edit", map[string]any{
 					"file_path":   path,
@@ -222,35 +221,35 @@ func EditTool(env *ToolEnv) fantasy.AgentTool {
 					return *denied, nil
 				}
 				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-					return fantasy.NewTextErrorResponse("mkdir " + filepath.Dir(path) + ": " + err.Error()), nil
+					return NewTextErrorResponse("mkdir " + filepath.Dir(path) + ": " + err.Error()), nil
 				}
 				if err := os.WriteFile(path, []byte(p.NewString), 0o644); err != nil {
-					return fantasy.NewTextErrorResponse("write " + path + ": " + err.Error()), nil
+					return NewTextErrorResponse("write " + path + ": " + err.Error()), nil
 				}
 				if env.Files != nil {
 					env.Files.RecordRead(path)
 				}
 				env.EmitFileDiff(path, "", p.NewString)
-				return fantasy.NewTextResponse("created " + path), nil
+				return NewTextResponse("created " + path), nil
 			}
 
 			info, err := os.Stat(path)
 			if err != nil {
 				if os.IsNotExist(err) {
-					return fantasy.NewTextErrorResponse("file not found: " + path), nil
+					return NewTextErrorResponse("file not found: " + path), nil
 				}
-				return fantasy.NewTextErrorResponse("stat " + path + ": " + err.Error()), nil
+				return NewTextErrorResponse("stat " + path + ": " + err.Error()), nil
 			}
 			if info.IsDir() {
-				return fantasy.NewTextErrorResponse(path + " is a directory"), nil
+				return NewTextErrorResponse(path + " is a directory"), nil
 			}
 			if guard := env.CheckReadBeforeMutate(path, info.ModTime()); guard != "" {
-				return fantasy.NewTextErrorResponse(guard), nil
+				return NewTextErrorResponse(guard), nil
 			}
 
 			data, err := os.ReadFile(path)
 			if err != nil {
-				return fantasy.NewTextErrorResponse("read " + path + ": " + err.Error()), nil
+				return NewTextErrorResponse("read " + path + ": " + err.Error()), nil
 			}
 			content := string(data)
 
@@ -266,9 +265,9 @@ func EditTool(env *ToolEnv) fantasy.AgentTool {
 			count := strings.Count(work, oldStr)
 			switch {
 			case count == 0:
-				return fantasy.NewTextErrorResponse("old_string not found in " + path + ". Make sure it matches the file content exactly, including whitespace and indentation. Re-read the file if it may have changed."), nil
+				return NewTextErrorResponse("old_string not found in " + path + ". Make sure it matches the file content exactly, including whitespace and indentation. Re-read the file if it may have changed."), nil
 			case count > 1 && !p.ReplaceAll:
-				return fantasy.NewTextErrorResponse(fmt.Sprintf("old_string appears %d times in %s. Provide more surrounding context to make it unique, or set replace_all to true.", count, path)), nil
+				return NewTextErrorResponse(fmt.Sprintf("old_string appears %d times in %s. Provide more surrounding context to make it unique, or set replace_all to true.", count, path)), nil
 			}
 
 			if denied := env.RequestApproval(ctx, "edit", map[string]any{
@@ -292,16 +291,16 @@ func EditTool(env *ToolEnv) fantasy.AgentTool {
 				work = strings.ReplaceAll(work, "\n", "\r\n")
 			}
 			if err := os.WriteFile(path, []byte(work), info.Mode().Perm()); err != nil {
-				return fantasy.NewTextErrorResponse("write " + path + ": " + err.Error()), nil
+				return NewTextErrorResponse("write " + path + ": " + err.Error()), nil
 			}
 			if env.Files != nil {
 				env.Files.RecordRead(path)
 			}
 			env.EmitFileDiff(path, content, work)
 			if replaced == 1 {
-				return fantasy.NewTextResponse("edited " + path), nil
+				return NewTextResponse("edited " + path), nil
 			}
-			return fantasy.NewTextResponse(fmt.Sprintf("edited %s: %d replacements", path, replaced)), nil
+			return NewTextResponse(fmt.Sprintf("edited %s: %d replacements", path, replaced)), nil
 		},
 	)
 }

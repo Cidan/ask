@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/workflow"
 )
@@ -129,7 +128,7 @@ func TestTodosWorkflowGuard_DisarmedByCheck(t *testing.T) {
 	var events []engine.EngineEvent
 	env := NewToolEnv(cwd, 1, true, true, func(ev engine.EngineEvent) { events = append(events, ev) }, nil)
 	wfTools := WorkflowTools(env)
-	var listTool fantasy.AgentTool
+	var listTool Tool
 	for _, wt := range wfTools {
 		if wt.Info().Name == "workflow_list" {
 			listTool = wt

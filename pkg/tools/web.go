@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/config"
 	"golang.org/x/net/html"
 )
@@ -41,18 +40,18 @@ type FetchParams struct {
 var FetchClient = &http.Client{}
 
 // FetchTool returns the native fetch tool.
-func FetchTool(env *ToolEnv) fantasy.AgentTool {
-	return fantasy.NewParallelAgentTool(
+func FetchTool(env *ToolEnv) Tool {
+	return NewTool(
 		"fetch",
 		FetchToolDescription,
-		func(ctx context.Context, p FetchParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, p FetchParams) (ToolResponse, error) {
 			raw := strings.TrimSpace(p.URL)
 			if raw == "" {
-				return fantasy.NewTextErrorResponse("url is required"), nil
+				return NewTextErrorResponse("url is required"), nil
 			}
 			u, err := url.Parse(raw)
 			if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-				return fantasy.NewTextErrorResponse("only http and https URLs are supported: " + raw), nil
+				return NewTextErrorResponse("only http and https URLs are supported: " + raw), nil
 			}
 			if denied := env.RequestApproval(ctx, "fetch", map[string]any{"url": raw, "description": p.Description}); denied != nil {
 				return *denied, nil
@@ -66,18 +65,18 @@ func FetchTool(env *ToolEnv) fantasy.AgentTool {
 			defer cancel()
 			req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, raw, nil)
 			if err != nil {
-				return fantasy.NewTextErrorResponse("bad request: " + err.Error()), nil
+				return NewTextErrorResponse("bad request: " + err.Error()), nil
 			}
 			req.Header.Set("User-Agent", "ask-agent/1.0")
 			resp, err := FetchClient.Do(req)
 			if err != nil {
-				return fantasy.NewTextErrorResponse("fetch failed: " + err.Error()), nil
+				return NewTextErrorResponse("fetch failed: " + err.Error()), nil
 			}
 			defer resp.Body.Close()
 
 			body, err := io.ReadAll(io.LimitReader(resp.Body, FetchMaxBytes+1))
 			if err != nil {
-				return fantasy.NewTextErrorResponse("read body: " + err.Error()), nil
+				return NewTextErrorResponse("read body: " + err.Error()), nil
 			}
 			truncated := len(body) > FetchMaxBytes
 			if truncated {
@@ -90,7 +89,7 @@ func FetchTool(env *ToolEnv) fantasy.AgentTool {
 				text = HTMLToText(text)
 			}
 			if LooksBinary([]byte(text[:min(len(text), 8192)])) {
-				return fantasy.NewTextErrorResponse(fmt.Sprintf(
+				return NewTextErrorResponse(fmt.Sprintf(
 					"%s returned binary content (%s) — not useful as text", raw, contentType)), nil
 			}
 
@@ -101,9 +100,9 @@ func FetchTool(env *ToolEnv) fantasy.AgentTool {
 				fmt.Fprintf(&out, "\n(body capped at %d bytes)", FetchMaxBytes)
 			}
 			if resp.StatusCode >= 400 {
-				return fantasy.NewTextErrorResponse(out.String()), nil
+				return NewTextErrorResponse(out.String()), nil
 			}
-			return fantasy.NewTextResponse(out.String()), nil
+			return NewTextResponse(out.String()), nil
 		},
 	)
 }
@@ -229,19 +228,19 @@ func BraveSearch(ctx context.Context, apiKey, query string, count int) ([]BraveR
 }
 
 // WebSearchTool returns the Brave-backed web_search tool.
-func WebSearchTool(env *ToolEnv) fantasy.AgentTool {
-	return fantasy.NewParallelAgentTool(
+func WebSearchTool(env *ToolEnv) Tool {
+	return NewTool(
 		"web_search",
 		WebSearchToolDescription,
-		func(ctx context.Context, p WebSearchParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, p WebSearchParams) (ToolResponse, error) {
 			query := strings.TrimSpace(p.Query)
 			if query == "" {
-				return fantasy.NewTextErrorResponse("query is required"), nil
+				return NewTextErrorResponse("query is required"), nil
 			}
 			cfg, _ := config.Load()
 			apiKey := config.ResolveBraveAPIKey(cfg.WebSearch)
 			if apiKey == "" {
-				return fantasy.NewTextResponse(WebSearchNoKeyNotice), nil
+				return NewTextResponse(WebSearchNoKeyNotice), nil
 			}
 			if denied := env.RequestApproval(ctx, "WebSearch", map[string]any{"query": query, "description": p.Description}); denied != nil {
 				return *denied, nil
@@ -255,10 +254,10 @@ func WebSearchTool(env *ToolEnv) fantasy.AgentTool {
 			defer cancel()
 			results, err := BraveSearch(reqCtx, apiKey, query, count)
 			if err != nil {
-				return fantasy.NewTextErrorResponse("web search failed: " + err.Error()), nil
+				return NewTextErrorResponse("web search failed: " + err.Error()), nil
 			}
 			if len(results) == 0 {
-				return fantasy.NewTextResponse(fmt.Sprintf("no results found for %q", query)), nil
+				return NewTextResponse(fmt.Sprintf("no results found for %q", query)), nil
 			}
 
 			var out strings.Builder
@@ -268,7 +267,7 @@ func WebSearchTool(env *ToolEnv) fantasy.AgentTool {
 				}
 				fmt.Fprintf(&out, "%d. %s\n   %s\n   %s", i+1, r.Title, r.URL, r.Description)
 			}
-			return fantasy.NewTextResponse(out.String()), nil
+			return NewTextResponse(out.String()), nil
 		},
 	)
 }

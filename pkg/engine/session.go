@@ -3,10 +3,11 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 
-	"charm.land/fantasy"
+	"google.golang.org/genai"
 )
 
 type SessionArgs struct {
@@ -22,17 +23,17 @@ type SessionArgs struct {
 
 type Turn struct {
 	Text  string
-	Files []fantasy.FilePart
+	Files []FilePart
 }
 
 type Session struct {
 	args          SessionArgs
-	model         fantasy.LanguageModel
+	client        *genai.Client
 	system        string
 	contextWindow int64
 	modelID       string
-	tools         []fantasy.AgentTool
-	messages      []fantasy.Message
+	tools         []Tool
+	messages      []Message
 	sendCh        chan Turn
 	closed        chan struct{}
 	closeOnce     sync.Once
@@ -43,15 +44,15 @@ type Session struct {
 	sessionID     string
 }
 
-func NewSession(args SessionArgs, model fantasy.LanguageModel, system string, tools []fantasy.AgentTool, listener EventListener, interaction InteractionHandler) *Session {
+func NewSession(args SessionArgs, client *genai.Client, system string, tools []Tool, listener EventListener, interaction InteractionHandler) *Session {
 	if interaction == nil {
 		interaction = HeadlessInteractionHandler{AutoApproveTools: true}
 	}
 	s := &Session{
 		args:          args,
-		model:         model,
+		client:        client,
 		system:        system,
-		contextWindow: 200_000,
+		contextWindow: 1_048_576,
 		modelID:       args.Model,
 		tools:         tools,
 		sendCh:        make(chan Turn, 8),
@@ -96,7 +97,7 @@ func (s *Session) Close() {
 	})
 }
 
-func (s *Session) QueueTurn(text string, files ...[]fantasy.FilePart) error {
+func (s *Session) QueueTurn(text string, files ...[]FilePart) error {
 	turn := Turn{Text: text}
 	for _, f := range files {
 		turn.Files = append(turn.Files, f...)
@@ -154,116 +155,178 @@ func (s *Session) runTurn(turn Turn) {
 		Status:    "thinking…",
 	})
 
-	var textBuf strings.Builder
-
-	agentOpts := []fantasy.AgentOption{
-		fantasy.WithSystemPrompt(s.system),
-		fantasy.WithTools(s.tools...),
+	var functionDecls []*genai.FunctionDeclaration
+	toolMap := make(map[string]Tool, len(s.tools))
+	for _, t := range s.tools {
+		toolMap[t.Info().Name] = t
+		if decl := t.Declaration(); decl != nil {
+			functionDecls = append(functionDecls, decl)
+		}
 	}
-	agent := fantasy.NewAgent(s.model, agentOpts...)
 
-	history := append([]fantasy.Message(nil), s.messages...)
-	result, err := agent.Stream(ctx, fantasy.AgentStreamCall{
-		Prompt:   turn.Text,
-		Files:    turn.Files,
-		Messages: history,
-		OnTextDelta: func(_, text string) error {
-			textBuf.WriteString(text)
-			s.Emit(TextDeltaEvent{
-				BaseEvent: BaseEvent{TabID: s.args.TabID},
-				Delta:     text,
-			})
-			return nil
-		},
-		OnTextEnd: func(string) error {
-			if t := strings.TrimSpace(textBuf.String()); t != "" {
-				s.Emit(AssistantTextEvent{
-					BaseEvent: BaseEvent{TabID: s.args.TabID},
-					Text:      t,
+	genaiConfig := &genai.GenerateContentConfig{
+		SystemInstruction: genai.NewContentFromText(s.system, genai.RoleUser),
+	}
+	if len(functionDecls) > 0 {
+		genaiConfig.Tools = []*genai.Tool{
+			{FunctionDeclarations: functionDecls},
+		}
+	}
+
+	var contents []*genai.Content
+	for _, msg := range s.messages {
+		contents = append(contents, msg.ToGenAIContent())
+	}
+
+	userMsg := NewUserMessage(turn.Text, turn.Files...)
+	s.messages = append(s.messages, userMsg)
+	contents = append(contents, userMsg.ToGenAIContent())
+
+	const maxTurns = 50
+	var finalResponseText strings.Builder
+
+	for turnIdx := 0; turnIdx < maxTurns; turnIdx++ {
+		stream := GenerateStream(ctx, s.client, s.modelID, contents, genaiConfig)
+
+		var turnTextBuf strings.Builder
+		var turnThoughts []ThoughtPart
+		var turnToolCalls []ToolCallPart
+		var streamErr error
+
+		for chunk, err := range stream {
+			if err != nil {
+				streamErr = err
+				break
+			}
+			if chunk == nil {
+				continue
+			}
+
+			if chunk.UsageMetadata != nil {
+				s.Emit(UsageEvent{
+					BaseEvent:    BaseEvent{TabID: s.args.TabID},
+					InputTokens:  int(chunk.UsageMetadata.PromptTokenCount),
+					OutputTokens: int(chunk.UsageMetadata.CandidatesTokenCount),
+					TotalTokens:  int(chunk.UsageMetadata.TotalTokenCount),
 				})
 			}
-			textBuf.Reset()
-			return nil
-		},
-		OnToolCall: func(tc fantasy.ToolCallContent) error {
-			s.Emit(ToolCallEvent{
+
+			for _, candidate := range chunk.Candidates {
+				if candidate.Content == nil {
+					continue
+				}
+				for _, part := range candidate.Content.Parts {
+					if part.Thought {
+						turnThoughts = append(turnThoughts, ThoughtPart{
+							Text:      part.Text,
+							Signature: part.ThoughtSignature,
+						})
+					} else if part.Text != "" {
+						turnTextBuf.WriteString(part.Text)
+						s.Emit(TextDeltaEvent{
+							BaseEvent: BaseEvent{TabID: s.args.TabID},
+							Delta:     part.Text,
+						})
+					}
+					if part.FunctionCall != nil {
+						turnToolCalls = append(turnToolCalls, ToolCallPart{
+							Name: part.FunctionCall.Name,
+							Args: part.FunctionCall.Args,
+						})
+						s.Emit(ToolCallEvent{
+							BaseEvent: BaseEvent{TabID: s.args.TabID},
+							ToolName:  part.FunctionCall.Name,
+							Input:     part.FunctionCall.Args,
+						})
+					}
+				}
+			}
+		}
+
+		if streamErr != nil {
+			s.Emit(DoneEvent{
 				BaseEvent: BaseEvent{TabID: s.args.TabID},
-				ToolUseID: tc.ToolCallID,
-				ToolName:  tc.ToolName,
+				Result: ResultSummary{
+					SessionID: s.sessionID,
+					IsError:   true,
+					Result:    streamErr.Error(),
+				},
+				Error: streamErr,
 			})
-			return nil
-		},
-		OnToolResult: func(tr fantasy.ToolResultContent) error {
+			s.Emit(TurnCompleteEvent{BaseEvent: BaseEvent{TabID: s.args.TabID}})
+			return
+		}
+
+		rawText := turnTextBuf.String()
+		if rawText != "" {
+			if finalResponseText.Len() > 0 {
+				finalResponseText.WriteString("\n")
+			}
+			finalResponseText.WriteString(rawText)
+			s.Emit(AssistantTextEvent{
+				BaseEvent: BaseEvent{TabID: s.args.TabID},
+				Text:      rawText,
+			})
+		}
+
+		assistantMsg := NewAssistantMessage(rawText, turnThoughts, turnToolCalls)
+		s.messages = append(s.messages, assistantMsg)
+		contents = append(contents, assistantMsg.ToGenAIContent())
+
+		if len(turnToolCalls) == 0 {
+			break
+		}
+
+		var toolResultParts []ToolResultPart
+		var stopTurnRequested bool
+
+		for _, tc := range turnToolCalls {
+			tool, ok := toolMap[tc.Name]
+			var resp ToolResponse
+			var runErr error
+			if !ok {
+				resp = NewTextErrorResponse(fmt.Sprintf("unknown tool %s", tc.Name))
+			} else {
+				resp, runErr = tool.Run(ctx, tc.Args)
+				if runErr != nil {
+					resp = NewTextErrorResponse(fmt.Sprintf("tool %s error: %s", tc.Name, runErr.Error()))
+				}
+			}
+
 			s.Emit(ToolResultEvent{
 				BaseEvent: BaseEvent{TabID: s.args.TabID},
-				ToolUseID: tr.ToolCallID,
-				Output:    ToolResultText(tr.Result),
-				IsError:   ToolResultIsError(tr.Result),
+				ToolName:  tc.Name,
+				Output:    resp.Content,
+				IsError:   resp.IsError,
 			})
-			return nil
-		},
-	})
 
-	if err != nil {
-		s.Emit(DoneEvent{
-			BaseEvent: BaseEvent{TabID: s.args.TabID},
-			Result: ResultSummary{
-				SessionID: s.sessionID,
-				IsError:   true,
-				Result:    err.Error(),
-			},
-			Error: err,
-		})
-		s.Emit(TurnCompleteEvent{BaseEvent: BaseEvent{TabID: s.args.TabID}})
-		return
+			toolResultParts = append(toolResultParts, ToolResultPart{
+				Name:    tc.Name,
+				Content: resp.Content,
+				IsError: resp.IsError,
+			})
+
+			if resp.StopTurn {
+				stopTurnRequested = true
+			}
+		}
+
+		toolMsg := NewToolResultMessage(toolResultParts...)
+		s.messages = append(s.messages, toolMsg)
+		contents = append(contents, toolMsg.ToGenAIContent())
+
+		if stopTurnRequested {
+			break
+		}
 	}
 
-	newMessages := []fantasy.Message{fantasy.NewUserMessage(turn.Text, turn.Files...)}
-	for _, step := range result.Steps {
-		newMessages = append(newMessages, step.Messages...)
-	}
-	s.messages = append(s.messages, newMessages...)
-
-	resultText := result.Response.Content.Text()
-
+	respText := finalResponseText.String()
 	s.Emit(DoneEvent{
 		BaseEvent: BaseEvent{TabID: s.args.TabID},
 		Result: ResultSummary{
 			SessionID: s.sessionID,
-			Result:    resultText,
+			Result:    respText,
 		},
 	})
 	s.Emit(TurnCompleteEvent{BaseEvent: BaseEvent{TabID: s.args.TabID}})
-}
-
-func ToolResultText(out fantasy.ToolResultOutputContent) string {
-	switch v := out.(type) {
-	case fantasy.ToolResultOutputContentText:
-		return v.Text
-	case *fantasy.ToolResultOutputContentText:
-		return v.Text
-	case fantasy.ToolResultOutputContentError:
-		if v.Error != nil {
-			return v.Error.Error()
-		}
-	case *fantasy.ToolResultOutputContentError:
-		if v.Error != nil {
-			return v.Error.Error()
-		}
-	case fantasy.ToolResultOutputContentMedia:
-		return "(media result: " + v.MediaType + ")"
-	case *fantasy.ToolResultOutputContentMedia:
-		return "(media result: " + v.MediaType + ")"
-	}
-	return ""
-}
-
-func ToolResultIsError(out fantasy.ToolResultOutputContent) bool {
-	switch out.(type) {
-	case fantasy.ToolResultOutputContentError:
-		return true
-	case *fantasy.ToolResultOutputContentError:
-		return true
-	}
-	return false
 }

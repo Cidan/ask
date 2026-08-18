@@ -8,9 +8,8 @@ import (
 	"strings"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"charm.land/fantasy"
-	"charm.land/fantasy/providers/google"
 	"github.com/Cidan/ask/pkg/config"
+	"google.golang.org/genai"
 )
 
 const (
@@ -26,7 +25,7 @@ const (
 
 var VertexEffortOptions = GlobalEffortOptions
 
-// FilterVertexModelOptions strips Claude / Anthropic ids from the Vertex catwalk list.
+// FilterVertexModelOptions strips Claude / Anthropic ids from the Vertex model list.
 func FilterVertexModelOptions(all []string) []string {
 	out := make([]string, 0, len(all))
 	for _, id := range all {
@@ -81,41 +80,74 @@ var VertexPrepareCredentials = func(vc config.VertexConfig) (string, error) {
 	return saKeyPath, nil
 }
 
-// VertexLanguageModel builds the fantasy LanguageModel for one session.
+// VertexNewClient constructs a genai.Client configured for Vertex AI.
 // Swappable in tests.
-var VertexLanguageModel = func(vc config.VertexConfig, modelID string) (fantasy.LanguageModel, error) {
+var VertexNewClient = func(ctx context.Context, vc config.VertexConfig) (*genai.Client, error) {
 	project := VertexResolveProject(vc)
 	if project == "" {
 		return nil, errors.New("vertex: project is required — set it in /config → Vertex AI, or via " + VertexEnvCloudProject)
 	}
 	location := VertexResolveLocation(vc)
-	opts := []google.Option{google.WithVertex(project, location)}
 
 	if _, err := VertexPrepareCredentials(vc); err != nil {
 		return nil, err
 	}
-	provider, err := google.New(opts...)
+	return genai.NewClient(ctx, &genai.ClientConfig{
+		Backend:  genai.BackendVertexAI,
+		Project:  project,
+		Location: location,
+	})
+}
+
+// ListVertexModels queries the Vertex AI / Gemini API dynamically for available models.
+var ListVertexModels = func(ctx context.Context, vc config.VertexConfig) ([]string, error) {
+	client, err := VertexNewClient(ctx, vc)
 	if err != nil {
 		return nil, err
 	}
-	return provider.LanguageModel(context.Background(), modelID)
+	var models []string
+	page, err := client.Models.List(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range page.Items {
+		name := m.Name
+		name = strings.TrimPrefix(name, "publishers/google/models/")
+		name = strings.TrimPrefix(name, "models/")
+		if strings.Contains(strings.ToLower(name), "claude") || strings.Contains(strings.ToLower(name), "anthropic") {
+			continue
+		}
+		if name != "" {
+			models = append(models, name)
+		}
+	}
+	return models, nil
 }
 
 // VertexProviderOptions translates ask's effort picker onto Gemini's thinking controls.
-func VertexProviderOptions(modelID, effort string) (fantasy.ProviderOptions, *float64) {
+func VertexProviderOptions(modelID, effort string) (*genai.GenerateContentConfig, *float64) {
 	if effort == "" || effort == "off" {
 		return nil, nil
 	}
 	resolved := CatalogResolveEffort(catwalk.InferenceProviderVertexAI, modelID, effort)
+	if resolved == "" {
+		resolved = effort
+	}
 	clamped := CatalogClampEffort(catwalk.InferenceProviderVertexAI, modelID, resolved)
+	if clamped == "" {
+		clamped = resolved
+	}
 	if clamped == "" || clamped == "off" {
 		return nil, nil
 	}
-	level := google.ThinkingLevel(strings.ToUpper(clamped))
-	opts := &google.ProviderOptions{
-		ThinkingConfig: &google.ThinkingConfig{ThinkingLevel: &level},
+	level := genai.ThinkingLevel(strings.ToUpper(clamped))
+	cfg := &genai.GenerateContentConfig{
+		ThinkingConfig: &genai.ThinkingConfig{
+			IncludeThoughts: true,
+			ThinkingLevel:   level,
+		},
 	}
-	return fantasy.ProviderOptions{google.Name: opts}, nil
+	return cfg, nil
 }
 
 var VertexSpec = AgentProviderSpec{
@@ -124,8 +156,8 @@ var VertexSpec = AgentProviderSpec{
 	DefaultModel:  VertexDefaultModel,
 	ModelOptions:  VertexModelOptions,
 	EffortOptions: VertexEffortOptions,
-	BuildModel: func(cfg config.Config, modelID string) (fantasy.LanguageModel, error) {
-		return VertexLanguageModel(cfg.Vertex, modelID)
+	BuildClient: func(cfg config.Config) (*genai.Client, error) {
+		return VertexNewClient(context.Background(), cfg.Vertex)
 	},
 	CallOptions: VertexProviderOptions,
 	SupportsImages: func(modelID string) bool {

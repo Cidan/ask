@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/config"
+	"google.golang.org/genai"
 )
 
 func writeTestSubagent(t *testing.T, dir, name, frontmatterExtra, body string) {
@@ -28,7 +28,7 @@ func TestDiscoverSubagents_PrecedenceAndFields(t *testing.T) {
 	cwd := t.TempDir()
 	globalDir := filepath.Join(home, ".claude", "agents")
 	projectDir := filepath.Join(cwd, ".claude", "agents")
-	writeTestSubagent(t, globalDir, "reviewer", "tools: read, grep\nmodel: claude-haiku-4-5-20251001\nprovider: anthropic\n", "Review code carefully.")
+	writeTestSubagent(t, globalDir, "reviewer", "tools: read, grep\nmodel: gemini-2.5-pro\nprovider: vertex\n", "Review code carefully.")
 	writeTestSubagent(t, projectDir, "reviewer", "", "Project reviewer.")
 	writeTestSubagent(t, globalDir, "fixer", "tools: *\n", "Fix things.")
 
@@ -56,18 +56,28 @@ func TestDiscoverSubagents_PrecedenceAndFields(t *testing.T) {
 	}
 }
 
+type fakeSubagentTool struct {
+	name string
+}
+
+func (f *fakeSubagentTool) Name() string                             { return f.name }
+func (f *fakeSubagentTool) Description() string                      { return "desc" }
+func (f *fakeSubagentTool) Info() ToolInfo                           { return ToolInfo{Name: f.name} }
+func (f *fakeSubagentTool) Declaration() *genai.FunctionDeclaration { return &genai.FunctionDeclaration{Name: f.name} }
+func (f *fakeSubagentTool) Run(ctx context.Context, args map[string]any) (ToolResponse, error) {
+	return NewTextResponse("ok"), nil
+}
+
 func TestSubagentTools_GrantSets(t *testing.T) {
-	fakeTool := func(name string) fantasy.AgentTool {
-		return fantasy.NewAgentTool(name, "desc", func(ctx context.Context, p map[string]any, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			return fantasy.NewTextResponse("ok"), nil
-		})
+	fakeTool := func(name string) Tool {
+		return &fakeSubagentTool{name: name}
 	}
-	all := map[string]fantasy.AgentTool{
+	all := map[string]Tool{
 		"read": fakeTool("read"), "glob": fakeTool("glob"), "grep": fakeTool("grep"), "ls": fakeTool("ls"),
 		"write": fakeTool("write"), "edit": fakeTool("edit"), "bash": fakeTool("bash"),
 		"job_output": fakeTool("job_output"), "job_kill": fakeTool("job_kill"), "fetch": fakeTool("fetch"), "todos": fakeTool("todos"),
 	}
-	names := func(tls []fantasy.AgentTool) map[string]bool {
+	names := func(tls []Tool) map[string]bool {
 		out := map[string]bool{}
 		for _, tl := range tls {
 			out[tl.Info().Name] = true
@@ -94,15 +104,15 @@ func TestResolveSubagentModel(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	// Inherit
-	lm, budget, err := ResolveSubagentModel(SubagentDef{Name: "x"}, "deepseek", nil, config.Config{})
-	if err != nil || lm != nil || budget != 0 {
-		t.Errorf("inherit failed: %v budget=%d %v", lm, budget, err)
+	client, budget, err := ResolveSubagentModel(SubagentDef{Name: "x"}, "vertex", nil, config.Config{})
+	if err != nil || client != nil || budget != 0 {
+		t.Errorf("inherit failed: %v budget=%d %v", client, budget, err)
 	}
 
 	// Unknown provider
-	if _, _, err := ResolveSubagentModel(SubagentDef{Name: "x", Provider: "codex"}, "deepseek", nil, config.Config{}); err == nil ||
+	if _, _, err := ResolveSubagentModel(SubagentDef{Name: "x", Provider: "unknown-provider"}, "vertex", nil, config.Config{}); err == nil ||
 		!strings.Contains(err.Error(), "not an in-process provider") {
-		t.Errorf("subprocess provider must be rejected: %v", err)
+		t.Errorf("unknown provider must be rejected: %v", err)
 	}
 }
 

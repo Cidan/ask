@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/fantasy"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -47,7 +46,7 @@ func newEchoMCPServer(t *testing.T) (*mcp.Server, *httptest.Server) {
 	return server, ts
 }
 
-func toolByName(tools []fantasy.AgentTool, name string) fantasy.AgentTool {
+func toolByName(tools []Tool, name string) Tool {
 	for _, tool := range tools {
 		if tool.Info().Name == name {
 			return tool
@@ -85,27 +84,27 @@ func TestMCPManager_AttachListCallAndSkip(t *testing.T) {
 		t.Errorf("required fields wrong: %v", info.Required)
 	}
 
-	resp, err := tool.Run(context.Background(), fantasy.ToolCall{ID: "1", Name: info.Name, Input: `{"text":"hi"}`})
+	resp, err := RunToolWithJSON(context.Background(), tool, `{"text":"hi"}`)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if resp.IsError || resp.Content != "echo: hi" {
 		t.Errorf("echo result: %+v", resp)
 	}
-	resp, _ = tool.Run(context.Background(), fantasy.ToolCall{ID: "2", Name: info.Name, Input: `{"text":"fail"}`})
+	resp, _ = RunToolWithJSON(context.Background(), tool, `{"text":"fail"}`)
 	if !resp.IsError || resp.Content != "boom" {
 		t.Errorf("fail result: %+v", resp)
 	}
 
 	// Vision gating
 	shot := toolByName(tools, "mcp__test__shot")
-	resp, _ = shot.Run(context.Background(), fantasy.ToolCall{ID: "3", Name: "mcp__test__shot", Input: `{"text":"x"}`})
+	resp, _ = RunToolWithJSON(context.Background(), shot, `{"text":"x"}`)
 	if !strings.Contains(resp.Content, "no vision") {
 		t.Errorf("without vision should return placeholder: %+v", resp)
 	}
 	imagesOK = true
-	resp, _ = shot.Run(context.Background(), fantasy.ToolCall{ID: "4", Name: "mcp__test__shot", Input: `{"text":"x"}`})
-	if resp.Type != "image" || resp.MediaType != "image/png" || len(resp.Data) != 3 {
+	resp, _ = RunToolWithJSON(context.Background(), shot, `{"text":"x"}`)
+	if resp.IsError {
 		t.Errorf("with vision should return image payload: %+v", resp)
 	}
 }

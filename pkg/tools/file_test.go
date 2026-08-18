@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/engine"
 )
 
@@ -27,13 +26,13 @@ func newTestToolEnv(t *testing.T) (*ToolEnv, *[]engine.EngineEvent) {
 	return env, events
 }
 
-func runTool(t *testing.T, tool fantasy.AgentTool, input any) fantasy.ToolResponse {
+func runTool(t *testing.T, tool Tool, input any) ToolResponse {
 	t.Helper()
 	b, err := json.Marshal(input)
 	if err != nil {
 		t.Fatalf("marshal input: %v", err)
 	}
-	resp, err := tool.Run(context.Background(), fantasy.ToolCall{ID: "t1", Name: tool.Info().Name, Input: string(b)})
+	resp, err := RunToolWithJSON(context.Background(), tool, string(b))
 	if err != nil {
 		t.Fatalf("tool.Run returned hard error: %v", err)
 	}
@@ -198,15 +197,15 @@ func TestEditUniquenessAndCRLF(t *testing.T) {
 		t.Errorf("unexpected content: %q", string(data))
 	}
 
-	// CRLF preserved
-	writeTestFile(t, env.Cwd, "crlf.txt", "line1\r\nline2\r\nline3\r\n")
+	// CRLF Preservation
+	writeTestFile(t, env.Cwd, "crlf.txt", "line1\r\nline2\r\n")
 	runTool(t, readTool, ReadParams{FilePath: "crlf.txt"})
 	resp = runTool(t, editTool, EditParams{FilePath: "crlf.txt", OldString: "line2", NewString: "modified"})
 	if resp.IsError {
-		t.Fatalf("edit crlf failed: %s", resp.Content)
+		t.Fatalf("crlf edit failed: %s", resp.Content)
 	}
-	crlfData, _ := os.ReadFile(filepath.Join(env.Cwd, "crlf.txt"))
-	if string(crlfData) != "line1\r\nmodified\r\nline3\r\n" {
-		t.Errorf("CRLF not preserved: %q", string(crlfData))
+	data, _ = os.ReadFile(filepath.Join(env.Cwd, "crlf.txt"))
+	if string(data) != "line1\r\nmodified\r\n" {
+		t.Errorf("CRLF line endings were lost: %q", string(data))
 	}
 }

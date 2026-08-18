@@ -11,17 +11,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"charm.land/fantasy"
 )
 
 // SessionFile represents the serialized on-disk format for a session transcript.
 type SessionFile struct {
-	Version   int               `json:"version"`
-	Cwd       string            `json:"cwd"`
-	CreatedAt time.Time         `json:"createdAt"`
-	UpdatedAt time.Time         `json:"updatedAt"`
-	Messages  []fantasy.Message `json:"messages"`
+	Version   int       `json:"version"`
+	Cwd       string    `json:"cwd"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	Messages  []Message `json:"messages"`
 }
 
 // SessionSummary summarizes a stored session for listing.
@@ -79,7 +77,7 @@ func (st *SessionStore) PathFor(id string) (string, error) {
 
 // Save writes the full transcript atomically with 0600 permissions.
 // CreatedAt timestamp is preserved across subsequent saves.
-func (st *SessionStore) Save(id, cwd string, messages []fantasy.Message) error {
+func (st *SessionStore) Save(id, cwd string, messages []Message) error {
 	if strings.TrimSpace(id) == "" {
 		return errors.New("cannot save session with empty id")
 	}
@@ -204,20 +202,18 @@ func ReadSessionFile(path string) (SessionFile, error) {
 }
 
 // SessionPreview extracts the first user prompt line to serve as a preview.
-func SessionPreview(messages []fantasy.Message) string {
+func SessionPreview(messages []Message) string {
 	for _, m := range messages {
-		if m.Role != fantasy.MessageRoleUser {
+		if m.Role != RoleUser {
 			continue
 		}
-		for _, part := range m.Content {
-			if tp, ok := fantasy.AsMessagePart[fantasy.TextPart](part); ok {
-				line := strings.TrimSpace(strings.SplitN(tp.Text, "\n", 2)[0])
-				if len(line) > 80 {
-					line = line[:80] + "…"
-				}
-				if line != "" {
-					return line
-				}
+		if m.Text != "" {
+			line := strings.TrimSpace(strings.SplitN(m.Text, "\n", 2)[0])
+			if len(line) > 80 {
+				line = line[:80] + "…"
+			}
+			if line != "" {
+				return line
 			}
 		}
 	}

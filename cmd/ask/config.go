@@ -114,70 +114,19 @@ func migrateLegacyIssuesGitHub(cfg *askConfig, data []byte) {
 
 // Provider endpoints and environment keys.
 const (
-	deepseekDefaultBaseURL = providers.DeepSeekDefaultBaseURL
-	moonshotDefaultBaseURL = providers.MoonshotDefaultBaseURL
-	minimaxDefaultBaseURL  = providers.MiniMaxDefaultBaseURL
-
-	deepseekEnvAPIKey  = providers.DeepSeekEnvAPIKey
-	moonshotEnvAPIKey  = providers.MoonshotEnvAPIKey
-	anthropicEnvAPIKey = providers.AnthropicEnvAPIKey
-	openaiEnvAPIKey    = providers.OpenAIEnvAPIKey
-	braveEnvAPIKey     = providers.BraveEnvAPIKey
-	minimaxEnvAPIKey   = providers.MiniMaxEnvAPIKey
-	googleaiEnvAPIKey  = providers.GoogleAIEnvAPIKey
+	braveEnvAPIKey = "BRAVE_API_KEY"
 )
-
-func resolveAPIProviderKey(c apiProviderConfig, envKey string) string {
-	return providers.ResolveAPIProviderKey(c, envKey)
-}
-
-func resolveDeepSeekAPIKey(c apiProviderConfig) string {
-	return providers.ResolveDeepSeekAPIKey(c)
-}
-
-func resolveKimiAPIKey(c apiProviderConfig) string {
-	return providers.ResolveKimiAPIKey(c)
-}
-
-func resolveAnthropicAPIKey(c apiProviderConfig) string {
-	return providers.ResolveAnthropicAPIKey(c)
-}
-
-func resolveOpenAIAPIKey(c apiProviderConfig) string {
-	return providers.ResolveOpenAIAPIKey(c)
-}
-
-func resolveMiniMaxAPIKey(c apiProviderConfig) string {
-	return providers.ResolveMiniMaxAPIKey(c)
-}
-
-func resolveGoogleAIAPIKey(c apiProviderConfig) string {
-	return providers.ResolveGoogleAIAPIKey(c)
-}
 
 func resolveBraveAPIKey(c webSearchConfig) string {
 	return config.ResolveBraveAPIKey(c)
 }
 
-func resolveDeepSeekBaseURL(c apiProviderConfig) string {
-	if c.BaseURL != "" {
-		return c.BaseURL
-	}
-	return deepseekDefaultBaseURL
+func resolveVertexProject(vc vertexConfig) string {
+	return providers.VertexResolveProject(vc)
 }
 
-func resolveKimiBaseURL(c apiProviderConfig) string {
-	if c.BaseURL != "" {
-		return c.BaseURL
-	}
-	return moonshotDefaultBaseURL
-}
-
-func resolveMiniMaxBaseURL(c apiProviderConfig) string {
-	if c.BaseURL != "" {
-		return c.BaseURL
-	}
-	return minimaxDefaultBaseURL
+func resolveVertexLocation(vc vertexConfig) string {
+	return providers.VertexResolveLocation(vc)
 }
 
 const maxRecentModels = 5

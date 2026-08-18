@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/tools"
 )
@@ -23,8 +22,6 @@ const agentSubagentPromptTail = `
 
 Your final message is returned verbatim to the calling agent as data — make it a complete, self-contained report.`
 
-const agentTaskMaxSteps = 50
-
 type agentTaskParams struct {
 	Prompt          string `json:"prompt" description:"the self-contained task for the sub-agent, including everything it needs to know"`
 	Agent           string `json:"agent,omitempty" description:"named agent definition to run (see <available_agents>); empty runs the default read-only researcher on the current model"`
@@ -32,31 +29,27 @@ type agentTaskParams struct {
 	Description     string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this sub-agent is doing"`
 }
 
-func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel, maxTokens func() int64) fantasy.AgentTool {
-	return fantasy.NewAgentTool(
+func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Tool {
+	return tools.NewTool(
 		"task",
 		agentTaskToolDescription,
-		func(ctx context.Context, p agentTaskParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, p agentTaskParams) (tools.ToolResponse, error) {
 			prompt := strings.TrimSpace(p.Prompt)
 			if prompt == "" {
-				return fantasy.NewTextErrorResponse("prompt is required"), nil
+				return tools.NewTextErrorResponse("prompt is required"), nil
 			}
 
-			system := agentTaskSystemPrompt
-			toolsList := []fantasy.AgentTool{
+			sess := getSession()
+			modelID := "gemini-3.1-pro-preview"
+			if sess != nil && sess.modelID != "" {
+				modelID = sess.modelID
+			}
+
+			toolsList := []tools.Tool{
 				tools.ReadTool(env),
 				tools.GlobTool(env),
 				tools.GrepTool(env),
 				tools.LsTool(env),
-			}
-			lm := model()
-			var budget int64
-			if maxTokens != nil {
-				budget = maxTokens()
-			}
-			parentProviderID := ""
-			if lm != nil {
-				parentProviderID = lm.Provider()
 			}
 
 			if name := strings.TrimSpace(p.Agent); name != "" {
@@ -69,52 +62,30 @@ func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel, maxTok
 					}
 				}
 				if def == nil {
-					return fantasy.NewTextErrorResponse("unknown agent " + name + " — see <available_agents> for what is defined"), nil
+					return tools.NewTextErrorResponse("unknown agent " + name + " — see <available_agents> for what is defined"), nil
 				}
-				resolved, pinnedBudget, err := resolveSubagentModel(*def, parentProviderID, lm)
-				if err != nil {
-					return fantasy.NewTextErrorResponse(err.Error()), nil
-				}
-				lm = resolved
-				if pinnedBudget > 0 {
-					budget = pinnedBudget
-				}
-				if def.Prompt != "" {
-					system = def.Prompt + agentSubagentPromptTail
+				if def.Model != "" {
+					modelID = def.Model
 				}
 				toolsList = subagentTools(*def, env)
-			}
-			if lm == nil {
-				return fantasy.NewTextErrorResponse("sub-agent model unavailable"), nil
 			}
 
 			run := func(runCtx context.Context) (string, error) {
 				toolsList = wrapContextAwareTools(toolsList, env.Cwd, discoverRules(env.Cwd))
-				taskCfg, _ := loadConfig()
-				taskMaxRetries, _, _ := agentRetryOptions(taskCfg)
-				sub := fantasy.NewAgent(lm,
-					fantasy.WithSystemPrompt(system),
-					fantasy.WithTools(toolsList...),
-					fantasy.WithStopConditions(
-						agentLoopDetectionCondition(),
-						fantasy.StepCountIs(agentTaskMaxSteps),
-					),
-				)
-				result, err := sub.Stream(runCtx, fantasy.AgentStreamCall{
-					Prompt:          prompt,
-					MaxOutputTokens: maxOutputTokensPtr(budget),
-					MaxRetries:      retryMaxRetriesPtr(taskMaxRetries),
+				cfg, _ := loadConfig()
+				res, err := engine.Run(runCtx, engine.RunOptions{
+					Prompt:             prompt,
+					Cwd:                env.Cwd,
+					Config:             toPkgConfig(cfg),
+					Provider:           "vertex",
+					Model:              modelID,
+					Tools:              toolsList,
+					SkipAllPermissions: true,
 				})
 				if err != nil {
 					return "", err
 				}
-				if cost, known := stepCostUSD(lm.Provider(), lm.Model(), result.TotalUsage); known && env.Emit != nil {
-					env.Emit(engine.CostEvent{
-						BaseEvent: engine.BaseEvent{TabID: env.TabID},
-						CostUSD:   cost,
-					})
-				}
-				return strings.TrimSpace(result.Response.Content.Text()), nil
+				return strings.TrimSpace(res.Response), nil
 			}
 
 			if p.RunInBackground {
@@ -151,19 +122,19 @@ func agentTaskTool(env *agentToolEnv, model func() fantasy.LanguageModel, maxTok
 						Description: p.Description,
 					})
 				}
-				return fantasy.NewTextResponse(
+				return tools.NewTextResponse(
 					"started background " + label + " as " + job.ID +
 						"; poll the report with job_output and stop it with job_kill"), nil
 			}
 
 			report, err := run(ctx)
 			if err != nil {
-				return fantasy.NewTextErrorResponse("sub-agent failed: " + err.Error()), nil
+				return tools.NewTextErrorResponse("sub-agent failed: " + err.Error()), nil
 			}
 			if report == "" {
-				return fantasy.NewTextErrorResponse("sub-agent returned no report"), nil
+				return tools.NewTextErrorResponse("sub-agent returned no report"), nil
 			}
-			return fantasy.NewTextResponse(report), nil
+			return tools.NewTextResponse(report), nil
 		},
 	)
 }

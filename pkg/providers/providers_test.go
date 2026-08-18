@@ -27,7 +27,7 @@ func TestProviders_SteeringPrompt(t *testing.T) {
 }
 
 func TestProviders_Specs(t *testing.T) {
-	for _, id := range []string{"anthropic", "openai", "deepseek", "googleai", "vertex", "kimi", "minimax"} {
+	for _, id := range []string{"vertex"} {
 		spec, ok := GetSpec(id)
 		if !ok {
 			t.Errorf("expected spec for %q", id)

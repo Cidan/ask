@@ -5,11 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/workflow"
 )
 
-func workflowToolByName(t *testing.T, env *ToolEnv, name string) fantasy.AgentTool {
+func workflowToolByName(t *testing.T, env *ToolEnv, name string) Tool {
 	t.Helper()
 	for _, tool := range WorkflowTools(env) {
 		if tool.Info().Name == name {
@@ -46,16 +45,13 @@ func TestWorkflowCRUDRoundTrip(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 
 	list := workflowToolByName(t, env, "workflow_list")
-	resp, err := list.Run(context.Background(), fantasy.ToolCall{ID: "1", Name: "workflow_list", Input: `{}`})
+	resp, err := RunToolWithJSON(context.Background(), list, `{}`)
 	if err != nil || resp.IsError {
 		t.Fatalf("list: %+v %v", resp, err)
 	}
 
 	create := workflowToolByName(t, env, "workflow_create")
-	resp, err = create.Run(context.Background(), fantasy.ToolCall{
-		ID: "2", Name: "workflow_create",
-		Input: `{"name":"review","steps":[{"name":"step1","provider":"deepseek","prompt":"review the issue"}]}`,
-	})
+	resp, err = RunToolWithJSON(context.Background(), create, `{"name":"review","steps":[{"name":"step1","provider":"deepseek","prompt":"review the issue"}]}`)
 	if err != nil || resp.IsError {
 		t.Fatalf("create: %+v %v", resp, err)
 	}
@@ -66,17 +62,14 @@ func TestWorkflowCRUDRoundTrip(t *testing.T) {
 	}
 
 	// Duplicate create gates
-	resp, _ = create.Run(context.Background(), fantasy.ToolCall{
-		ID: "3", Name: "workflow_create",
-		Input: `{"name":"review","steps":[{"name":"s","provider":"deepseek","prompt":"p"}]}`,
-	})
+	resp, _ = RunToolWithJSON(context.Background(), create, `{"name":"review","steps":[{"name":"s","provider":"deepseek","prompt":"p"}]}`)
 	if !resp.IsError || !strings.Contains(resp.Content, "already exists") {
 		t.Errorf("duplicate create must error: %+v", resp)
 	}
 
 	// Delete
 	del := workflowToolByName(t, env, "workflow_delete")
-	resp, err = del.Run(context.Background(), fantasy.ToolCall{ID: "4", Name: "workflow_delete", Input: `{"name":"review"}`})
+	resp, err = RunToolWithJSON(context.Background(), del, `{"name":"review"}`)
 	if err != nil || resp.IsError {
 		t.Fatalf("delete: %+v %v", resp, err)
 	}
@@ -93,7 +86,7 @@ func TestClearPlansTool(t *testing.T) {
 	writeTestFile(t, env.Cwd, "ask/plans/start/plan.md", "# Plan")
 	writeTestFile(t, env.Cwd, "ask/plans/step-1/notes.md", "Notes")
 
-	resp, err := clearTool.Run(context.Background(), fantasy.ToolCall{ID: "1", Name: "clear_plans", Input: `{}`})
+	resp, err := RunToolWithJSON(context.Background(), clearTool, `{}`)
 	if err != nil || resp.IsError {
 		t.Fatalf("clear_plans failed: %+v %v", resp, err)
 	}
@@ -147,18 +140,17 @@ func TestWorkflowTools_LoopWorkflowPromptAndExitConditionPreservation(t *testing
 		]
 	}`
 
-	resp, err := create.Run(context.Background(), fantasy.ToolCall{ID: "c1", Name: "workflow_create", Input: createJSON})
+	resp, err := RunToolWithJSON(context.Background(), create, createJSON)
 	if err != nil || resp.IsError {
 		t.Fatalf("create failed: %+v %v", resp, err)
 	}
 
 	// 2. Get the workflow and verify ExitCondition, Prompt, and inner Steps
-	resp, err = get.Run(context.Background(), fantasy.ToolCall{ID: "g1", Name: "workflow_get", Input: `{"name":"ship-test"}`})
+	resp, err = RunToolWithJSON(context.Background(), get, `{"name":"ship-test"}`)
 	if err != nil || resp.IsError {
 		t.Fatalf("get failed: %+v %v", resp, err)
 	}
-	// Verify response or parsed output contains the fields
-	listOutput, err := get.Run(context.Background(), fantasy.ToolCall{ID: "g2", Name: "workflow_get", Input: `{"name":"ship-test","scope":"global"}`})
+	listOutput, err := RunToolWithJSON(context.Background(), get, `{"name":"ship-test","scope":"global"}`)
 	if err != nil || listOutput.IsError {
 		t.Fatalf("scoped get failed: %+v %v", listOutput, err)
 	}
@@ -202,7 +194,7 @@ func TestWorkflowTools_LoopWorkflowPromptAndExitConditionPreservation(t *testing
 			}
 		]
 	}`
-	resp, err = edit.Run(context.Background(), fantasy.ToolCall{ID: "e1", Name: "workflow_edit", Input: editJSON})
+	resp, err = RunToolWithJSON(context.Background(), edit, editJSON)
 	if err != nil || resp.IsError {
 		t.Fatalf("edit failed: %+v %v", resp, err)
 	}
@@ -224,7 +216,7 @@ func TestWorkflowTools_LoopWorkflowPromptAndExitConditionPreservation(t *testing
 
 	// 4. Copy to user scope
 	copyJSON := `{"name":"ship-test","scope":"global","to":"user","new_name":"ship-user"}`
-	resp, err = copyTool.Run(context.Background(), fantasy.ToolCall{ID: "cp1", Name: "workflow_copy", Input: copyJSON})
+	resp, err = RunToolWithJSON(context.Background(), copyTool, copyJSON)
 	if err != nil || resp.IsError {
 		t.Fatalf("copy failed: %+v %v", resp, err)
 	}

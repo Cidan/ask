@@ -136,6 +136,30 @@ func (m *EmbeddingModel) EmbdSize() int {
 	return int(C.llama_model_n_embd(m.model))
 }
 
+// FakeEmbedder provides a deterministic in-memory embedder for tests.
+type FakeEmbedder struct {
+	dim int
+}
+
+func NewFakeEmbedder(dim int) *FakeEmbedder {
+	return &FakeEmbedder{dim: dim}
+}
+
+func (f *FakeEmbedder) Embed(text string) ([]float32, error) {
+	vec := make([]float32, f.dim)
+	var h uint32 = 2166136261
+	for i := 0; i < len(text); i++ {
+		h = (h ^ uint32(text[i])) * 16777619
+	}
+	for i := 0; i < f.dim; i++ {
+		vec[i] = float32((h+uint32(i*31))%1000) / 1000.0
+	}
+	return vec, nil
+}
+
+func (f *FakeEmbedder) EmbdSize() int { return f.dim }
+func (f *FakeEmbedder) Close()        {}
+
 // Close releases the llama context and model resources.
 func (m *EmbeddingModel) Close() {
 	m.mu.Lock()

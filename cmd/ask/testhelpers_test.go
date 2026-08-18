@@ -14,22 +14,10 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/fantasy"
-	"github.com/Cidan/ask/pkg/config"
-	"github.com/Cidan/ask/pkg/providers"
+	"github.com/Cidan/ask/pkg/tools"
 )
 
-func swapDeepseekLM(t *testing.T, lm fantasy.LanguageModel) {
-	prev := providers.DeepSeekSpec.BuildModel
-	t.Cleanup(func() { providers.DeepSeekSpec.BuildModel = prev })
-	providers.DeepSeekSpec.BuildModel = func(_ config.Config, _ string) (fantasy.LanguageModel, error) {
-		return lm, nil
-	}
-}
-
-// fakeProvider is an instrumentable Provider for tests. Every method has an
-// overridable *Fn hook; the zero value picks safe defaults so most tests can
-// use newFakeProvider() verbatim.
+// fakeProvider is an instrumentable Provider for tests.
 type fakeProvider struct {
 	mu sync.Mutex
 
@@ -180,16 +168,12 @@ func (f *fakeProvider) Materialize(workspace string, turns []NeutralTurn) (strin
 	return "fake-" + f.id + "-" + newVirtualSessionID(), workspace, nil
 }
 
-// bufferCloser makes a bytes.Buffer satisfy io.WriteCloser; providerProc.stdin
-// is typed that way and is normally a pipe/file.
 type bufferCloser struct {
 	*bytes.Buffer
 }
 
 func (b *bufferCloser) Close() error { return nil }
 
-// withRegisteredProviders swaps the global providerRegistry for the duration
-// of the test, restoring it on cleanup.
 func withRegisteredProviders(t *testing.T, provs ...Provider) {
 	t.Helper()
 	prev := providerRegistry
@@ -197,9 +181,6 @@ func withRegisteredProviders(t *testing.T, provs ...Provider) {
 	t.Cleanup(func() { providerRegistry = prev })
 }
 
-// isolateHome pins $HOME, $XDG_CONFIG_HOME and $XDG_CACHE_HOME at a
-// tmp dir so tests never read or write the caller's real ~/.config,
-// ~/.claude, or ~/.cache state (e.g. the ask-usage plugin cache).
 func isolateHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
@@ -219,9 +200,6 @@ func jjAvailable() bool {
 	return err == nil
 }
 
-// initGitRepo stands up a throwaway git checkout with an empty initial commit
-// so branches/worktrees can be cut off HEAD. Skips the test when git is not
-// on PATH.
 func initGitRepo(t *testing.T) string {
 	t.Helper()
 	if !gitAvailable() {
@@ -235,9 +213,6 @@ func initGitRepo(t *testing.T) string {
 	return dir
 }
 
-// initJJRepo stands up a throwaway jj repo rooted at the returned path. The
-// default init is colocated, so the repo also has a .git directory, which lets
-// us verify that .jj detection wins over git worktree behavior.
 func initJJRepo(t *testing.T) string {
 	t.Helper()
 	if !jjAvailable() {
@@ -271,12 +246,8 @@ func runJJ(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
-// newTestModel returns a model wired up just enough that Update/layout can
-// run without spawning a real provider process. Tests replace m.provider when
-// they want specific fake behavior.
 func newTestModel(t *testing.T, prov Provider) model {
 	t.Helper()
-	// Reset package-global coordinator to avoid test pollution
 	globalCoordinator.RemoveSession(1)
 	globalCoordinator.CancelWorkflow(1)
 	t.Cleanup(func() {
@@ -287,9 +258,6 @@ func newTestModel(t *testing.T, prov Provider) model {
 	ta := textarea.New()
 	ta.SetHeight(3)
 	ta.DynamicHeight = true
-	// Production calls Focus on the input textarea (main.go:newTab).
-	// Without it, textarea.Update silently returns on every msg —
-	// including tea.PasteMsg — so paste tests would land empty.
 	ta.Focus()
 	vp := newChatView()
 	sp := spinner.New()
@@ -323,13 +291,13 @@ func writeTestFile(t *testing.T, dir, name, content string) string {
 	return path
 }
 
-func runTool(t *testing.T, tool fantasy.AgentTool, input any) fantasy.ToolResponse {
+func runTool(t *testing.T, tool tools.Tool, input any) tools.ToolResponse {
 	t.Helper()
 	b, err := json.Marshal(input)
 	if err != nil {
 		t.Fatalf("marshal input: %v", err)
 	}
-	resp, err := tool.Run(context.Background(), fantasy.ToolCall{ID: "t1", Name: tool.Info().Name, Input: string(b)})
+	resp, err := tools.RunToolWithJSON(context.Background(), tool, string(b))
 	if err != nil {
 		t.Fatalf("tool.Run returned hard error: %v", err)
 	}
@@ -368,11 +336,6 @@ func drainCh(ch <-chan tea.Msg) []tea.Msg {
 	return out
 }
 
-// drainBatch executes cmd (expected to be a tea.BatchMsg-producing
-// batch or a plain cmd) and returns the flattened tea.Msg list that
-// the batched commands produced. Used by tests that fire compound
-// commands (e.g. probe + loadHistory + translate) and need to pick
-// specific messages out.
 func walkForItemsAnyOfConflict(t *testing.T, toolName string, node any) {
 	t.Helper()
 	switch n := node.(type) {

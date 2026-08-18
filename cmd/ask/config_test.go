@@ -264,15 +264,15 @@ func largeWorkflowFixture(seed int) []workflowDef {
 	return items
 }
 
-func TestAnthropicProviderSettings_RoundTrip(t *testing.T) {
+func TestVertexProviderSettings_RoundTrip(t *testing.T) {
 	isolateHome(t)
-	p := anthropicAgentProvider()
+	p := vertexAgentProvider()
 	initial := p.LoadSettings()
 	if initial.Model != "" || initial.Effort != "" || len(initial.SlashCommands) != 0 {
 		t.Errorf("fresh settings not zero-valued: %+v", initial)
 	}
 	updated := ProviderSettings{
-		Model:         "sonnet[1m]",
+		Model:         "gemini-3.1-pro-preview",
 		Effort:        "high",
 		SlashCommands: []providerSlashEntry{{Name: "foo", Description: "bar"}},
 	}
@@ -566,15 +566,15 @@ func TestAnthropicProviderSettings_PreservesOtherFields(t *testing.T) {
 	// Seed unrelated fields in the on-disk config; SaveSettings must not nuke them.
 	boolT := true
 	cfg := askConfig{
-		Provider: "anthropic",
+		Provider: "vertex",
 		UI:       uiConfig{QuietMode: &boolT, Theme: "keep-me"},
 	}
 	if err := saveConfig(cfg); err != nil {
 		t.Fatalf("seed saveConfig: %v", err)
 	}
 
-	p := anthropicAgentProvider()
-	if err := p.SaveSettings(ProviderSettings{Model: "claude-opus-4-8"}); err != nil {
+	p := vertexAgentProvider()
+	if err := p.SaveSettings(ProviderSettings{Model: "gemini-3.1-pro-preview"}); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
 	}
 	got, _ := loadConfig()
@@ -584,66 +584,51 @@ func TestAnthropicProviderSettings_PreservesOtherFields(t *testing.T) {
 	if got.UI.QuietMode == nil || *got.UI.QuietMode != true {
 		t.Errorf("quietMode pointer lost: %+v", got.UI.QuietMode)
 	}
-	if got.Anthropic.Model != "claude-opus-4-8" {
-		t.Errorf("model not persisted: %+v", got.Anthropic)
+	if got.Vertex.Model != "gemini-3.1-pro-preview" {
+		t.Errorf("model not persisted: %+v", got.Vertex)
 	}
 }
 
-func TestResolveDeepSeek_ConfigWinsEnvFallsBack(t *testing.T) {
-	t.Setenv(deepseekEnvAPIKey, "sk-from-env")
-
-	if got := resolveDeepSeekAPIKey(apiProviderConfig{APIKey: "sk-from-config"}); got != "sk-from-config" {
-		t.Errorf("config key should win over env, got %q", got)
+func TestResolveVertexConfig(t *testing.T) {
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "env-project")
+	if got := resolveVertexProject(vertexConfig{Project: "config-project"}); got != "config-project" {
+		t.Errorf("config project should win over env, got %q", got)
 	}
-	if got := resolveDeepSeekAPIKey(apiProviderConfig{}); got != "sk-from-env" {
+	if got := resolveVertexProject(vertexConfig{}); got != "env-project" {
 		t.Errorf("empty config should fall back to env, got %q", got)
 	}
-	t.Setenv(deepseekEnvAPIKey, "")
-	if got := resolveDeepSeekAPIKey(apiProviderConfig{}); got != "" {
-		t.Errorf("no config + no env should be empty, got %q", got)
-	}
 
-	if got := resolveDeepSeekBaseURL(apiProviderConfig{}); got != deepseekDefaultBaseURL {
-		t.Errorf("empty base URL should default, got %q", got)
+	if got := resolveVertexLocation(vertexConfig{Location: "us-central1"}); got != "us-central1" {
+		t.Errorf("explicit location lost, got %q", got)
 	}
-	if got := resolveDeepSeekBaseURL(apiProviderConfig{BaseURL: "http://localhost:9999/v1"}); got != "http://localhost:9999/v1" {
-		t.Errorf("explicit base URL lost, got %q", got)
-	}
-
-	// Kimi defaults to the international Moonshot platform — a .cn
-	// default would 401 international keys as "invalid authentication".
-	if got := resolveKimiBaseURL(apiProviderConfig{}); got != "https://api.moonshot.ai/v1" {
-		t.Errorf("kimi default base URL = %q, want international endpoint", got)
-	}
-	if got := resolveKimiBaseURL(apiProviderConfig{BaseURL: "https://api.moonshot.cn/v1"}); got != "https://api.moonshot.cn/v1" {
-		t.Errorf("explicit kimi base URL lost, got %q", got)
+	if got := resolveVertexLocation(vertexConfig{}); got != "global" {
+		t.Errorf("default location should be global, got %q", got)
 	}
 }
 
-func TestResolveAnthropicOpenAIKeys(t *testing.T) {
-	t.Setenv(anthropicEnvAPIKey, "sk-ant-env")
-	t.Setenv(openaiEnvAPIKey, "sk-oai-env")
-	if got := resolveAnthropicAPIKey(apiProviderConfig{APIKey: "sk-ant-cfg"}); got != "sk-ant-cfg" {
-		t.Errorf("anthropic config key should win, got %q", got)
+func TestResolveBraveKey(t *testing.T) {
+	t.Setenv(braveEnvAPIKey, "sk-brave-env")
+	if got := resolveBraveAPIKey(webSearchConfig{BraveAPIKey: "sk-brave-cfg"}); got != "sk-brave-cfg" {
+		t.Errorf("brave config key should win, got %q", got)
 	}
-	if got := resolveAnthropicAPIKey(apiProviderConfig{}); got != "sk-ant-env" {
-		t.Errorf("anthropic env fallback lost, got %q", got)
+	if got := resolveBraveAPIKey(webSearchConfig{}); got != "sk-brave-env" {
+		t.Errorf("brave env fallback lost, got %q", got)
 	}
-	if got := resolveOpenAIAPIKey(apiProviderConfig{}); got != "sk-oai-env" {
-		t.Errorf("openai env fallback lost, got %q", got)
-	}
-	t.Setenv(anthropicEnvAPIKey, "")
-	if got := resolveAnthropicAPIKey(apiProviderConfig{}); got != "" {
+	t.Setenv(braveEnvAPIKey, "")
+	if got := resolveBraveAPIKey(webSearchConfig{}); got != "" {
 		t.Errorf("no config + no env should be empty, got %q", got)
 	}
 }
 
-func TestAnthropicOpenAIConfigRoundTrip(t *testing.T) {
+func TestVertexConfigRoundTrip(t *testing.T) {
 	isolateHome(t)
 	want := askConfig{
-		Effort:    "high",
-		Anthropic: apiProviderConfig{Model: "claude-fable-5", APIKey: "sk-a"},
-		OpenAI:    apiProviderConfig{Model: "gpt-5.5", BaseURL: "https://proxy.test/v1"},
+		Effort: "high",
+		Vertex: vertexConfig{
+			Project:  "my-gcp-project",
+			Location: "us-central1",
+			Model:    "gemini-3.1-pro-preview",
+		},
 	}
 	if err := saveConfig(want); err != nil {
 		t.Fatalf("saveConfig: %v", err)
@@ -652,11 +637,8 @@ func TestAnthropicOpenAIConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if got.Anthropic.Model != "claude-fable-5" || got.Anthropic.APIKey != "sk-a" {
-		t.Errorf("anthropic block lost: %+v", got.Anthropic)
-	}
-	if got.OpenAI.Model != "gpt-5.5" || got.OpenAI.BaseURL != "https://proxy.test/v1" {
-		t.Errorf("openai block lost: %+v", got.OpenAI)
+	if got.Vertex.Project != "my-gcp-project" || got.Vertex.Location != "us-central1" || got.Vertex.Model != "gemini-3.1-pro-preview" {
+		t.Errorf("vertex block lost: %+v", got.Vertex)
 	}
 	if got.Effort != "high" {
 		t.Errorf("effort block lost: got %q", got.Effort)

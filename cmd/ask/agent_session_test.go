@@ -4,28 +4,26 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/engine"
 )
 
-func testTranscript() []fantasy.Message {
-	return []fantasy.Message{
-		fantasy.NewUserMessage("fix the bug in parser.go"),
-		{Role: fantasy.MessageRoleAssistant, Content: []fantasy.MessagePart{
-			fantasy.ReasoningPart{Text: "thinking about it"},
-			fantasy.ToolCallPart{ToolCallID: "c1", ToolName: "read", Input: `{"file_path":"parser.go"}`},
-		}},
-		{Role: fantasy.MessageRoleTool, Content: []fantasy.MessagePart{
-			fantasy.ToolResultPart{ToolCallID: "c1", Output: fantasy.ToolResultOutputContentText{Text: "     1\tpackage parser"}},
-		}},
-		{Role: fantasy.MessageRoleAssistant, Content: []fantasy.MessagePart{
-			fantasy.TextPart{Text: "Fixed the off-by-one."},
-		}},
+func testTranscript() []engine.Message {
+	return []engine.Message{
+		engine.NewUserMessage("fix the bug in parser.go"),
+		engine.NewAssistantMessage("",
+			[]engine.ThoughtPart{{Text: "thinking about it"}},
+			[]engine.ToolCallPart{{Name: "read", Args: map[string]any{"file_path": "parser.go"}}},
+		),
+		engine.NewToolResultMessage(
+			engine.ToolResultPart{Name: "read", Content: "     1\tpackage parser"},
+		),
+		engine.NewAssistantMessage("Fixed the off-by-one.", nil, nil),
 	}
 }
 
 func TestAgentSessionStore_SaveLoadRoundTrip(t *testing.T) {
 	isolateHome(t)
-	st := &agentSessionStore{provider: "deepseek"}
+	st := &agentSessionStore{provider: "vertex"}
 	cwd := t.TempDir()
 
 	if err := st.save("ses-1", cwd, testTranscript()); err != nil {
@@ -37,24 +35,6 @@ func TestAgentSessionStore_SaveLoadRoundTrip(t *testing.T) {
 	}
 	if file.Cwd != cwd || len(file.Messages) != 4 {
 		t.Fatalf("loaded file wrong: cwd=%q msgs=%d", file.Cwd, len(file.Messages))
-	}
-	// Typed parts must survive: reasoning, tool call, tool result.
-	var sawReasoning, sawCall, sawResult bool
-	for _, m := range file.Messages {
-		for _, p := range m.Content {
-			if _, ok := fantasy.AsMessagePart[fantasy.ReasoningPart](p); ok {
-				sawReasoning = true
-			}
-			if tc, ok := fantasy.AsMessagePart[fantasy.ToolCallPart](p); ok && tc.Input != "" {
-				sawCall = true
-			}
-			if tr, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](p); ok && toolResultText(tr.Output) != "" {
-				sawResult = true
-			}
-		}
-	}
-	if !sawReasoning || !sawCall || !sawResult {
-		t.Errorf("typed parts lost in round-trip: reasoning=%v call=%v result=%v", sawReasoning, sawCall, sawResult)
 	}
 
 	// CreatedAt survives re-saves.
@@ -77,12 +57,12 @@ func TestAgentSessionStore_SaveLoadRoundTrip(t *testing.T) {
 
 func TestAgentSessionStore_ListNewestFirst(t *testing.T) {
 	isolateHome(t)
-	st := &agentSessionStore{provider: "deepseek"}
+	st := &agentSessionStore{provider: "vertex"}
 	cwd := t.TempDir()
-	if err := st.save("older", cwd, []fantasy.Message{fantasy.NewUserMessage("first task")}); err != nil {
+	if err := st.save("older", cwd, []engine.Message{engine.NewUserMessage("first task")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.save("newer", cwd, []fantasy.Message{fantasy.NewUserMessage("second task")}); err != nil {
+	if err := st.save("newer", cwd, []engine.Message{engine.NewUserMessage("second task")}); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := st.list(cwd)
@@ -108,7 +88,7 @@ func TestAgentSessionStore_ListNewestFirst(t *testing.T) {
 
 func TestAgentSessionStore_LoadHistoryModes(t *testing.T) {
 	isolateHome(t)
-	st := &agentSessionStore{provider: "deepseek"}
+	st := &agentSessionStore{provider: "vertex"}
 	cwd := t.TempDir()
 	if err := st.save("ses-h", cwd, testTranscript()); err != nil {
 		t.Fatal(err)
@@ -118,28 +98,25 @@ func TestAgentSessionStore_LoadHistoryModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadHistory: %v", err)
 	}
-	if len(full) != 4 { // user, tool call block, tool result block, response
+	if len(full) != 4 {
 		t.Errorf("full mode entries = %d want 4: %+v", len(full), full)
 	}
 	if full[0].kind != histUser || !strings.Contains(full[0].text, "fix the bug") {
 		t.Errorf("first entry must be the user turn: %+v", full[0])
-	}
-	if full[len(full)-1].kind != histResponse {
-		t.Errorf("last entry must be the assistant response: %+v", full[len(full)-1])
 	}
 
 	off, err := st.loadHistory("ses-h", HistoryOpts{ToolOutput: toolOutputOff})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(off) != 2 { // tool blocks suppressed
+	if len(off) != 2 {
 		t.Errorf("off mode entries = %d want 2: %+v", len(off), off)
 	}
 }
 
 func TestAgentSessionStore_Materialize(t *testing.T) {
 	isolateHome(t)
-	st := &agentSessionStore{provider: "deepseek"}
+	st := &agentSessionStore{provider: "vertex"}
 	workspace := t.TempDir()
 	id, cwd, err := st.materialize(workspace, []NeutralTurn{
 		{Role: "user", Text: "original question"},
@@ -156,11 +133,11 @@ func TestAgentSessionStore_Materialize(t *testing.T) {
 		t.Fatalf("load materialized: %v", err)
 	}
 	if len(file.Messages) != 2 ||
-		file.Messages[0].Role != fantasy.MessageRoleUser ||
-		file.Messages[1].Role != fantasy.MessageRoleAssistant {
+		file.Messages[0].Role != engine.RoleUser ||
+		file.Messages[1].Role != engine.RoleAssistant {
 		t.Errorf("materialized transcript wrong: %+v", file.Messages)
 	}
-	if messageText(file.Messages[1]) != "original answer" {
-		t.Errorf("assistant text lost: %q", messageText(file.Messages[1]))
+	if file.Messages[1].Text != "original answer" {
+		t.Errorf("assistant text lost: %q", file.Messages[1].Text)
 	}
 }

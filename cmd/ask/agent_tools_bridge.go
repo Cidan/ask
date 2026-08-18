@@ -3,14 +3,13 @@ package main
 import (
 	"context"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/tools"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func nativeBridgeTool[In, Out any](name, description string,
 	run func(ctx context.Context, in In) (*mcp.CallToolResult, Out, error),
-) fantasy.AgentTool {
+) tools.Tool {
 	return tools.NativeBridgeTool(name, description, run)
 }
 
@@ -22,9 +21,9 @@ func mcpResultText(res *mcp.CallToolResult) string {
 	return tools.MCPResultText(res)
 }
 
-func agentLinearTools(env *agentToolEnv) []fantasy.AgentTool {
+func agentLinearTools(env *agentToolEnv) []tools.Tool {
 	cwd := func() string { return env.Cwd }
-	return []fantasy.AgentTool{
+	return []tools.Tool{
 		nativeBridgeTool("linear_list_issues", linearListToolDescription,
 			func(ctx context.Context, in linearListInput) (*mcp.CallToolResult, linearListOutput, error) {
 				return linearListCore(ctx, cwd(), in)

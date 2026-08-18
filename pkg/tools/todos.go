@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/engine"
 )
 
@@ -57,13 +56,13 @@ type TodosParams struct {
 }
 
 // TodosTool returns the native task list management tool.
-func TodosTool(env *ToolEnv) fantasy.AgentTool {
-	return fantasy.NewAgentTool(
+func TodosTool(env *ToolEnv) Tool {
+	return NewTool(
 		"todos",
 		TodosToolDescription,
-		func(ctx context.Context, p TodosParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, p TodosParams) (ToolResponse, error) {
 			if notice := env.WorkflowGuardNotice(); notice != "" {
-				return fantasy.NewTextResponse(notice), nil
+				return NewTextResponse(notice), nil
 			}
 			inProgress := 0
 			completed := 0
@@ -76,11 +75,11 @@ func TodosTool(env *ToolEnv) fantasy.AgentTool {
 				case "completed":
 					completed++
 				default:
-					return fantasy.NewTextErrorResponse(fmt.Sprintf(
+					return NewTextErrorResponse(fmt.Sprintf(
 						"todos[%d] has invalid status %q (want pending, in_progress, or completed)", i, td.Status)), nil
 				}
 				if td.Content == "" {
-					return fantasy.NewTextErrorResponse(fmt.Sprintf("todos[%d] has empty content", i)), nil
+					return NewTextErrorResponse(fmt.Sprintf("todos[%d] has empty content", i)), nil
 				}
 				items = append(items, engine.TodoItem{
 					Content:    td.Content,
@@ -89,7 +88,7 @@ func TodosTool(env *ToolEnv) fantasy.AgentTool {
 				})
 			}
 			if inProgress > 1 {
-				return fantasy.NewTextErrorResponse("keep at most one todo in_progress at a time"), nil
+				return NewTextErrorResponse("keep at most one todo in_progress at a time"), nil
 			}
 			env.MarkTodosApplied()
 			if env.Emit != nil {
@@ -105,7 +104,7 @@ func TodosTool(env *ToolEnv) fantasy.AgentTool {
 			case inProgress == 0 && completed < len(items):
 				note = " — no item is in_progress; mark the one you are about to work on before continuing"
 			}
-			return fantasy.NewTextResponse(fmt.Sprintf(
+			return NewTextResponse(fmt.Sprintf(
 				"(todo list updated: %d items, %d completed)%s", len(items), completed, note)), nil
 		},
 	)

@@ -7,9 +7,9 @@ import (
 	"sort"
 	"strings"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/providers"
+	"google.golang.org/genai"
 )
 
 // SubagentDef is a named subagent definition.
@@ -129,8 +129,8 @@ Named agents run through the task tool: pass agent:"<name>" with a self-containe
 	return b.String()
 }
 
-// ResolveSubagentModel builds the child LanguageModel for a def.
-func ResolveSubagentModel(def SubagentDef, parentProviderID string, parent fantasy.LanguageModel, cfg config.Config) (fantasy.LanguageModel, int64, error) {
+// ResolveSubagentModel builds the child Client for a def.
+func ResolveSubagentModel(def SubagentDef, parentProviderID string, parent *genai.Client, cfg config.Config) (*genai.Client, int64, error) {
 	providerID := def.Provider
 	if providerID == "" && def.Model == "" {
 		return parent, 0, nil
@@ -146,10 +146,7 @@ func ResolveSubagentModel(def SubagentDef, parentProviderID string, parent fanta
 	if model == "" {
 		model = spec.DefaultModel
 	}
-	if spec.ID == "anthropic" {
-		model = providers.AnthropicModelAlias(model)
-	}
-	lm, err := spec.BuildModel(cfg, model)
+	client, err := spec.BuildClient(cfg)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -157,7 +154,7 @@ func ResolveSubagentModel(def SubagentDef, parentProviderID string, parent fanta
 	if spec.MaxOutputTokens != nil {
 		budget = spec.MaxOutputTokens(model)
 	}
-	return lm, budget, nil
+	return client, budget, nil
 }
 
 // SubagentToolNames returns the slice of tool names allowed for the subagent.
@@ -191,9 +188,9 @@ func SubagentToolNames(def SubagentDef) []string {
 }
 
 // SubagentTools filters the provided tools map by the subagent's allowed tool names.
-func SubagentTools(def SubagentDef, available map[string]fantasy.AgentTool) []fantasy.AgentTool {
+func SubagentTools(def SubagentDef, available map[string]Tool) []Tool {
 	names := SubagentToolNames(def)
-	out := make([]fantasy.AgentTool, 0, len(names))
+	out := make([]Tool, 0, len(names))
 	for _, name := range names {
 		if t, ok := available[name]; ok {
 			out = append(out, t)

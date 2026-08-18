@@ -1,15 +1,18 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"iter"
 	"strings"
 	"testing"
 	"time"
 
-	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/engine"
+	"google.golang.org/genai"
 )
 
-func swapTitleGenerator(t *testing.T, fn func(providerID, modelID, prompt string) (string, fantasy.Usage, error)) {
+func swapTitleGenerator(t *testing.T, fn func(providerID, modelID, prompt string) (string, TokenUsage, error)) {
 	t.Helper()
 	prev := generateTabTitleText
 	generateTabTitleText = fn
@@ -48,8 +51,8 @@ func TestSanitizeTabTitle(t *testing.T) {
 }
 
 func TestMaybeStartTabTitleGating(t *testing.T) {
-	swapTitleGenerator(t, func(_, _, _ string) (string, fantasy.Usage, error) {
-		return "Generated title", fantasy.Usage{}, nil
+	swapTitleGenerator(t, func(_, _, _ string) (string, TokenUsage, error) {
+		return "Generated title", TokenUsage{}, nil
 	})
 
 	// Seeds the fallback and returns the async cmd.
@@ -89,8 +92,8 @@ func TestMaybeStartTabTitleGating(t *testing.T) {
 }
 
 func TestGenerateTabTitleCmdSwallowsErrors(t *testing.T) {
-	swapTitleGenerator(t, func(_, _, _ string) (string, fantasy.Usage, error) {
-		return "", fantasy.Usage{}, errors.New("network down")
+	swapTitleGenerator(t, func(_, _, _ string) (string, TokenUsage, error) {
+		return "", TokenUsage{}, errors.New("network down")
 	})
 	msg := generateTabTitleCmd(7, "fake", "", "prompt")().(tabTitleMsg)
 	if msg.tabID != 7 || msg.title != "" {
@@ -211,29 +214,24 @@ func TestResumeRehydratesTitle(t *testing.T) {
 	}
 }
 
-// TestGenerateTabTitle_RetriesOn5xx verifies the title call's
-// AgentStreamCall carries MaxRetries, so a 5xx on the first attempt
-// gets retried and a non-empty title still lands. Drives the real
-// generateTabTitleText (not the swap) by swapping the deepseek model
-// factory to return a fakeLM that fails once with a 5xx.
-func TestGenerateTabTitle_RetriesOn5xx(t *testing.T) {
-	lm := &fakeLM{turns: [][]fantasy.StreamPart{
-		{providerErrPart(500, "internal server error", "boom")},
-		textTurn("Recovered Title", fantasy.Usage{InputTokens: 5, OutputTokens: 3}),
-	}}
-	swapDeepseekLM(t, lm)
+func TestGenerateTabTitle_StreamsTitle(t *testing.T) {
+	origStream := engine.GenerateStream
+	defer func() { engine.GenerateStream = origStream }()
 
-	title, usage, err := generateTabTitleText("deepseek", "deepseek-v4-pro", "fix the flaky test")
+	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			yield(genaiTextChunk("Recovered Title", 5, 3), nil)
+		}
+	}
+
+	title, usage, err := generateTabTitleText("vertex", "gemini-2.5-pro", "fix the flaky test")
 	if err != nil {
-		t.Fatalf("expected success after retry, got error: %v", err)
+		t.Fatalf("expected success, got error: %v", err)
 	}
 	if title != "Recovered Title" {
 		t.Errorf("title = %q want %q", title, "Recovered Title")
 	}
 	if usage.OutputTokens != 3 {
-		t.Errorf("usage.OutputTokens = %d want 3 (from the successful retry)", usage.OutputTokens)
-	}
-	if n := len(lm.streamCalls()); n != 2 {
-		t.Errorf("stream calls = %d want 2 (1 fail + 1 success)", n)
+		t.Errorf("usage.OutputTokens = %d want 3", usage.OutputTokens)
 	}
 }

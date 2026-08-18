@@ -9,8 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/bubbletea/v2"
-	"charm.land/fantasy"
+	tea "charm.land/bubbletea/v2"
 	"github.com/Cidan/ask/pkg/tools"
 )
 
@@ -201,7 +200,7 @@ func TestSudoEnv_AgentBashToolAndAskPassHelper(t *testing.T) {
 
 	tool := agentBashTool(env)
 	ctx := context.Background()
-	_, err := tool.Run(ctx, fantasy.ToolCall{ID: "t", Name: "bash", Input: `{"command": "echo test", "description": "test"}`})
+	_, err := tool.Run(ctx, map[string]any{"command": "echo test", "description": "test"})
 	if err != nil {
 		t.Fatalf("tool.Run failed: %v", err)
 	}

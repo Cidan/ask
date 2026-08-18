@@ -5,11 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/fantasy"
-	"charm.land/fantasy/schema"
+	"github.com/Cidan/ask/pkg/tools"
 )
 
-func bridgeToolByName(t *testing.T, env *agentToolEnv, name string) fantasy.AgentTool {
+func bridgeToolByName(t *testing.T, env *agentToolEnv, name string) tools.Tool {
 	t.Helper()
 	for _, tool := range agentLinearTools(env) {
 		if tool.Info().Name == name {
@@ -110,7 +109,7 @@ func TestNativeBridgeTool_LinearGateErrors(t *testing.T) {
 	isolateHome(t)
 	env, _ := newTestToolEnv(t)
 	tool := bridgeToolByName(t, env, "linear_list_issues")
-	resp, err := tool.Run(context.Background(), fantasy.ToolCall{ID: "1", Name: "linear_list_issues", Input: `{}`})
+	resp, err := tools.RunToolWithJSON(context.Background(), tool, `{}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +121,7 @@ func TestNativeBridgeTool_LinearGateErrors(t *testing.T) {
 func TestNativeBridgeTool_InvalidInputErrors(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 	tool := bridgeToolByName(t, env, "linear_get_issue")
-	resp, err := tool.Run(context.Background(), fantasy.ToolCall{ID: "1", Name: "linear_get_issue", Input: `{not json`})
+	resp, err := tools.RunToolWithJSON(context.Background(), tool, `{not json`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,21 +139,11 @@ func TestSetupAgentSessionTools_NoLoopbackAttachAndNativesPresent(t *testing.T) 
 	for _, tool := range agentLinearTools(env) {
 		names[tool.Info().Name] = true
 	}
-	// The linear_* tools are the registry-resident bridge twins. The
-	// workflow tools now live on the wire as core exceptions
-	// (agent_tools_workflow.go); their presence in the registry would
-	// mean a regression. Both are still assembled in the session — the
-	// point of this test is the loopback bridge isn't attached.
 	if !names["linear_list_issues"] {
 		t.Error("linear_* native bridge twins must be present in the deferred registry")
 	}
 }
 
-// TestClearPlans_NotInLinearTools sanity-checks that the clear_plans
-// tool is NOT in agentLinearTools (it lives in the workflow core set
-// now, not the linear twins). The full clear_plans behavior is
-// covered by TestClearPlans_WorkflowCoreToolIdempotent in
-// agent_tools_workflow_test.go.
 func TestClearPlans_NotInLinearTools(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 	for _, tool := range agentLinearTools(env) {
@@ -164,21 +153,13 @@ func TestClearPlans_NotInLinearTools(t *testing.T) {
 	}
 }
 
-// TestNativeBridgeTool_AllWireSchemasClean runs the same
-// Normalize-then-walk check the workflow suite uses, but across every
-// linear_* native twin. Catches a future nullable field introduced
-// into a linear input type, so the strict-validator bug can't sneak
-// back in via a different tool family.
 func TestNativeBridgeTool_AllWireSchemasClean(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 	for _, tool := range agentLinearTools(env) {
-		info := tool.Info()
-		wire := map[string]any{
-			"type":       "object",
-			"properties": info.Parameters,
-			"required":   info.Required,
+		decl := tool.Declaration()
+		if decl == nil {
+			t.Fatalf("tool %s missing declaration", tool.Info().Name)
 		}
-		schema.Normalize(wire)
-		walkForItemsAnyOfConflict(t, info.Name, wire)
+		walkForItemsAnyOfConflict(t, tool.Info().Name, decl.ParametersJsonSchema)
 	}
 }

@@ -3,11 +3,6 @@ package main
 // Tab titles: a short human-readable description of what each tab is
 // doing, surfaced on the sidebar cards and
 // persisted on the VirtualSession for /resume.
-//
-// Two layers, cheapest first: the moment the first user turn is sent
-// the title is seeded from the prompt itself (fallbackTabTitle), then
-// a one-shot LLM call — the crush session-title pattern — refines it
-// asynchronously (generateTabTitleCmd → tabTitleMsg).
 
 import (
 	"context"
@@ -16,7 +11,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/engine"
+	"google.golang.org/genai"
 )
 
 // tabTitleMaxLen caps a title at sidebar-card scale.
@@ -34,49 +30,60 @@ Rules:
 // can't leak goroutines per tab.
 var tabTitleTimeout = 30 * time.Second
 
-// tabTitleMaxOutputTokens leaves room for reasoning models that burn
-// tokens before emitting text; the sanitizer clamps the result anyway.
-const tabTitleMaxOutputTokens = int64(512)
-
 // generateTabTitleText runs the one-shot LLM title call, returning the
-// raw title text and the call's token usage (so the dispatcher can
-// price it onto the session cost meter). Swappable package var so
-// tests script the result with zero network.
-var generateTabTitleText = func(providerID, modelID, prompt string) (string, fantasy.Usage, error) {
+// raw title text and the call's token usage.
+var generateTabTitleText = func(providerID, modelID, prompt string) (string, TokenUsage, error) {
 	spec, ok := agentSpecByID(providerID)
 	if !ok {
-		return "", fantasy.Usage{}, fmt.Errorf("tab title: provider %q has no agent spec", providerID)
+		return "", TokenUsage{}, fmt.Errorf("tab title: provider %q has no agent spec", providerID)
 	}
 	cfg, _ := loadConfig()
 	if modelID == "" {
 		modelID = spec.DefaultModel
 	}
-	lm, err := spec.BuildModel(toPkgConfig(cfg), modelID)
+	client, err := spec.BuildClient(toPkgConfig(cfg))
 	if err != nil {
-		return "", fantasy.Usage{}, err
+		return "", TokenUsage{}, err
 	}
-	agent := fantasy.NewAgent(lm, fantasy.WithSystemPrompt(tabTitleSystemPrompt))
+
 	ctx, cancel := context.WithTimeout(context.Background(), tabTitleTimeout)
 	defer cancel()
-	retryMaxRetries, _, _ := agentRetryOptions(cfg)
-	res, err := agent.Stream(ctx, fantasy.AgentStreamCall{
-		Prompt:          "Generate a concise title for the following session-opening message:\n\n" + prompt,
-		MaxOutputTokens: maxOutputTokensPtr(tabTitleMaxOutputTokens),
-		MaxRetries:      retryMaxRetriesPtr(retryMaxRetries),
-	})
-	if err != nil {
-		return "", fantasy.Usage{}, err
+
+	genaiConfig := &genai.GenerateContentConfig{
+		SystemInstruction: genai.NewContentFromText(tabTitleSystemPrompt, genai.RoleUser),
 	}
-	if res == nil {
-		return "", fantasy.Usage{}, fmt.Errorf("tab title: empty response")
+	contents := []*genai.Content{
+		genai.NewContentFromText("Generate a concise title for the following session-opening message:\n\n"+prompt, genai.RoleUser),
 	}
-	return res.Response.Content.Text(), res.TotalUsage, nil
+
+	stream := engine.GenerateStream(ctx, client, modelID, contents, genaiConfig)
+	var sb strings.Builder
+	var usage TokenUsage
+	for chunk, err := range stream {
+		if err != nil {
+			return "", usage, err
+		}
+		if chunk == nil {
+			continue
+		}
+		if chunk.UsageMetadata != nil {
+			usage.InputTokens = int(chunk.UsageMetadata.PromptTokenCount)
+			usage.OutputTokens = int(chunk.UsageMetadata.CandidatesTokenCount)
+		}
+		for _, cand := range chunk.Candidates {
+			if cand.Content != nil {
+				for _, part := range cand.Content.Parts {
+					if part.Text != "" && !part.Thought {
+						sb.WriteString(part.Text)
+					}
+				}
+			}
+		}
+	}
+	return sb.String(), usage, nil
 }
 
-// generateTabTitleCmd dispatches the background title call and lands
-// the sanitized result as a tabTitleMsg, priced via the catwalk
-// catalog. Failures return an empty title — the handler keeps the
-// first-prompt fallback, never errors at the user.
+// generateTabTitleCmd dispatches the background title call.
 func generateTabTitleCmd(tabID int, providerID, modelID, prompt string) tea.Cmd {
 	return func() tea.Msg {
 		raw, usage, err := generateTabTitleText(providerID, modelID, prompt)
@@ -84,8 +91,6 @@ func generateTabTitleCmd(tabID int, providerID, modelID, prompt string) tea.Cmd 
 			debugLog("tab title generation: %v", err)
 			return tabTitleMsg{tabID: tabID}
 		}
-		// Resolve the same default the generator used so the catalog
-		// lookup prices the model actually called.
 		costModel := modelID
 		if costModel == "" {
 			if spec, ok := agentSpecByID(providerID); ok {
@@ -97,10 +102,7 @@ func generateTabTitleCmd(tabID int, providerID, modelID, prompt string) tea.Cmd 
 	}
 }
 
-// maybeStartTabTitle seeds the fallback title from the first user
-// prompt and returns the cmd that refines it via the LLM. Nil (and a
-// no-op) for workflow tabs, already-titled tabs, blank prompts, and
-// invalid cwds (where the turn itself will be refused).
+// maybeStartTabTitle seeds the fallback title from the first user prompt.
 func (m *model) maybeStartTabTitle(line string) tea.Cmd {
 	if m.workflowRun != nil || m.tabTitle != "" || m.provider == nil {
 		return nil
@@ -115,15 +117,12 @@ func (m *model) maybeStartTabTitle(line string) tea.Cmd {
 	return generateTabTitleCmd(m.id, m.provider.ID(), m.providerModel, line)
 }
 
-// fallbackTabTitle derives the instant title from the user's prompt:
-// newlines collapsed, clipped to card scale.
+// fallbackTabTitle derives the instant title from the user's prompt.
 func fallbackTabTitle(prompt string) string {
 	return clipText(strings.TrimSpace(flattenNewlines(prompt)), tabTitleMaxLen)
 }
 
-// sanitizeTabTitle cleans an LLM response into a card-safe one-liner:
-// reasoning tags stripped, newlines collapsed, surrounding quotes and
-// trailing period dropped, clipped to tabTitleMaxLen.
+// sanitizeTabTitle cleans an LLM response into a card-safe one-liner.
 func sanitizeTabTitle(s string) string {
 	for {
 		start := strings.Index(s, "<think>")
@@ -145,8 +144,6 @@ func sanitizeTabTitle(s string) string {
 }
 
 // persistTabTitle writes the title onto the tab's VirtualSession.
-// No-op until the tab is paired with a VS — recordVirtualSession
-// backfills the title on the next turn completion for that case.
 func (m *model) persistTabTitle() {
 	if m.virtualSessionID == "" || m.tabTitle == "" {
 		return

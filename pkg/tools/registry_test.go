@@ -6,23 +6,30 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/fantasy"
+	"google.golang.org/genai"
 )
 
 type testRegistryTool struct {
-	info fantasy.ToolInfo
-	fn   func(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error)
+	info ToolInfo
+	fn   func(ctx context.Context, args map[string]any) (ToolResponse, error)
 }
 
-func (t *testRegistryTool) Info() fantasy.ToolInfo { return t.info }
-func (t *testRegistryTool) Run(ctx context.Context, c fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	return t.fn(ctx, c)
+func (t *testRegistryTool) Name() string        { return t.info.Name }
+func (t *testRegistryTool) Description() string { return t.info.Description }
+func (t *testRegistryTool) Info() ToolInfo      { return t.info }
+func (t *testRegistryTool) Declaration() *genai.FunctionDeclaration {
+	return &genai.FunctionDeclaration{
+		Name:                 t.info.Name,
+		Description:          t.info.Description,
+		ParametersJsonSchema: map[string]any{"type": "object", "properties": t.info.Parameters, "required": t.info.Required},
+	}
 }
-func (t *testRegistryTool) ProviderOptions() fantasy.ProviderOptions   { return nil }
-func (t *testRegistryTool) SetProviderOptions(fantasy.ProviderOptions) {}
+func (t *testRegistryTool) Run(ctx context.Context, args map[string]any) (ToolResponse, error) {
+	return t.fn(ctx, args)
+}
 
-func staticRegistry(tools ...fantasy.AgentTool) func() []fantasy.AgentTool {
-	return func() []fantasy.AgentTool { return tools }
+func staticRegistry(tools ...Tool) func() []Tool {
+	return func() []Tool { return tools }
 }
 
 func registryTool(name, description string, required []string) *testRegistryTool {
@@ -31,14 +38,14 @@ func registryTool(name, description string, required []string) *testRegistryTool
 		props[r] = map[string]any{"type": "string"}
 	}
 	return &testRegistryTool{
-		info: fantasy.ToolInfo{
+		info: ToolInfo{
 			Name:        name,
 			Description: description,
 			Parameters:  props,
 			Required:    required,
 		},
-		fn: func(_ context.Context, c fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			return fantasy.NewTextResponse("ok:" + c.Name), nil
+		fn: func(_ context.Context, args map[string]any) (ToolResponse, error) {
+			return NewTextResponse("ok:" + name), nil
 		},
 	}
 }
@@ -52,7 +59,7 @@ func TestSearchTools_QueryForms(t *testing.T) {
 	)
 	tool := SearchToolsTool(reg)
 
-	parse := func(resp fantasy.ToolResponse) []SearchToolsEntry {
+	parse := func(resp ToolResponse) []SearchToolsEntry {
 		t.Helper()
 		if resp.IsError {
 			t.Fatalf("unexpected error response: %s", resp.Content)
@@ -89,10 +96,9 @@ func TestSearchTools_QueryForms(t *testing.T) {
 
 func TestInvokeTool(t *testing.T) {
 	env, _ := newTestToolEnv(t)
-	var capturedCall fantasy.ToolCall
-	_ = capturedCall
+	var capturedArgs map[string]any
 	targetTool := &testRegistryTool{
-		info: fantasy.ToolInfo{
+		info: ToolInfo{
 			Name:        "linear_custom",
 			Description: "A custom linear tool",
 			Parameters: map[string]any{
@@ -101,9 +107,9 @@ func TestInvokeTool(t *testing.T) {
 			},
 			Required: []string{"id", "description"},
 		},
-		fn: func(_ context.Context, c fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			capturedCall = c
-			return fantasy.NewTextResponse("invoked:" + c.Name), nil
+		fn: func(_ context.Context, args map[string]any) (ToolResponse, error) {
+			capturedArgs = args
+			return NewTextResponse("invoked:linear_custom"), nil
 		},
 	}
 
@@ -135,6 +141,9 @@ func TestInvokeTool(t *testing.T) {
 	})
 	if resp.IsError || !strings.Contains(resp.Content, "invoked:linear_custom") {
 		t.Fatalf("invoke failed: %+v", resp)
+	}
+	if capturedArgs == nil || capturedArgs["id"] != "123" || capturedArgs["description"] != "running linear custom" {
+		t.Errorf("capturedArgs wrong: %+v", capturedArgs)
 	}
 
 	// Check unwrapping

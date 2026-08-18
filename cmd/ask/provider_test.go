@@ -8,18 +8,18 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-func TestProviderRegistry_ReturnsAnthropicByID(t *testing.T) {
+func TestProviderRegistry_ReturnsVertexByID(t *testing.T) {
 	// The registry is populated by provider.go's init(); verify lookup
-	// works end-to-end and the default (first registered) is anthropic.
-	p := providerByID("anthropic")
+	// works end-to-end and the default (first registered) is vertex.
+	p := providerByID("vertex")
 	if p == nil {
-		t.Fatalf("providerByID(\"anthropic\") returned nil; registry=%d", len(providerRegistry))
+		t.Fatalf("providerByID(\"vertex\") returned nil; registry=%d", len(providerRegistry))
 	}
-	if p.ID() != "anthropic" {
-		t.Fatalf("want ID=anthropic, got %q", p.ID())
+	if p.ID() != "vertex" {
+		t.Fatalf("want ID=vertex, got %q", p.ID())
 	}
-	if def := providerByID(""); def == nil || def.ID() != "anthropic" {
-		t.Fatalf("empty id must fall back to anthropic, got %v", def)
+	if def := providerByID(""); def == nil || def.ID() != "vertex" {
+		t.Fatalf("empty id must fall back to vertex, got %v", def)
 	}
 }
 
@@ -67,11 +67,6 @@ func TestProviderByID_EmptyIDReturnsFirst(t *testing.T) {
 	}
 }
 
-// providerByIDStrict must NEVER fall back to the first registered
-// provider. The resume-side LastProvider override depends on this:
-// silently swapping providers when the recorded id is missing would
-// either reopen the conversation under the wrong backend (defeating
-// the purpose) or hide the rename/removal from the user.
 func TestProviderByIDStrict_HitReturnsTrue(t *testing.T) {
 	f1 := newFakeProvider()
 	f1.id = "alpha"
@@ -137,24 +132,13 @@ func TestProviderProc_KillClosesStdin(t *testing.T) {
 	}
 }
 
-// TestKillProc_DrainsStreamChannelSoWriterCanExit pins the fix for the
-// workflow-step freeze: when the model abandons a stream channel
-// (workflow advancing to the next step, /clear, provider switch),
-// the read side must keep draining until the writer's `defer close(ch)`
-// runs. Without the drainer, a writer with stdout still backlogged
-// blocks at `ch <- msg` after the 32-slot buffer fills, never reaches
-// `cmd.Wait()`, and wedges the whole pipeline.
 func TestKillProc_DrainsStreamChannelSoWriterCanExit(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
-	// Channel size mirrors the 32 used by readClaudeStream/readCodexStream.
 	ch := make(chan tea.Msg, 32)
 	m.proc = &providerProc{}
 	m.streamCh = ch
 
 	writerDone := make(chan struct{})
-	// Writer mimics readClaudeStream's tail: many backlogged events
-	// followed by `defer close(ch)`. With a 32-slot buffer and no
-	// reader, a non-drained channel pins this goroutine forever.
 	go func() {
 		defer close(ch)
 		defer close(writerDone)
@@ -178,15 +162,10 @@ func TestKillProc_DrainsStreamChannelSoWriterCanExit(t *testing.T) {
 	}
 }
 
-// TestDrainProviderStream_NilChannelSafe guards against a nil-deref
-// regression — callers (eventually proc.go's error paths) may pass a
-// nil channel when StartSession failed before allocating one.
 func TestDrainProviderStream_NilChannelSafe(t *testing.T) {
 	drainProviderStream(nil) // must not panic
 }
 
-// trackCloser is a bufferCloser variant that records whether Close was
-// ever invoked. Used to verify kill() actually drives the io.WriteCloser.
 type trackCloser struct {
 	*bytes.Buffer
 	closed bool

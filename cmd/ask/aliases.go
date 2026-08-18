@@ -4,13 +4,13 @@ import (
 	"context"
 	"strings"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/memory"
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/tools"
 	"github.com/Cidan/ask/pkg/workflow"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/genai"
 )
 
 // Workflow aliases
@@ -236,59 +236,20 @@ func agentMemorySystemBlock(cwd string) string {
 	return memory.SystemBlock(context.Background(), cwd)
 }
 
-func wrapFileToolsWithMemory(ts []fantasy.AgentTool, cwd string) []fantasy.AgentTool {
-	return memory.WrapFileTools(ts, cwd)
+func wrapFileToolsWithMemory(ts []tools.Tool, cwd string) []tools.Tool {
+	return tools.WrapFileToolsWithMemory(ts, cwd)
 }
 
-func agentMemoryIndexTool(env *agentToolEnv) fantasy.AgentTool {
-	return memory.MemoryIndexTool(env.Cwd, env.RequestApproval)
+func agentMemoryIndexTool(env *agentToolEnv) tools.Tool {
+	return tools.MemoryIndexTool(env.Cwd, env.RequestApproval)
 }
 
 // Provider aliases
 const (
-	anthropicProviderID   = providers.AnthropicProviderID
-	openaiProviderID      = providers.OpenAIProviderID
-	deepseekProviderID    = providers.DeepSeekProviderID
-	kimiProviderID        = providers.KimiProviderID
-	minimaxProviderID     = providers.MiniMaxProviderID
-	googleaiProviderID    = providers.GoogleAIProviderID
 	vertexProviderID      = providers.VertexProviderID
 	vertexDefaultLocation = providers.VertexDefaultLocation
-	deepseekContextWindow = providers.DeepSeekContextWindow
-	kimiContextWindow     = providers.KimiContextWindow
-
-	anthropicDefaultModel = providers.AnthropicDefaultModel
-	openaiDefaultModel    = providers.OpenAIDefaultModel
-	deepseekDefaultModel  = providers.DeepSeekDefaultModel
-	kimiDefaultModel      = providers.KimiDefaultModel
-	minimaxDefaultModel   = providers.MiniMaxDefaultModel
-	googleaiDefaultModel  = providers.GoogleAIDefaultModel
 	vertexDefaultModel    = providers.VertexDefaultModel
 )
-
-func anthropicAgentProvider() agentAPIProvider {
-	return agentAPIProvider{spec: &providers.AnthropicSpec}
-}
-
-func openaiAgentProvider() agentAPIProvider {
-	return agentAPIProvider{spec: &providers.OpenAISpec}
-}
-
-func deepseekAgentProvider() agentAPIProvider {
-	return agentAPIProvider{spec: &providers.DeepSeekSpec}
-}
-
-func kimiAgentProvider() agentAPIProvider {
-	return agentAPIProvider{spec: &providers.KimiSpec}
-}
-
-func minimaxAgentProvider() agentAPIProvider {
-	return agentAPIProvider{spec: &providers.MiniMaxSpec}
-}
-
-func googleaiAgentProvider() agentAPIProvider {
-	return agentAPIProvider{spec: &providers.GoogleAISpec}
-}
 
 func vertexAgentProvider() agentAPIProvider {
 	return agentAPIProvider{spec: &providers.VertexSpec}
@@ -307,13 +268,6 @@ var (
 	vertexResolveLocation    = providers.VertexResolveLocation
 	vertexResolveProject     = providers.VertexResolveProject
 	filterVertexModelOptions = providers.FilterVertexModelOptions
-	deepseekModelOptions     = providers.DeepSeekModelOptions
-	deepseekEffortOptions    = providers.DeepSeekEffortOptions
-	anthropicEffortOptions   = providers.AnthropicEffortOptions
-	openaiEffortOptions      = providers.OpenAIEffortOptions
-	kimiEffortOptions        = providers.KimiEffortOptions
-	minimaxEffortOptions     = providers.MiniMaxEffortOptions
-	googleaiEffortOptions    = providers.GoogleAIEffortOptions
 	vertexEffortOptions      = providers.VertexEffortOptions
 	globalEffortOptions      = providers.GlobalEffortOptions
 )
@@ -354,13 +308,13 @@ var (
 	agentGitStatus        = engine.AgentGitStatus
 )
 
-func resolveSubagentModel(def subagentDef, parentProviderID string, parent fantasy.LanguageModel) (fantasy.LanguageModel, int64, error) {
+func resolveSubagentModel(def subagentDef, parentProviderID string, parent *genai.Client) (*genai.Client, int64, error) {
 	cfg, _ := loadConfig()
 	return engine.ResolveSubagentModel(def, parentProviderID, parent, toPkgConfig(cfg))
 }
 
-func subagentTools(def subagentDef, env *agentToolEnv) []fantasy.AgentTool {
-	available := map[string]fantasy.AgentTool{
+func subagentTools(def subagentDef, env *agentToolEnv) []tools.Tool {
+	available := map[string]tools.Tool{
 		"read":       tools.ReadTool(env),
 		"glob":       tools.GlobTool(env),
 		"grep":       tools.GrepTool(env),
