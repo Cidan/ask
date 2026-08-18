@@ -191,6 +191,7 @@ func (s *Session) runTurn(turn Turn) {
 		var turnTextBuf strings.Builder
 		var turnThoughts []ThoughtPart
 		var turnToolCalls []ToolCallPart
+		var latestThoughtSig []byte
 		var streamErr error
 
 		for chunk, err := range stream {
@@ -217,6 +218,9 @@ func (s *Session) runTurn(turn Turn) {
 				}
 				for _, part := range candidate.Content.Parts {
 					if part.Thought {
+						if len(part.ThoughtSignature) > 0 {
+							latestThoughtSig = part.ThoughtSignature
+						}
 						turnThoughts = append(turnThoughts, ThoughtPart{
 							Text:      part.Text,
 							Signature: part.ThoughtSignature,
@@ -229,9 +233,19 @@ func (s *Session) runTurn(turn Turn) {
 						})
 					}
 					if part.FunctionCall != nil {
+						sig := part.ThoughtSignature
+						if len(sig) == 0 {
+							sig = latestThoughtSig
+						}
+						id := ""
+						if part.FunctionCall != nil {
+							id = part.FunctionCall.ID
+						}
 						turnToolCalls = append(turnToolCalls, ToolCallPart{
-							Name: part.FunctionCall.Name,
-							Args: part.FunctionCall.Args,
+							ID:               id,
+							Name:             part.FunctionCall.Name,
+							Args:             part.FunctionCall.Args,
+							ThoughtSignature: sig,
 						})
 						s.Emit(ToolCallEvent{
 							BaseEvent: BaseEvent{TabID: s.args.TabID},

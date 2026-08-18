@@ -82,6 +82,42 @@ func functionCallChunk(name string, args map[string]any) *genai.GenerateContentR
 	}
 }
 
+func functionCallChunkWithSignature(name string, args map[string]any, sig []byte) *genai.GenerateContentResponse {
+	p := genai.NewPartFromFunctionCall(name, args)
+	p.ThoughtSignature = sig
+	return &genai.GenerateContentResponse{
+		Candidates: []*genai.Candidate{
+			{
+				Content: &genai.Content{
+					Role: genai.RoleModel,
+					Parts: []*genai.Part{
+						p,
+					},
+				},
+			},
+		},
+	}
+}
+
+func thoughtChunkWithSignature(thought string, sig []byte) *genai.GenerateContentResponse {
+	return &genai.GenerateContentResponse{
+		Candidates: []*genai.Candidate{
+			{
+				Content: &genai.Content{
+					Role: genai.RoleModel,
+					Parts: []*genai.Part{
+						{
+							Text:             thought,
+							Thought:          true,
+							ThoughtSignature: sig,
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func TestEngineRun_SingleTurn(t *testing.T) {
 	isolateTestHome(t)
 	tmpCwd := t.TempDir()
@@ -446,5 +482,100 @@ func TestEngineRun_SessionStoreRoundTrip(t *testing.T) {
 	}
 	if _, err := store.Load(sessionID); err == nil {
 		t.Error("expected error loading deleted session")
+	}
+}
+
+func TestEngineRun_ThoughtSignaturePreservation(t *testing.T) {
+	isolateTestHome(t)
+	tmpCwd := t.TempDir()
+
+	testTool := &mockCustomTool{}
+
+	origBuilder := ClientBuilder
+	ClientBuilder = func(spec *providers.AgentProviderSpec, cfg config.Config) (*genai.Client, error) {
+		return nil, nil
+	}
+	defer func() { ClientBuilder = origBuilder }()
+
+	origStream := GenerateStream
+	defer func() { GenerateStream = origStream }()
+
+	expectedSig := []byte("crypto-thought-signature-12345")
+	var capturedContents []*genai.Content
+
+	step := 0
+	GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+		step++
+		if step == 1 {
+			// Stream a thought chunk followed by a function call chunk with signature
+			return mockStreamSequence(
+				thoughtChunkWithSignature("Let me call the calculator", expectedSig),
+				functionCallChunkWithSignature("custom_calc", map[string]any{"a": 10, "b": 32}, expectedSig),
+			)
+		}
+		// Capture contents received in turn 2 (after tool result)
+		capturedContents = append([]*genai.Content(nil), contents...)
+		return mockStreamSequence(textChunk("Done!"))
+	}
+
+	res, err := Run(context.Background(), RunOptions{
+		Prompt:   "Run calculation",
+		Cwd:      tmpCwd,
+		Provider: "vertex",
+		Tools:    []Tool{testTool},
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	if !testTool.ran {
+		t.Error("expected tool to run")
+	}
+	if res.Response != "Done!" {
+		t.Errorf("unexpected response: %s", res.Response)
+	}
+
+	// Verify that the model turn passed in step 2 preserved the ThoughtSignature on both Thought and FunctionCall parts
+	if len(capturedContents) < 3 {
+		t.Fatalf("expected at least 3 contents (user, model, tool-response), got %d", len(capturedContents))
+	}
+
+	modelContent := capturedContents[1]
+	if modelContent.Role != genai.RoleModel {
+		t.Errorf("expected role model, got %s", modelContent.Role)
+	}
+
+	var foundThoughtSig, foundFunctionCallSig bool
+	for _, part := range modelContent.Parts {
+		if part.Thought && string(part.ThoughtSignature) == string(expectedSig) {
+			foundThoughtSig = true
+		}
+		if part.FunctionCall != nil && string(part.ThoughtSignature) == string(expectedSig) {
+			foundFunctionCallSig = true
+		}
+	}
+
+	if !foundThoughtSig {
+		t.Error("expected Thought part to carry expected ThoughtSignature in multi-turn contents")
+	}
+	if !foundFunctionCallSig {
+		t.Error("expected FunctionCall part to carry expected ThoughtSignature in multi-turn contents")
+	}
+
+	// Verify session store roundtrip preserved thought signature
+	store := NewSessionStore("vertex")
+	loaded, err := store.Load(res.SessionID)
+	if err != nil {
+		t.Fatalf("Load session failed: %v", err)
+	}
+	if len(loaded.Messages) < 3 {
+		t.Fatalf("expected at least 3 saved messages, got %d", len(loaded.Messages))
+	}
+	assistantMsg := loaded.Messages[1]
+	if len(assistantMsg.Thoughts) == 0 || string(assistantMsg.Thoughts[0].Signature) != string(expectedSig) {
+		t.Errorf("saved thought signature mismatch: %+v", assistantMsg.Thoughts)
+	}
+	if len(assistantMsg.ToolCalls) == 0 || string(assistantMsg.ToolCalls[0].ThoughtSignature) != string(expectedSig) {
+		t.Errorf("saved tool call thought signature mismatch: %+v", assistantMsg.ToolCalls)
 	}
 }

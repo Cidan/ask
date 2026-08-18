@@ -66,9 +66,10 @@ type ThoughtPart struct {
 
 // ToolCallPart represents an invocation request from the model.
 type ToolCallPart struct {
-	ID   string         `json:"id,omitempty"`
-	Name string         `json:"name"`
-	Args map[string]any `json:"args,omitempty"`
+	ID               string         `json:"id,omitempty"`
+	Name             string         `json:"name"`
+	Args             map[string]any `json:"args,omitempty"`
+	ThoughtSignature []byte         `json:"thought_signature,omitempty"`
 }
 
 // ToolResultPart represents the response from executing a tool.
@@ -131,7 +132,12 @@ func (m Message) ToGenAIContent() *genai.Content {
 		}
 	}
 	for _, tc := range m.ToolCalls {
-		parts = append(parts, genai.NewPartFromFunctionCall(tc.Name, tc.Args))
+		p := genai.NewPartFromFunctionCall(tc.Name, tc.Args)
+		if tc.ID != "" && p.FunctionCall != nil {
+			p.FunctionCall.ID = tc.ID
+		}
+		p.ThoughtSignature = tc.ThoughtSignature
+		parts = append(parts, p)
 	}
 	for _, tr := range m.ToolResults {
 		respMap := map[string]any{
@@ -140,7 +146,11 @@ func (m Message) ToGenAIContent() *genai.Content {
 		if tr.IsError {
 			respMap["is_error"] = true
 		}
-		parts = append(parts, genai.NewPartFromFunctionResponse(tr.Name, respMap))
+		p := genai.NewPartFromFunctionResponse(tr.Name, respMap)
+		if tr.ID != "" && p.FunctionResponse != nil {
+			p.FunctionResponse.ID = tr.ID
+		}
+		parts = append(parts, p)
 	}
 
 	role := genai.RoleUser
@@ -180,9 +190,15 @@ func MessageFromGenAIContent(c *genai.Content) Message {
 			})
 		}
 		if p.FunctionCall != nil {
+			id := ""
+			if p.FunctionCall != nil {
+				id = p.FunctionCall.ID
+			}
 			m.ToolCalls = append(m.ToolCalls, ToolCallPart{
-				Name: p.FunctionCall.Name,
-				Args: p.FunctionCall.Args,
+				ID:               id,
+				Name:             p.FunctionCall.Name,
+				Args:             p.FunctionCall.Args,
+				ThoughtSignature: p.ThoughtSignature,
 			})
 		}
 		if p.FunctionResponse != nil {
@@ -194,7 +210,12 @@ func MessageFromGenAIContent(c *genai.Content) Message {
 			if errFlag, ok := p.FunctionResponse.Response["is_error"].(bool); ok {
 				isErr = errFlag
 			}
+			id := ""
+			if p.FunctionResponse != nil {
+				id = p.FunctionResponse.ID
+			}
 			m.ToolResults = append(m.ToolResults, ToolResultPart{
+				ID:      id,
 				Name:    p.FunctionResponse.Name,
 				Content: contentStr,
 				IsError: isErr,
@@ -230,14 +251,16 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		var texts []string
 		for _, part := range raw.Content {
 			var p struct {
-				Type          string         `json:"type"`
-				Text          string         `json:"text,omitempty"`
-				Name          string         `json:"name,omitempty"`
-				ToolCallName  string         `json:"tool_call_name,omitempty"`
-				Input         map[string]any `json:"input,omitempty"`
-				ToolCallInput string         `json:"tool_call_input,omitempty"`
-				Output        string         `json:"output,omitempty"`
-				IsError       bool           `json:"is_error,omitempty"`
+				Type             string         `json:"type"`
+				Text             string         `json:"text,omitempty"`
+				Name             string         `json:"name,omitempty"`
+				ToolCallName     string         `json:"tool_call_name,omitempty"`
+				Input            map[string]any `json:"input,omitempty"`
+				ToolCallInput    string         `json:"tool_call_input,omitempty"`
+				Output           string         `json:"output,omitempty"`
+				IsError          bool           `json:"is_error,omitempty"`
+				Signature        []byte         `json:"signature,omitempty"`
+				ThoughtSignature []byte         `json:"thought_signature,omitempty"`
 			}
 			if err := json.Unmarshal(part, &p); err == nil {
 				switch p.Type {
@@ -247,7 +270,11 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 					}
 				case "thought", "reasoning":
 					if p.Text != "" {
-						m.Thoughts = append(m.Thoughts, ThoughtPart{Text: p.Text})
+						sig := p.Signature
+						if len(sig) == 0 {
+							sig = p.ThoughtSignature
+						}
+						m.Thoughts = append(m.Thoughts, ThoughtPart{Text: p.Text, Signature: sig})
 					}
 				case "tool_call":
 					name := p.Name
@@ -258,7 +285,11 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 					if args == nil && p.ToolCallInput != "" {
 						_ = json.Unmarshal([]byte(p.ToolCallInput), &args)
 					}
-					m.ToolCalls = append(m.ToolCalls, ToolCallPart{Name: name, Args: args})
+					sig := p.ThoughtSignature
+					if len(sig) == 0 {
+						sig = p.Signature
+					}
+					m.ToolCalls = append(m.ToolCalls, ToolCallPart{Name: name, Args: args, ThoughtSignature: sig})
 				case "tool_result":
 					m.ToolResults = append(m.ToolResults, ToolResultPart{
 						Name:    p.Name,
