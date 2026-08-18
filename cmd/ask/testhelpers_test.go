@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"iter"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,7 +16,21 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/Cidan/ask/pkg/tools"
+	adkmodel "google.golang.org/adk/v2/model"
 )
+
+type mockADKModel struct {
+	name         string
+	generateFunc func(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error]
+}
+
+func (m *mockADKModel) Name() string { return m.name }
+func (m *mockADKModel) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	if m.generateFunc != nil {
+		return m.generateFunc(ctx, req, stream)
+	}
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {}
+}
 
 // fakeProvider is an instrumentable Provider for tests.
 type fakeProvider struct {

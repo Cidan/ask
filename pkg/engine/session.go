@@ -3,10 +3,14 @@ package engine
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/llmagent"
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
@@ -28,7 +32,7 @@ type Turn struct {
 
 type Session struct {
 	args          SessionArgs
-	client        *genai.Client
+	llm           model.LLM
 	system        string
 	contextWindow int64
 	modelID       string
@@ -42,15 +46,17 @@ type Session struct {
 	listener      EventListener
 	interaction   InteractionHandler
 	sessionID     string
+	sessSvc       session.Service
+	runner        *runner.Runner
 }
 
-func NewSession(args SessionArgs, client *genai.Client, system string, tools []Tool, listener EventListener, interaction InteractionHandler) *Session {
+func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, listener EventListener, interaction InteractionHandler) *Session {
 	if interaction == nil {
 		interaction = HeadlessInteractionHandler{AutoApproveTools: true}
 	}
 	s := &Session{
 		args:          args,
-		client:        client,
+		llm:           llm,
 		system:        system,
 		contextWindow: 1_048_576,
 		modelID:       args.Model,
@@ -64,6 +70,24 @@ func NewSession(args SessionArgs, client *genai.Client, system string, tools []T
 	if s.sessionID == "" {
 		s.sessionID = "ses-" + args.Model
 	}
+
+	adkTools, _ := AsADKTools(tools)
+	agentInstance, err := llmagent.New(llmagent.Config{
+		Name:        "ask_coder",
+		Model:       llm,
+		Instruction: system,
+		Tools:       adkTools,
+	})
+	if err == nil {
+		s.sessSvc = session.InMemoryService()
+		_, _ = s.sessSvc.Create(context.Background(), &session.CreateRequest{
+			AppName:   "ask",
+			UserID:    "user",
+			SessionID: s.sessionID,
+		})
+		s.runner, _ = RunnerBuilder(agentInstance, s.sessSvc)
+	}
+
 	go s.run()
 	return s
 }
@@ -155,182 +179,147 @@ func (s *Session) runTurn(turn Turn) {
 		Status:    "thinking…",
 	})
 
-	var functionDecls []*genai.FunctionDeclaration
-	toolMap := make(map[string]Tool, len(s.tools))
-	for _, t := range s.tools {
-		toolMap[t.Info().Name] = t
-		if decl := t.Declaration(); decl != nil {
-			functionDecls = append(functionDecls, decl)
+	if s.runner == nil {
+		s.Emit(DoneEvent{
+			BaseEvent: BaseEvent{TabID: s.args.TabID},
+			Result: ResultSummary{
+				SessionID: s.sessionID,
+				IsError:   true,
+				Result:    "runner is nil",
+			},
+			Error: errors.New("runner is nil"),
+		})
+		s.Emit(TurnCompleteEvent{BaseEvent: BaseEvent{TabID: s.args.TabID}})
+		return
+	}
+
+	userMsg := genai.NewContentFromText(turn.Text, genai.RoleUser)
+	for _, f := range turn.Files {
+		if len(f.Data) > 0 {
+			userMsg.Parts = append(userMsg.Parts, genai.NewPartFromBytes(f.Data, f.MIMEType))
 		}
 	}
 
-	genaiConfig := &genai.GenerateContentConfig{
-		SystemInstruction: genai.NewContentFromText(s.system, genai.RoleUser),
-	}
-	if len(functionDecls) > 0 {
-		genaiConfig.Tools = []*genai.Tool{
-			{FunctionDeclarations: functionDecls},
-		}
-	}
+	userMessageObj := NewUserMessage(turn.Text, turn.Files...)
+	s.messages = append(s.messages, userMessageObj)
 
-	var contents []*genai.Content
-	for _, msg := range s.messages {
-		contents = append(contents, msg.ToGenAIContent())
-	}
-
-	userMsg := NewUserMessage(turn.Text, turn.Files...)
-	s.messages = append(s.messages, userMsg)
-	contents = append(contents, userMsg.ToGenAIContent())
-
-	const maxTurns = 50
 	var finalResponseText strings.Builder
+	var currentTurnThoughts []ThoughtPart
+	var currentTurnToolCalls []ToolCallPart
+	var currentTurnToolResults []ToolResultPart
 
-	for turnIdx := 0; turnIdx < maxTurns; turnIdx++ {
-		stream := GenerateStream(ctx, s.client, s.modelID, contents, genaiConfig)
-
-		var turnTextBuf strings.Builder
-		var turnThoughts []ThoughtPart
-		var turnToolCalls []ToolCallPart
-		var latestThoughtSig []byte
-		var streamErr error
-
-		for chunk, err := range stream {
-			if err != nil {
-				streamErr = err
-				break
-			}
-			if chunk == nil {
-				continue
-			}
-
-			if chunk.UsageMetadata != nil {
-				s.Emit(UsageEvent{
-					BaseEvent:    BaseEvent{TabID: s.args.TabID},
-					InputTokens:  int(chunk.UsageMetadata.PromptTokenCount),
-					OutputTokens: int(chunk.UsageMetadata.CandidatesTokenCount),
-					TotalTokens:  int(chunk.UsageMetadata.TotalTokenCount),
-				})
-			}
-
-			for _, candidate := range chunk.Candidates {
-				if candidate.Content == nil {
-					continue
-				}
-				for _, part := range candidate.Content.Parts {
-					if part.Thought {
-						if len(part.ThoughtSignature) > 0 {
-							latestThoughtSig = part.ThoughtSignature
-						}
-						turnThoughts = append(turnThoughts, ThoughtPart{
-							Text:      part.Text,
-							Signature: part.ThoughtSignature,
-						})
-					} else if part.Text != "" {
-						turnTextBuf.WriteString(part.Text)
-						s.Emit(TextDeltaEvent{
-							BaseEvent: BaseEvent{TabID: s.args.TabID},
-							Delta:     part.Text,
-						})
-					}
-					if part.FunctionCall != nil {
-						sig := part.ThoughtSignature
-						if len(sig) == 0 {
-							sig = latestThoughtSig
-						}
-						id := ""
-						if part.FunctionCall != nil {
-							id = part.FunctionCall.ID
-						}
-						turnToolCalls = append(turnToolCalls, ToolCallPart{
-							ID:               id,
-							Name:             part.FunctionCall.Name,
-							Args:             part.FunctionCall.Args,
-							ThoughtSignature: sig,
-						})
-						s.Emit(ToolCallEvent{
-							BaseEvent: BaseEvent{TabID: s.args.TabID},
-							ToolName:  part.FunctionCall.Name,
-							Input:     part.FunctionCall.Args,
-						})
-					}
-				}
-			}
-		}
-
-		if streamErr != nil {
+	for event, err := range s.runner.Run(ctx, "user", s.sessionID, userMsg, agent.RunConfig{}) {
+		if err != nil {
 			s.Emit(DoneEvent{
 				BaseEvent: BaseEvent{TabID: s.args.TabID},
 				Result: ResultSummary{
 					SessionID: s.sessionID,
 					IsError:   true,
-					Result:    streamErr.Error(),
+					Result:    err.Error(),
 				},
-				Error: streamErr,
+				Error: err,
 			})
 			s.Emit(TurnCompleteEvent{BaseEvent: BaseEvent{TabID: s.args.TabID}})
 			return
 		}
+		if event == nil {
+			continue
+		}
 
-		rawText := turnTextBuf.String()
-		if rawText != "" {
-			if finalResponseText.Len() > 0 {
-				finalResponseText.WriteString("\n")
-			}
-			finalResponseText.WriteString(rawText)
-			s.Emit(AssistantTextEvent{
-				BaseEvent: BaseEvent{TabID: s.args.TabID},
-				Text:      rawText,
+		if event.UsageMetadata != nil {
+			s.Emit(UsageEvent{
+				BaseEvent:    BaseEvent{TabID: s.args.TabID},
+				InputTokens:  int(event.UsageMetadata.PromptTokenCount),
+				OutputTokens: int(event.UsageMetadata.CandidatesTokenCount),
+				TotalTokens:  int(event.UsageMetadata.TotalTokenCount),
 			})
 		}
 
-		assistantMsg := NewAssistantMessage(rawText, turnThoughts, turnToolCalls)
-		s.messages = append(s.messages, assistantMsg)
-		contents = append(contents, assistantMsg.ToGenAIContent())
-
-		if len(turnToolCalls) == 0 {
-			break
-		}
-
-		var toolResultParts []ToolResultPart
-		var stopTurnRequested bool
-
-		for _, tc := range turnToolCalls {
-			tool, ok := toolMap[tc.Name]
-			var resp ToolResponse
-			var runErr error
-			if !ok {
-				resp = NewTextErrorResponse(fmt.Sprintf("unknown tool %s", tc.Name))
-			} else {
-				resp, runErr = tool.Run(ctx, tc.Args)
-				if runErr != nil {
-					resp = NewTextErrorResponse(fmt.Sprintf("tool %s error: %s", tc.Name, runErr.Error()))
+		if event.LLMResponse.Content != nil {
+			for _, part := range event.LLMResponse.Content.Parts {
+				if part == nil {
+					continue
+				}
+				if part.Thought {
+					currentTurnThoughts = append(currentTurnThoughts, ThoughtPart{
+						Text:      part.Text,
+						Signature: part.ThoughtSignature,
+					})
+				} else if part.Text != "" {
+					if event.LLMResponse.Partial {
+						s.Emit(TextDeltaEvent{
+							BaseEvent: BaseEvent{TabID: s.args.TabID},
+							Delta:     part.Text,
+						})
+					}
+				}
+				if part.FunctionCall != nil {
+					tc := ToolCallPart{
+						ID:               part.FunctionCall.ID,
+						Name:             part.FunctionCall.Name,
+						Args:             part.FunctionCall.Args,
+						ThoughtSignature: part.ThoughtSignature,
+					}
+					currentTurnToolCalls = append(currentTurnToolCalls, tc)
+					s.Emit(ToolCallEvent{
+						BaseEvent: BaseEvent{TabID: s.args.TabID},
+						ToolName:  tc.Name,
+						Input:     tc.Args,
+					})
+				}
+				if part.FunctionResponse != nil {
+					resStr := ""
+					isErr := false
+					if res, ok := part.FunctionResponse.Response["result"].(string); ok {
+						resStr = res
+					}
+					if errFlag, ok := part.FunctionResponse.Response["is_error"].(bool); ok {
+						isErr = errFlag
+					}
+					tr := ToolResultPart{
+						ID:      part.FunctionResponse.ID,
+						Name:    part.FunctionResponse.Name,
+						Content: resStr,
+						IsError: isErr,
+					}
+					currentTurnToolResults = append(currentTurnToolResults, tr)
+					s.Emit(ToolResultEvent{
+						BaseEvent: BaseEvent{TabID: s.args.TabID},
+						ToolName:  tr.Name,
+						Output:    tr.Content,
+						IsError:   tr.IsError,
+					})
 				}
 			}
-
-			s.Emit(ToolResultEvent{
-				BaseEvent: BaseEvent{TabID: s.args.TabID},
-				ToolName:  tc.Name,
-				Output:    resp.Content,
-				IsError:   resp.IsError,
-			})
-
-			toolResultParts = append(toolResultParts, ToolResultPart{
-				Name:    tc.Name,
-				Content: resp.Content,
-				IsError: resp.IsError,
-			})
-
-			if resp.StopTurn {
-				stopTurnRequested = true
-			}
 		}
 
-		toolMsg := NewToolResultMessage(toolResultParts...)
-		s.messages = append(s.messages, toolMsg)
-		contents = append(contents, toolMsg.ToGenAIContent())
-
-		if stopTurnRequested {
-			break
+		if !event.LLMResponse.Partial && event.LLMResponse.Content != nil {
+			var nonPartialText strings.Builder
+			for _, part := range event.LLMResponse.Content.Parts {
+				if part != nil && !part.Thought && part.Text != "" {
+					nonPartialText.WriteString(part.Text)
+				}
+			}
+			txt := nonPartialText.String()
+			if txt != "" {
+				if finalResponseText.Len() > 0 {
+					finalResponseText.WriteString("\n")
+				}
+				finalResponseText.WriteString(txt)
+				s.Emit(AssistantTextEvent{
+					BaseEvent: BaseEvent{TabID: s.args.TabID},
+					Text:      txt,
+				})
+			}
+			if len(currentTurnThoughts) > 0 || len(currentTurnToolCalls) > 0 || txt != "" {
+				s.messages = append(s.messages, NewAssistantMessage(txt, currentTurnThoughts, currentTurnToolCalls))
+				currentTurnThoughts = nil
+				currentTurnToolCalls = nil
+			}
+			if len(currentTurnToolResults) > 0 {
+				s.messages = append(s.messages, NewToolResultMessage(currentTurnToolResults...))
+				currentTurnToolResults = nil
+			}
 		}
 	}
 

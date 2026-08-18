@@ -9,8 +9,22 @@ import (
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/providers"
+	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
+
+type mockLLM struct {
+	name         string
+	generateFunc func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error]
+}
+
+func (m *mockLLM) Name() string { return m.name }
+func (m *mockLLM) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+	if m.generateFunc != nil {
+		return m.generateFunc(ctx, req, stream)
+	}
+	return func(yield func(*model.LLMResponse, error) bool) {}
+}
 
 func TestAskTopLevel_Run(t *testing.T) {
 	tmpHome := t.TempDir()
@@ -18,30 +32,26 @@ func TestAskTopLevel_Run(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 	defer func() { _ = os.Setenv("HOME", origHome) }()
 
-	origStream := engine.GenerateStream
-	defer func() { engine.GenerateStream = origStream }()
+	origModelBuilder := engine.ModelBuilder
+	defer func() { engine.ModelBuilder = origModelBuilder }()
 
-	origClientBuilder := engine.ClientBuilder
-	defer func() { engine.ClientBuilder = origClientBuilder }()
-
-	engine.ClientBuilder = func(spec *providers.AgentProviderSpec, cfg config.Config) (*genai.Client, error) {
-		return &genai.Client{}, nil
-	}
-
-	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
-		return func(yield func(*genai.GenerateContentResponse, error) bool) {
-			yield(&genai.GenerateContentResponse{
-				Candidates: []*genai.Candidate{
-					{
+	engine.ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+		return &mockLLM{
+			name: modelID,
+			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+				return func(yield func(*model.LLMResponse, error) bool) {
+					yield(&model.LLMResponse{
 						Content: &genai.Content{
+							Role: genai.RoleModel,
 							Parts: []*genai.Part{
 								genai.NewPartFromText("Top-level ask.Run response"),
 							},
 						},
-					},
-				},
-			}, nil)
-		}
+						FinishReason: genai.FinishReasonStop,
+					}, nil)
+				}
+			},
+		}, nil
 	}
 
 	res, err := Run(context.Background(), RunOptions{

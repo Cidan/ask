@@ -8,12 +8,31 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/google/uuid"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/llmagent"
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
+
+// GenerateStreamFunc defines the signature for streaming content generation from GenAI.
+type GenerateStreamFunc func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error]
+
+// GenerateStream is the streaming generation hook, swappable in tests.
+var GenerateStream GenerateStreamFunc = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+	if client == nil {
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			yield(nil, errors.New("genai client is nil"))
+		}
+	}
+	return client.Models.GenerateContentStream(ctx, model, contents, config)
+}
 
 // RunOptions defines the input parameters for executing an ask agent turn.
 type RunOptions struct {
@@ -107,28 +126,26 @@ func GetDefaultToolFactory() ToolFactory {
 	return defaultToolFactory
 }
 
-// ClientBuilder allows customizing or mocking GenAI client instantiation in tests.
-var ClientBuilder = func(spec *providers.AgentProviderSpec, cfg config.Config) (*genai.Client, error) {
+// ModelBuilder allows customizing or mocking ADK LLM instantiation in tests.
+var ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
 	if spec == nil {
 		return nil, errors.New("provider spec is nil")
 	}
-	if spec.BuildClient == nil {
-		return nil, fmt.Errorf("provider %s has no BuildClient implementation", spec.ID)
+	if spec.BuildModel == nil {
+		return nil, fmt.Errorf("provider %s has no BuildModel implementation", spec.ID)
 	}
-	return spec.BuildClient(cfg)
+	return spec.BuildModel(ctx, cfg, modelID)
 }
 
-// GenerateStreamFunc defines the signature for streaming content generation from GenAI.
-type GenerateStreamFunc func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error]
+// RunnerBuilder allows customizing or mocking the ADK runner in tests.
+type RunnerBuilderFunc func(agentInstance agent.Agent, sessSvc session.Service) (*runner.Runner, error)
 
-// GenerateStream is the streaming generation hook, swappable in tests.
-var GenerateStream GenerateStreamFunc = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
-	if client == nil {
-		return func(yield func(*genai.GenerateContentResponse, error) bool) {
-			yield(nil, errors.New("genai client is nil"))
-		}
-	}
-	return client.Models.GenerateContentStream(ctx, model, contents, config)
+var RunnerBuilder RunnerBuilderFunc = func(agentInstance agent.Agent, sessSvc session.Service) (*runner.Runner, error) {
+	return runner.New(runner.Config{
+		AppName:        "ask",
+		Agent:          agentInstance,
+		SessionService: sessSvc,
+	})
 }
 
 // Run executes an ask agent turn with the provided options using default engine settings.
@@ -180,13 +197,13 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	}
 
 	spec, ok := providers.GetAgentProviderSpec(providerID)
-	if !ok {
-		return nil, fmt.Errorf("unsupported provider %q", providerID)
+	if !ok || spec == nil {
+		return nil, fmt.Errorf("unknown provider %q", providerID)
 	}
 
-	settings := spec.LoadSettings(opts.Config)
 	modelID := strings.TrimSpace(opts.Model)
 	if modelID == "" {
+		settings := spec.LoadSettings(opts.Config)
 		modelID = strings.TrimSpace(settings.Model)
 	}
 	if modelID == "" {
@@ -195,6 +212,7 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 
 	effort := strings.TrimSpace(opts.Effort)
 	if effort == "" {
+		settings := spec.LoadSettings(opts.Config)
 		effort = strings.TrimSpace(settings.Effort)
 	}
 	if effort == "" {
@@ -214,9 +232,9 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		}
 	}
 
-	client, err := ClientBuilder(spec, opts.Config)
+	llm, err := ModelBuilder(ctx, spec, opts.Config, modelID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build client for provider %s: %w", providerID, err)
+		return nil, fmt.Errorf("failed to build model for provider %s: %w", providerID, err)
 	}
 
 	var agentTools []Tool
@@ -234,35 +252,71 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		})
 	}
 
+	adkTools, err := AsADKTools(agentTools)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert tools to ADK: %w", err)
+	}
+
 	systemPrompt := BuildSystemPrompt(PromptOptions{
 		Cwd:        opts.Cwd,
 		InWorkflow: false,
 	})
 
-	genaiConfig := &genai.GenerateContentConfig{
-		SystemInstruction: genai.NewContentFromText(systemPrompt, genai.RoleUser),
-	}
+	genConfig := &genai.GenerateContentConfig{}
 	if spec.CallOptions != nil {
 		if callOpts, _ := spec.CallOptions(modelID, effort); callOpts != nil {
 			if callOpts.ThinkingConfig != nil {
-				genaiConfig.ThinkingConfig = callOpts.ThinkingConfig
+				genConfig.ThinkingConfig = callOpts.ThinkingConfig
 			}
 		}
 	}
 
-	var functionDecls []*genai.FunctionDeclaration
-	toolMap := make(map[string]Tool, len(agentTools))
-	for _, t := range agentTools {
-		toolMap[t.Info().Name] = t
-		if decl := t.Declaration(); decl != nil {
-			functionDecls = append(functionDecls, decl)
+	agentInstance, err := llmagent.New(llmagent.Config{
+		Name:                  "ask_coder",
+		Model:                 llm,
+		Instruction:           systemPrompt,
+		Tools:                 adkTools,
+		GenerateContentConfig: genConfig,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ADK agent: %w", err)
+	}
+
+	sessSvc := session.InMemoryService()
+	created, err := sessSvc.Create(ctx, &session.CreateRequest{
+		AppName:   "ask",
+		UserID:    "user",
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ADK session: %w", err)
+	}
+
+	// Replay history events into the ADK session service if resuming
+	for _, msg := range messages {
+		event := &session.Event{
+			LLMResponse: model.LLMResponse{
+				Content: msg.ToGenAIContent(),
+			},
+			Timestamp: time.Now(),
+		}
+		_ = sessSvc.AppendEvent(ctx, created.Session, event)
+	}
+
+	r, err := RunnerBuilder(agentInstance, sessSvc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ADK runner: %w", err)
+	}
+
+	userMsg := genai.NewContentFromText(opts.Prompt, genai.RoleUser)
+	for _, f := range opts.Files {
+		if len(f.Data) > 0 {
+			userMsg.Parts = append(userMsg.Parts, genai.NewPartFromBytes(f.Data, f.MIMEType))
 		}
 	}
-	if len(functionDecls) > 0 {
-		genaiConfig.Tools = []*genai.Tool{
-			{FunctionDeclarations: functionDecls},
-		}
-	}
+
+	userMessageObj := NewUserMessage(opts.Prompt, opts.Files...)
+	messages = append(messages, userMessageObj)
 
 	if opts.EventListener != nil {
 		opts.EventListener(ModelInfoEvent{
@@ -275,61 +329,57 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		})
 	}
 
-	// Prepare history contents
-	var contents []*genai.Content
-	for _, msg := range messages {
-		contents = append(contents, msg.ToGenAIContent())
-	}
-
-	userMsg := NewUserMessage(opts.Prompt, opts.Files...)
-	contents = append(contents, userMsg.ToGenAIContent())
-	messages = append(messages, userMsg)
-
-	const maxTurns = 50
 	var finalResponseText strings.Builder
+	var currentTurnThoughts []ThoughtPart
+	var currentTurnToolCalls []ToolCallPart
+	var currentTurnToolResults []ToolResultPart
 
-	for turnIdx := 0; turnIdx < maxTurns; turnIdx++ {
-		stream := GenerateStream(ctx, client, modelID, contents, genaiConfig)
-
-		var turnTextBuf strings.Builder
-		var turnThoughts []ThoughtPart
-		var turnToolCalls []ToolCallPart
-		var latestThoughtSig []byte
-		var streamErr error
-
-		for chunk, err := range stream {
-			if err != nil {
-				streamErr = err
-				break
-			}
-			if chunk == nil {
-				continue
-			}
-
-			if chunk.UsageMetadata != nil && opts.EventListener != nil {
-				opts.EventListener(UsageEvent{
-					BaseEvent:    BaseEvent{TabID: 0},
-					InputTokens:  int(chunk.UsageMetadata.PromptTokenCount),
-					OutputTokens: int(chunk.UsageMetadata.CandidatesTokenCount),
-					TotalTokens:  int(chunk.UsageMetadata.TotalTokenCount),
+	for event, err := range r.Run(ctx, "user", sessionID, userMsg, agent.RunConfig{}) {
+		if err != nil {
+			if opts.EventListener != nil {
+				opts.EventListener(DoneEvent{
+					BaseEvent: BaseEvent{TabID: 0},
+					Result: ResultSummary{
+						SessionID: sessionID,
+						IsError:   true,
+						Result:    err.Error(),
+					},
+					Error: err,
 				})
+				opts.EventListener(TurnCompleteEvent{BaseEvent: BaseEvent{TabID: 0}})
 			}
+			return &RunResult{
+				SessionID: sessionID,
+				IsError:   true,
+				Error:     err,
+				Messages:  messages,
+			}, err
+		}
+		if event == nil {
+			continue
+		}
 
-			for _, candidate := range chunk.Candidates {
-				if candidate.Content == nil {
+		if event.UsageMetadata != nil && opts.EventListener != nil {
+			opts.EventListener(UsageEvent{
+				BaseEvent:    BaseEvent{TabID: 0},
+				InputTokens:  int(event.UsageMetadata.PromptTokenCount),
+				OutputTokens: int(event.UsageMetadata.CandidatesTokenCount),
+				TotalTokens:  int(event.UsageMetadata.TotalTokenCount),
+			})
+		}
+
+		if event.LLMResponse.Content != nil {
+			for _, part := range event.LLMResponse.Content.Parts {
+				if part == nil {
 					continue
 				}
-				for _, part := range candidate.Content.Parts {
-					if part.Thought {
-						if len(part.ThoughtSignature) > 0 {
-							latestThoughtSig = part.ThoughtSignature
-						}
-						turnThoughts = append(turnThoughts, ThoughtPart{
-							Text:      part.Text,
-							Signature: part.ThoughtSignature,
-						})
-					} else if part.Text != "" {
-						turnTextBuf.WriteString(part.Text)
+				if part.Thought {
+					currentTurnThoughts = append(currentTurnThoughts, ThoughtPart{
+						Text:      part.Text,
+						Signature: part.ThoughtSignature,
+					})
+				} else if part.Text != "" {
+					if event.LLMResponse.Partial {
 						if opts.EventListener != nil {
 							opts.EventListener(TextDeltaEvent{
 								BaseEvent: BaseEvent{TabID: 0},
@@ -337,118 +387,80 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 							})
 						}
 					}
-					if part.FunctionCall != nil {
-						sig := part.ThoughtSignature
-						if len(sig) == 0 {
-							sig = latestThoughtSig
-						}
-						id := ""
-						if part.FunctionCall != nil {
-							id = part.FunctionCall.ID
-						}
-						turnToolCalls = append(turnToolCalls, ToolCallPart{
-							ID:               id,
-							Name:             part.FunctionCall.Name,
-							Args:             part.FunctionCall.Args,
-							ThoughtSignature: sig,
+				}
+				if part.FunctionCall != nil {
+					tc := ToolCallPart{
+						ID:               part.FunctionCall.ID,
+						Name:             part.FunctionCall.Name,
+						Args:             part.FunctionCall.Args,
+						ThoughtSignature: part.ThoughtSignature,
+					}
+					currentTurnToolCalls = append(currentTurnToolCalls, tc)
+					if opts.EventListener != nil {
+						opts.EventListener(ToolCallEvent{
+							BaseEvent: BaseEvent{TabID: 0},
+							ToolName:  tc.Name,
+							Input:     tc.Args,
 						})
-						if opts.EventListener != nil {
-							opts.EventListener(ToolCallEvent{
-								BaseEvent: BaseEvent{TabID: 0},
-								ToolName:  part.FunctionCall.Name,
-								Input:     part.FunctionCall.Args,
-							})
-						}
+					}
+				}
+				if part.FunctionResponse != nil {
+					resStr := ""
+					isErr := false
+					if res, ok := part.FunctionResponse.Response["result"].(string); ok {
+						resStr = res
+					}
+					if errFlag, ok := part.FunctionResponse.Response["is_error"].(bool); ok {
+						isErr = errFlag
+					}
+					tr := ToolResultPart{
+						ID:      part.FunctionResponse.ID,
+						Name:    part.FunctionResponse.Name,
+						Content: resStr,
+						IsError: isErr,
+					}
+					currentTurnToolResults = append(currentTurnToolResults, tr)
+					if opts.EventListener != nil {
+						opts.EventListener(ToolResultEvent{
+							BaseEvent: BaseEvent{TabID: 0},
+							ToolName:  tr.Name,
+							Output:    tr.Content,
+							IsError:   tr.IsError,
+						})
 					}
 				}
 			}
 		}
 
-		if streamErr != nil {
-			if opts.EventListener != nil {
-				opts.EventListener(DoneEvent{
-					BaseEvent: BaseEvent{TabID: 0},
-					Result: ResultSummary{
-						SessionID: sessionID,
-						IsError:   true,
-						Result:    streamErr.Error(),
-					},
-					Error: streamErr,
-				})
-				opts.EventListener(TurnCompleteEvent{BaseEvent: BaseEvent{TabID: 0}})
-			}
-			return &RunResult{
-				SessionID: sessionID,
-				IsError:   true,
-				Error:     streamErr,
-				Messages:  messages,
-			}, streamErr
-		}
-
-		rawText := turnTextBuf.String()
-		if rawText != "" {
-			if finalResponseText.Len() > 0 {
-				finalResponseText.WriteString("\n")
-			}
-			finalResponseText.WriteString(rawText)
-			if opts.EventListener != nil {
-				opts.EventListener(AssistantTextEvent{
-					BaseEvent: BaseEvent{TabID: 0},
-					Text:      rawText,
-				})
-			}
-		}
-
-		assistantMsg := NewAssistantMessage(rawText, turnThoughts, turnToolCalls)
-		messages = append(messages, assistantMsg)
-		contents = append(contents, assistantMsg.ToGenAIContent())
-
-		if len(turnToolCalls) == 0 {
-			break
-		}
-
-		var toolResultParts []ToolResultPart
-		var stopTurnRequested bool
-
-		for _, tc := range turnToolCalls {
-			tool, ok := toolMap[tc.Name]
-			var resp ToolResponse
-			var runErr error
-			if !ok {
-				resp = NewTextErrorResponse(fmt.Sprintf("unknown tool %s", tc.Name))
-			} else {
-				resp, runErr = tool.Run(ctx, tc.Args)
-				if runErr != nil {
-					resp = NewTextErrorResponse(fmt.Sprintf("tool %s error: %s", tc.Name, runErr.Error()))
+		if !event.LLMResponse.Partial && event.LLMResponse.Content != nil {
+			var nonPartialText strings.Builder
+			for _, part := range event.LLMResponse.Content.Parts {
+				if part != nil && !part.Thought && part.Text != "" {
+					nonPartialText.WriteString(part.Text)
 				}
 			}
-
-			if opts.EventListener != nil {
-				opts.EventListener(ToolResultEvent{
-					BaseEvent: BaseEvent{TabID: 0},
-					ToolName:  tc.Name,
-					Output:    resp.Content,
-					IsError:   resp.IsError,
-				})
+			txt := nonPartialText.String()
+			if txt != "" {
+				if finalResponseText.Len() > 0 {
+					finalResponseText.WriteString("\n")
+				}
+				finalResponseText.WriteString(txt)
+				if opts.EventListener != nil {
+					opts.EventListener(AssistantTextEvent{
+						BaseEvent: BaseEvent{TabID: 0},
+						Text:      txt,
+					})
+				}
 			}
-
-			toolResultParts = append(toolResultParts, ToolResultPart{
-				Name:    tc.Name,
-				Content: resp.Content,
-				IsError: resp.IsError,
-			})
-
-			if resp.StopTurn {
-				stopTurnRequested = true
+			if len(currentTurnThoughts) > 0 || len(currentTurnToolCalls) > 0 || txt != "" {
+				messages = append(messages, NewAssistantMessage(txt, currentTurnThoughts, currentTurnToolCalls))
+				currentTurnThoughts = nil
+				currentTurnToolCalls = nil
 			}
-		}
-
-		toolMsg := NewToolResultMessage(toolResultParts...)
-		messages = append(messages, toolMsg)
-		contents = append(contents, toolMsg.ToGenAIContent())
-
-		if stopTurnRequested {
-			break
+			if len(currentTurnToolResults) > 0 {
+				messages = append(messages, NewToolResultMessage(currentTurnToolResults...))
+				currentTurnToolResults = nil
+			}
 		}
 	}
 

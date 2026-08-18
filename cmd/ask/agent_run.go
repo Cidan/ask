@@ -308,6 +308,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		var turnTextBuf strings.Builder
 		var turnThoughts []engine.ThoughtPart
 		var turnToolCalls []engine.ToolCallPart
+		var latestThoughtSig []byte
 		var streamErr error
 
 		for chunk, err := range stream {
@@ -338,6 +339,9 @@ func (s *agentSession) runTurn(turn agentTurn) {
 				}
 				for _, part := range candidate.Content.Parts {
 					if part.Thought {
+						if len(part.ThoughtSignature) > 0 {
+							latestThoughtSig = part.ThoughtSignature
+						}
 						turnThoughts = append(turnThoughts, engine.ThoughtPart{
 							Text:      part.Text,
 							Signature: part.ThoughtSignature,
@@ -347,6 +351,10 @@ func (s *agentSession) runTurn(turn agentTurn) {
 						turnTextBuf.WriteString(part.Text)
 					}
 					if part.FunctionCall != nil {
+						sig := part.ThoughtSignature
+						if len(sig) == 0 {
+							sig = latestThoughtSig
+						}
 						inputMap := part.FunctionCall.Args
 						name := part.FunctionCall.Name
 						if name == "invoke_tool" {
@@ -358,9 +366,15 @@ func (s *agentSession) runTurn(turn agentTurn) {
 							backgroundCalls[part.FunctionCall.Name] = true
 						}
 
+						id := ""
+						if part.FunctionCall != nil {
+							id = part.FunctionCall.ID
+						}
 						turnToolCalls = append(turnToolCalls, engine.ToolCallPart{
-							Name: part.FunctionCall.Name,
-							Args: part.FunctionCall.Args,
+							ID:               id,
+							Name:             part.FunctionCall.Name,
+							Args:             part.FunctionCall.Args,
+							ThoughtSignature: sig,
 						})
 						s.emit(toolCallMsg{
 							name:       name,

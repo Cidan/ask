@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/Cidan/ask/pkg/config"
-	"google.golang.org/genai"
+	"google.golang.org/adk/v2/model"
 )
 
 func TestEngine_InitializationAndPrompt(t *testing.T) {
@@ -29,11 +29,14 @@ func TestEngine_InitializationAndPrompt(t *testing.T) {
 }
 
 func TestEngine_SessionStreamEvents(t *testing.T) {
-	origStream := GenerateStream
-	defer func() { GenerateStream = origStream }()
-
-	GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
-		return mockStreamSequence(textChunk("Engine response"))
+	mockModel := &mockLLM{
+		name: "mock-model",
+		generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+			return mockLLMSequence(
+				partialTextResponse("Engine response"),
+				textResponse("Engine response"),
+			)
+		},
 	}
 
 	var events []EngineEvent
@@ -47,7 +50,7 @@ func TestEngine_SessionStreamEvents(t *testing.T) {
 
 	session := NewSession(
 		SessionArgs{TabID: 1, Cwd: t.TempDir(), Model: "mock-model"},
-		nil,
+		mockModel,
 		"system prompt",
 		nil,
 		listener,

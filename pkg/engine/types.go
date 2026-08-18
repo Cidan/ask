@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/google/jsonschema-go/jsonschema"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 )
 
@@ -38,6 +42,52 @@ type Tool interface {
 	Info() ToolInfo
 	Declaration() *genai.FunctionDeclaration
 	Run(ctx context.Context, args map[string]any) (ToolResponse, error)
+}
+
+// AsADKTool converts a native ask Tool into an ADK Tool.
+func AsADKTool(t Tool) (tool.Tool, error) {
+	if t == nil {
+		return nil, nil
+	}
+	info := t.Info()
+	var inputSchema *jsonschema.Schema
+	if info.Parameters != nil {
+		if raw, err := json.Marshal(info.Parameters); err == nil {
+			var s jsonschema.Schema
+			if err := json.Unmarshal(raw, &s); err == nil {
+				inputSchema = &s
+			}
+		}
+	}
+	return functiontool.New[map[string]any, any](
+		functiontool.Config{
+			Name:        info.Name,
+			Description: info.Description,
+			InputSchema: inputSchema,
+		},
+		func(actx agent.Context, args map[string]any) (any, error) {
+			resp, err := t.Run(actx, args)
+			if err != nil {
+				return nil, err
+			}
+			return resp.Content, nil
+		},
+	)
+}
+
+// AsADKTools converts a slice of native ask Tools into ADK Tools.
+func AsADKTools(tools []Tool) ([]tool.Tool, error) {
+	out := make([]tool.Tool, 0, len(tools))
+	for _, t := range tools {
+		at, err := AsADKTool(t)
+		if err != nil {
+			return nil, err
+		}
+		if at != nil {
+			out = append(out, at)
+		}
+	}
+	return out, nil
 }
 
 // MessageRole defines the role of a message participant.

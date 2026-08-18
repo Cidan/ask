@@ -9,6 +9,8 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/Cidan/ask/pkg/config"
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/model/gemini"
 	"google.golang.org/genai"
 )
 
@@ -78,6 +80,26 @@ var VertexPrepareCredentials = func(vc config.VertexConfig) (string, error) {
 	}
 	VertexApplyEnv(saKeyPath)
 	return saKeyPath, nil
+}
+
+// VertexModel constructs a model.LLM backed by Vertex AI via ADK's gemini package.
+// Swappable in tests.
+var VertexModel = func(ctx context.Context, vc config.VertexConfig, modelID string) (model.LLM, error) {
+	project := VertexResolveProject(vc)
+	if project == "" {
+		return nil, errors.New("vertex: project is required — set it in /config → Vertex AI, or via " + VertexEnvCloudProject)
+	}
+	location := VertexResolveLocation(vc)
+
+	if _, err := VertexPrepareCredentials(vc); err != nil {
+		return nil, err
+	}
+	cfg := &genai.ClientConfig{
+		Backend:  genai.BackendVertexAI,
+		Project:  project,
+		Location: location,
+	}
+	return gemini.NewModel(ctx, modelID, cfg)
 }
 
 // VertexNewClient constructs a genai.Client configured for Vertex AI.
@@ -156,6 +178,9 @@ var VertexSpec = AgentProviderSpec{
 	DefaultModel:  VertexDefaultModel,
 	ModelOptions:  VertexModelOptions,
 	EffortOptions: VertexEffortOptions,
+	BuildModel: func(ctx context.Context, cfg config.Config, modelID string) (model.LLM, error) {
+		return VertexModel(ctx, cfg.Vertex, modelID)
+	},
 	BuildClient: func(cfg config.Config) (*genai.Client, error) {
 		return VertexNewClient(context.Background(), cfg.Vertex)
 	},

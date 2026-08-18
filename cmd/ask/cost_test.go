@@ -12,7 +12,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/providers"
+	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
 
@@ -166,13 +169,26 @@ func TestProviderModelSwapCostMeter(t *testing.T) {
 }
 
 func TestTaskToolExecution(t *testing.T) {
-	origStream := engine.GenerateStream
-	defer func() { engine.GenerateStream = origStream }()
+	origModelBuilder := engine.ModelBuilder
+	defer func() { engine.ModelBuilder = origModelBuilder }()
 
-	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
-		return func(yield func(*genai.GenerateContentResponse, error) bool) {
-			yield(genaiTextChunk("report findings", 100, 50), nil)
-		}
+	engine.ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (adkmodel.LLM, error) {
+		return &mockADKModel{
+			name: modelID,
+			generateFunc: func(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+				return func(yield func(*adkmodel.LLMResponse, error) bool) {
+					yield(&adkmodel.LLMResponse{
+						Content: &genai.Content{
+							Role: genai.RoleModel,
+							Parts: []*genai.Part{
+								genai.NewPartFromText("report findings"),
+							},
+						},
+						FinishReason: genai.FinishReasonStop,
+					}, nil)
+				}
+			},
+		}, nil
 	}
 
 	env, _ := newTestToolEnv(t)

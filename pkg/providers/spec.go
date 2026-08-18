@@ -1,10 +1,12 @@
 package providers
 
 import (
+	"context"
 	"fmt"
 	"os"
 
 	"github.com/Cidan/ask/pkg/config"
+	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
 
@@ -22,6 +24,7 @@ type AgentProviderSpec struct {
 	DefaultModel    string
 	ModelOptions    []string
 	EffortOptions   []string
+	BuildModel      func(ctx context.Context, cfg config.Config, modelID string) (model.LLM, error)
 	BuildClient     func(cfg config.Config) (*genai.Client, error)
 	CallOptions     func(modelID, effort string) (*genai.GenerateContentConfig, *float64)
 	SupportsImages  func(modelID string) bool
