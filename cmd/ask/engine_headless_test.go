@@ -2,22 +2,42 @@ package main
 
 import (
 	"context"
+	"iter"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/tools"
+	"google.golang.org/genai"
 )
 
 func TestHeadlessCoordinator_MultiTurnSessionHistory(t *testing.T) {
 	isolateHome(t)
 
-	lm := &fakeLM{turns: [][]fantasy.StreamPart{
-		textTurn("Turn 1 response", fantasy.Usage{InputTokens: 10, OutputTokens: 5}),
-		textTurn("Turn 2 response", fantasy.Usage{InputTokens: 20, OutputTokens: 10}),
-	}}
+	origStream := engine.GenerateStream
+	defer func() { engine.GenerateStream = origStream }()
+
+	var turnIdx int
+	var mu sync.Mutex
+	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+		mu.Lock()
+		idx := turnIdx
+		turnIdx++
+		mu.Unlock()
+
+		var chunk *genai.GenerateContentResponse
+		if idx == 0 {
+			chunk = genaiTextChunk("Turn 1 response", 10, 5)
+		} else {
+			chunk = genaiTextChunk("Turn 2 response", 20, 10)
+		}
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			yield(chunk, nil)
+		}
+	}
 
 	prov := newFakeProvider()
 	prov.id = "fake-prov"
@@ -26,9 +46,8 @@ func TestHeadlessCoordinator_MultiTurnSessionHistory(t *testing.T) {
 	prov.startSessionFn = func(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
 		sess = &agentSession{
 			args:          args,
-			model:         lm,
 			system:        "system prompt",
-			contextWindow: deepseekContextWindow,
+			contextWindow: 1_048_576,
 			modelID:       "fake-model",
 			ch:            make(chan tea.Msg, 256),
 			sendCh:        make(chan agentTurn, 8),
@@ -99,17 +118,27 @@ func TestHeadlessCoordinator_MultiTurnSessionHistory(t *testing.T) {
 func TestHeadlessCoordinator_InterruptTurn(t *testing.T) {
 	isolateHome(t)
 
-	lm := &fakeLM{
-		turns: [][]fantasy.StreamPart{
-			// Turn 1 will block until cancelled
-			nil,
-			// Turn 2 completes normally
-			textTurn("recovered", fantasy.Usage{}),
-		},
-		blocks: map[int]bool{0: true},
+	origStream := engine.GenerateStream
+	defer func() { engine.GenerateStream = origStream }()
+
+	var turnIdx int
+	var mu sync.Mutex
+	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+		mu.Lock()
+		idx := turnIdx
+		turnIdx++
+		mu.Unlock()
+
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			if idx == 0 {
+				<-ctx.Done()
+				return
+			}
+			yield(genaiTextChunk("recovered", 10, 5), nil)
+		}
 	}
 
-	s := newTestAgentSession(t, lm, nil)
+	s := newTestAgentSession(t, nil)
 	if err := s.queueTurn("blocking turn"); err != nil {
 		t.Fatal(err)
 	}
@@ -157,13 +186,31 @@ func TestHeadlessCoordinator_InterruptTurn(t *testing.T) {
 func TestHeadlessToolApproval_CustomHandlerAllowsAndDenies(t *testing.T) {
 	isolateHome(t)
 
+	origStream := engine.GenerateStream
+	defer func() { engine.GenerateStream = origStream }()
+
 	// Test Allow
 	allowCalled := false
-	lmAllow := &fakeLM{turns: [][]fantasy.StreamPart{
-		toolCallTurn("c1", "mutating_ping", "{\"v\": \"allow-me\"}", fantasy.Usage{}),
-		textTurn("done allow", fantasy.Usage{}),
-	}}
-	sAllow := newTestAgentSession(t, lmAllow, nil)
+	var turnIdxAllow int
+	var muAllow sync.Mutex
+	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+		muAllow.Lock()
+		idx := turnIdxAllow
+		turnIdxAllow++
+		muAllow.Unlock()
+
+		var chunk *genai.GenerateContentResponse
+		if idx == 0 {
+			chunk = genaiToolCallChunk("mutating_ping", map[string]any{"v": "allow-me"})
+		} else {
+			chunk = genaiTextChunk("done allow", 10, 5)
+		}
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			yield(chunk, nil)
+		}
+	}
+
+	sAllow := newTestAgentSession(t, nil)
 	sAllow.env.SkipPermissions = false
 	sAllow.env.Approve = func(ctx context.Context, toolName string, input map[string]any) (bool, error) {
 		allowCalled = true
@@ -172,15 +219,15 @@ func TestHeadlessToolApproval_CustomHandlerAllowsAndDenies(t *testing.T) {
 		}
 		return true, nil
 	}
-	sAllow.tools = []fantasy.AgentTool{
-		fantasy.NewAgentTool("mutating_ping", "test mutating tool",
+	sAllow.tools = []tools.Tool{
+		tools.NewTool("mutating_ping", "test mutating tool",
 			func(ctx context.Context, in struct {
 				V string `json:"v"`
-			}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			}) (tools.ToolResponse, error) {
 				if resp := sAllow.env.RequestApproval(ctx, "mutating_ping", map[string]any{"v": in.V}); resp != nil {
 					return *resp, nil
 				}
-				return fantasy.NewTextResponse("pong:" + in.V), nil
+				return tools.NewTextResponse("pong:" + in.V), nil
 			}),
 	}
 
@@ -194,25 +241,40 @@ func TestHeadlessToolApproval_CustomHandlerAllowsAndDenies(t *testing.T) {
 
 	// Test Deny
 	denyCalled := false
-	lmDeny := &fakeLM{turns: [][]fantasy.StreamPart{
-		toolCallTurn("c2", "mutating_ping", "{\"v\": \"deny-me\"}", fantasy.Usage{}),
-		textTurn("done deny", fantasy.Usage{}),
-	}}
-	sDeny := newTestAgentSession(t, lmDeny, nil)
+	var turnIdxDeny int
+	var muDeny sync.Mutex
+	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+		muDeny.Lock()
+		idx := turnIdxDeny
+		turnIdxDeny++
+		muDeny.Unlock()
+
+		var chunk *genai.GenerateContentResponse
+		if idx == 0 {
+			chunk = genaiToolCallChunk("mutating_ping", map[string]any{"v": "deny-me"})
+		} else {
+			chunk = genaiTextChunk("done deny", 10, 5)
+		}
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			yield(chunk, nil)
+		}
+	}
+
+	sDeny := newTestAgentSession(t, nil)
 	sDeny.env.SkipPermissions = false
 	sDeny.env.Approve = func(ctx context.Context, toolName string, input map[string]any) (bool, error) {
 		denyCalled = true
 		return false, nil // Deny
 	}
-	sDeny.tools = []fantasy.AgentTool{
-		fantasy.NewAgentTool("mutating_ping", "test mutating tool",
+	sDeny.tools = []tools.Tool{
+		tools.NewTool("mutating_ping", "test mutating tool",
 			func(ctx context.Context, in struct {
 				V string `json:"v"`
-			}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			}) (tools.ToolResponse, error) {
 				if resp := sDeny.env.RequestApproval(ctx, "mutating_ping", map[string]any{"v": in.V}); resp != nil {
 					return *resp, nil
 				}
-				return fantasy.NewTextResponse("pong:" + in.V), nil
+				return tools.NewTextResponse("pong:" + in.V), nil
 			}),
 	}
 
@@ -267,12 +329,41 @@ func TestHeadlessAskQuestion_InteractionFlow(t *testing.T) {
 		return true
 	}
 
-	lm := &fakeLM{turns: [][]fantasy.StreamPart{
-		toolCallTurn("q1", "ask_user_question", "{\"questions\": [{\"kind\": \"pick_one\", \"prompt\": \"Which DB?\", \"options\": [{\"label\": \"Postgres\"}, {\"label\": \"MySQL\"}]}], \"description\": \"ask DB\"}", fantasy.Usage{}),
-		textTurn("configured DB", fantasy.Usage{}),
-	}}
+	origStream := engine.GenerateStream
+	defer func() { engine.GenerateStream = origStream }()
 
-	s := newTestAgentSession(t, lm, nil)
+	var turnIdx int
+	var muStream sync.Mutex
+	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+		muStream.Lock()
+		idx := turnIdx
+		turnIdx++
+		muStream.Unlock()
+
+		var chunk *genai.GenerateContentResponse
+		if idx == 0 {
+			chunk = genaiToolCallChunk("ask_user_question", map[string]any{
+				"questions": []any{
+					map[string]any{
+						"kind":   "pick_one",
+						"prompt": "Which DB?",
+						"options": []any{
+							map[string]any{"label": "Postgres"},
+							map[string]any{"label": "MySQL"},
+						},
+					},
+				},
+				"description": "ask DB",
+			})
+		} else {
+			chunk = genaiTextChunk("configured DB", 10, 5)
+		}
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			yield(chunk, nil)
+		}
+	}
+
+	s := newTestAgentSession(t, nil)
 	s.tools = append(s.tools, agentAskUserQuestionTool(s.env))
 
 	if err := s.queueTurn("start db config"); err != nil {

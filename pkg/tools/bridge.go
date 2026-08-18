@@ -5,15 +5,15 @@ import (
 	"encoding/json"
 	"strings"
 
-	"charm.land/fantasy"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/genai"
 )
 
-// NativeBridgeTool adapts an MCP handler core to fantasy's AgentTool.
+// NativeBridgeTool adapts an MCP handler core to our Tool interface.
 func NativeBridgeTool[In, Out any](name, description string,
 	run func(ctx context.Context, in In) (*mcp.CallToolResult, Out, error),
-) fantasy.AgentTool {
+) Tool {
 	properties := map[string]any{}
 	var required []string
 	if schema, err := jsonschema.For[In](nil); err == nil {
@@ -41,7 +41,7 @@ func NativeBridgeTool[In, Out any](name, description string,
 		}
 		required = append(required, "description")
 	}
-	return &BridgeAgentTool[In, Out]{
+	return &BridgeTool[In, Out]{
 		NameVal:        name,
 		DescriptionVal: description,
 		PropertiesVal:  properties,
@@ -80,21 +80,22 @@ func FlattenNullableTypes(v any) {
 	}
 }
 
-type BridgeAgentTool[In, Out any] struct {
+type BridgeTool[In, Out any] struct {
 	NameVal        string
 	DescriptionVal string
 	PropertiesVal  map[string]any
 	RequiredVal    []string
 	RunVal         func(ctx context.Context, in In) (*mcp.CallToolResult, Out, error)
-	OptsVal        fantasy.ProviderOptions
 }
 
-func (t *BridgeAgentTool[In, Out]) Info() fantasy.ToolInfo {
+func (t *BridgeTool[In, Out]) Name() string        { return t.NameVal }
+func (t *BridgeTool[In, Out]) Description() string { return t.DescriptionVal }
+func (t *BridgeTool[In, Out]) Info() ToolInfo {
 	required := t.RequiredVal
 	if required == nil {
 		required = []string{}
 	}
-	return fantasy.ToolInfo{
+	return ToolInfo{
 		Name:        t.NameVal,
 		Description: t.DescriptionVal,
 		Parameters:  t.PropertiesVal,
@@ -102,23 +103,42 @@ func (t *BridgeAgentTool[In, Out]) Info() fantasy.ToolInfo {
 	}
 }
 
-func (t *BridgeAgentTool[In, Out]) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+func (t *BridgeTool[In, Out]) Declaration() *genai.FunctionDeclaration {
+	schemaObj := map[string]any{
+		"type":       "object",
+		"properties": t.PropertiesVal,
+	}
+	if len(t.RequiredVal) > 0 {
+		schemaObj["required"] = t.RequiredVal
+	}
+	return &genai.FunctionDeclaration{
+		Name:                 t.NameVal,
+		Description:          t.DescriptionVal,
+		ParametersJsonSchema: schemaObj,
+	}
+}
+
+func (t *BridgeTool[In, Out]) Run(ctx context.Context, args map[string]any) (ToolResponse, error) {
 	var in In
-	if strings.TrimSpace(call.Input) != "" {
-		if err := json.Unmarshal([]byte(call.Input), &in); err != nil {
-			return fantasy.NewTextErrorResponse("invalid parameters: " + err.Error()), nil
+	if len(args) > 0 {
+		raw, err := json.Marshal(args)
+		if err != nil {
+			return NewTextErrorResponse("invalid parameters: " + err.Error()), nil
+		}
+		if err := json.Unmarshal(raw, &in); err != nil {
+			return NewTextErrorResponse("invalid parameters: " + err.Error()), nil
 		}
 	}
 	res, out, err := t.RunVal(ctx, in)
 	if err != nil {
-		return fantasy.NewTextErrorResponse(t.NameVal + ": " + err.Error()), nil
+		return NewTextErrorResponse(t.NameVal + ": " + err.Error()), nil
 	}
 	body := MCPResultText(res)
 	if res != nil && res.IsError {
 		if strings.TrimSpace(body) == "" {
 			body = "(empty error result)"
 		}
-		return fantasy.NewTextErrorResponse(body), nil
+		return NewTextErrorResponse(body), nil
 	}
 	if j, err := json.Marshal(out); err == nil {
 		js := string(j)
@@ -133,12 +153,7 @@ func (t *BridgeAgentTool[In, Out]) Run(ctx context.Context, call fantasy.ToolCal
 	if strings.TrimSpace(body) == "" {
 		body = "(empty result)"
 	}
-	return fantasy.NewTextResponse(TruncateMiddle(body)), nil
-}
-
-func (t *BridgeAgentTool[In, Out]) ProviderOptions() fantasy.ProviderOptions { return t.OptsVal }
-func (t *BridgeAgentTool[In, Out]) SetProviderOptions(opts fantasy.ProviderOptions) {
-	t.OptsVal = opts
+	return NewTextResponse(TruncateMiddle(body)), nil
 }
 
 func MCPResultText(res *mcp.CallToolResult) string {

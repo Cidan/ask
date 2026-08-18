@@ -57,22 +57,10 @@ type Spec struct {
 var (
 	registryMu sync.RWMutex
 	specs      = map[string]Spec{
-		"anthropic": {ID: "anthropic", Name: "Anthropic", DefaultModel: AnthropicDefaultModel},
-		"openai":    {ID: "openai", Name: "OpenAI", DefaultModel: OpenAIDefaultModel},
-		"deepseek":  {ID: "deepseek", Name: "DeepSeek", DefaultModel: DeepSeekDefaultModel},
-		"googleai":  {ID: "googleai", Name: "Google AI", DefaultModel: GoogleAIDefaultModel},
-		"vertex":    {ID: "vertex", Name: "Vertex AI", DefaultModel: VertexDefaultModel},
-		"kimi":      {ID: "kimi", Name: "Kimi", DefaultModel: KimiDefaultModel},
-		"minimax":   {ID: "minimax", Name: "MiniMax", DefaultModel: MiniMaxDefaultModel},
+		"vertex": {ID: "vertex", Name: "Vertex AI", DefaultModel: VertexDefaultModel},
 	}
 	agentSpecs = map[string]*AgentProviderSpec{
-		"anthropic": &AnthropicSpec,
-		"openai":    &OpenAISpec,
-		"deepseek":  &DeepSeekSpec,
-		"googleai":  &GoogleAISpec,
-		"vertex":    &VertexSpec,
-		"kimi":      &KimiSpec,
-		"minimax":   &MiniMaxSpec,
+		"vertex": &VertexSpec,
 	}
 )
 
@@ -94,12 +82,6 @@ func AllAgentProviderSpecs() []*AgentProviderSpec {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
 	return []*AgentProviderSpec{
-		&AnthropicSpec,
-		&OpenAISpec,
-		&DeepSeekSpec,
-		&GoogleAISpec,
 		&VertexSpec,
-		&KimiSpec,
-		&MiniMaxSpec,
 	}
 }

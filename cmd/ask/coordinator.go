@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/workflow"
 )
 
@@ -77,7 +77,6 @@ func (c *Coordinator) Dispatch(tabID int, p Provider, args ProviderSessionArgs, 
 	session := c.sessions[tabID]
 	if session == nil {
 		c.mu.Unlock()
-		// Start a fresh session
 		proc, _, err := p.StartSession(args)
 		if err != nil {
 			return err
@@ -90,8 +89,6 @@ func (c *Coordinator) Dispatch(tabID int, p Provider, args ProviderSessionArgs, 
 				c.mu.Unlock()
 			}
 		} else if proc != nil {
-			// For testing / fake providers that don't return an in-process agentSession payload:
-			// forward the turn to the provider directly!
 			return p.Send(proc, text, attachments)
 		}
 	} else {
@@ -99,8 +96,7 @@ func (c *Coordinator) Dispatch(tabID int, p Provider, args ProviderSessionArgs, 
 	}
 
 	if session != nil {
-		// Enqueue the turn to the session's background runner
-		var files []fantasy.FilePart
+		var files []engine.FilePart
 		if len(attachments) > 0 {
 			files = attachmentFileParts(attachments)
 		}
@@ -141,7 +137,7 @@ func (c *Coordinator) Kill(tabID int) {
 	}
 }
 
-// Clear all active sessions (e.g. on application exit)
+// Clear all active sessions
 func (c *Coordinator) Clear() {
 	c.mu.Lock()
 	targets := make([]*agentSession, 0, len(c.sessions))
@@ -368,8 +364,7 @@ stepLoop:
 	}, nil
 }
 
-// RunWorkflow Sync executes a workflow synchronously step by step in the background.
-// Emits event-bus messages directly to update the TUI live.
+// RunWorkflow executes a workflow synchronously step by step in the background.
 func (c *Coordinator) RunWorkflow(ctx context.Context, tabID int, def workflowDef, src workflowSource) (finalizedPlanReply, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

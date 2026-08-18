@@ -3,30 +3,33 @@ package main
 import (
 	"context"
 	"errors"
+	"iter"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/engine"
+	"google.golang.org/genai"
 )
 
 func TestCoordinator_RunWorkflowRestoreSession(t *testing.T) {
 	isolateHome(t)
-	
+
 	// Create a fake provider
 	prov := newFakeProvider()
 	prov.id = "fake-prov"
-	
+
 	// Mock StartSession for the step
 	prov.startSessionFn = func(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
 		ch := make(chan tea.Msg, 8)
 		proc := &providerProc{
 			stdin: &bufferCloser{Buffer: nil},
 		}
-		
+
 		// Create a session and set it as payload so the coordinator can set/remove it
 		env := newAgentToolEnv(args.Cwd, args.TabID, true, true, func(msg tea.Msg) {})
 		env.PendingEndTurn = &endTurnSignal{Summary: "step completed", Decision: "break"}
@@ -38,7 +41,7 @@ func TestCoordinator_RunWorkflowRestoreSession(t *testing.T) {
 			closed: make(chan struct{}),
 		}
 		proc.payload = sess
-		
+
 		// Simulate step running and completing
 		go func() {
 			time.Sleep(10 * time.Millisecond)
@@ -51,10 +54,10 @@ func TestCoordinator_RunWorkflowRestoreSession(t *testing.T) {
 			}
 			close(ch)
 		}()
-		
+
 		return proc, ch, nil
 	}
-	
+
 	withRegisteredProviders(t, prov)
 
 	cwd := t.TempDir()
@@ -109,18 +112,18 @@ func TestCoordinator_RunWorkflowRestoreSession(t *testing.T) {
 
 func TestCoordinator_RunWorkflowCancellationStopRetries(t *testing.T) {
 	isolateHome(t)
-	
+
 	prov := newFakeProvider()
 	prov.id = "fake-prov"
-	
+
 	stepStartCh := make(chan struct{})
-	
+
 	prov.startSessionFn = func(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
 		ch := make(chan tea.Msg, 8)
 		proc := &providerProc{
 			stdin: &bufferCloser{Buffer: nil},
 		}
-		
+
 		env := newAgentToolEnv(args.Cwd, args.TabID, true, true, func(msg tea.Msg) {})
 		sess := &agentSession{
 			args:   args,
@@ -129,10 +132,10 @@ func TestCoordinator_RunWorkflowCancellationStopRetries(t *testing.T) {
 			closed: make(chan struct{}),
 		}
 		proc.payload = sess
-		
+
 		go func() {
 			close(stepStartCh) // Notify test that the step has started
-			
+
 			// Stay running until step or workflow is cancelled
 			time.Sleep(100 * time.Millisecond)
 			ch <- providerDoneMsg{
@@ -140,10 +143,10 @@ func TestCoordinator_RunWorkflowCancellationStopRetries(t *testing.T) {
 			}
 			close(ch)
 		}()
-		
+
 		return proc, ch, nil
 	}
-	
+
 	withRegisteredProviders(t, prov)
 
 	cwd := t.TempDir()
@@ -302,6 +305,68 @@ func TestCoordinator_RunWorkflowLoopWithDecisionAndFinish(t *testing.T) {
 	agentSendToProgram = func(msg tea.Msg) bool { return true }
 	t.Cleanup(func() { agentSendToProgram = oldSend })
 
+	origStream := engine.GenerateStream
+	defer func() { engine.GenerateStream = origStream }()
+
+	var turnIdx int
+	var mu sync.Mutex
+	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+		mu.Lock()
+		idx := turnIdx
+		turnIdx++
+		mu.Unlock()
+
+		var chunk *genai.GenerateContentResponse
+		switch idx {
+		case 0:
+			chunk = genaiToolCallChunk("read", map[string]any{"file_path": "ask/plans/start/plan.txt", "description": "read start plan"})
+		case 1:
+			chunk = genaiToolCallChunk("end_turn", map[string]any{"summary": "validated the plan"})
+		case 2:
+			chunk = genaiTextChunk("completed", 10, 10)
+		case 3:
+			chunk = genaiToolCallChunk("read", map[string]any{"file_path": "hello.go", "description": "check if hello.go exists"})
+		case 4:
+			chunk = genaiToolCallChunk("write", map[string]any{"file_path": "hello.go", "content": "package main\n\nfunc main() {}\n", "description": "create hello.go with main function"})
+		case 5:
+			chunk = genaiToolCallChunk("end_turn", map[string]any{"summary": "implemented changes"})
+		case 6:
+			chunk = genaiTextChunk("completed", 10, 10)
+		case 7:
+			chunk = genaiToolCallChunk("read", map[string]any{"file_path": "hello.go", "description": "verify hello.go before continuing"})
+		case 8:
+			chunk = genaiToolCallChunk("end_turn", map[string]any{"summary": "validated changes", "decision": "continue"})
+		case 9:
+			chunk = genaiTextChunk("completed", 10, 10)
+		case 10:
+			chunk = genaiToolCallChunk("read", map[string]any{"file_path": "hello.go", "description": "read hello.go before editing"})
+		case 11:
+			chunk = genaiToolCallChunk("edit", map[string]any{"file_path": "hello.go", "old_string": "package main\n\nfunc main() {}\n", "new_string": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n", "description": "add print to main"})
+		case 12:
+			chunk = genaiToolCallChunk("end_turn", map[string]any{"summary": "implemented more changes"})
+		case 13:
+			chunk = genaiTextChunk("completed", 10, 10)
+		case 14:
+			chunk = genaiToolCallChunk("read", map[string]any{"file_path": "hello.go", "description": "verify hello.go before break"})
+		case 15:
+			chunk = genaiToolCallChunk("end_turn", map[string]any{"summary": "validated and broke loop", "decision": "break"})
+		case 16:
+			chunk = genaiTextChunk("completed", 10, 10)
+		case 17:
+			chunk = genaiToolCallChunk("finish_workflow", map[string]any{"description": "workflow executed successfully", "artifacts": []any{"hello.go"}})
+		case 18:
+			chunk = genaiToolCallChunk("end_turn", map[string]any{"summary": "finalized the workflow"})
+		case 19:
+			chunk = genaiTextChunk("completed", 10, 10)
+		default:
+			chunk = genaiTextChunk("done", 10, 10)
+		}
+
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			yield(chunk, nil)
+		}
+	}
+
 	prov := newFakeProvider()
 	prov.id = "fake-prov"
 
@@ -309,91 +374,10 @@ func TestCoordinator_RunWorkflowLoopWithDecisionAndFinish(t *testing.T) {
 	prov.startSessionFn = func(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
 		stepCount++
 
-		var lm *fakeLM
-		switch stepCount {
-		case 1:
-			// Validate plan step.
-			// Turn 0: Call read tool on ask/plans/start/plan.txt
-			// Turn 1: Call end_turn with summary: "validated the plan"
-			// Turn 2: Finish
-			lm = &fakeLM{
-				turns: [][]fantasy.StreamPart{
-					toolCallTurn("tc1", "read", "{\"file_path\": \"ask/plans/start/plan.txt\", \"description\": \"read start plan\"}", fantasy.Usage{}),
-					toolCallTurn("tc2", "end_turn", "{\"summary\": \"validated the plan\"}", fantasy.Usage{}),
-					textTurn("completed", fantasy.Usage{}),
-				},
-			}
-		case 2:
-			// Implement changes (iter 1) step.
-			// Turn 0: Call read on hello.go (expecting file not found)
-			// Turn 1: Call write tool to create hello.go with initial content
-			// Turn 2: Call end_turn with summary: "implemented changes"
-			// Turn 3: Finish
-			lm = &fakeLM{
-				turns: [][]fantasy.StreamPart{
-					toolCallTurn("tc3", "read", "{\"file_path\": \"hello.go\", \"description\": \"check if hello.go exists\"}", fantasy.Usage{}),
-					toolCallTurn("tc4", "write", "{\"file_path\": \"hello.go\", \"content\": \"package main\\n\\nfunc main() {}\\n\", \"description\": \"create hello.go with main function\"}", fantasy.Usage{}),
-					toolCallTurn("tc5", "end_turn", "{\"summary\": \"implemented changes\"}", fantasy.Usage{}),
-					textTurn("completed", fantasy.Usage{}),
-				},
-			}
-		case 3:
-			// Validate changes (iter 1) -> continue step.
-			// Turn 0: Call read on hello.go
-			// Turn 1: Call end_turn with summary: "validated changes", decision: "continue"
-			// Turn 2: Finish
-			lm = &fakeLM{
-				turns: [][]fantasy.StreamPart{
-					toolCallTurn("tc6", "read", "{\"file_path\": \"hello.go\", \"description\": \"verify hello.go before continuing\"}", fantasy.Usage{}),
-					toolCallTurn("tc7", "end_turn", "{\"summary\": \"validated changes\", \"decision\": \"continue\"}", fantasy.Usage{}),
-					textTurn("completed", fantasy.Usage{}),
-				},
-			}
-		case 4:
-			// Implement changes (iter 2) step.
-			// Turn 0: Call read on hello.go
-			// Turn 1: Call edit tool to edit hello.go to print hello
-			// Turn 2: Call end_turn with summary: "implemented more changes"
-			// Turn 3: Finish
-			lm = &fakeLM{
-				turns: [][]fantasy.StreamPart{
-					toolCallTurn("tc8", "read", "{\"file_path\": \"hello.go\", \"description\": \"read hello.go before editing\"}", fantasy.Usage{}),
-					toolCallTurn("tc9", "edit", "{\"file_path\": \"hello.go\", \"old_string\": \"package main\\n\\nfunc main() {}\\n\", \"new_string\": \"package main\\n\\nimport \\\"fmt\\\"\\n\\nfunc main() {\\n\\tfmt.Println(\\\"hello\\\")\\n}\\n\", \"description\": \"add print to main\"}", fantasy.Usage{}),
-					toolCallTurn("tc10", "end_turn", "{\"summary\": \"implemented more changes\"}", fantasy.Usage{}),
-					textTurn("completed", fantasy.Usage{}),
-				},
-			}
-		case 5:
-			// Validate changes (iter 2) -> break step.
-			// Turn 0: Call read on hello.go
-			// Turn 1: Call end_turn with summary: "validated and broke loop", decision: "break"
-			// Turn 2: Finish
-			lm = &fakeLM{
-				turns: [][]fantasy.StreamPart{
-					toolCallTurn("tc11", "read", "{\"file_path\": \"hello.go\", \"description\": \"verify hello.go before break\"}", fantasy.Usage{}),
-					toolCallTurn("tc12", "end_turn", "{\"summary\": \"validated and broke loop\", \"decision\": \"break\"}", fantasy.Usage{}),
-					textTurn("completed", fantasy.Usage{}),
-				},
-			}
-		case 6:
-			// Finalize step.
-			// Turn 0: Call finish_workflow tool
-			// Turn 1: Call end_turn with summary: "finalized the workflow"
-			// Turn 2: Finish
-			lm = &fakeLM{
-				turns: [][]fantasy.StreamPart{
-					toolCallTurn("tc13", "finish_workflow", "{\"description\": \"workflow executed successfully\", \"artifacts\": [\"hello.go\"]}", fantasy.Usage{}),
-					toolCallTurn("tc14", "end_turn", "{\"summary\": \"finalized the workflow\"}", fantasy.Usage{}),
-					textTurn("completed", fantasy.Usage{}),
-				},
-			}
-		}
-
 		sess := &agentSession{
 			args:          args,
-			model:         lm,
 			system:        "test system prompt",
-			contextWindow: deepseekContextWindow,
+			contextWindow: 1_048_576,
 			modelID:       "fake-model",
 			ch:            make(chan tea.Msg, 32),
 			sendCh:        make(chan agentTurn, 8),
@@ -500,4 +484,3 @@ func TestCoordinator_RunWorkflowLoopWithDecisionAndFinish(t *testing.T) {
 		t.Errorf("hello.go has wrong content:\ngot:\n%q\nwant:\n%q", string(content), wantContent)
 	}
 }
-

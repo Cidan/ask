@@ -10,8 +10,8 @@ import (
 	"strings"
 	"sync"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/config"
+	"google.golang.org/genai"
 )
 
 // Rule is one parsed .claude/rules/*.md file.
@@ -227,7 +227,7 @@ func RulesPromptBlock(rules []Rule) string {
 }
 
 type ContextAwareTool struct {
-	fantasy.AgentTool
+	Inner      Tool
 	cwd        string
 	root       string
 	rules      []Rule
@@ -236,7 +236,12 @@ type ContextAwareTool struct {
 	seenCtx    map[string]bool
 }
 
-func WrapContextAwareTools(tools []fantasy.AgentTool, cwd string, rules []Rule) []fantasy.AgentTool {
+func (ct *ContextAwareTool) Name() string                             { return ct.Inner.Name() }
+func (ct *ContextAwareTool) Description() string                      { return ct.Inner.Description() }
+func (ct *ContextAwareTool) Info() ToolInfo                           { return ct.Inner.Info() }
+func (ct *ContextAwareTool) Declaration() *genai.FunctionDeclaration { return ct.Inner.Declaration() }
+
+func WrapContextAwareTools(tools []Tool, cwd string, rules []Rule) []Tool {
 	var scoped []Rule
 	for _, r := range rules {
 		if !r.Eager() {
@@ -250,12 +255,12 @@ func WrapContextAwareTools(tools []fantasy.AgentTool, cwd string, rules []Rule) 
 	mu := &sync.Mutex{}
 	firedRules := map[string]bool{}
 	seenCtx := map[string]bool{}
-	out := make([]fantasy.AgentTool, len(tools))
+	out := make([]Tool, len(tools))
 	for i, t := range tools {
 		name := t.Info().Name
 		if name == "read" || name == "glob" || name == "grep" || name == "ls" {
 			out[i] = &ContextAwareTool{
-				AgentTool:  t,
+				Inner:      t,
 				cwd:        cwd,
 				root:       root,
 				rules:      scoped,
@@ -270,22 +275,21 @@ func WrapContextAwareTools(tools []fantasy.AgentTool, cwd string, rules []Rule) 
 	return out
 }
 
-func (ct *ContextAwareTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	resp, err := ct.AgentTool.Run(ctx, call)
-	if err != nil || resp.IsError || resp.Type != "text" {
+func (ct *ContextAwareTool) Run(ctx context.Context, args map[string]any) (ToolResponse, error) {
+	resp, err := ct.Inner.Run(ctx, args)
+	if err != nil || resp.IsError {
 		return resp, err
 	}
 
 	var targetPath string
 	name := ct.Info().Name
 	if name == "read" {
-		targetPath = extractFilePath(call.Input)
+		if p, ok := args["file_path"].(string); ok {
+			targetPath = p
+		}
 	} else {
-		var parsed map[string]any
-		if err := json.Unmarshal([]byte(call.Input), &parsed); err == nil {
-			if p, ok := parsed["path"].(string); ok && p != "" {
-				targetPath = p
-			}
+		if p, ok := args["path"].(string); ok && p != "" {
+			targetPath = p
 		}
 		if targetPath == "" {
 			targetPath = ct.cwd

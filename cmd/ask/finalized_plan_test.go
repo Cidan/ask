@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
+	"iter"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/tools"
+	"google.golang.org/genai"
 )
 
 func TestFinalizedPlan_ClearPlan(t *testing.T) {
@@ -651,10 +656,31 @@ func TestFinalizedPlan_AgentSession_EndToEndWorkflowCompletion(t *testing.T) {
 		}},
 	}})
 
-	lm := &fakeLM{turns: [][]fantasy.StreamPart{
-		toolCallTurn("c1", "finalized_plan", `{"plan":"Refactor foo","explanation":"Clean architecture","default_workflow":"ship"}`, fantasy.Usage{InputTokens: 100}),
-		textTurn("Workflow finished! I opened PR #42 for you.", fantasy.Usage{InputTokens: 150}),
-	}}
+	origStream := engine.GenerateStream
+	defer func() { engine.GenerateStream = origStream }()
+
+	var turnIdx int
+	var muStream sync.Mutex
+	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+		muStream.Lock()
+		idx := turnIdx
+		turnIdx++
+		muStream.Unlock()
+
+		var chunk *genai.GenerateContentResponse
+		if idx == 0 {
+			chunk = genaiToolCallChunk("finalized_plan", map[string]any{
+				"plan":             "Refactor foo",
+				"explanation":      "Clean architecture",
+				"default_workflow": "ship",
+			})
+		} else {
+			chunk = genaiTextChunk("Workflow finished! I opened PR #42 for you.", 150, 10)
+		}
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			yield(chunk, nil)
+		}
+	}
 
 	m := newTestModel(t, prov)
 	m.id = 1
@@ -662,9 +688,8 @@ func TestFinalizedPlan_AgentSession_EndToEndWorkflowCompletion(t *testing.T) {
 
 	s := &agentSession{
 		args:          ProviderSessionArgs{Cwd: cwd, TabID: 1, SkipAllPermissions: true},
-		model:         lm,
 		system:        "test system prompt",
-		contextWindow: deepseekContextWindow,
+		contextWindow: 1_048_576,
 		modelID:       "fake-model",
 		ch:            make(chan tea.Msg, 256),
 		sendCh:        make(chan agentTurn, 8),
@@ -672,7 +697,7 @@ func TestFinalizedPlan_AgentSession_EndToEndWorkflowCompletion(t *testing.T) {
 		sessionID:     "ses-test",
 	}
 	s.env = newAgentToolEnv(cwd, 1, true, false, s.emit)
-	s.tools = []fantasy.AgentTool{
+	s.tools = []tools.Tool{
 		agentFinalizedPlanTool(s.env),
 	}
 	s.proc = &providerProc{stdin: agentStdin{s: s}, stderr: &stderrBuf{}, payload: s}

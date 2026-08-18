@@ -6,12 +6,13 @@ import (
 	"fmt"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/config"
+	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/providers"
+	"github.com/Cidan/ask/pkg/tools"
 )
 
-// agentProviderSpec describes one fantasy-backed in-process API provider.
+// agentProviderSpec describes one in-process API provider.
 type agentProviderSpec = providers.AgentProviderSpec
 
 // toPkgConfig returns config.Config (which askConfig is aliased to).
@@ -30,17 +31,22 @@ func (p agentAPIProvider) Capabilities() ProviderCapabilities {
 		Resume:       true,
 		ModelPicker:  true,
 		EffortPicker: true,
-		// The question modal and tool approvals are wired natively
-		// in-process (agent_tools_ask.go); no MCP redirect hooks needed.
 		AskUserQuestionMCP:  false,
 		PermissionPromptMCP: false,
 	}
 }
 
 func (p agentAPIProvider) ModelPicker() ProviderPicker {
+	cfg, _ := loadConfig()
+	options := p.spec.ModelOptions
+	if p.spec.ID == "vertex" {
+		if dynamicModels, err := providers.ListVertexModels(context.Background(), cfg.Vertex); err == nil && len(dynamicModels) > 0 {
+			options = dynamicModels
+		}
+	}
 	return ProviderPicker{
 		Prompt:      "Select " + p.spec.DisplayName + " model",
-		Options:     p.spec.ModelOptions,
+		Options:     options,
 		AllowCustom: true,
 	}
 }
@@ -57,10 +63,7 @@ func (p agentAPIProvider) BaseSlashCommands() []slashCmd {
 	}
 }
 
-// ProbeInit discovers user-invocable skills as slash commands. The
-// /name lines forward to the session (the registry match in update.go
-// uses bare names), where runTurn expands them into the full skill
-// invocation message.
+// ProbeInit discovers user-invocable skills as slash commands.
 func (p agentAPIProvider) ProbeInit(args ProviderSessionArgs) tea.Cmd {
 	return func() tea.Msg {
 		var entries []providerSlashEntry
@@ -73,9 +76,6 @@ func (p agentAPIProvider) ProbeInit(args ProviderSessionArgs) tea.Cmd {
 	}
 }
 
-// PreMintSessionID: session ids are ours (the store keys on them), so
-// minting up front gives the same first-turn-cancel safety claude's
-// --session-id path has.
 func (p agentAPIProvider) PreMintSessionID(_ ProviderSessionArgs) string { return newUUIDv4() }
 
 func (p agentAPIProvider) NativeSessionID(_ *providerProc) string { return "" }
@@ -90,19 +90,19 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 	if modelID == "" {
 		modelID = p.spec.DefaultModel
 	}
-	lm, err := p.spec.BuildModel(toPkgConfig(cfg), modelID)
+	client, err := p.spec.BuildClient(toPkgConfig(cfg))
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", p.spec.ID, err)
 	}
 
 	store := p.store()
-	providerOpts, temperature := p.spec.CallOptions(modelID, args.Effort)
+	callOpts, temperature := p.spec.CallOptions(modelID, args.Effort)
 	session := &agentSession{
 		args:          args,
 		spec:          p.spec,
-		model:         lm,
+		client:        client,
 		system:        buildAgentSystemPrompt(args),
-		providerOpts:  providerOpts,
+		callOpts:      callOpts,
 		temperature:   temperature,
 		contextWindow: p.spec.ContextWindow(modelID),
 		modelID:       modelID,
@@ -123,7 +123,7 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 			return nil, nil, fmt.Errorf("%s: resume %s: %w", p.spec.ID, short(args.SessionID), err)
 		}
 		session.sessionID = args.SessionID
-		session.messages = repairDanglingToolCalls(file.Messages)
+		session.messages = file.Messages
 	case args.NewSessionID != "":
 		session.sessionID = args.NewSessionID
 	default:
@@ -146,7 +146,7 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 // setupAgentSessionTools assembles the session's tool surface in two tiers.
 func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	env := s.env
-	s.coreTools = []fantasy.AgentTool{
+	s.coreTools = []tools.Tool{
 		agentReadTool(env),
 		agentWriteTool(env),
 		agentEditTool(env),
@@ -159,8 +159,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		agentFetchTool(env),
 		agentTodosTool(env),
 		agentTaskTool(env,
-			func() fantasy.LanguageModel { return s.model },
-			func() int64 { return s.maxOutputTokens }),
+			func() *agentSession { return s }),
 		agentAskUserQuestionTool(env),
 		agentEndTurnTool(env),
 		agentSearchToolsTool(s.deferredTools),
@@ -175,11 +174,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	if !s.args.InWorkflow {
 		s.coreTools = append(s.coreTools, agentWorkflowTools(env)...)
 	}
-	if s.spec != nil && s.spec.NativeWebSearch != nil {
-		s.providerWebSearch = s.spec.NativeWebSearch(s.modelID)
-	} else {
-		s.coreTools = append(s.coreTools, agentWebSearchTool(env))
-	}
+	s.coreTools = append(s.coreTools, agentWebSearchTool(env))
 	s.coreTools = wrapFileToolsWithMemory(s.coreTools, s.args.Cwd)
 	s.coreTools = wrapContextAwareTools(s.coreTools, s.args.Cwd, discoverRules(s.args.Cwd))
 	s.deferredBase = agentLinearTools(env)
@@ -225,16 +220,16 @@ func (p agentAPIProvider) Send(proc *providerProc, text string, attachments []pe
 	return session.queueTurn(text, attachmentFileParts(attachments))
 }
 
-func attachmentFileParts(attachments []pendingAttachment) []fantasy.FilePart {
+func attachmentFileParts(attachments []pendingAttachment) []engine.FilePart {
 	if len(attachments) == 0 {
 		return nil
 	}
-	parts := make([]fantasy.FilePart, 0, len(attachments))
+	parts := make([]engine.FilePart, 0, len(attachments))
 	for i, a := range attachments {
-		parts = append(parts, fantasy.FilePart{
-			Filename:  fmt.Sprintf("attachment-%d", i+1),
-			Data:      a.data,
-			MediaType: a.mime,
+		parts = append(parts, engine.FilePart{
+			Path:     fmt.Sprintf("attachment-%d", i+1),
+			Data:     a.data,
+			MIMEType: a.mime,
 		})
 	}
 	return parts
@@ -266,12 +261,6 @@ func (p agentAPIProvider) SaveSettings(s ProviderSettings) error {
 		cfg, _ := loadConfig()
 		pkgCfg := toPkgConfig(cfg)
 		p.spec.SaveSettings(&pkgCfg, s)
-		cfg.Anthropic = pkgCfg.Anthropic
-		cfg.OpenAI = pkgCfg.OpenAI
-		cfg.DeepSeek = pkgCfg.DeepSeek
-		cfg.Moonshot = pkgCfg.Moonshot
-		cfg.MiniMax = pkgCfg.MiniMax
-		cfg.GoogleAI = pkgCfg.GoogleAI
 		cfg.Vertex = pkgCfg.Vertex
 		cfg.Effort = pkgCfg.Effort
 		return saveConfig(cfg)

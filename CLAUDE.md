@@ -21,9 +21,10 @@ git to /tmp:
 
 as it is the cannonical interface in terms of implementation/bubbletea use, though it does not use Claude in the way we do.
 
-when working on the agent runtime, ALWAYS read the fantasy source, which you must checkout to /tmp:
+when working on the agent runtime, ALWAYS read the Google ADK Go documentation and source:
 
-* https://github.com/charmbracelet/fantasy
+* https://google.github.io/adk-docs/
+* https://github.com/google/adk-go
 
 when working on MCP (client transports, OAuth, elicitation), ALWAYS read the official Go SDK source at the pinned version:
 
@@ -38,9 +39,8 @@ ALL OF THE ABOVE IS NOT OPTIONAL. YOU MUST ALWAYS USE THE ABOVE REFERENCES.
 ## General info
 
 `ask` is a Bubble Tea v2 TUI coding agent. The agent loop runs
-in-process on `charm.land/fantasy` against provider APIs (anthropic,
-openai, deepseek, kimi, minimax, googleai, vertex) — there are NO CLI
-subprocesses and NO loopback MCP
+in-process on Google ADK 2.0 (`google.golang.org/adk/v2`) and the GenAI SDK
+against Vertex AI Gemini — there are NO CLI subprocesses and NO loopback MCP
 server; every tool (coding core, linear/workflow bridge twins,
 question modal, external MCP clients) is native Go. The tool surface
 is two-tier: a small fixed CORE rides the wire tool definitions,
@@ -639,14 +639,11 @@ over the column are absorbed.
   titles persist on the VirtualSession and rehydrate on /resume.
 
 
-## In-process API providers (fantasy agents)
+## In-process API providers (ADK 2.0 & Vertex AI)
 
-`deepseek`, `anthropic`, and `openai` run with **no CLI subprocess**:
-the agent loop runs inside ask, built on `charm.land/fantasy`
-(Apache-2.0, the agent runtime crush uses; v0.30+ repairs malformed
-tool-call JSON by default — important for DeepSeek — so don't pass a
-custom `WithRepairToolCall` that would shadow it). Crush itself is
-FSL-licensed: design reference only, never copy its code.
+`vertex` runs with **no CLI subprocess**:
+the agent loop runs inside ask, built on Google ADK 2.0 (`google.golang.org/adk/v2`)
+and `google.golang.org/genai`.
 
 ### Provider seam
 
@@ -657,13 +654,11 @@ satisfies the `Provider` interface for every spec, with
 session down (that's what `killProc` calls), and `Interrupt` cancels
 the in-flight turn's context cooperatively (handled=true, codex-style —
 the session emits its own turn end). A provider is an
-`agentProviderSpec` value (deepseek.go / anthropic.go / openai.go):
-identity, model/effort options, `buildModel` (via a swappable
-package-level var for tests), `callOptions` (effort→wire),
-`prepareStep`/`decorateTools` hooks, image capability, context window,
+`agentProviderSpec` value (`pkg/providers/vertex.go`):
+identity, model/effort options, `BuildModel` (via ADK's `gemini.NewModel`),
+`CallOptions` (effort→wire), image capability, context window,
 and config-block accessors. Registration order is explicit in
-provider.go's single `init()` — anthropic first (the default for an
-empty config), then openai, then deepseek.
+provider.go's single `init()`.
 Everything else (tabs, workflows, banner, cancellation, the Ctrl+M picker)
 works because the session emits the shared provider message protocol:
 `streamStatusMsg`, `assistantTextMsg` (one per completed text block,
@@ -892,7 +887,7 @@ the core wire toolset) and the question modal is driven by
 
 ## Conventions
 
-- No new runtime dependencies without asking. We already carry Charm (bubbletea/bubbles/lipgloss/glamour/ultraviolet), `charm.land/fantasy` (the agent runtime behind the deepseek provider — user-approved), the official MCP SDK, golang.org/x/net (fetch tool's HTML→text), and stdlib.
+- No new runtime dependencies without asking. We already carry Charm (bubbletea/bubbles/lipgloss/glamour/ultraviolet), Google ADK 2.0 (`google.golang.org/adk/v2`), Google GenAI (`google.golang.org/genai`), the official MCP SDK, golang.org/x/net (fetch tool's HTML→text), and stdlib.
 - Only emojis that already exist in the codebase (`✓`, `✗`, `▸`, `›`, `▏`) — nothing new unless the user asks.
 - Comments: default to none. Only add one when a reader cannot derive the reason from the code.
 - Debug logging uses `debugLog(format, args...)` and is a no-op unless `ASK_DEBUG=1`. Add one when crossing an async boundary (paste command, MCP handler, provider stream, tool dispatch).

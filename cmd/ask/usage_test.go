@@ -7,12 +7,10 @@ func TestModelContextLimit(t *testing.T) {
 		model string
 		want  int
 	}{
-		{"opus[1m]", 1_000_000},
-		{"sonnet[1m]", 1_000_000},
-		{"claude-opus-4-7-1m", 1_000_000},
-		{"claude-OPUS-4-7-1M", 1_000_000},
-		{"sonnet", 200_000},
-		{"opus", 200_000},
+		{"custom-gemini", 1_048_576},
+		{"custom-1m", 1_048_576},
+		{"CUSTOM-1M", 1_048_576},
+		{"unknown-model", 200_000},
 		{"default", 200_000},
 		{"", 200_000},
 	}

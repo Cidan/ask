@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/workflow"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -154,9 +153,9 @@ type ClearPlansOutput struct {
 }
 
 // WorkflowTools returns all 7 workflow core tools.
-func WorkflowTools(env *ToolEnv) []fantasy.AgentTool {
+func WorkflowTools(env *ToolEnv) []Tool {
 	cwd := func() string { return env.Cwd }
-	return []fantasy.AgentTool{
+	return []Tool{
 		NativeBridgeTool("workflow_list", WorkflowListToolDescription,
 			func(_ context.Context, in WorkflowListInput) (*mcp.CallToolResult, WorkflowListOutput, error) {
 				env.MarkWorkflowsChecked()

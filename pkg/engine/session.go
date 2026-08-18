@@ -6,7 +6,12 @@ import (
 	"strings"
 	"sync"
 
-	"charm.land/fantasy"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/llmagent"
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
 )
 
 type SessionArgs struct {
@@ -22,17 +27,17 @@ type SessionArgs struct {
 
 type Turn struct {
 	Text  string
-	Files []fantasy.FilePart
+	Files []FilePart
 }
 
 type Session struct {
 	args          SessionArgs
-	model         fantasy.LanguageModel
+	llm           model.LLM
 	system        string
 	contextWindow int64
 	modelID       string
-	tools         []fantasy.AgentTool
-	messages      []fantasy.Message
+	tools         []Tool
+	messages      []Message
 	sendCh        chan Turn
 	closed        chan struct{}
 	closeOnce     sync.Once
@@ -41,17 +46,19 @@ type Session struct {
 	listener      EventListener
 	interaction   InteractionHandler
 	sessionID     string
+	sessSvc       session.Service
+	runner        *runner.Runner
 }
 
-func NewSession(args SessionArgs, model fantasy.LanguageModel, system string, tools []fantasy.AgentTool, listener EventListener, interaction InteractionHandler) *Session {
+func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, listener EventListener, interaction InteractionHandler) *Session {
 	if interaction == nil {
 		interaction = HeadlessInteractionHandler{AutoApproveTools: true}
 	}
 	s := &Session{
 		args:          args,
-		model:         model,
+		llm:           llm,
 		system:        system,
-		contextWindow: 200_000,
+		contextWindow: 1_048_576,
 		modelID:       args.Model,
 		tools:         tools,
 		sendCh:        make(chan Turn, 8),
@@ -63,6 +70,24 @@ func NewSession(args SessionArgs, model fantasy.LanguageModel, system string, to
 	if s.sessionID == "" {
 		s.sessionID = "ses-" + args.Model
 	}
+
+	adkTools, _ := AsADKTools(tools)
+	agentInstance, err := llmagent.New(llmagent.Config{
+		Name:        "ask_coder",
+		Model:       llm,
+		Instruction: system,
+		Tools:       adkTools,
+	})
+	if err == nil {
+		s.sessSvc = session.InMemoryService()
+		_, _ = s.sessSvc.Create(context.Background(), &session.CreateRequest{
+			AppName:   "ask",
+			UserID:    "user",
+			SessionID: s.sessionID,
+		})
+		s.runner, _ = RunnerBuilder(agentInstance, s.sessSvc)
+	}
+
 	go s.run()
 	return s
 }
@@ -96,7 +121,7 @@ func (s *Session) Close() {
 	})
 }
 
-func (s *Session) QueueTurn(text string, files ...[]fantasy.FilePart) error {
+func (s *Session) QueueTurn(text string, files ...[]FilePart) error {
 	turn := Turn{Text: text}
 	for _, f := range files {
 		turn.Files = append(turn.Files, f...)
@@ -154,116 +179,157 @@ func (s *Session) runTurn(turn Turn) {
 		Status:    "thinking…",
 	})
 
-	var textBuf strings.Builder
-
-	agentOpts := []fantasy.AgentOption{
-		fantasy.WithSystemPrompt(s.system),
-		fantasy.WithTools(s.tools...),
-	}
-	agent := fantasy.NewAgent(s.model, agentOpts...)
-
-	history := append([]fantasy.Message(nil), s.messages...)
-	result, err := agent.Stream(ctx, fantasy.AgentStreamCall{
-		Prompt:   turn.Text,
-		Files:    turn.Files,
-		Messages: history,
-		OnTextDelta: func(_, text string) error {
-			textBuf.WriteString(text)
-			s.Emit(TextDeltaEvent{
-				BaseEvent: BaseEvent{TabID: s.args.TabID},
-				Delta:     text,
-			})
-			return nil
-		},
-		OnTextEnd: func(string) error {
-			if t := strings.TrimSpace(textBuf.String()); t != "" {
-				s.Emit(AssistantTextEvent{
-					BaseEvent: BaseEvent{TabID: s.args.TabID},
-					Text:      t,
-				})
-			}
-			textBuf.Reset()
-			return nil
-		},
-		OnToolCall: func(tc fantasy.ToolCallContent) error {
-			s.Emit(ToolCallEvent{
-				BaseEvent: BaseEvent{TabID: s.args.TabID},
-				ToolUseID: tc.ToolCallID,
-				ToolName:  tc.ToolName,
-			})
-			return nil
-		},
-		OnToolResult: func(tr fantasy.ToolResultContent) error {
-			s.Emit(ToolResultEvent{
-				BaseEvent: BaseEvent{TabID: s.args.TabID},
-				ToolUseID: tr.ToolCallID,
-				Output:    ToolResultText(tr.Result),
-				IsError:   ToolResultIsError(tr.Result),
-			})
-			return nil
-		},
-	})
-
-	if err != nil {
+	if s.runner == nil {
 		s.Emit(DoneEvent{
 			BaseEvent: BaseEvent{TabID: s.args.TabID},
 			Result: ResultSummary{
 				SessionID: s.sessionID,
 				IsError:   true,
-				Result:    err.Error(),
+				Result:    "runner is nil",
 			},
-			Error: err,
+			Error: errors.New("runner is nil"),
 		})
 		s.Emit(TurnCompleteEvent{BaseEvent: BaseEvent{TabID: s.args.TabID}})
 		return
 	}
 
-	newMessages := []fantasy.Message{fantasy.NewUserMessage(turn.Text, turn.Files...)}
-	for _, step := range result.Steps {
-		newMessages = append(newMessages, step.Messages...)
+	userMsg := genai.NewContentFromText(turn.Text, genai.RoleUser)
+	for _, f := range turn.Files {
+		if len(f.Data) > 0 {
+			userMsg.Parts = append(userMsg.Parts, genai.NewPartFromBytes(f.Data, f.MIMEType))
+		}
 	}
-	s.messages = append(s.messages, newMessages...)
 
-	resultText := result.Response.Content.Text()
+	userMessageObj := NewUserMessage(turn.Text, turn.Files...)
+	s.messages = append(s.messages, userMessageObj)
 
+	var finalResponseText strings.Builder
+	var currentTurnThoughts []ThoughtPart
+	var currentTurnToolCalls []ToolCallPart
+	var currentTurnToolResults []ToolResultPart
+
+	for event, err := range s.runner.Run(ctx, "user", s.sessionID, userMsg, agent.RunConfig{}) {
+		if err != nil {
+			s.Emit(DoneEvent{
+				BaseEvent: BaseEvent{TabID: s.args.TabID},
+				Result: ResultSummary{
+					SessionID: s.sessionID,
+					IsError:   true,
+					Result:    err.Error(),
+				},
+				Error: err,
+			})
+			s.Emit(TurnCompleteEvent{BaseEvent: BaseEvent{TabID: s.args.TabID}})
+			return
+		}
+		if event == nil {
+			continue
+		}
+
+		if event.UsageMetadata != nil {
+			s.Emit(UsageEvent{
+				BaseEvent:    BaseEvent{TabID: s.args.TabID},
+				InputTokens:  int(event.UsageMetadata.PromptTokenCount),
+				OutputTokens: int(event.UsageMetadata.CandidatesTokenCount),
+				TotalTokens:  int(event.UsageMetadata.TotalTokenCount),
+			})
+		}
+
+		if event.LLMResponse.Content != nil {
+			for _, part := range event.LLMResponse.Content.Parts {
+				if part == nil {
+					continue
+				}
+				if part.Thought {
+					currentTurnThoughts = append(currentTurnThoughts, ThoughtPart{
+						Text:      part.Text,
+						Signature: part.ThoughtSignature,
+					})
+				} else if part.Text != "" {
+					if event.LLMResponse.Partial {
+						s.Emit(TextDeltaEvent{
+							BaseEvent: BaseEvent{TabID: s.args.TabID},
+							Delta:     part.Text,
+						})
+					}
+				}
+				if part.FunctionCall != nil {
+					tc := ToolCallPart{
+						ID:               part.FunctionCall.ID,
+						Name:             part.FunctionCall.Name,
+						Args:             part.FunctionCall.Args,
+						ThoughtSignature: part.ThoughtSignature,
+					}
+					currentTurnToolCalls = append(currentTurnToolCalls, tc)
+					s.Emit(ToolCallEvent{
+						BaseEvent: BaseEvent{TabID: s.args.TabID},
+						ToolName:  tc.Name,
+						Input:     tc.Args,
+					})
+				}
+				if part.FunctionResponse != nil {
+					resStr := ""
+					isErr := false
+					if res, ok := part.FunctionResponse.Response["result"].(string); ok {
+						resStr = res
+					}
+					if errFlag, ok := part.FunctionResponse.Response["is_error"].(bool); ok {
+						isErr = errFlag
+					}
+					tr := ToolResultPart{
+						ID:      part.FunctionResponse.ID,
+						Name:    part.FunctionResponse.Name,
+						Content: resStr,
+						IsError: isErr,
+					}
+					currentTurnToolResults = append(currentTurnToolResults, tr)
+					s.Emit(ToolResultEvent{
+						BaseEvent: BaseEvent{TabID: s.args.TabID},
+						ToolName:  tr.Name,
+						Output:    tr.Content,
+						IsError:   tr.IsError,
+					})
+				}
+			}
+		}
+
+		if !event.LLMResponse.Partial && event.LLMResponse.Content != nil {
+			var nonPartialText strings.Builder
+			for _, part := range event.LLMResponse.Content.Parts {
+				if part != nil && !part.Thought && part.Text != "" {
+					nonPartialText.WriteString(part.Text)
+				}
+			}
+			txt := nonPartialText.String()
+			if txt != "" {
+				if finalResponseText.Len() > 0 {
+					finalResponseText.WriteString("\n")
+				}
+				finalResponseText.WriteString(txt)
+				s.Emit(AssistantTextEvent{
+					BaseEvent: BaseEvent{TabID: s.args.TabID},
+					Text:      txt,
+				})
+			}
+			if len(currentTurnThoughts) > 0 || len(currentTurnToolCalls) > 0 || txt != "" {
+				s.messages = append(s.messages, NewAssistantMessage(txt, currentTurnThoughts, currentTurnToolCalls))
+				currentTurnThoughts = nil
+				currentTurnToolCalls = nil
+			}
+			if len(currentTurnToolResults) > 0 {
+				s.messages = append(s.messages, NewToolResultMessage(currentTurnToolResults...))
+				currentTurnToolResults = nil
+			}
+		}
+	}
+
+	respText := finalResponseText.String()
 	s.Emit(DoneEvent{
 		BaseEvent: BaseEvent{TabID: s.args.TabID},
 		Result: ResultSummary{
 			SessionID: s.sessionID,
-			Result:    resultText,
+			Result:    respText,
 		},
 	})
 	s.Emit(TurnCompleteEvent{BaseEvent: BaseEvent{TabID: s.args.TabID}})
-}
-
-func ToolResultText(out fantasy.ToolResultOutputContent) string {
-	switch v := out.(type) {
-	case fantasy.ToolResultOutputContentText:
-		return v.Text
-	case *fantasy.ToolResultOutputContentText:
-		return v.Text
-	case fantasy.ToolResultOutputContentError:
-		if v.Error != nil {
-			return v.Error.Error()
-		}
-	case *fantasy.ToolResultOutputContentError:
-		if v.Error != nil {
-			return v.Error.Error()
-		}
-	case fantasy.ToolResultOutputContentMedia:
-		return "(media result: " + v.MediaType + ")"
-	case *fantasy.ToolResultOutputContentMedia:
-		return "(media result: " + v.MediaType + ")"
-	}
-	return ""
-}
-
-func ToolResultIsError(out fantasy.ToolResultOutputContent) bool {
-	switch out.(type) {
-	case fantasy.ToolResultOutputContentError:
-		return true
-	case *fantasy.ToolResultOutputContentError:
-		return true
-	}
-	return false
 }

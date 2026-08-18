@@ -14,8 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-
-	"charm.land/fantasy"
 )
 
 const GlobToolDescription = `Find files by glob pattern, relative to the search path. Supports ** for crossing directories and {a,b} alternation (e.g. "**/*.go", "src/**/*.{ts,tsx}"). Results are sorted by modification time, newest first.`
@@ -27,13 +25,13 @@ type GlobParams struct {
 }
 
 // GlobTool returns the native glob tool.
-func GlobTool(env *ToolEnv) fantasy.AgentTool {
-	return fantasy.NewAgentTool(
+func GlobTool(env *ToolEnv) Tool {
+	return NewTool(
 		"glob",
 		GlobToolDescription,
-		func(ctx context.Context, p GlobParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, p GlobParams) (ToolResponse, error) {
 			if strings.TrimSpace(p.Pattern) == "" {
-				return fantasy.NewTextErrorResponse("pattern is required"), nil
+				return NewTextErrorResponse("pattern is required"), nil
 			}
 			root := env.AbsPath(p.Path)
 			type hit struct {
@@ -72,10 +70,10 @@ func GlobTool(env *ToolEnv) fantasy.AgentTool {
 				return ctx.Err()
 			})
 			if err != nil && err != filepath.SkipAll {
-				return fantasy.NewTextErrorResponse("glob walk: " + err.Error()), nil
+				return NewTextErrorResponse("glob walk: " + err.Error()), nil
 			}
 			if len(hits) == 0 {
-				return fantasy.NewTextResponse("no files match " + p.Pattern + " under " + root), nil
+				return NewTextResponse("no files match " + p.Pattern + " under " + root), nil
 			}
 			sort.Slice(hits, func(i, j int) bool { return hits[i].mod > hits[j].mod })
 			if len(hits) > MaxSearchHits {
@@ -90,7 +88,7 @@ func GlobTool(env *ToolEnv) fantasy.AgentTool {
 			if truncated {
 				fmt.Fprintf(&out, "(capped at %d results — narrow the pattern for more)\n", MaxSearchHits)
 			}
-			return fantasy.NewTextResponse(out.String()), nil
+			return NewTextResponse(out.String()), nil
 		},
 	)
 }
@@ -182,19 +180,19 @@ type GrepParams struct {
 var RgPath, _ = exec.LookPath("rg")
 
 // GrepTool returns the native grep tool.
-func GrepTool(env *ToolEnv) fantasy.AgentTool {
-	return fantasy.NewAgentTool(
+func GrepTool(env *ToolEnv) Tool {
+	return NewTool(
 		"grep",
 		GrepToolDescription,
-		func(ctx context.Context, p GrepParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, p GrepParams) (ToolResponse, error) {
 			if p.Pattern == "" {
-				return fantasy.NewTextErrorResponse("pattern is required"), nil
+				return NewTextErrorResponse("pattern is required"), nil
 			}
 			out, errText := GrepRun(ctx, RgPath, p, env.AbsPath(p.Path))
 			if errText != "" {
-				return fantasy.NewTextErrorResponse(errText), nil
+				return NewTextErrorResponse(errText), nil
 			}
-			return fantasy.NewTextResponse(out), nil
+			return NewTextResponse(out), nil
 		},
 	)
 }
@@ -390,18 +388,18 @@ type LsParams struct {
 }
 
 // LsTool returns the native ls tool.
-func LsTool(env *ToolEnv) fantasy.AgentTool {
-	return fantasy.NewAgentTool(
+func LsTool(env *ToolEnv) Tool {
+	return NewTool(
 		"ls",
 		LsToolDescription,
-		func(ctx context.Context, p LsParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, p LsParams) (ToolResponse, error) {
 			root := env.AbsPath(p.Path)
 			info, err := os.Stat(root)
 			if err != nil {
-				return fantasy.NewTextErrorResponse("stat " + root + ": " + err.Error()), nil
+				return NewTextErrorResponse("stat " + root + ": " + err.Error()), nil
 			}
 			if !info.IsDir() {
-				return fantasy.NewTextErrorResponse(root + " is not a directory"), nil
+				return NewTextErrorResponse(root + " is not a directory"), nil
 			}
 			var out strings.Builder
 			out.WriteString(root + "/\n")
@@ -443,12 +441,12 @@ func LsTool(env *ToolEnv) fantasy.AgentTool {
 				return ctx.Err()
 			})
 			if err != nil && err != filepath.SkipAll {
-				return fantasy.NewTextErrorResponse("ls walk: " + err.Error()), nil
+				return NewTextErrorResponse("ls walk: " + err.Error()), nil
 			}
 			if truncated {
 				fmt.Fprintf(&out, "(capped at %d entries — use depth or a narrower path)\n", MaxListEntries)
 			}
-			return fantasy.NewTextResponse(out.String()), nil
+			return NewTextResponse(out.String()), nil
 		},
 	)
 }

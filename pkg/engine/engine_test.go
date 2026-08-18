@@ -2,58 +2,18 @@ package engine
 
 import (
 	"context"
-	"errors"
+	"iter"
 	"sync"
 	"testing"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/config"
+	"google.golang.org/adk/v2/model"
 )
-
-type mockLM struct {
-	mu    sync.Mutex
-	turns [][]fantasy.StreamPart
-	idx   int
-}
-
-func (m *mockLM) Provider() string { return "deepseek" }
-func (m *mockLM) Model() string    { return "mock-model" }
-
-func (m *mockLM) Generate(ctx context.Context, call fantasy.Call) (*fantasy.Response, error) {
-	return nil, errors.New("unimplemented")
-}
-
-func (m *mockLM) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
-	m.mu.Lock()
-	turn := m.idx
-	m.idx++
-	var parts []fantasy.StreamPart
-	if turn < len(m.turns) {
-		parts = m.turns[turn]
-	}
-	m.mu.Unlock()
-
-	return func(yield func(fantasy.StreamPart) bool) {
-		for _, p := range parts {
-			if !yield(p) {
-				return
-			}
-		}
-	}, nil
-}
-
-func (m *mockLM) GenerateObject(context.Context, fantasy.ObjectCall) (*fantasy.ObjectResponse, error) {
-	return nil, errors.New("unsupported")
-}
-
-func (m *mockLM) StreamObject(context.Context, fantasy.ObjectCall) (fantasy.ObjectStreamResponse, error) {
-	return nil, errors.New("unsupported")
-}
 
 func TestEngine_InitializationAndPrompt(t *testing.T) {
 	eng := New(Options{
 		Config: config.Config{
-			Provider: "deepseek",
+			Provider: "vertex",
 		},
 		InteractionHandler: HeadlessInteractionHandler{AutoApproveTools: true},
 	})
@@ -69,14 +29,13 @@ func TestEngine_InitializationAndPrompt(t *testing.T) {
 }
 
 func TestEngine_SessionStreamEvents(t *testing.T) {
-	lm := &mockLM{
-		turns: [][]fantasy.StreamPart{
-			{
-				{Type: fantasy.StreamPartTypeTextStart, ID: "t1"},
-				{Type: fantasy.StreamPartTypeTextDelta, ID: "t1", Delta: "Engine response"},
-				{Type: fantasy.StreamPartTypeTextEnd, ID: "t1"},
-				{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonStop},
-			},
+	mockModel := &mockLLM{
+		name: "mock-model",
+		generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+			return mockLLMSequence(
+				partialTextResponse("Engine response"),
+				textResponse("Engine response"),
+			)
 		},
 	}
 
@@ -91,7 +50,7 @@ func TestEngine_SessionStreamEvents(t *testing.T) {
 
 	session := NewSession(
 		SessionArgs{TabID: 1, Cwd: t.TempDir(), Model: "mock-model"},
-		lm,
+		mockModel,
 		"system prompt",
 		nil,
 		listener,

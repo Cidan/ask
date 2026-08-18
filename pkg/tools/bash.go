@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/engine"
 )
 
@@ -201,17 +200,17 @@ type BashParams struct {
 }
 
 // BashTool returns the native bash tool.
-func BashTool(env *ToolEnv) fantasy.AgentTool {
-	return fantasy.NewAgentTool(
+func BashTool(env *ToolEnv) Tool {
+	return NewTool(
 		"bash",
 		BashToolDescription,
-		func(ctx context.Context, p BashParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, p BashParams) (ToolResponse, error) {
 			command := strings.TrimSpace(p.Command)
 			if command == "" {
-				return fantasy.NewTextErrorResponse("command is required"), nil
+				return NewTextErrorResponse("command is required"), nil
 			}
 			if err := ValidateSudoCommand(command); err != nil {
-				return fantasy.NewTextErrorResponse(err.Error()), nil
+				return NewTextErrorResponse(err.Error()), nil
 			}
 			if !SafeShellCommand(command) {
 				if denied := env.RequestApproval(ctx, "bash", map[string]any{
@@ -238,7 +237,7 @@ func BashTool(env *ToolEnv) fantasy.AgentTool {
 
 			handle, err := RunShell(env.Cwd, command, extraEnv...)
 			if err != nil {
-				return fantasy.NewTextErrorResponse("could not start shell: " + err.Error()), nil
+				return NewTextErrorResponse("could not start shell: " + err.Error()), nil
 			}
 
 			if p.RunInBackground {
@@ -262,7 +261,7 @@ func BashTool(env *ToolEnv) fantasy.AgentTool {
 						Description: p.Description,
 					})
 				}
-				return fantasy.NewTextResponse(fmt.Sprintf(
+				return NewTextResponse(fmt.Sprintf(
 					"started background job %s; poll it with job_output and stop it with job_kill", job.ID)), nil
 			}
 
@@ -303,13 +302,13 @@ func BashTool(env *ToolEnv) fantasy.AgentTool {
 				case <-timer.C:
 					handle.Kill()
 					drainShellOutput(handle.Output, collect)
-					return fantasy.NewTextErrorResponse(fmt.Sprintf(
+					return NewTextErrorResponse(fmt.Sprintf(
 						"command timed out after %s and was killed\n%s",
 						timeout, TruncateMiddle(handleFinalOutput(buf.String())))), nil
 				case <-ctx.Done():
 					handle.Kill()
 					drainShellOutput(handle.Output, collect)
-					return fantasy.NewTextErrorResponse("command cancelled\n" + TruncateMiddle(handleFinalOutput(buf.String()))), nil
+					return NewTextErrorResponse("command cancelled\n" + TruncateMiddle(handleFinalOutput(buf.String()))), nil
 				}
 			}
 		},
@@ -322,24 +321,24 @@ func drainShellOutput(ch <-chan string, collect func(string)) {
 	}
 }
 
-func bashResponse(output string, rawTruncated bool, res ShellResult) fantasy.ToolResponse {
+func bashResponse(output string, rawTruncated bool, res ShellResult) ToolResponse {
 	body := TruncateMiddle(output)
 	if rawTruncated {
 		body += "\n(output exceeded the in-memory cap; middle portions were dropped)"
 	}
 	if res.Err != nil {
-		return fantasy.NewTextErrorResponse(body + "\nshell error: " + res.Err.Error())
+		return NewTextErrorResponse(body + "\nshell error: " + res.Err.Error())
 	}
 	if res.ExitCode != 0 {
 		if body != "" && !strings.HasSuffix(body, "\n") {
 			body += "\n"
 		}
-		return fantasy.NewTextErrorResponse(fmt.Sprintf("%sExit code %d", body, res.ExitCode))
+		return NewTextErrorResponse(fmt.Sprintf("%sExit code %d", body, res.ExitCode))
 	}
 	if strings.TrimSpace(body) == "" {
-		return fantasy.NewTextResponse("(no output)")
+		return NewTextResponse("(no output)")
 	}
-	return fantasy.NewTextResponse(body)
+	return NewTextResponse(body)
 }
 
 const JobOutputToolDescription = `Read the accumulated output of a background job started with bash run_in_background. Set wait to block until the job exits (up to 30s).`
@@ -351,21 +350,21 @@ type JobOutputParams struct {
 }
 
 // JobOutputTool returns the native job_output tool.
-func JobOutputTool(env *ToolEnv) fantasy.AgentTool {
-	return fantasy.NewAgentTool(
+func JobOutputTool(env *ToolEnv) Tool {
+	return NewTool(
 		"job_output",
 		JobOutputToolDescription,
-		func(ctx context.Context, p JobOutputParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, p JobOutputParams) (ToolResponse, error) {
 			job := env.Jobs.Get(p.JobID)
 			if job == nil {
-				return fantasy.NewTextErrorResponse("no such job: " + p.JobID), nil
+				return NewTextErrorResponse("no such job: " + p.JobID), nil
 			}
 			if p.Wait {
 				select {
 				case <-job.DoneCh:
 				case <-time.After(30 * time.Second):
 				case <-ctx.Done():
-					return fantasy.NewTextErrorResponse("cancelled while waiting for " + p.JobID), nil
+					return NewTextErrorResponse("cancelled while waiting for " + p.JobID), nil
 				}
 			}
 			output, truncated, done, res := job.Snapshot()
@@ -399,7 +398,7 @@ func JobOutputTool(env *ToolEnv) fantasy.AgentTool {
 			if strings.TrimSpace(body) == "" {
 				body = "(no output yet)"
 			}
-			return fantasy.NewTextResponse(fmt.Sprintf("[%s %s — %s]\n%s", p.JobID, job.Command, status, body)), nil
+			return NewTextResponse(fmt.Sprintf("[%s %s — %s]\n%s", p.JobID, job.Command, status, body)), nil
 		},
 	)
 }
@@ -412,18 +411,18 @@ type JobKillParams struct {
 }
 
 // JobKillTool returns the native job_kill tool.
-func JobKillTool(env *ToolEnv) fantasy.AgentTool {
-	return fantasy.NewAgentTool(
+func JobKillTool(env *ToolEnv) Tool {
+	return NewTool(
 		"job_kill",
 		JobKillToolDescription,
-		func(ctx context.Context, p JobKillParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, p JobKillParams) (ToolResponse, error) {
 			job := env.Jobs.Get(p.JobID)
 			if job == nil {
-				return fantasy.NewTextErrorResponse("no such job: " + p.JobID), nil
+				return NewTextErrorResponse("no such job: " + p.JobID), nil
 			}
 			_, _, done, res := job.Snapshot()
 			if done {
-				return fantasy.NewTextResponse(fmt.Sprintf("%s already exited with code %d", p.JobID, res.ExitCode)), nil
+				return NewTextResponse(fmt.Sprintf("%s already exited with code %d", p.JobID, res.ExitCode)), nil
 			}
 			if job.Kill != nil {
 				job.Kill()
@@ -431,11 +430,11 @@ func JobKillTool(env *ToolEnv) fantasy.AgentTool {
 			select {
 			case <-job.DoneCh:
 			case <-time.After(5 * time.Second):
-				return fantasy.NewTextErrorResponse(p.JobID + " did not exit within 5s of SIGKILL"), nil
+				return NewTextErrorResponse(p.JobID + " did not exit within 5s of SIGKILL"), nil
 			case <-ctx.Done():
-				return fantasy.NewTextErrorResponse("cancelled while waiting for " + p.JobID + " to die"), nil
+				return NewTextErrorResponse("cancelled while waiting for " + p.JobID + " to die"), nil
 			}
-			return fantasy.NewTextResponse("killed " + p.JobID), nil
+			return NewTextResponse("killed " + p.JobID), nil
 		},
 	)
 }

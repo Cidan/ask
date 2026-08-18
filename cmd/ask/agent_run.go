@@ -11,20 +11,12 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/tools"
+	"google.golang.org/genai"
 )
 
-// agentCompactReserve is the remaining-window threshold that triggers
-// auto-summarization: when a step leaves fewer than this many tokens
-// of headroom, the turn is stopped, the transcript is compacted into a
-// summary head message, and — if the model was mid-tool-loop — a
-// continuation turn is queued automatically.
-const agentCompactReserve = 20_000
-
-// Loop detection bounds (crush's scheme): a step signature is the
-// hash of every (tool, input, result) interaction in the step; if the
-// same signature appears more than agentLoopMaxRepeats times within
-// the last agentLoopWindow steps, the turn is stopped.
+// Loop detection bounds
 const (
 	agentLoopWindow     = 10
 	agentLoopMaxRepeats = 5
@@ -33,46 +25,29 @@ const (
 // agentTurn is one queued user submission.
 type agentTurn struct {
 	text  string
-	files []fantasy.FilePart
+	files []engine.FilePart
 }
 
-// agentSession is the in-process replacement for a provider
-// subprocess: a goroutine owning a fantasy agent, its tools, and the
-// conversation history. It satisfies the providerProc contract with
-// cmd=nil — kill() closes stdin, which tears the session down.
+// agentSession owns a GenAI agent session and the conversation history.
 type agentSession struct {
-	args   ProviderSessionArgs
-	spec   *agentProviderSpec
-	model  fantasy.LanguageModel
-	env    *agentToolEnv
-	sysMu  sync.RWMutex
-	system string
+	args          ProviderSessionArgs
+	spec          *agentProviderSpec
+	client        *genai.Client
+	env           *agentToolEnv
+	sysMu         sync.RWMutex
+	system        string
+	callOpts      *genai.GenerateContentConfig
+	temperature   *float64
+	contextWindow int64
+	maxOutputTokens int64
+	modelID       string
 
-	// coreTools are the harness natives — the ONLY tools that reach
-	// the model's wire tool definitions. deferredBase holds the
-	// always-available registry tools (the native bridge twins); MCP
-	// tools join them in refreshToolset. The registry is reachable
-	// through search_tools/invoke_tool, never through the wire — see
-	// agent_tools_registry.go.
-	coreTools    []fantasy.AgentTool
-	deferredBase []fantasy.AgentTool
+	coreTools    []tools.Tool
+	deferredBase []tools.Tool
 	mcp          *mcpManager
 	toolsMu      sync.Mutex
-	tools        []fantasy.AgentTool
-	deferred     []fantasy.AgentTool
-
-	// providerWebSearch is the provider-executed web search tool
-	// (anthropic / openai), registered via WithProviderDefinedTools so
-	// the API runs the search server-side. Nil for providers using the
-	// Brave-backed core web_search tool instead. Set once at setup; read
-	// only on the run goroutine, so no lock is needed.
-	providerWebSearch fantasy.ProviderTool
-
-	providerOpts    fantasy.ProviderOptions
-	temperature     *float64
-	contextWindow   int64
-	maxOutputTokens int64
-	modelID         string
+	tools        []tools.Tool
+	deferred     []tools.Tool
 
 	proc   *providerProc
 	ch     chan tea.Msg
@@ -86,61 +61,39 @@ type agentSession struct {
 
 	sessionID string
 	store     *agentSessionStore
-	messages  []fantasy.Message
+	messages  []engine.Message
 
-	// retryMaxRetries / retryInitialDelay / retryBackoffFactor are the
-	// per-session policy handed to fantasy's retry middleware. Set at
-	// session start from cfg.UI.Retry (with package defaults), so tests
-	// can override them directly when constructing a session via
-	// newTestAgentSession. Read on the run goroutine, written once at
-	// StartSession time — no lock needed.
 	retryMaxRetries    int
 	retryInitialDelay  time.Duration
 	retryBackoffFactor float64
 }
 
-// refreshToolset rebuilds the wire tool set (core only) and the
-// deferred registry (bridge twins + MCP) and re-runs the spec's
-// decoration (anthropic's strip-then-mark cache breakpoint) so a
-// tool-list change never leaves stale markers behind. MCP tools land
-// in the registry, NOT on the wire — the wire toolset stays
-// byte-stable for the whole session, which keeps anthropic's cached
-// tool block valid across MCP tools/list_changed refreshes. Safe from
-// SDK goroutines; the next turn (and the next search_tools call)
-// picks the new sets up.
 func (s *agentSession) refreshToolset() {
 	s.toolsMu.Lock()
-	tools := append([]fantasy.AgentTool(nil), s.coreTools...)
-	deferred := append([]fantasy.AgentTool(nil), s.deferredBase...)
+	toolList := append([]tools.Tool(nil), s.coreTools...)
+	deferred := append([]tools.Tool(nil), s.deferredBase...)
 	s.toolsMu.Unlock()
 	if s.mcp != nil {
 		deferred = append(deferred, s.mcp.Tools()...)
 	}
-	if s.spec != nil && s.spec.DecorateTools != nil {
-		s.spec.DecorateTools(tools)
-	}
 	s.toolsMu.Lock()
-	s.tools = tools
+	s.tools = toolList
 	s.deferred = deferred
 	s.toolsMu.Unlock()
 }
 
-func (s *agentSession) currentTools() []fantasy.AgentTool {
+func (s *agentSession) currentTools() []tools.Tool {
 	s.toolsMu.Lock()
 	defer s.toolsMu.Unlock()
-	return append([]fantasy.AgentTool(nil), s.tools...)
+	return append([]tools.Tool(nil), s.tools...)
 }
 
-// deferredTools snapshots the registry for search_tools/invoke_tool.
-func (s *agentSession) deferredTools() []fantasy.AgentTool {
+func (s *agentSession) deferredTools() []tools.Tool {
 	s.toolsMu.Lock()
 	defer s.toolsMu.Unlock()
-	return append([]fantasy.AgentTool(nil), s.deferred...)
+	return append([]tools.Tool(nil), s.deferred...)
 }
 
-// isCoreToolName reports whether a name belongs to the core tools, so
-// invoke_tool can steer the model back to a direct call instead of a
-// generic "unknown tool" error.
 func (s *agentSession) isCoreToolName(name string) bool {
 	s.toolsMu.Lock()
 	defer s.toolsMu.Unlock()
@@ -152,8 +105,6 @@ func (s *agentSession) isCoreToolName(name string) bool {
 	return false
 }
 
-// agentStdin adapts the session's shutdown to the providerProc stdin
-// contract: killProc closes stdin, which must end the session.
 type agentStdin struct{ s *agentSession }
 
 func (w agentStdin) Write(p []byte) (int, error) { return len(p), nil }
@@ -162,8 +113,6 @@ func (w agentStdin) Close() error {
 	return nil
 }
 
-// shutdown signals the run goroutine to exit and cancels any in-flight
-// turn. Idempotent.
 func (s *agentSession) shutdown() {
 	s.closeOnce.Do(func() {
 		close(s.closed)
@@ -177,17 +126,13 @@ func (s *agentSession) setTurnCancel(fn context.CancelFunc) {
 	s.turnCancel = fn
 }
 
-// stepCost prices one API call of this session's model. Safe on
-// spec-less sessions (tests): unknown spec means unpriceable.
-func (s *agentSession) stepCost(u fantasy.Usage) (float64, bool) {
+func (s *agentSession) stepCost(u TokenUsage) (float64, bool) {
 	if s.spec == nil {
 		return 0, false
 	}
 	return stepCostUSD(s.spec.ID, s.modelID, u)
 }
 
-// interruptTurn cancels the in-flight turn, if any. Returns whether a
-// turn was actually cancelled.
 func (s *agentSession) interruptTurn() bool {
 	s.turnMu.Lock()
 	defer s.turnMu.Unlock()
@@ -204,8 +149,6 @@ func (s *agentSession) isBusy() bool {
 	return s.turnCancel != nil
 }
 
-// emit tags a provider-protocol message with the session's proc and tabID,
-// and pushes it onto the Event Bus (agentSendToProgram).
 func (s *agentSession) emit(msg tea.Msg) {
 	switch m := msg.(type) {
 	case streamStatusMsg:
@@ -252,7 +195,6 @@ func (s *agentSession) emit(msg tea.Msg) {
 		msg = m
 	}
 	msg = injectTabID(msg, s.args.TabID)
-	// Write non-blockingly to s.ch for backward compatibility in tests
 	select {
 	case s.ch <- msg:
 	default:
@@ -260,9 +202,7 @@ func (s *agentSession) emit(msg tea.Msg) {
 	agentSendToProgram(msg)
 }
 
-// queueTurn enqueues a user turn for the run loop. Errors when the
-// session is shut down.
-func (s *agentSession) queueTurn(text string, files ...[]fantasy.FilePart) error {
+func (s *agentSession) queueTurn(text string, files ...[]engine.FilePart) error {
 	turn := agentTurn{text: text}
 	for _, f := range files {
 		turn.files = append(turn.files, f...)
@@ -280,9 +220,6 @@ func (s *agentSession) queueTurn(text string, files ...[]fantasy.FilePart) error
 	}
 }
 
-// run is the session goroutine: process queued turns until shutdown,
-// then clean up jobs/MCP sessions, emit providerExitedMsg, and close
-// the stream channel (drainProviderStream relies on that close).
 func (s *agentSession) run() {
 	defer close(s.ch)
 	first := true
@@ -307,10 +244,6 @@ func (s *agentSession) run() {
 	}
 }
 
-// runTurn executes one user turn through the fantasy agent loop and
-// emits the provider message protocol around it. Always ends with
-// providerDoneMsg then turnCompleteMsg (same order as claude's
-// stream) so workflow advancement and busy-state work identically.
 func (s *agentSession) runTurn(turn agentTurn) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.setTurnCancel(cancel)
@@ -321,292 +254,247 @@ func (s *agentSession) runTurn(turn agentTurn) {
 
 	s.emit(streamStatusMsg{status: "thinking…"})
 
-	shouldCompact := false
-	var textBuf strings.Builder
-	backgroundCalls := map[string]bool{}
-	// displayNames maps call ids to the unwrapped (inner) tool name so
-	// toolResultMsg matches the toolCallMsg the user saw — invoke_tool
-	// never appears as a construct in the transcript.
-	displayNames := map[string]string{}
-
 	s.sysMu.RLock()
 	systemPrompt := s.system
 	s.sysMu.RUnlock()
 
-	agentOpts := []fantasy.AgentOption{
-		fantasy.WithSystemPrompt(systemPrompt),
-		fantasy.WithTools(s.currentTools()...),
-		fantasy.WithStopConditions(
-			agentLoopDetectionCondition(),
-			s.contextPressureCondition(&shouldCompact),
-		),
-	}
-	if s.providerWebSearch != nil {
-		// Provider-executed web search (anthropic / openai). The API runs
-		// the search; its server_tool_use / result blocks stream through
-		// OnToolCall / OnToolResult like any other tool (ProviderExecuted),
-		// so the transcript renders it under the name "web_search".
-		agentOpts = append(agentOpts, fantasy.WithProviderDefinedTools(s.providerWebSearch))
-	}
-	agent := fantasy.NewAgent(s.model, agentOpts...)
-
-	var prepareStep fantasy.PrepareStepFunction
-	if s.spec != nil {
-		prepareStep = s.spec.PrepareStep
-	}
-
-	// A /skill-name line expands into the full skill invocation before
-	// anything else sees the prompt.
 	if expanded, ok := expandSkillInvocation(s.args.Cwd, turn.text); ok {
 		turn.text = expanded
 	}
-
-	// Per-prompt memory recall (the UserPromptSubmit hook twin) rides
-	// the wire prompt and persists with it — wire-true transcripts.
 	if mem := agentMemoryPromptContext(s.args.Cwd, turn.text); mem != "" {
 		turn.text = turn.text + "\n\n" + mem
 	}
 
-	history := append([]fantasy.Message(nil), s.messages...)
-	retryMaxRetries, onRetry := s.agentRetryCallOptions()
-	result, err := agent.Stream(ctx, fantasy.AgentStreamCall{
-		Prompt:          turn.text,
-		Files:           turn.files,
-		Messages:        history,
-		Temperature:     s.temperature,
-		MaxOutputTokens: maxOutputTokensPtr(s.maxOutputTokens),
-		ProviderOptions: s.providerOpts,
-		PrepareStep:     prepareStep,
-		MaxRetries:      retryMaxRetriesPtr(retryMaxRetries),
-		OnRetry:         onRetry,
-		OnReasoningStart: func(string, fantasy.ReasoningContent) error {
-			s.emit(streamStatusMsg{status: "thinking…"})
-			return nil
-		},
-		OnTextDelta: func(_, text string) error {
-			textBuf.WriteString(text)
-			return nil
-		},
-		OnTextEnd: func(string) error {
-			if t := strings.TrimSpace(textBuf.String()); t != "" {
-				s.emit(assistantTextMsg{text: t})
+	activeTools := s.currentTools()
+	var functionDecls []*genai.FunctionDeclaration
+	toolMap := make(map[string]tools.Tool, len(activeTools))
+	for _, t := range activeTools {
+		toolMap[t.Info().Name] = t
+		if decl := t.Declaration(); decl != nil {
+			functionDecls = append(functionDecls, decl)
+		}
+	}
+
+	genaiConfig := &genai.GenerateContentConfig{
+		SystemInstruction: genai.NewContentFromText(systemPrompt, genai.RoleUser),
+	}
+	if s.callOpts != nil && s.callOpts.ThinkingConfig != nil {
+		genaiConfig.ThinkingConfig = s.callOpts.ThinkingConfig
+	}
+	if len(functionDecls) > 0 {
+		genaiConfig.Tools = []*genai.Tool{
+			{FunctionDeclarations: functionDecls},
+		}
+	}
+
+	var contents []*genai.Content
+	for _, msg := range s.messages {
+		contents = append(contents, msg.ToGenAIContent())
+	}
+
+	userMsg := engine.NewUserMessage(turn.text, turn.files...)
+	s.messages = append(s.messages, userMsg)
+	contents = append(contents, userMsg.ToGenAIContent())
+
+	const maxSteps = 50
+	var finalResponseText strings.Builder
+	stepSignatures := make([][32]byte, 0)
+	displayNames := make(map[string]string)
+	backgroundCalls := make(map[string]bool)
+
+	for stepIdx := 0; stepIdx < maxSteps; stepIdx++ {
+		stream := engine.GenerateStream(ctx, s.client, s.modelID, contents, genaiConfig)
+
+		var turnTextBuf strings.Builder
+		var turnThoughts []engine.ThoughtPart
+		var turnToolCalls []engine.ToolCallPart
+		var latestThoughtSig []byte
+		var streamErr error
+
+		for chunk, err := range stream {
+			if err != nil {
+				streamErr = err
+				break
 			}
-			textBuf.Reset()
-			return nil
-		},
-		OnToolCall: func(tc fantasy.ToolCallContent) error {
-			input := map[string]any{}
-			_ = json.Unmarshal([]byte(tc.Input), &input)
-			name := tc.ToolName
-			if name == "invoke_tool" {
-				// Display the real registry tool, not the plumbing.
-				name, input = unwrapInvokeToolCall(input)
+			if chunk == nil {
+				continue
 			}
-			displayNames[tc.ToolCallID] = name
-			background, _ := input["run_in_background"].(bool)
-			if background {
-				backgroundCalls[tc.ToolCallID] = true
+
+			if chunk.UsageMetadata != nil {
+				usage := TokenUsage{
+					InputTokens:  int(chunk.UsageMetadata.PromptTokenCount),
+					OutputTokens: int(chunk.UsageMetadata.CandidatesTokenCount),
+				}
+				cost, known := s.stepCost(usage)
+				s.emit(usageMsg{
+					tokens:    usage.InputTokens + usage.OutputTokens,
+					costUSD:   cost,
+					costKnown: known,
+				})
 			}
-			s.emit(toolCallMsg{
-				id:         tc.ToolCallID,
-				name:       name,
-				input:      input,
-				background: background,
+
+			for _, candidate := range chunk.Candidates {
+				if candidate.Content == nil {
+					continue
+				}
+				for _, part := range candidate.Content.Parts {
+					if part.Thought {
+						if len(part.ThoughtSignature) > 0 {
+							latestThoughtSig = part.ThoughtSignature
+						}
+						turnThoughts = append(turnThoughts, engine.ThoughtPart{
+							Text:      part.Text,
+							Signature: part.ThoughtSignature,
+						})
+						s.emit(streamStatusMsg{status: "thinking…"})
+					} else if part.Text != "" {
+						turnTextBuf.WriteString(part.Text)
+					}
+					if part.FunctionCall != nil {
+						sig := part.ThoughtSignature
+						if len(sig) == 0 {
+							sig = latestThoughtSig
+						}
+						inputMap := part.FunctionCall.Args
+						name := part.FunctionCall.Name
+						if name == "invoke_tool" {
+							name, inputMap = unwrapInvokeToolCall(inputMap)
+						}
+						displayNames[part.FunctionCall.Name] = name
+						bg, _ := inputMap["run_in_background"].(bool)
+						if bg {
+							backgroundCalls[part.FunctionCall.Name] = true
+						}
+
+						id := ""
+						if part.FunctionCall != nil {
+							id = part.FunctionCall.ID
+						}
+						turnToolCalls = append(turnToolCalls, engine.ToolCallPart{
+							ID:               id,
+							Name:             part.FunctionCall.Name,
+							Args:             part.FunctionCall.Args,
+							ThoughtSignature: sig,
+						})
+						s.emit(toolCallMsg{
+							name:       name,
+							input:      inputMap,
+							background: bg,
+						})
+						status := "running " + name + "…"
+						if phrase := toolCallPhrase(inputMap); phrase != "" {
+							status = name + ": " + phrase
+						}
+						s.emit(streamStatusMsg{status: status})
+					}
+				}
+			}
+		}
+
+		if streamErr != nil {
+			if isAgentCancel(streamErr) {
+				s.emit(providerDoneMsg{res: providerResult{SessionID: s.sessionID}})
+				s.emit(turnCompleteMsg{})
+				return
+			}
+			s.emit(providerDoneMsg{
+				res: providerResult{SessionID: s.sessionID, IsError: true, Result: streamErr.Error()},
+				err: streamErr,
 			})
-			// The model-authored phrase makes the status context-specific
-			// ("bash: looking for the latest files") instead of generic.
-			status := "running " + name + "…"
-			if phrase := toolCallPhrase(input); phrase != "" {
-				status = name + ": " + phrase
+			s.emit(turnCompleteMsg{})
+			return
+		}
+
+		rawText := turnTextBuf.String()
+		if rawText != "" {
+			if finalResponseText.Len() > 0 {
+				finalResponseText.WriteString("\n")
 			}
-			s.emit(streamStatusMsg{status: status})
-			return nil
-		},
-		OnToolResult: func(tr fantasy.ToolResultContent) error {
-			name := tr.ToolName
-			if display, ok := displayNames[tr.ToolCallID]; ok {
-				name = display
+			finalResponseText.WriteString(rawText)
+			s.emit(assistantTextMsg{text: rawText})
+		}
+
+		assistantMsg := engine.NewAssistantMessage(rawText, turnThoughts, turnToolCalls)
+		s.messages = append(s.messages, assistantMsg)
+		contents = append(contents, assistantMsg.ToGenAIContent())
+
+		if len(turnToolCalls) == 0 {
+			break
+		}
+
+		// Loop detection
+		sig := stepSignatureFromToolCalls(turnToolCalls)
+		stepSignatures = append(stepSignatures, sig)
+		if checkLoopDetection(stepSignatures) {
+			s.emit(providerDoneMsg{res: providerResult{
+				SessionID: s.sessionID,
+				IsError:   true,
+				Result:    "stopped: repeated identical tool call loop detected",
+			}})
+			s.emit(turnCompleteMsg{})
+			return
+		}
+
+		var toolResultParts []engine.ToolResultPart
+		var stopTurnRequested bool
+
+		for _, tc := range turnToolCalls {
+			tool, ok := toolMap[tc.Name]
+			var resp tools.ToolResponse
+			var runErr error
+			if !ok {
+				resp = tools.NewTextErrorResponse(fmt.Sprintf("unknown tool %s", tc.Name))
+			} else {
+				resp, runErr = tool.Run(ctx, tc.Args)
+				if runErr != nil {
+					resp = tools.NewTextErrorResponse(fmt.Sprintf("tool %s error: %s", tc.Name, runErr.Error()))
+				}
 			}
+
+			dispName := tc.Name
+			if dn, ok := displayNames[tc.Name]; ok {
+				dispName = dn
+			}
+
 			s.emit(toolResultMsg{
-				toolUseID:  tr.ToolCallID,
-				name:       name,
-				output:     toolResultText(tr.Result),
-				isError:    toolResultIsError(tr.Result),
-				background: backgroundCalls[tr.ToolCallID],
+				name:       dispName,
+				output:     resp.Content,
+				isError:    resp.IsError,
+				background: backgroundCalls[tc.Name],
 			})
-			return nil
-		},
-		OnStepFinish: func(step fantasy.StepResult) error {
-			cost, known := s.stepCost(step.Usage)
-			s.emit(usageMsg{
-				tokens:    contextTokensFromUsage(step.Usage),
-				costUSD:   cost,
-				costKnown: known,
-			})
-			s.emit(streamStatusMsg{status: "thinking…"})
-			return nil
-		},
-	})
 
-	switch {
-	case err != nil && isAgentCancel(err):
-		// User interrupt: no error display, just a clean turn end. The
-		// partial turn is not persisted — resuming replays the last
-		// complete turn boundary, like a killed claude proc.
-		s.emit(providerDoneMsg{res: providerResult{SessionID: s.sessionID}})
-		s.emit(turnCompleteMsg{})
-		return
-	case err != nil:
-		debugLog("agent.Stream failed: %v", err)
-		debugLog("agent.Stream failed full error: %+v", err)
-		debugLog("agent.Stream model ID: %s", s.modelID)
-		sysExcerpt := systemPrompt
-		if len(sysExcerpt) > 1000 {
-			sysExcerpt = sysExcerpt[:1000] + "..."
+			toolResultParts = append(toolResultParts, engine.ToolResultPart{
+				Name:    tc.Name,
+				Content: resp.Content,
+				IsError: resp.IsError,
+			})
+
+			if resp.StopTurn {
+				stopTurnRequested = true
+			}
 		}
-		debugLog("agent.Stream system prompt length: %d", len(systemPrompt))
-		debugLog("agent.Stream system prompt excerpt: %q", sysExcerpt)
-		tools := s.currentTools()
-		debugLog("agent.Stream tools count: %d", len(tools))
-		for i, tool := range tools {
-			info := tool.Info()
-			debugLog("  tool[%d]: %s", i, info.Name)
-			schemaBytes, _ := json.Marshal(info)
-			debugLog("    schema: %s", string(schemaBytes))
+
+		toolMsg := engine.NewToolResultMessage(toolResultParts...)
+		s.messages = append(s.messages, toolMsg)
+		contents = append(contents, toolMsg.ToGenAIContent())
+
+		if stopTurnRequested {
+			break
 		}
-		if len(turn.text) > 0 {
-			debugLog("agent.Stream failed prompt length: %d", len(turn.text))
-			debugLog("agent.Stream failed prompt excerpt: %q", turn.text)
-		}
-		debugLog("agent.Stream failed history length: %d", len(history))
-		for i, msg := range history {
-			role := msg.Role
-			partsLen := len(msg.Content)
-			debugLog("  history[%d]: role=%s parts=%d", i, role, partsLen)
-		}
-		s.emit(providerDoneMsg{
-			res: providerResult{SessionID: s.sessionID, IsError: true, Result: err.Error()},
-			err: err,
-		})
-		s.emit(turnCompleteMsg{})
-		return
 	}
 
-	// Fold the turn into history: the user message plus every step's
-	// assistant/tool messages, with dangling tool calls repaired so the
-	// persisted transcript always satisfies DeepSeek's strict
-	// call/result pairing (a loop-detection or compaction stop can land
-	// mid-tool-use).
-	newMessages := []fantasy.Message{fantasy.NewUserMessage(turn.text, turn.files...)}
-	for _, step := range result.Steps {
-		newMessages = append(newMessages, step.Messages...)
-	}
-	newMessages = repairDanglingToolCalls(newMessages)
-	s.messages = append(s.messages, newMessages...)
 	s.persist()
 
-	resultText := strings.TrimSpace(result.Response.Content.Text())
-
-	// A finish reason the model did not choose (max_tokens truncation,
-	// content filter, an unmapped stop like anthropic's refusal) ends
-	// the loop with no tool calls and no error — without surfacing it
-	// the turn is indistinguishable from a completed one and the
-	// session looks bricked.
-	if notice := agentAbnormalFinishNotice(result.Response.FinishReason); notice != "" {
-		s.emit(providerDoneMsg{res: providerResult{
+	respText := strings.TrimSpace(finalResponseText.String())
+	s.emit(providerDoneMsg{
+		res: providerResult{
 			SessionID: s.sessionID,
-			IsError:   true,
-			Result:    notice,
-		}})
-		s.emit(turnCompleteMsg{})
-		return
-	}
-
-	if shouldCompact {
-		s.compact(ctx, turn, result)
-	}
-
-	s.emit(providerDoneMsg{res: providerResult{
-		SessionID: s.sessionID,
-		Result:    resultText,
-	}})
+			Result:    respText,
+		},
+	})
 	s.emit(turnCompleteMsg{})
 }
 
-// maxOutputTokensPtr converts a session's output budget to the wire
-// field, nil when unset so providers keep their own defaults (some
-// OpenAI-compatible servers reject an explicit 0 — crush's guard).
-func maxOutputTokensPtr(budget int64) *int64 {
-	if budget > 0 {
-		return &budget
-	}
-	return nil
-}
-
-// retryMaxRetriesPtr wraps the per-session retry count for the
-// fantasy call options. Nil means "use fantasy's DefaultRetryOptions";
-// this preserves the existing behavior for tests that don't set the
-// retry fields (newTestAgentSession leaves them at their zero value).
-func retryMaxRetriesPtr(n int) *int {
-	if n <= 0 {
-		return nil
-	}
-	return &n
-}
-
-// agentRetryCallOptions packages the per-call retry knobs fantasy
-// wants on AgentStreamCall (MaxRetries + OnRetry). The OnRetry
-// closure emits a streamStatusMsg into the session's emit channel so
-// the user sees the retry happening in the bottom status chip.
-// Network errors come through with err == nil; HTTP errors carry
-// err.StatusCode + err.Title.
-func (s *agentSession) agentRetryCallOptions() (maxRetries int, onRetry fantasy.OnRetryCallback) {
-	maxRetries = s.retryMaxRetries
-	if maxRetries <= 0 {
-		return 0, nil
-	}
-	onRetry = func(err *fantasy.ProviderError, delay time.Duration) {
-		s.emit(streamStatusMsg{status: agentRetryStatusMessage(err, delay)})
-	}
-	return maxRetries, onRetry
-}
-
-// agentRetryStatusMessage formats a single retry attempt for the
-// status chip. Pure helper (no env access) so tests can assert on the
-// string directly.
-func agentRetryStatusMessage(err *fantasy.ProviderError, delay time.Duration) string {
-	wait := delay.Round(time.Millisecond)
-	switch {
-	case err == nil:
-		return "retrying after connection error in " + wait.String() + "…"
-	case err.StatusCode > 0:
-		return fmt.Sprintf("retrying after HTTP %d in %s…", err.StatusCode, wait)
-	default:
-		title := strings.ToLower(strings.TrimSpace(err.Title))
-		if title == "" {
-			title = "error"
-		}
-		return "retrying after " + title + " in " + wait.String() + "…"
-	}
-}
-
-// agentAbnormalFinishNotice maps turn-ending finish reasons the model
-// did not choose onto a user-visible error line. Stop and ToolCalls
-// (incl. loop-detection / compaction stops and StopTurn) are normal.
-func agentAbnormalFinishNotice(reason fantasy.FinishReason) string {
-	switch reason {
-	case fantasy.FinishReasonLength:
-		return "turn stopped at the max_tokens output limit — the last response may be truncated"
-	case fantasy.FinishReasonContentFilter:
-		return "turn stopped by the provider's content filter"
-	case fantasy.FinishReasonError, fantasy.FinishReasonOther, fantasy.FinishReasonUnknown:
-		return "turn stopped early (provider finish reason: " + string(reason) + ")"
-	}
-	return ""
-}
-
-// persist writes the current message history through the session
-// store. Nil store (tests, ephemeral sessions) is a no-op.
 func (s *agentSession) persist() {
 	if s.store == nil || s.sessionID == "" {
 		return
@@ -616,210 +504,40 @@ func (s *agentSession) persist() {
 	}
 }
 
-const agentSummaryPrompt = `Summarize this coding conversation for a fresh context window. Your summary will be the ONLY context available to continue the work, so be thorough and specific.
-
-Required sections:
-1. Goal — what the user is trying to accomplish, in their words where possible.
-2. Current state — what has been done, which files were created/modified (full paths), what was verified (builds, tests).
-3. Key technical context — APIs, types, invariants, decisions, and constraints discovered along the way.
-4. Next steps — exactly what remains, with file:line specificity where known.
-
-Write it as a briefing to your successor. Do not omit failing tests, open errors, or unverified assumptions.`
-
-// agentSummaryMaxOutputTokens bounds the compaction summarizer's
-// output. The summarizer is the one non-streaming wire call, and the
-// anthropic SDK refuses non-streaming requests whose max_tokens imply
-// >10 minutes (~21K tokens) — 16K stays under that ceiling with ample
-// room for the summary plus always-on thinking.
-const agentSummaryMaxOutputTokens int64 = 16_384
-
-// compact replaces the conversation history with a summary head
-// message. When the stopped turn was still mid-tool-loop, a
-// continuation turn is queued so the work resumes automatically.
-func (s *agentSession) compact(ctx context.Context, turn agentTurn, result *fantasy.AgentResult) {
-	s.emit(streamStatusMsg{status: "compacting context…"})
-	summaryBudget := agentSummaryMaxOutputTokens
-	if s.maxOutputTokens > 0 && s.maxOutputTokens < summaryBudget {
-		summaryBudget = s.maxOutputTokens
-	}
-	summarizer := fantasy.NewAgent(s.model, fantasy.WithSystemPrompt(agentSummaryPrompt))
-	retryMaxRetries, onRetry := s.agentRetryCallOptions()
-	sum, err := summarizer.Generate(ctx, fantasy.AgentCall{
-		Messages:        s.messages,
-		Prompt:          "Produce the continuation summary now.",
-		MaxOutputTokens: &summaryBudget,
-		MaxRetries:      retryMaxRetriesPtr(retryMaxRetries),
-		OnRetry:         onRetry,
-	})
-	if err != nil {
-		debugLog("agent compact failed: %v", err)
-		return
-	}
-	// The summarizer is a real API call outside the main loop's
-	// OnStepFinish — count its spend on the session meter.
-	if cost, known := s.stepCost(sum.TotalUsage); known {
-		s.emit(costMsg{costUSD: cost})
-	}
-	summary := strings.TrimSpace(sum.Response.Content.Text())
-	if summary == "" {
-		debugLog("agent compact produced empty summary; keeping full history")
-		return
-	}
-	s.messages = []fantasy.Message{fantasy.NewUserMessage(
-		"Context was compacted. Summary of the conversation so far:\n\n" + summary)}
-	s.persist()
-
-	interrupted := len(result.Steps) > 0 &&
-		result.Steps[len(result.Steps)-1].FinishReason == fantasy.FinishReasonToolCalls
-	if interrupted {
-		go func() {
-			_ = s.queueTurn("The previous turn was interrupted because the context window filled up. " +
-				"A summary of progress so far is in your context. Continue working on the original request: " + turn.text)
-		}()
-	}
-}
-
-// agentLoopDetectionCondition stops a turn when the model keeps making
-// identical tool calls with identical results.
-func agentLoopDetectionCondition() fantasy.StopCondition {
-	return func(steps []fantasy.StepResult) bool {
-		if len(steps) < agentLoopMaxRepeats {
-			return false
-		}
-		window := steps
-		if len(window) > agentLoopWindow {
-			window = window[len(window)-agentLoopWindow:]
-		}
-		counts := map[[32]byte]int{}
-		for _, step := range window {
-			sig, ok := stepSignature(step)
-			if !ok {
-				continue
-			}
-			counts[sig]++
-			if counts[sig] > agentLoopMaxRepeats {
-				return true
-			}
-		}
+func isAgentCancel(err error) bool {
+	if err == nil {
 		return false
 	}
+	return errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "cancel")
 }
 
-// stepSignature hashes every tool interaction in a step. Steps without
-// tool calls never count toward loop detection.
-func stepSignature(step fantasy.StepResult) ([32]byte, bool) {
-	calls := step.Content.ToolCalls()
-	if len(calls) == 0 {
-		return [32]byte{}, false
-	}
+func stepSignatureFromToolCalls(calls []engine.ToolCallPart) [32]byte {
 	h := sha256.New()
 	for _, c := range calls {
-		h.Write([]byte(c.ToolName))
-		h.Write([]byte{0})
-		h.Write([]byte(c.Input))
-		h.Write([]byte{0})
-	}
-	for _, r := range step.Content.ToolResults() {
-		h.Write([]byte(toolResultText(r.Result)))
-		h.Write([]byte{0})
+		h.Write([]byte(c.Name))
+		if b, err := json.Marshal(c.Args); err == nil {
+			h.Write(b)
+		}
 	}
 	var sig [32]byte
 	copy(sig[:], h.Sum(nil))
-	return sig, true
+	return sig
 }
 
-// contextPressureCondition stops the turn (setting *flag) when the
-// last step's usage leaves less than agentCompactReserve headroom.
-func (s *agentSession) contextPressureCondition(flag *bool) fantasy.StopCondition {
-	return func(steps []fantasy.StepResult) bool {
-		if s.contextWindow <= 0 || len(steps) == 0 {
-			return false
-		}
-		if contextTokensFromUsage(steps[len(steps)-1].Usage)+int(steps[len(steps)-1].Usage.OutputTokens) >=
-			int(s.contextWindow)-agentCompactReserve {
-			*flag = true
-			return true
-		}
+func checkLoopDetection(sigs [][32]byte) bool {
+	if len(sigs) < agentLoopMaxRepeats {
 		return false
 	}
-}
-
-// contextTokensFromUsage derives the prompt-side context footprint:
-// fresh input plus cached input, mirroring codexContextTokens'
-// definition of "tokens occupying the window".
-func contextTokensFromUsage(u fantasy.Usage) int {
-	return int(u.InputTokens + u.CacheReadTokens + u.CacheCreationTokens)
-}
-
-func toolResultText(out fantasy.ToolResultOutputContent) string {
-	switch v := out.(type) {
-	case fantasy.ToolResultOutputContentText:
-		return v.Text
-	case *fantasy.ToolResultOutputContentText:
-		return v.Text
-	case fantasy.ToolResultOutputContentError:
-		if v.Error != nil {
-			return v.Error.Error()
-		}
-	case *fantasy.ToolResultOutputContentError:
-		if v.Error != nil {
-			return v.Error.Error()
-		}
-	case fantasy.ToolResultOutputContentMedia:
-		return "(media result: " + v.MediaType + ")"
-	case *fantasy.ToolResultOutputContentMedia:
-		return "(media result: " + v.MediaType + ")"
+	window := sigs
+	if len(window) > agentLoopWindow {
+		window = window[len(window)-agentLoopWindow:]
 	}
-	return ""
-}
-
-func toolResultIsError(out fantasy.ToolResultOutputContent) bool {
-	switch out.(type) {
-	case fantasy.ToolResultOutputContentError, *fantasy.ToolResultOutputContentError:
-		return true
+	counts := make(map[[32]byte]int)
+	for _, sig := range window {
+		counts[sig]++
+		if counts[sig] >= agentLoopMaxRepeats {
+			return true
+		}
 	}
 	return false
-}
-
-func isAgentCancel(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
-}
-
-// repairDanglingToolCalls appends synthesized error results for any
-// assistant tool call that has no matching tool result, so a persisted
-// transcript never violates the strict call/result pairing OpenAI-
-// compatible APIs (DeepSeek included) enforce on replay.
-func repairDanglingToolCalls(msgs []fantasy.Message) []fantasy.Message {
-	answered := map[string]bool{}
-	for _, m := range msgs {
-		for _, part := range m.Content {
-			if tr, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](part); ok {
-				answered[tr.ToolCallID] = true
-			}
-		}
-	}
-	var dangling []fantasy.ToolCallPart
-	for _, m := range msgs {
-		if m.Role != fantasy.MessageRoleAssistant {
-			continue
-		}
-		for _, part := range m.Content {
-			if tc, ok := fantasy.AsMessagePart[fantasy.ToolCallPart](part); ok && !answered[tc.ToolCallID] {
-				dangling = append(dangling, tc)
-			}
-		}
-	}
-	if len(dangling) == 0 {
-		return msgs
-	}
-	parts := make([]fantasy.MessagePart, 0, len(dangling))
-	for _, tc := range dangling {
-		parts = append(parts, fantasy.ToolResultPart{
-			ToolCallID: tc.ToolCallID,
-			Output: fantasy.ToolResultOutputContentError{
-				Error: errors.New("tool call was interrupted before it could run"),
-			},
-		})
-	}
-	return append(msgs, fantasy.Message{Role: fantasy.MessageRoleTool, Content: parts})
 }

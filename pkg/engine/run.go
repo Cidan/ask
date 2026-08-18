@@ -2,18 +2,37 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
-	"charm.land/fantasy"
-	"github.com/google/uuid"
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/providers"
+	"github.com/google/uuid"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/llmagent"
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
 )
+
+// GenerateStreamFunc defines the signature for streaming content generation from GenAI.
+type GenerateStreamFunc func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error]
+
+// GenerateStream is the streaming generation hook, swappable in tests.
+var GenerateStream GenerateStreamFunc = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+	if client == nil {
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			yield(nil, errors.New("genai client is nil"))
+		}
+	}
+	return client.Models.GenerateContentStream(ctx, model, contents, config)
+}
 
 // RunOptions defines the input parameters for executing an ask agent turn.
 type RunOptions struct {
@@ -30,7 +49,7 @@ type RunOptions struct {
 	// Config optionally overrides default configuration (~/.config/ask/ask.json).
 	Config config.Config `json:"config,omitempty"`
 
-	// Provider optionally overrides the LLM provider (e.g. "anthropic", "vertex", "deepseek").
+	// Provider optionally overrides the LLM provider (e.g. "vertex").
 	Provider string `json:"provider,omitempty"`
 
 	// Model optionally overrides the default model for the selected provider.
@@ -40,10 +59,10 @@ type RunOptions struct {
 	Effort string `json:"effort,omitempty"`
 
 	// Files provides optional image/media attachments for models with vision.
-	Files []fantasy.FilePart `json:"files,omitempty"`
+	Files []FilePart `json:"files,omitempty"`
 
 	// Tools optionally overrides or augments the default toolset.
-	Tools []fantasy.AgentTool `json:"-"`
+	Tools []Tool `json:"-"`
 
 	// EventListener receives real-time streaming deltas, tool calls, and lifecycle events.
 	EventListener EventListener `json:"-"`
@@ -65,7 +84,7 @@ type RunResult struct {
 	Response string `json:"response"`
 
 	// Messages contains the complete message history up to this point.
-	Messages []fantasy.Message `json:"messages"`
+	Messages []Message `json:"messages"`
 
 	// IsError indicates whether the turn failed.
 	IsError bool `json:"is_error"`
@@ -85,8 +104,8 @@ type ToolFactoryArgs struct {
 	AttachWebSearch       bool
 }
 
-// ToolFactory builds a slice of fantasy AgentTools for an engine turn.
-type ToolFactory func(args ToolFactoryArgs) []fantasy.AgentTool
+// ToolFactory builds a slice of Tools for an engine turn.
+type ToolFactory func(args ToolFactoryArgs) []Tool
 
 var (
 	toolFactoryMu      sync.RWMutex
@@ -107,15 +126,26 @@ func GetDefaultToolFactory() ToolFactory {
 	return defaultToolFactory
 }
 
-// ModelBuilder allows customizing or mocking language model instantiation in tests.
-var ModelBuilder = func(spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (fantasy.LanguageModel, error) {
+// ModelBuilder allows customizing or mocking ADK LLM instantiation in tests.
+var ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
 	if spec == nil {
 		return nil, errors.New("provider spec is nil")
 	}
 	if spec.BuildModel == nil {
 		return nil, fmt.Errorf("provider %s has no BuildModel implementation", spec.ID)
 	}
-	return spec.BuildModel(cfg, modelID)
+	return spec.BuildModel(ctx, cfg, modelID)
+}
+
+// RunnerBuilder allows customizing or mocking the ADK runner in tests.
+type RunnerBuilderFunc func(agentInstance agent.Agent, sessSvc session.Service) (*runner.Runner, error)
+
+var RunnerBuilder RunnerBuilderFunc = func(agentInstance agent.Agent, sessSvc session.Service) (*runner.Runner, error) {
+	return runner.New(runner.Config{
+		AppName:        "ask",
+		Agent:          agentInstance,
+		SessionService: sessSvc,
+	})
 }
 
 // Run executes an ask agent turn with the provided options using default engine settings.
@@ -130,7 +160,6 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 
 // Run executes an ask agent turn on the Engine instance.
 func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
-	// Normalize working directory
 	if opts.Cwd == "" {
 		if wd, err := os.Getwd(); err == nil {
 			opts.Cwd = wd
@@ -139,14 +168,12 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		}
 	}
 
-	// Normalize configuration
 	if opts.Config.Provider == "" {
 		if loadedCfg, err := config.Load(); err == nil && loadedCfg.Provider != "" {
 			opts.Config = loadedCfg
 		}
 	}
 
-	// Normalize interaction handler
 	if opts.InteractionHandler == nil {
 		if e.opts.InteractionHandler != nil {
 			opts.InteractionHandler = e.opts.InteractionHandler
@@ -157,30 +184,26 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		}
 	}
 
-	// Normalize event listener
 	if opts.EventListener == nil {
 		opts.EventListener = e.opts.EventListener
 	}
 
-	// Resolve provider ID
 	providerID := strings.TrimSpace(opts.Provider)
 	if providerID == "" {
 		providerID = strings.TrimSpace(opts.Config.Provider)
 	}
 	if providerID == "" {
-		providerID = "anthropic"
+		providerID = "vertex"
 	}
 
-	// Resolve provider spec
 	spec, ok := providers.GetAgentProviderSpec(providerID)
-	if !ok {
-		return nil, fmt.Errorf("unsupported provider %q", providerID)
+	if !ok || spec == nil {
+		return nil, fmt.Errorf("unknown provider %q", providerID)
 	}
 
-	// Resolve model and effort
-	settings := spec.LoadSettings(opts.Config)
 	modelID := strings.TrimSpace(opts.Model)
 	if modelID == "" {
+		settings := spec.LoadSettings(opts.Config)
 		modelID = strings.TrimSpace(settings.Model)
 	}
 	if modelID == "" {
@@ -189,34 +212,32 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 
 	effort := strings.TrimSpace(opts.Effort)
 	if effort == "" {
+		settings := spec.LoadSettings(opts.Config)
 		effort = strings.TrimSpace(settings.Effort)
 	}
 	if effort == "" {
 		effort = "medium"
 	}
 
-	// Resolve session ID and history
 	sessionID := strings.TrimSpace(opts.SessionID)
 	if sessionID == "" {
 		sessionID = uuid.New().String()
 	}
 
 	store := NewSessionStore(providerID)
-	var messages []fantasy.Message
+	var messages []Message
 	if opts.SessionID != "" {
 		if file, err := store.Load(sessionID); err == nil {
 			messages = file.Messages
 		}
 	}
 
-	// Build language model
-	lm, err := ModelBuilder(spec, opts.Config, modelID)
+	llm, err := ModelBuilder(ctx, spec, opts.Config, modelID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build model %s for provider %s: %w", modelID, providerID, err)
+		return nil, fmt.Errorf("failed to build model for provider %s: %w", providerID, err)
 	}
 
-	// Setup tools
-	var agentTools []fantasy.AgentTool
+	var agentTools []Tool
 	if len(opts.Tools) > 0 {
 		agentTools = append(agentTools, opts.Tools...)
 	} else if tf := GetDefaultToolFactory(); tf != nil {
@@ -227,44 +248,75 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			GateTodosBeforeMutate: opts.Config.UI.GateTodosBeforeMutate != nil && *opts.Config.UI.GateTodosBeforeMutate,
 			EventListener:         opts.EventListener,
 			InteractionHandler:    opts.InteractionHandler,
-			AttachWebSearch:       spec.NativeWebSearch == nil,
+			AttachWebSearch:       true,
 		})
 	}
 
-	if spec.DecorateTools != nil && len(agentTools) > 0 {
-		spec.DecorateTools(agentTools)
+	adkTools, err := AsADKTools(agentTools)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert tools to ADK: %w", err)
 	}
 
-	// Build system prompt
 	systemPrompt := BuildSystemPrompt(PromptOptions{
 		Cwd:        opts.Cwd,
 		InWorkflow: false,
 	})
 
-	// Construct agent
-	agentOpts := []fantasy.AgentOption{
-		fantasy.WithSystemPrompt(systemPrompt),
-	}
-	if len(agentTools) > 0 {
-		agentOpts = append(agentOpts, fantasy.WithTools(agentTools...))
-	}
-	if spec.NativeWebSearch != nil {
-		agentOpts = append(agentOpts, fantasy.WithProviderDefinedTools(spec.NativeWebSearch(modelID)))
-	}
-	if spec.PrepareStep != nil {
-		agentOpts = append(agentOpts, fantasy.WithPrepareStep(spec.PrepareStep))
-	}
+	genConfig := &genai.GenerateContentConfig{}
 	if spec.CallOptions != nil {
-		callOpts, maxTokens := spec.CallOptions(modelID, effort)
-		if callOpts != nil {
-			agentOpts = append(agentOpts, fantasy.WithProviderOptions(callOpts))
-		}
-		if maxTokens != nil {
-			agentOpts = append(agentOpts, fantasy.WithMaxOutputTokens(int64(*maxTokens)))
+		if callOpts, _ := spec.CallOptions(modelID, effort); callOpts != nil {
+			if callOpts.ThinkingConfig != nil {
+				genConfig.ThinkingConfig = callOpts.ThinkingConfig
+			}
 		}
 	}
 
-	agent := fantasy.NewAgent(lm, agentOpts...)
+	agentInstance, err := llmagent.New(llmagent.Config{
+		Name:                  "ask_coder",
+		Model:                 llm,
+		Instruction:           systemPrompt,
+		Tools:                 adkTools,
+		GenerateContentConfig: genConfig,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ADK agent: %w", err)
+	}
+
+	sessSvc := session.InMemoryService()
+	created, err := sessSvc.Create(ctx, &session.CreateRequest{
+		AppName:   "ask",
+		UserID:    "user",
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ADK session: %w", err)
+	}
+
+	// Replay history events into the ADK session service if resuming
+	for _, msg := range messages {
+		event := &session.Event{
+			LLMResponse: model.LLMResponse{
+				Content: msg.ToGenAIContent(),
+			},
+			Timestamp: time.Now(),
+		}
+		_ = sessSvc.AppendEvent(ctx, created.Session, event)
+	}
+
+	r, err := RunnerBuilder(agentInstance, sessSvc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ADK runner: %w", err)
+	}
+
+	userMsg := genai.NewContentFromText(opts.Prompt, genai.RoleUser)
+	for _, f := range opts.Files {
+		if len(f.Data) > 0 {
+			userMsg.Parts = append(userMsg.Parts, genai.NewPartFromBytes(f.Data, f.MIMEType))
+		}
+	}
+
+	userMessageObj := NewUserMessage(opts.Prompt, opts.Files...)
+	messages = append(messages, userMessageObj)
 
 	if opts.EventListener != nil {
 		opts.EventListener(ModelInfoEvent{
@@ -277,99 +329,150 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		})
 	}
 
-	var textBuf strings.Builder
-	streamCall := fantasy.AgentStreamCall{
-		Prompt:   opts.Prompt,
-		Files:    opts.Files,
-		Messages: append([]fantasy.Message(nil), messages...),
-		OnTextDelta: func(_, delta string) error {
-			textBuf.WriteString(delta)
-			if opts.EventListener != nil {
-				opts.EventListener(TextDeltaEvent{
-					BaseEvent: BaseEvent{TabID: 0},
-					Delta:     delta,
-				})
-			}
-			return nil
-		},
-		OnTextEnd: func(string) error {
-			if t := strings.TrimSpace(textBuf.String()); t != "" && opts.EventListener != nil {
-				opts.EventListener(AssistantTextEvent{
-					BaseEvent: BaseEvent{TabID: 0},
-					Text:      t,
-				})
-			}
-			textBuf.Reset()
-			return nil
-		},
-		OnToolCall: func(tc fantasy.ToolCallContent) error {
-			if opts.EventListener != nil {
-				var inMap map[string]any
-				_ = json.Unmarshal([]byte(tc.Input), &inMap)
-				opts.EventListener(ToolCallEvent{
-					BaseEvent: BaseEvent{TabID: 0},
-					ToolUseID: tc.ToolCallID,
-					ToolName:  tc.ToolName,
-					Input:     inMap,
-				})
-			}
-			return nil
-		},
-		OnToolResult: func(tr fantasy.ToolResultContent) error {
-			if opts.EventListener != nil {
-				opts.EventListener(ToolResultEvent{
-					BaseEvent: BaseEvent{TabID: 0},
-					ToolUseID: tr.ToolCallID,
-					ToolName:  "",
-					Output:    ToolResultText(tr.Result),
-					IsError:   ToolResultIsError(tr.Result),
-				})
-			}
-			return nil
-		},
-	}
+	var finalResponseText strings.Builder
+	var currentTurnThoughts []ThoughtPart
+	var currentTurnToolCalls []ToolCallPart
+	var currentTurnToolResults []ToolResultPart
 
-	result, err := agent.Stream(ctx, streamCall)
-	if err != nil {
-		if opts.EventListener != nil {
-			opts.EventListener(DoneEvent{
-				BaseEvent: BaseEvent{TabID: 0},
-				Result: ResultSummary{
-					SessionID: sessionID,
-					IsError:   true,
-					Result:    err.Error(),
-				},
-				Error: err,
-			})
-			opts.EventListener(TurnCompleteEvent{BaseEvent: BaseEvent{TabID: 0}})
+	for event, err := range r.Run(ctx, "user", sessionID, userMsg, agent.RunConfig{}) {
+		if err != nil {
+			if opts.EventListener != nil {
+				opts.EventListener(DoneEvent{
+					BaseEvent: BaseEvent{TabID: 0},
+					Result: ResultSummary{
+						SessionID: sessionID,
+						IsError:   true,
+						Result:    err.Error(),
+					},
+					Error: err,
+				})
+				opts.EventListener(TurnCompleteEvent{BaseEvent: BaseEvent{TabID: 0}})
+			}
+			return &RunResult{
+				SessionID: sessionID,
+				IsError:   true,
+				Error:     err,
+				Messages:  messages,
+			}, err
 		}
-		return &RunResult{
-			SessionID: sessionID,
-			Messages:  messages,
-			IsError:   true,
-			Error:     err,
-		}, err
+		if event == nil {
+			continue
+		}
+
+		if event.UsageMetadata != nil && opts.EventListener != nil {
+			opts.EventListener(UsageEvent{
+				BaseEvent:    BaseEvent{TabID: 0},
+				InputTokens:  int(event.UsageMetadata.PromptTokenCount),
+				OutputTokens: int(event.UsageMetadata.CandidatesTokenCount),
+				TotalTokens:  int(event.UsageMetadata.TotalTokenCount),
+			})
+		}
+
+		if event.LLMResponse.Content != nil {
+			for _, part := range event.LLMResponse.Content.Parts {
+				if part == nil {
+					continue
+				}
+				if part.Thought {
+					currentTurnThoughts = append(currentTurnThoughts, ThoughtPart{
+						Text:      part.Text,
+						Signature: part.ThoughtSignature,
+					})
+				} else if part.Text != "" {
+					if event.LLMResponse.Partial {
+						if opts.EventListener != nil {
+							opts.EventListener(TextDeltaEvent{
+								BaseEvent: BaseEvent{TabID: 0},
+								Delta:     part.Text,
+							})
+						}
+					}
+				}
+				if part.FunctionCall != nil {
+					tc := ToolCallPart{
+						ID:               part.FunctionCall.ID,
+						Name:             part.FunctionCall.Name,
+						Args:             part.FunctionCall.Args,
+						ThoughtSignature: part.ThoughtSignature,
+					}
+					currentTurnToolCalls = append(currentTurnToolCalls, tc)
+					if opts.EventListener != nil {
+						opts.EventListener(ToolCallEvent{
+							BaseEvent: BaseEvent{TabID: 0},
+							ToolName:  tc.Name,
+							Input:     tc.Args,
+						})
+					}
+				}
+				if part.FunctionResponse != nil {
+					resStr := ""
+					isErr := false
+					if res, ok := part.FunctionResponse.Response["result"].(string); ok {
+						resStr = res
+					}
+					if errFlag, ok := part.FunctionResponse.Response["is_error"].(bool); ok {
+						isErr = errFlag
+					}
+					tr := ToolResultPart{
+						ID:      part.FunctionResponse.ID,
+						Name:    part.FunctionResponse.Name,
+						Content: resStr,
+						IsError: isErr,
+					}
+					currentTurnToolResults = append(currentTurnToolResults, tr)
+					if opts.EventListener != nil {
+						opts.EventListener(ToolResultEvent{
+							BaseEvent: BaseEvent{TabID: 0},
+							ToolName:  tr.Name,
+							Output:    tr.Content,
+							IsError:   tr.IsError,
+						})
+					}
+				}
+			}
+		}
+
+		if !event.LLMResponse.Partial && event.LLMResponse.Content != nil {
+			var nonPartialText strings.Builder
+			for _, part := range event.LLMResponse.Content.Parts {
+				if part != nil && !part.Thought && part.Text != "" {
+					nonPartialText.WriteString(part.Text)
+				}
+			}
+			txt := nonPartialText.String()
+			if txt != "" {
+				if finalResponseText.Len() > 0 {
+					finalResponseText.WriteString("\n")
+				}
+				finalResponseText.WriteString(txt)
+				if opts.EventListener != nil {
+					opts.EventListener(AssistantTextEvent{
+						BaseEvent: BaseEvent{TabID: 0},
+						Text:      txt,
+					})
+				}
+			}
+			if len(currentTurnThoughts) > 0 || len(currentTurnToolCalls) > 0 || txt != "" {
+				messages = append(messages, NewAssistantMessage(txt, currentTurnThoughts, currentTurnToolCalls))
+				currentTurnThoughts = nil
+				currentTurnToolCalls = nil
+			}
+			if len(currentTurnToolResults) > 0 {
+				messages = append(messages, NewToolResultMessage(currentTurnToolResults...))
+				currentTurnToolResults = nil
+			}
+		}
 	}
 
-	// Append turn messages to history
-	newMessages := []fantasy.Message{fantasy.NewUserMessage(opts.Prompt, opts.Files...)}
-	for _, step := range result.Steps {
-		newMessages = append(newMessages, step.Messages...)
-	}
-	messages = append(messages, newMessages...)
-
-	response := result.Response.Content.Text()
-
-	// Persist session transcript
 	_ = store.Save(sessionID, opts.Cwd, messages)
 
+	respText := finalResponseText.String()
 	if opts.EventListener != nil {
 		opts.EventListener(DoneEvent{
 			BaseEvent: BaseEvent{TabID: 0},
 			Result: ResultSummary{
 				SessionID: sessionID,
-				Result:    response,
-				IsError:   false,
+				Result:    respText,
 			},
 		})
 		opts.EventListener(TurnCompleteEvent{BaseEvent: BaseEvent{TabID: 0}})
@@ -377,7 +480,7 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 
 	return &RunResult{
 		SessionID: sessionID,
-		Response:  response,
+		Response:  respText,
 		Messages:  messages,
 		IsError:   false,
 	}, nil

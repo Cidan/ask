@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"sort"
 	"strings"
 	"unicode"
@@ -13,20 +14,8 @@ import (
 
 // Ctrl+M opens the unified model picker (crush-style): a search input
 // on top, a "Recently used" group first, then one section per
-// registered provider listing its models with human-friendly names
-// from catwalk's catalog. ↑/↓ (and Ctrl+P/Ctrl+N) walk the model rows
-// skipping section headers; Enter applies the pick to the current tab
-// and persists it as the provider's default model (what /model used to
-// do). The persisted *default provider* for new tabs is untouched —
-// that stays in /config → Default Provider. Picking a model whose
-// provider has no API key configured drops into an inline key prompt
-// first; the key is saved to ~/.config/ask/ask.json and the pick
-// proceeds.
+// registered provider listing its models dynamically queried from the API.
 
-// providerKeySpec describes where one in-process API provider's key
-// lives: the config block in askConfig and the conventional
-// environment fallback. Providers without a spec (tests, future
-// keyless backends) never gate on a key.
 type providerKeySpec struct {
 	id     string
 	title  string
@@ -34,20 +23,7 @@ type providerKeySpec struct {
 	config func(*askConfig) *apiProviderConfig
 }
 
-var providerKeySpecs = []providerKeySpec{
-	{anthropicProviderID, "Anthropic", anthropicEnvAPIKey,
-		func(c *askConfig) *apiProviderConfig { return &c.Anthropic }},
-	{openaiProviderID, "OpenAI", openaiEnvAPIKey,
-		func(c *askConfig) *apiProviderConfig { return &c.OpenAI }},
-	{deepseekProviderID, "DeepSeek", deepseekEnvAPIKey,
-		func(c *askConfig) *apiProviderConfig { return &c.DeepSeek }},
-	{kimiProviderID, "Kimi (Moonshot)", moonshotEnvAPIKey,
-		func(c *askConfig) *apiProviderConfig { return &c.Moonshot }},
-	{minimaxProviderID, "MiniMax", minimaxEnvAPIKey,
-		func(c *askConfig) *apiProviderConfig { return &c.MiniMax }},
-	{googleaiProviderID, "Google AI Studio", googleaiEnvAPIKey,
-		func(c *askConfig) *apiProviderConfig { return &c.GoogleAI }},
-}
+var providerKeySpecs = []providerKeySpec{}
 
 func providerKeySpecByID(id string) (providerKeySpec, bool) {
 	for _, s := range providerKeySpecs {
@@ -58,10 +34,6 @@ func providerKeySpecByID(id string) (providerKeySpec, bool) {
 	return providerKeySpec{}, false
 }
 
-// missingAPIKeyError is the fail-fast session-start error for a
-// provider with no key anywhere. Names the model picker (with its
-// live binding when bound) since that's where the inline key prompt
-// lives now that /config no longer carries per-provider key rows.
 func missingAPIKeyError(envKey string) error {
 	picker := "the model picker"
 	if k := keyHintFor(ActionProviderSwitch); k != "" {
@@ -70,31 +42,28 @@ func missingAPIKeyError(envKey string) error {
 	return errors.New("no API key configured — add one via " + picker + ", or export " + envKey)
 }
 
-// providerNeedsAPIKey reports whether the provider requires an API key
-// that is currently missing (config field and environment both empty).
 func providerNeedsAPIKey(cfg askConfig, providerID string) bool {
 	spec, ok := providerKeySpecByID(providerID)
 	if !ok {
 		return false
 	}
-	return resolveAPIProviderKey(*spec.config(&cfg), spec.envKey) == ""
+	if spec.envKey != "" && os.Getenv(spec.envKey) != "" {
+		return false
+	}
+	if spec.config == nil {
+		return false
+	}
+	conf := spec.config(&cfg)
+	if conf == nil {
+		return false
+	}
+	return conf.APIKey == ""
 }
 
-// catwalkProviderIDs maps ask provider ids onto catwalk's catalog ids
-// so model rows can show the published display names.
 var catwalkProviderIDs = map[string]catwalk.InferenceProvider{
-	anthropicProviderID: catwalk.InferenceProviderAnthropic,
-	openaiProviderID:    catwalk.InferenceProviderOpenAI,
-	deepseekProviderID:  catwalk.InferenceProviderDeepSeek,
-	minimaxProviderID:   catwalk.InferenceProviderMiniMax,
-	googleaiProviderID:  catwalk.InferenceProviderGemini,
-	vertexProviderID:    catwalk.InferenceProviderVertexAI,
+	vertexProviderID: catwalk.InferenceProviderVertexAI,
 }
 
-// friendlyModelName resolves a model id to a human-friendly display
-// name: the catwalk catalog name when known (dashes swapped for
-// spaces — "DeepSeek-V4-Pro" → "DeepSeek V4 Pro"), a humanized id
-// otherwise.
 func friendlyModelName(providerID, modelID string) string {
 	if cw, ok := catwalkProviderIDs[providerID]; ok {
 		if mdl, ok := catalogModel(cw, modelID); ok && mdl.Name != "" {
@@ -104,9 +73,6 @@ func friendlyModelName(providerID, modelID string) string {
 	return humanizeModelID(modelID)
 }
 
-// humanizeModelID is the fallback display transform for ids the
-// catalog doesn't know: dash/underscore-separated words, each
-// title-cased ("deepseek-v4-pro" → "Deepseek V4 Pro").
 func humanizeModelID(id string) string {
 	words := strings.FieldsFunc(id, func(r rune) bool { return r == '-' || r == '_' })
 	for i, w := range words {
@@ -119,10 +85,8 @@ func humanizeModelID(id string) string {
 	return strings.Join(words, " ")
 }
 
-// modelPickerCustomRowLabel is the per-provider free-entry affordance.
 const modelPickerCustomRowLabel = "Enter your own…"
 
-// modelPickerEntry is one selectable model row.
 type modelPickerEntry struct {
 	providerID   string
 	providerName string
@@ -131,7 +95,7 @@ type modelPickerEntry struct {
 }
 
 type modelPickerGroup struct {
-	id          string // provider id; empty for "Recently used"
+	id          string
 	name        string
 	entries     []modelPickerEntry
 	allowCustom bool
@@ -147,52 +111,34 @@ const (
 	modelPickerRowBlank
 )
 
-// modelPickerRow is one rendered line of the flat list, derived from
-// the groups + filter on demand (the groups snapshot is the single
-// source of truth; rows are a pure projection).
 type modelPickerRow struct {
-	kind  modelPickerRowKind
-	title string // header text
-	note  string // dim header suffix ("no API key")
-	entry modelPickerEntry
-	// recent marks entries rendered under "Recently used", which
-	// carry a dim provider suffix so same-named models stay
-	// distinguishable outside their provider section.
+	kind   modelPickerRowKind
+	title  string
+	note   string
+	entry  modelPickerEntry
 	recent bool
 }
 
-// modelPickerKeyEntry is the inline API-key prompt sub-state: the pick
-// that triggered it waits on pending while the user types the key.
 type modelPickerKeyEntry struct {
 	pending modelPickerEntry
 	spec    providerKeySpec
 	draft   string
 }
 
-// modelPickerCustomEntry is the inline free-text model-id editor.
 type modelPickerCustomEntry struct {
 	providerID   string
 	providerName string
 	draft        string
 }
 
-// modelPickerState lives on the model while modeModelPicker is up.
-// Groups are snapshotted at open; query + cursor are the only moving
-// parts. keyEntry/customEntry switch the modal into its inline-editor
-// faces.
 type modelPickerState struct {
 	query       string
-	cursor      int // index into rows()
+	cursor      int
 	groups      []modelPickerGroup
 	keyEntry    *modelPickerKeyEntry
 	customEntry *modelPickerCustomEntry
 }
 
-// buildModelPickerState snapshots the registry + recents into picker
-// groups. Recents come first (crush-style); each entry there carries a
-// dim provider suffix at render time. A recent ref whose model id is
-// no longer in the provider's list (a custom id) is synthesized so the
-// user can re-pick it; refs to unknown providers are dropped.
 func buildModelPickerState(cfg askConfig) *modelPickerState {
 	s := &modelPickerState{}
 
@@ -244,9 +190,6 @@ func buildModelPickerState(cfg askConfig) *modelPickerState {
 	return s
 }
 
-// modelPickerFuzzyMatch reports whether every query rune appears in
-// order inside target (case-insensitive; spaces in the query are
-// ignored, same as crush's filter).
 func modelPickerFuzzyMatch(query, target string) bool {
 	q := []rune(strings.ToLower(strings.ReplaceAll(query, " ", "")))
 	if len(q) == 0 {
@@ -268,10 +211,6 @@ func (e modelPickerEntry) filterText() string {
 	return e.providerName + " " + e.display + " " + e.modelID
 }
 
-// rows projects groups + query into the flat render list. Headers and
-// blank separators are not selectable; selectable rows are entries and
-// the per-provider custom affordance (which only shows with an empty
-// query — it isn't a model to match against).
 func (s *modelPickerState) rows() []modelPickerRow {
 	var rows []modelPickerRow
 	for gi := range s.groups {
@@ -311,7 +250,6 @@ func (r modelPickerRow) selectable() bool {
 	return r.kind == modelPickerRowEntry || r.kind == modelPickerRowCustom
 }
 
-// firstSelectable returns the index of the first selectable row, or -1.
 func firstSelectableRow(rows []modelPickerRow) int {
 	for i, r := range rows {
 		if r.selectable() {
@@ -321,7 +259,6 @@ func firstSelectableRow(rows []modelPickerRow) int {
 	return -1
 }
 
-// moveCursor advances the cursor delta selectable rows, wrapping.
 func (s *modelPickerState) moveCursor(rows []modelPickerRow, delta int) {
 	var idxs []int
 	pos := -1
@@ -344,10 +281,6 @@ func (s *modelPickerState) moveCursor(rows []modelPickerRow, delta int) {
 	s.cursor = idxs[(pos+delta+len(idxs))%len(idxs)]
 }
 
-// seedCursor lands the cursor on the row matching the current tab's
-// provider + model. An empty model means "provider default", which the
-// providers list with their default id first — match the provider's
-// head row in that case. Falls back to the first selectable row.
 func (s *modelPickerState) seedCursor(providerID, modelID string) {
 	rows := s.rows()
 	matchIdx := -1
@@ -369,8 +302,6 @@ func (s *modelPickerState) seedCursor(providerID, modelID string) {
 	s.cursor = matchIdx
 }
 
-// openModelPicker enters the unified picker, seeded on the current
-// tab's provider/model.
 func (m model) openModelPicker() model {
 	(&m).clearSelection()
 	cfg, _ := loadConfig()
@@ -455,9 +386,6 @@ func (s *modelPickerState) resetCursorToFirst() {
 	}
 }
 
-// dispatchModelPick routes a confirmed pick: straight to the switch
-// when the provider has a usable key, into the inline key prompt
-// otherwise.
 func (m model) dispatchModelPick(entry modelPickerEntry) (tea.Model, tea.Cmd) {
 	cfg, _ := loadConfig()
 	if providerNeedsAPIKey(cfg, entry.providerID) {
@@ -468,8 +396,6 @@ func (m model) dispatchModelPick(entry modelPickerEntry) (tea.Model, tea.Cmd) {
 	return m.applyModelPickerEntry(entry)
 }
 
-// applyModelPickerEntry records the recent pick and swaps the current
-// tab to the entry's provider/model.
 func (m model) applyModelPickerEntry(entry modelPickerEntry) (tea.Model, tea.Cmd) {
 	recordRecentModel(entry.providerID, entry.modelID)
 	modelID := entry.modelID
@@ -559,8 +485,6 @@ func (m model) updateModelPickerCustomEntry(msg tea.KeyPressMsg) (tea.Model, tea
 	return m, nil
 }
 
-// applyModelPickerPaste appends pasted text to whichever input is
-// active — API keys especially are pasted far more often than typed.
 func (m model) applyModelPickerPaste(text string) (tea.Model, tea.Cmd) {
 	s := m.modelPicker
 	if s == nil || text == "" {
@@ -578,13 +502,6 @@ func (m model) applyModelPickerPaste(text string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// applyProviderModelSwitch swaps the current tab to prov with the
-// given model, kills the active proc, and reloads the target
-// provider's saved effort/slash-command defaults. Same-provider swaps
-// (model-only changes) preserve sessionID/resumeCwd so the next
-// ensureProc picks up where the conversation left off. The model is
-// persisted as the provider's default; the default-provider config is
-// untouched.
 func (m model) applyProviderModelSwitch(newProv Provider, model string) (tea.Model, tea.Cmd) {
 	newSettings := newProv.LoadSettings()
 	sameProvider := m.provider != nil && m.provider.ID() == newProv.ID()
@@ -593,44 +510,27 @@ func (m model) applyProviderModelSwitch(newProv Provider, model string) (tea.Mod
 		oldProvName = m.provider.DisplayName()
 	}
 
-	// Kill the active proc — even on a same-provider swap, the new
-	// model only takes effect after a fresh fork.
 	m.killProc()
 
 	m.provider = newProv
 	m.providerModel = model
 	m.providerEffort = newSettings.Effort
 	m.providerSlashCmds = newSettings.SlashCommands
-	// Persist the model as the provider's default (what /model used to
-	// do) so fresh tabs and restarts inherit the pick. The *default
-	// provider* (cfg.Provider) is deliberately untouched — that knob
-	// stays in /config → Default Provider.
+
 	if newSettings.Model != model {
 		newSettings.Model = model
 		if err := newProv.SaveSettings(newSettings); err != nil {
 			debugLog("SaveSettings err: %v", err)
 		}
 	}
-	// Clear token counts and context-model pointer so the chip
-	// starts fresh for the new session. The spend meter
-	// (sessionCostUSD / sessionCostKnown) follows the tab across
-	// provider swaps — the money is already billed.
+
 	m.lastUsageTokens = 0
 	m.modelForContext = ""
 	var historyCmd tea.Cmd
 	if !sameProvider {
-		// Cross-provider swap: if the tab is inside a virtual session,
-		// route the new provider's resume context through the VS store.
-		// A native mapping → resume it on the new provider (UI reloads
-		// via loadHistoryCmd). No mapping → materialize a synthetic
-		// native session file on the new provider from the current
-		// m.history and resume from that.
 		m.sessionID = ""
 		m.sessionMinted = false
 		m.resumeCwd = ""
-		// The spend meter follows the tab across provider swaps —
-		// the money is already billed and the session is being
-		// translated through the VS store, not discarded.
 		if m.virtualSessionID != "" {
 			historyCmd = m.applyVSProviderSwap(oldProvName, newProv)
 		}
@@ -649,9 +549,7 @@ func (m model) applyProviderModelSwitch(newProv Provider, model string) (tea.Mod
 	}
 	m.appendHistory(outputStyle.Render(promptStyle.Render(msg)))
 	m = m.closeModelPicker()
-	// Refresh slash commands from the new provider so /resume, /effort,
-	// etc. match. Same-provider swaps still re-probe so any cached
-	// commands reflect whatever the new model unlocks.
+
 	probe := newProv.ProbeInit(m.sessionArgs())
 	if historyCmd != nil {
 		return m, tea.Batch(probe, historyCmd)
@@ -659,13 +557,6 @@ func (m model) applyProviderModelSwitch(newProv Provider, model string) (tea.Mod
 	return m, probe
 }
 
-// applyVSProviderSwap routes a cross-provider swap through the VS
-// store. When the new provider already has a native mapping, sets
-// sessionID/resumeCwd and returns loadHistoryCmd so the UI reflects
-// the new provider's own file. When no mapping exists, materializes
-// a synthetic native session file from the current m.history turns
-// and schedules the new provider to resume it. Returns nil when the
-// store is unreachable or the VS has vanished between tabs.
 func (m *model) applyVSProviderSwap(oldProvName string, newProv Provider) tea.Cmd {
 	_ = oldProvName
 	store, err := loadVirtualSessions()
@@ -677,21 +568,11 @@ func (m *model) applyVSProviderSwap(oldProvName string, newProv Provider) tea.Cm
 	if vs == nil {
 		return nil
 	}
-	// Reuse the cached native id only when the new provider was also
-	// the last writer. Any other LastProvider means the cached
-	// mapping predates newer turns on a different backend, so the
-	// canonical state lives in m.history (which we just had rendered
-	// by the provider we're leaving) — translate from those turns.
+
 	if ref, ok := vs.ProviderSessions[newProv.ID()]; ok && ref.SessionID != "" &&
 		vs.LastProvider == newProv.ID() {
 		m.sessionID = ref.SessionID
 		m.resumeCwd = ref.Cwd
-		// Realign m.worktreeName with where the resumed session
-		// actually lived. A worktree-rooted ref hands over its name so
-		// any second swap before the first fork can translate into the
-		// same worktree; a project-root ref clears any stale name from
-		// the prior tab so we don't accidentally fork at a worktree
-		// the resumed session was never written to.
 		m.worktreeName = worktreeNameFromCwd(ref.Cwd)
 		m.history = nil
 		opts := HistoryOpts{
@@ -707,11 +588,7 @@ func (m *model) applyVSProviderSwap(oldProvName string, newProv Provider) tea.Cm
 	}
 	m.testBusy = true
 	m.status = "translating session…"
-	// Recover a worktree name from the last-writer ref in the VS so
-	// the translated session lands where the canonical conversation
-	// already lived. Only fall back to some other provider's worktree
-	// when the authoritative ref has lost its cwd entirely; an
-	// explicit project-root ref stays project-root.
+
 	worktreeName := m.worktreeName
 	if worktreeName == "" {
 		worktreeName = worktreeNameFromVS(vs, vs.LastProvider)
@@ -726,12 +603,6 @@ func (m *model) applyVSProviderSwap(oldProvName string, newProv Provider) tea.Cm
 	})
 }
 
-// worktreeNameFromVS resolves the worktree assignment recorded on vs.
-// When preferredProviderID has a ref, that ref is authoritative: a
-// worktree path returns its name, an explicit project-root cwd
-// returns "", and only a missing/empty cwd falls through to other
-// refs. Fallback scanning is deterministic (sorted provider ids) so
-// mixed/ref-corrupted VS rows don't produce random worktree choices.
 func worktreeNameFromVS(vs *VirtualSession, preferredProviderID string) string {
 	if vs == nil {
 		return ""
@@ -758,11 +629,6 @@ func worktreeNameFromVS(vs *VirtualSession, preferredProviderID string) string {
 	return ""
 }
 
-// ---- rendering ----
-
-// The picker leans wide-and-flat (house style for design popups): a
-// generous min/max width and a tighter visible-row cap so the modal
-// reads as a landscape rectangle rather than a tower.
 const (
 	modelPickerMinWidth = 60
 	modelPickerMaxWidth = 84
@@ -801,8 +667,6 @@ func (m model) viewModelPicker() string {
 	title := themePickerTitleStyle.Render("Switch Model")
 	searchLine := configPromptStyle.Render("> ") + filterPromptLine(s.query, "Type to filter")
 
-	// Visible window: keep the cursor in view when the list outgrows
-	// the terminal.
 	maxList := modelPickerMaxRows
 	if m.height > 0 && m.height-10 < maxList {
 		maxList = m.height - 10
@@ -843,10 +707,6 @@ func (m model) viewModelPicker() string {
 	return themePickerBoxStyle.Width(m.modelPickerBoxWidth(innerW)).Render(body)
 }
 
-// modelPickerBoxWidth converts a row width into the lipgloss block
-// width (content + the box style's horizontal padding) and clamps it
-// to the terminal. Shared by the list view and the inline editors so
-// the modal keeps one silhouette across its faces.
 func (m model) modelPickerBoxWidth(rowW int) int {
 	w := rowW + themePickerBoxStyle.GetHorizontalPadding()
 	if m.width > 0 && w > m.width-6 {
@@ -858,8 +718,6 @@ func (m model) modelPickerBoxWidth(rowW int) int {
 	return w
 }
 
-// modelPickerRowPlain is the unstyled text of a row, used for width
-// measurement and as the base for highlight rendering.
 func modelPickerRowPlain(r modelPickerRow, m model) string {
 	switch r.kind {
 	case modelPickerRowHeader:
@@ -883,9 +741,6 @@ func modelPickerRowPlain(r modelPickerRow, m model) string {
 	return ""
 }
 
-// modelPickerEntryIsCurrent reports whether the entry matches the
-// current tab's provider+model (empty tab model = provider default =
-// the provider's head row).
 func (m model) modelPickerEntryIsCurrent(e modelPickerEntry) bool {
 	if m.provider == nil || m.provider.ID() != e.providerID {
 		return false
@@ -909,7 +764,6 @@ func (m model) renderModelPickerRow(r modelPickerRow, width int, selected bool) 
 		return line
 	}
 
-	// Selectable rows.
 	plain := modelPickerRowPlain(r, m)
 	if selected {
 		line := "▸ " + strings.TrimPrefix(plain, "  ")
@@ -928,8 +782,6 @@ func (m model) renderModelPickerRow(r modelPickerRow, width int, selected bool) 
 	return "  " + r.entry.display + modelPickerCurrentMark(m, r.entry)
 }
 
-// modelPickerCurrentMark renders the ✓ suffix for the current
-// provider+model entry.
 func modelPickerCurrentMark(m model, e modelPickerEntry) string {
 	if m.modelPickerEntryIsCurrent(e) {
 		return promptStyle.Render(" ✓")

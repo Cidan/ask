@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/workflow"
 )
@@ -88,13 +87,13 @@ type AskOutput struct {
 }
 
 // AskUserQuestionTool returns the interactive ask_user_question tool.
-func AskUserQuestionTool(env *ToolEnv) fantasy.AgentTool {
-	return fantasy.NewAgentTool(
+func AskUserQuestionTool(env *ToolEnv) Tool {
+	return NewTool(
 		"ask_user_question",
 		AskToolDescription,
-		func(ctx context.Context, p AskParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, p AskParams) (ToolResponse, error) {
 			if len(p.Questions) == 0 {
-				return fantasy.NewTextErrorResponse("at least one question is required"), nil
+				return NewTextErrorResponse("at least one question is required"), nil
 			}
 			engineQs := make([]engine.Question, 0, len(p.Questions))
 			for _, q := range p.Questions {
@@ -113,23 +112,23 @@ func AskUserQuestionTool(env *ToolEnv) fantasy.AgentTool {
 			if env.Interaction != nil {
 				resp, err := env.Interaction.AskQuestion(ctx, env.TabID, engineQs)
 				if err != nil {
-					return fantasy.NewTextErrorResponse(err.Error()), nil
+					return NewTextErrorResponse(err.Error()), nil
 				}
 				if resp.Headless {
-					return fantasy.NewTextErrorResponse(WorkflowHeadlessAskNotice), nil
+					return NewTextErrorResponse(WorkflowHeadlessAskNotice), nil
 				}
 				if resp.Cancelled {
-					return fantasy.NewTextErrorResponse("user cancelled the dialog"), nil
+					return NewTextErrorResponse("user cancelled the dialog"), nil
 				}
 				out := AskOutput{Answers: resp.Answers}
 				body, err := json.Marshal(out)
 				if err != nil {
-					return fantasy.NewTextErrorResponse("encode answers: " + err.Error()), nil
+					return NewTextErrorResponse("encode answers: " + err.Error()), nil
 				}
-				return fantasy.NewTextResponse(string(body)), nil
+				return NewTextResponse(string(body)), nil
 			}
 
-			return fantasy.NewTextErrorResponse("ask UI not ready"), nil
+			return NewTextErrorResponse("ask UI not ready"), nil
 		},
 	)
 }
@@ -140,14 +139,14 @@ type FinishWorkflowParams struct {
 }
 
 // FinishWorkflowTool records final workflow artifacts and outcome description.
-func FinishWorkflowTool(env *ToolEnv) fantasy.AgentTool {
-	return fantasy.NewAgentTool(
+func FinishWorkflowTool(env *ToolEnv) Tool {
+	return NewTool(
 		"finish_workflow",
 		"Report the final outcome and artifacts of the workflow. REQUIRED on the final step.",
-		func(ctx context.Context, p FinishWorkflowParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, p FinishWorkflowParams) (ToolResponse, error) {
 			desc := strings.TrimSpace(p.Description)
 			if desc == "" {
-				return fantasy.NewTextErrorResponse("description is required: provide a summary of the workflow outcome"), nil
+				return NewTextErrorResponse("description is required: provide a summary of the workflow outcome"), nil
 			}
 
 			env.PendingFinishData = &FinishWorkflowData{
@@ -155,7 +154,7 @@ func FinishWorkflowTool(env *ToolEnv) fantasy.AgentTool {
 				Artifacts:   p.Artifacts,
 			}
 
-			return fantasy.NewTextResponse("finish_workflow recorded. Now call end_turn to complete the step."), nil
+			return NewTextResponse("finish_workflow recorded. Now call end_turn to complete the step."), nil
 		},
 	)
 }
@@ -166,18 +165,18 @@ type EndTurnParams struct {
 }
 
 // EndTurnTool registers the workflow step summary and loop decision.
-func EndTurnTool(env *ToolEnv) fantasy.AgentTool {
-	return fantasy.NewAgentTool(
+func EndTurnTool(env *ToolEnv) Tool {
+	return NewTool(
 		"end_turn",
 		EndTurnToolDescription,
-		func(ctx context.Context, p EndTurnParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, p EndTurnParams) (ToolResponse, error) {
 			summary := strings.TrimSpace(p.Summary)
 			if summary == "" {
-				return fantasy.NewTextErrorResponse("summary is required: describe in 1-3 sentences what you did this step"), nil
+				return NewTextErrorResponse("summary is required: describe in 1-3 sentences what you did this step"), nil
 			}
 			decision := strings.TrimSpace(p.Decision)
 			if decision != "" && decision != "break" && decision != "continue" {
-				return fantasy.NewTextErrorResponse(fmt.Sprintf(
+				return NewTextErrorResponse(fmt.Sprintf(
 					"decision, when provided, must be %q or %q", "continue", "break")), nil
 			}
 			env.PendingEndTurn = &EndTurnSignal{Decision: decision, Summary: summary}
@@ -186,7 +185,7 @@ func EndTurnTool(env *ToolEnv) fantasy.AgentTool {
 				note += " (decision: " + decision + ")"
 			}
 			note += ". Finish your turn normally; the workflow acts on it when your turn ends."
-			return fantasy.NewTextResponse(note), nil
+			return NewTextResponse(note), nil
 		},
 	)
 }
@@ -198,18 +197,18 @@ type FinalizedPlanParams struct {
 }
 
 // FinalizedPlanTool presents a finalized plan for confirmation or workflow dispatch.
-func FinalizedPlanTool(env *ToolEnv) fantasy.AgentTool {
-	return fantasy.NewAgentTool(
+func FinalizedPlanTool(env *ToolEnv) Tool {
+	return NewTool(
 		"finalized_plan",
 		"Present a finalized implementation plan to the user for confirmation and execution choice. Invoking this tool MUST be your absolute final action in the turn. Once called, do not generate any further text or perform any more planning, as the user will be presented with a modal to launch a workflow or execute the plan directly. The workflow runs in a separate, isolated subagent context without access to this chat's history, so the plan must be completely self-contained.",
-		func(ctx context.Context, p FinalizedPlanParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, p FinalizedPlanParams) (ToolResponse, error) {
 			plan := strings.TrimSpace(p.Plan)
 			explanation := strings.TrimSpace(p.Explanation)
 			if plan == "" {
-				return fantasy.NewTextErrorResponse("plan is required"), nil
+				return NewTextErrorResponse("plan is required"), nil
 			}
 			if explanation == "" {
-				return fantasy.NewTextErrorResponse("explanation is required"), nil
+				return NewTextErrorResponse("explanation is required"), nil
 			}
 
 			if env.Interaction != nil {
@@ -219,21 +218,21 @@ func FinalizedPlanTool(env *ToolEnv) fantasy.AgentTool {
 					DefaultWorkflow: strings.TrimSpace(p.DefaultWorkflow),
 				})
 				if err != nil {
-					return fantasy.NewTextErrorResponse("plan confirmation failed: " + err.Error()), nil
+					return NewTextErrorResponse("plan confirmation failed: " + err.Error()), nil
 				}
 				if resp.Headless {
-					return fantasy.NewTextResponse("This step is running headless as part of an automated workflow. Continuing directly."), nil
+					return NewTextResponse("This step is running headless as part of an automated workflow. Continuing directly."), nil
 				}
 				if resp.Cancelled {
-					return fantasy.NewTextErrorResponse("user cancelled or closed the finalized plan dialog"), nil
+					return NewTextErrorResponse("user cancelled or closed the finalized plan dialog"), nil
 				}
 				if resp.TalkMore {
-					return fantasy.NewTextResponse("The user declined the plan and wants to continue discussing. Re-evaluate your approach based on the user's feedback."), nil
+					return NewTextResponse("The user declined the plan and wants to continue discussing. Re-evaluate your approach based on the user's feedback."), nil
 				}
 				if resp.ExecuteInline {
 					env.MarkWorkflowsChecked()
 					env.MarkWorkflowRunDispatched()
-					return fantasy.NewTextResponse("Plan approved for inline execution. Planning mode has been turned OFF and todos guards have been disarmed. You can now execute your plan directly using write/edit/bash/etc."), nil
+					return NewTextResponse("Plan approved for inline execution. Planning mode has been turned OFF and todos guards have been disarmed. You can now execute your plan directly using write/edit/bash/etc."), nil
 				}
 				if resp.WorkflowName != "" {
 					env.MarkWorkflowsChecked()
@@ -242,20 +241,20 @@ func FinalizedPlanTool(env *ToolEnv) fantasy.AgentTool {
 					if env.WorkflowRunner != nil {
 						def, err := workflow.ResolveByName(env.Cwd, resp.WorkflowName, "")
 						if err != nil {
-							return fantasy.NewTextErrorResponse("could not resolve workflow: " + err.Error()), nil
+							return NewTextErrorResponse("could not resolve workflow: " + err.Error()), nil
 						}
 						out, err := env.WorkflowRunner(ctx, env.TabID, def, resp.Source)
 						if err != nil {
-							return fantasy.NewTextErrorResponse("workflow execution failed: " + err.Error()), nil
+							return NewTextErrorResponse("workflow execution failed: " + err.Error()), nil
 						}
-						return fantasy.NewTextResponse(out), nil
+						return NewTextResponse(out), nil
 					}
-					return fantasy.NewTextResponse(fmt.Sprintf("Workflow %q dispatched.", resp.WorkflowName)), nil
+					return NewTextResponse(fmt.Sprintf("Workflow %q dispatched.", resp.WorkflowName)), nil
 				}
-				return fantasy.NewTextResponse("Plan approved."), nil
+				return NewTextResponse("Plan approved."), nil
 			}
 
-			return fantasy.NewTextErrorResponse("plan confirmation UI not ready"), nil
+			return NewTextErrorResponse("plan confirmation UI not ready"), nil
 		},
 	)
 }

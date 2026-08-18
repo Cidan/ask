@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/genai"
 )
 
 // MCPServer describes one MCP server to attach.
@@ -152,11 +151,11 @@ func (m *MCPManager) Attach(ctx context.Context, srv MCPServer) error {
 }
 
 // Tools returns the snapshot of all current tools across all connected servers.
-func (m *MCPManager) Tools() []fantasy.AgentTool {
+func (m *MCPManager) Tools() []Tool {
 	m.mu.Lock()
 	conns := append([]*mcpServerConn(nil), m.conns...)
 	m.mu.Unlock()
-	var out []fantasy.AgentTool
+	var out []Tool
 	for _, c := range conns {
 		out = append(out, c.currentTools()...)
 	}
@@ -187,7 +186,7 @@ type mcpServerConn struct {
 
 	mu      sync.Mutex
 	session *mcp.ClientSession
-	tools   []fantasy.AgentTool
+	tools   []Tool
 }
 
 func (c *mcpServerConn) connect(ctx context.Context) error {
@@ -251,7 +250,7 @@ func (c *mcpServerConn) refreshTools(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	tools := make([]fantasy.AgentTool, 0, len(listed.Tools))
+	tools := make([]Tool, 0, len(listed.Tools))
 	for _, t := range listed.Tools {
 		if c.srv.Skip[t.Name] || !MCPToolAllowed(c.srv.Cfg, t.Name) {
 			continue
@@ -264,10 +263,10 @@ func (c *mcpServerConn) refreshTools(ctx context.Context) error {
 	return nil
 }
 
-func (c *mcpServerConn) currentTools() []fantasy.AgentTool {
+func (c *mcpServerConn) currentTools() []Tool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return append([]fantasy.AgentTool(nil), c.tools...)
+	return append([]Tool(nil), c.tools...)
 }
 
 func (c *mcpServerConn) onToolListChanged() {
@@ -439,7 +438,6 @@ type mcpAgentTool struct {
 	required    []string
 	conn        *mcpServerConn
 	remoteName  string
-	opts        fantasy.ProviderOptions
 }
 
 func newMCPAgentTool(conn *mcpServerConn, t *mcp.Tool) *mcpAgentTool {
@@ -467,12 +465,14 @@ func newMCPAgentTool(conn *mcpServerConn, t *mcp.Tool) *mcpAgentTool {
 	}
 }
 
-func (m *mcpAgentTool) Info() fantasy.ToolInfo {
+func (m *mcpAgentTool) Name() string        { return m.name }
+func (m *mcpAgentTool) Description() string { return m.description }
+func (m *mcpAgentTool) Info() ToolInfo {
 	required := m.required
 	if required == nil {
 		required = []string{}
 	}
-	return fantasy.ToolInfo{
+	return ToolInfo{
 		Name:        m.name,
 		Description: m.description,
 		Parameters:  m.properties,
@@ -480,16 +480,25 @@ func (m *mcpAgentTool) Info() fantasy.ToolInfo {
 	}
 }
 
-func (m *mcpAgentTool) Run(ctx context.Context, params fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	var args map[string]any
-	if strings.TrimSpace(params.Input) != "" {
-		if err := json.Unmarshal([]byte(params.Input), &args); err != nil {
-			return fantasy.NewTextErrorResponse("invalid parameters: " + err.Error()), nil
-		}
+func (m *mcpAgentTool) Declaration() *genai.FunctionDeclaration {
+	schemaObj := map[string]any{
+		"type":       "object",
+		"properties": m.properties,
 	}
+	if len(m.required) > 0 {
+		schemaObj["required"] = m.required
+	}
+	return &genai.FunctionDeclaration{
+		Name:                 m.name,
+		Description:          m.description,
+		ParametersJsonSchema: schemaObj,
+	}
+}
+
+func (m *mcpAgentTool) Run(ctx context.Context, args map[string]any) (ToolResponse, error) {
 	session, err := m.conn.ensure(ctx)
 	if err != nil {
-		return fantasy.NewTextErrorResponse(m.name + ": server unavailable: " + err.Error()), nil
+		return NewTextErrorResponse(m.name + ": server unavailable: " + err.Error()), nil
 	}
 	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: m.remoteName, Arguments: args})
 	if err != nil {
@@ -497,13 +506,13 @@ func (m *mcpAgentTool) Run(ctx context.Context, params fantasy.ToolCall) (fantas
 			res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: m.remoteName, Arguments: args})
 		}
 		if err != nil {
-			return fantasy.NewTextErrorResponse(m.name + ": " + err.Error()), nil
+			return NewTextErrorResponse(m.name + ": " + err.Error()), nil
 		}
 	}
 	return m.convertResult(res), nil
 }
 
-func (m *mcpAgentTool) convertResult(res *mcp.CallToolResult) fantasy.ToolResponse {
+func (m *mcpAgentTool) convertResult(res *mcp.CallToolResult) ToolResponse {
 	var out strings.Builder
 	var imageData []byte
 	var imageMIME string
@@ -537,21 +546,17 @@ func (m *mcpAgentTool) convertResult(res *mcp.CallToolResult) fantasy.ToolRespon
 		if strings.TrimSpace(body) == "" {
 			body = "(empty error result)"
 		}
-		return fantasy.NewTextErrorResponse(body)
+		return NewTextErrorResponse(body)
 	}
 	if imageData != nil {
-		if m.conn.mgr.imagesOK() {
-			return fantasy.NewImageResponse(imageData, imageMIME)
+		if !m.conn.mgr.imagesOK() {
+			fmt.Fprintf(&out, "[image result omitted — the current model has no vision: %s, %d bytes]",
+				imageMIME, len(imageData))
+			body = out.String()
 		}
-		fmt.Fprintf(&out, "[image result omitted — the current model has no vision: %s, %d bytes]",
-			imageMIME, len(imageData))
-		body = out.String()
 	}
 	if strings.TrimSpace(body) == "" {
 		body = "(empty result)"
 	}
-	return fantasy.NewTextResponse(TruncateMiddle(body))
+	return NewTextResponse(TruncateMiddle(body))
 }
-
-func (m *mcpAgentTool) ProviderOptions() fantasy.ProviderOptions        { return m.opts }
-func (m *mcpAgentTool) SetProviderOptions(opts fantasy.ProviderOptions) { m.opts = opts }

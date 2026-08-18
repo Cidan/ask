@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"charm.land/fantasy"
 	"github.com/Cidan/ask/pkg/diff"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/workflow"
@@ -109,7 +108,7 @@ func (env *ToolEnv) approveViaInteraction(ctx context.Context, toolName string, 
 }
 
 // RequestApproval checks permission before executing a mutating tool.
-func (env *ToolEnv) RequestApproval(ctx context.Context, toolName string, input map[string]any) *fantasy.ToolResponse {
+func (env *ToolEnv) RequestApproval(ctx context.Context, toolName string, input map[string]any) *ToolResponse {
 	if env == nil || env.SkipPermissions {
 		return nil
 	}
@@ -119,12 +118,12 @@ func (env *ToolEnv) RequestApproval(ctx context.Context, toolName string, input 
 	}
 	ok, err := approveFn(ctx, toolName, input)
 	if err != nil {
-		resp := fantasy.NewTextErrorResponse("permission check failed: " + err.Error())
+		resp := NewTextErrorResponse("permission check failed: " + err.Error())
 		resp.StopTurn = true
 		return &resp
 	}
 	if !ok {
-		resp := fantasy.NewTextErrorResponse("The user denied permission for this tool call. Do not retry it; either proceed without it or end your turn and explain what you need.")
+		resp := NewTextErrorResponse("The user denied permission for this tool call. Do not retry it; either proceed without it or end your turn and explain what you need.")
 		resp.StopTurn = true
 		return &resp
 	}

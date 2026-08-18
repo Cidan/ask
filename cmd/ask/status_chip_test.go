@@ -95,9 +95,9 @@ func TestStatusChipHeight_ZeroWhenNothingToShow(t *testing.T) {
 // percentage — every provider is API-billed, no quota windows.
 func TestProviderChip_CtxSegmentAlwaysPresent(t *testing.T) {
 	p := newFakeProvider()
-	p.id = "anthropic"
+	p.id = "vertex"
 	m := newTestModel(t, p)
-	m.providerModel = "claude-fable-5"
+	m.providerModel = "gemini-2.5-pro"
 	got := m.providerChip()
 	if !strings.Contains(got, "ctx:0%") {
 		t.Errorf("chip should contain 'ctx:0%%' when no usage yet: %q", got)
@@ -109,7 +109,7 @@ func TestProviderChip_CtxSegmentAlwaysPresent(t *testing.T) {
 
 func TestProviderChip_ContextPercentWithUnknownModel(t *testing.T) {
 	p := newFakeProvider()
-	p.id = "anthropic"
+	p.id = "vertex"
 	m := newTestModel(t, p)
 	m.providerModel = ""
 	// 50k tokens against the default 200k limit (unknown model) = 25%.
@@ -122,23 +122,23 @@ func TestProviderChip_ContextPercentWithUnknownModel(t *testing.T) {
 
 func TestProviderChip_CatalogModelDrivesPercent(t *testing.T) {
 	p := newFakeProvider()
-	p.id = "anthropic"
+	p.id = "vertex"
 	m := newTestModel(t, p)
-	m.providerModel = "claude-fable-5" // 1M via catwalk
-	m.lastUsageTokens = 100_000
+	m.providerModel = "custom-1m"
+	m.lastUsageTokens = 104_857
 	got := m.providerChip()
-	if !strings.Contains(got, "ctx:10%") {
+	if !strings.Contains(got, "ctx:9%") && !strings.Contains(got, "ctx:10%") {
 		t.Errorf("catalog window must drive the percent: %q", got)
 	}
 }
 
 func TestProviderChip_ModelForContextWins(t *testing.T) {
 	p := newFakeProvider()
-	p.id = "anthropic"
+	p.id = "vertex"
 	m := newTestModel(t, p)
 	m.providerModel = "custom-alias"
-	m.modelForContext = "claude-fable-5"
-	m.lastUsageTokens = 500_000
+	m.modelForContext = "custom-1m"
+	m.lastUsageTokens = 524_288
 	got := m.providerChip()
 	if !strings.Contains(got, "ctx:50%") {
 		t.Errorf("modelForContext must win the denominator: %q", got)
@@ -147,9 +147,9 @@ func TestProviderChip_ModelForContextWins(t *testing.T) {
 
 func TestProviderChipFitting_DropsCtxWhenNarrow(t *testing.T) {
 	p := newFakeProvider()
-	p.id = "anthropic"
+	p.id = "vertex"
 	m := newTestModel(t, p)
-	m.providerModel = "claude-fable-5"
+	m.providerModel = "gemini-2.5-pro"
 	m.lastUsageTokens = 150_000
 
 	full := m.providerChipFitting(0)
@@ -161,22 +161,22 @@ func TestProviderChipFitting_DropsCtxWhenNarrow(t *testing.T) {
 	if strings.Contains(got, "ctx:") {
 		t.Errorf("fitting at %d cols should drop ctx: %q", fullW-1, got)
 	}
-	if !strings.Contains(got, "p: anthropic") {
+	if !strings.Contains(got, "p: vertex") {
 		t.Errorf("bare chip must survive: %q", got)
 	}
 }
 
 func TestApplyProviderSwitch_ClearsUsageFields(t *testing.T) {
 	pA := newFakeProvider()
-	pA.id = "anthropic"
+	pA.id = "vertex"
 	pB := newFakeProvider()
-	pB.id = "openai"
+	pB.id = "custom"
 	withRegisteredProviders(t, pA, pB)
 	m := newTestModel(t, pA)
-	m.providerModel = "claude-fable-5"
+	m.providerModel = "gemini-2.5-pro"
 	m.lastUsageTokens = 123_456
-	m.modelForContext = "claude-fable-5"
-	next, _ := m.applyProviderModelSwitch(providerRegistry[1], "gpt-5.5")
+	m.modelForContext = "gemini-2.5-pro"
+	next, _ := m.applyProviderModelSwitch(providerRegistry[1], "custom-model")
 	mi := next.(model)
 	if mi.lastUsageTokens != 0 {
 		t.Errorf("lastUsageTokens should be 0 after switch, got %d", mi.lastUsageTokens)

@@ -1,4 +1,4 @@
-package memory
+package tools
 
 import (
 	"context"
@@ -6,24 +6,24 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/fantasy"
+	"github.com/Cidan/ask/pkg/memory"
 )
 
 func TestTool_MemoryIndexTool(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "tool_test.db")
-	embedder := newFakeEmbedder(32)
+	embedder := memory.NewFakeEmbedder(32)
 
-	_ = Close()
-	defer Close()
+	_ = memory.Close()
+	defer memory.Close()
 
-	if err := Open(Options{DBPath: dbPath, Embedder: embedder}); err != nil {
+	if err := memory.Open(memory.Options{DBPath: dbPath, Embedder: embedder}); err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
 
 	cwd := filepath.Join(tmpDir, "proj")
 	var approved bool
-	approvalHandler := func(ctx context.Context, name string, params map[string]any) *fantasy.ToolResponse {
+	approvalHandler := func(ctx context.Context, name string, params map[string]any) *ToolResponse {
 		approved = true
 		return nil
 	}
@@ -34,9 +34,7 @@ func TestTool_MemoryIndexTool(t *testing.T) {
 	}
 
 	// Empty text should return error
-	resp, err := tool.Run(context.Background(), fantasy.ToolCall{
-		Input: `{"text":"","description":"indexing empty"}`,
-	})
+	resp, err := RunToolWithJSON(context.Background(), tool, `{"text":"","description":"indexing empty"}`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -45,9 +43,7 @@ func TestTool_MemoryIndexTool(t *testing.T) {
 	}
 
 	// Valid indexing
-	resp, err = tool.Run(context.Background(), fantasy.ToolCall{
-		Input: `{"text":"important note","description":"indexing note"}`,
-	})
+	resp, err = RunToolWithJSON(context.Background(), tool, `{"text":"important note","description":"indexing note"}`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -59,7 +55,7 @@ func TestTool_MemoryIndexTool(t *testing.T) {
 	}
 
 	// Recall to verify
-	hits, err := Recall(context.Background(), cwd, "important note", 5)
+	hits, err := memory.Recall(context.Background(), cwd, "important note", 5)
 	if err != nil {
 		t.Fatalf("Recall failed: %v", err)
 	}
@@ -71,38 +67,36 @@ func TestTool_MemoryIndexTool(t *testing.T) {
 func TestTool_MemoryAwareTool(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "aware_tool.db")
-	embedder := newFakeEmbedder(32)
+	embedder := memory.NewFakeEmbedder(32)
 
-	_ = Close()
-	defer Close()
+	_ = memory.Close()
+	defer memory.Close()
 
-	if err := Open(Options{DBPath: dbPath, Embedder: embedder}); err != nil {
+	if err := memory.Open(memory.Options{DBPath: dbPath, Embedder: embedder}); err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
 
 	cwd := filepath.Join(tmpDir, "proj")
 	targetFile := filepath.Join(cwd, "main.go")
-	_ = Index(context.Background(), cwd, "main.go contains the entrypoint")
+	_ = memory.Index(context.Background(), cwd, "main.go contains the entrypoint")
 
-	fileTools := []fantasy.AgentTool{
-		fantasy.NewAgentTool("read", "read file", func(ctx context.Context, p map[string]any, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			return fantasy.NewTextResponse("package main\nfunc main() {}"), nil
+	fileTools := []Tool{
+		NewTool("read", "read file", func(ctx context.Context, p map[string]any) (ToolResponse, error) {
+			return NewTextResponse("package main\nfunc main() {}"), nil
 		}),
-		fantasy.NewAgentTool("glob", "glob pattern", func(ctx context.Context, p map[string]any, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			return fantasy.NewTextResponse("main.go"), nil
+		NewTool("glob", "glob pattern", func(ctx context.Context, p map[string]any) (ToolResponse, error) {
+			return NewTextResponse("main.go"), nil
 		}),
 	}
 
-	wrapped := WrapFileTools(fileTools, cwd)
+	wrapped := WrapFileToolsWithMemory(fileTools, cwd)
 	if len(wrapped) != 2 {
 		t.Fatalf("expected 2 tools, got %d", len(wrapped))
 	}
 
 	// "read" should be wrapped by MemoryAwareTool
 	readTool := wrapped[0]
-	resp, err := readTool.Run(context.Background(), fantasy.ToolCall{
-		Input: `{"file_path":"` + targetFile + `"}`,
-	})
+	resp, err := RunToolWithJSON(context.Background(), readTool, `{"file_path":"`+targetFile+`"}`)
 	if err != nil {
 		t.Fatalf("readTool.Run failed: %v", err)
 	}
@@ -113,9 +107,7 @@ func TestTool_MemoryAwareTool(t *testing.T) {
 
 	// "glob" should NOT be wrapped
 	globTool := wrapped[1]
-	resp, err = globTool.Run(context.Background(), fantasy.ToolCall{
-		Input: `{"pattern":"*.go"}`,
-	})
+	resp, err = RunToolWithJSON(context.Background(), globTool, `{"pattern":"*.go"}`)
 	if err != nil {
 		t.Fatalf("globTool.Run failed: %v", err)
 	}
