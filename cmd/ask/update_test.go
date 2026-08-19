@@ -402,6 +402,44 @@ func TestUpdate_TodoUpdatedMsg(t *testing.T) {
 	}
 }
 
+func TestUpdate_SubagentLifecycleEvents(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+
+	m2, _ := runUpdate(t, m, subagentStartedMsg{
+		subagentID:  "agent-1",
+		agentType:   "researcher",
+		description: "Scanning auth module",
+		proc:        m.proc,
+	})
+	if len(m2.activeSubagents) != 1 || m2.activeSubagents["agent-1"] != "Scanning auth module" {
+		t.Fatalf("expected activeSubagents to have agent-1, got %+v", m2.activeSubagents)
+	}
+
+	m3, _ := runUpdate(t, m2, subagentStartedMsg{
+		subagentID:  "agent-2",
+		agentType:   "researcher",
+		description: "Reading schema definitions",
+		proc:        m.proc,
+	})
+	if len(m3.activeSubagents) != 2 {
+		t.Fatalf("expected 2 active subagents, got %d", len(m3.activeSubagents))
+	}
+
+	m4, _ := runUpdate(t, m3, subagentEndedMsg{
+		subagentID: "agent-1",
+		proc:       m.proc,
+	})
+	if len(m4.activeSubagents) != 1 || m4.activeSubagents["agent-2"] != "Reading schema definitions" {
+		t.Fatalf("expected agent-1 removed, got %+v", m4.activeSubagents)
+	}
+
+	m5, _ := runUpdate(t, m4, turnCompleteMsg{proc: m.proc})
+	if m5.activeSubagents != nil {
+		t.Errorf("activeSubagents should be cleared on turnCompleteMsg, got %+v", m5.activeSubagents)
+	}
+}
+
 func TestUpdate_ToolDiffMsgRendersWhenEnabled(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}

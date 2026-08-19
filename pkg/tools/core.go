@@ -31,6 +31,23 @@ func BuildCoreTools(args engine.ToolFactoryArgs, attachWebSearch bool) []Tool {
 	return CoreTools(env, registryFunc, attachWebSearch)
 }
 
+// BuildSubagentTools constructs the centralized toolset configured for an isolated subagent session.
+func BuildSubagentTools(args engine.ToolFactoryArgs, attachWebSearch bool) []Tool {
+	env := NewToolEnv(
+		args.Cwd,
+		args.TabID,
+		true,  // SkipPermissions: subagents bypass interactive prompts
+		false, // GateTodosBeforeMutate: false for subagents
+		args.EventListener,
+		args.InteractionHandler,
+	)
+	env.IsSubagent = true
+	registryFunc := func() []Tool {
+		return nil
+	}
+	return CoreTools(env, registryFunc, attachWebSearch)
+}
+
 // CoreTools returns the standard core wire tools for an agent session.
 func CoreTools(env *ToolEnv, registry func() []Tool, attachWebSearch bool) []Tool {
 	var isCore func(string) bool

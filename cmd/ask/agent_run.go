@@ -183,6 +183,12 @@ func (s *agentSession) emit(msg tea.Msg) {
 	case todoUpdatedMsg:
 		m.proc = s.proc
 		msg = m
+	case subagentStartedMsg:
+		m.proc = s.proc
+		msg = m
+	case subagentEndedMsg:
+		m.proc = s.proc
+		msg = m
 	case bgTaskStartedMsg:
 		m.proc = s.proc
 		msg = m

@@ -241,3 +241,25 @@ func TestFormatToolInputValue_StringAndStruct(t *testing.T) {
 		t.Errorf("nil should stringify as 'null'; got %q", got)
 	}
 }
+
+func TestTodoBlock_RendersActiveSubagents(t *testing.T) {
+	m := model{
+		testBusy: true,
+		todos: []todoItem{
+			{Content: "Implement feature", Status: "in_progress"},
+		},
+		activeSubagents: map[string]string{
+			"sub-1": "Researching endpoints",
+		},
+	}
+	out := m.todoBlock()
+	if !strings.Contains(out, "Implement feature") {
+		t.Errorf("todo block missing main todo: %q", out)
+	}
+	if !strings.Contains(out, "[agent] Researching endpoints") {
+		t.Errorf("todo block missing active subagent: %q", out)
+	}
+	if h := m.todoBlockHeight(); h <= 0 {
+		t.Errorf("expected positive todo block height, got %d", h)
+	}
+}

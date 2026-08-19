@@ -312,20 +312,29 @@ func resolveSubagentModel(def subagentDef, parentProviderID string, parent *gena
 	return engine.ResolveSubagentModel(def, parentProviderID, parent, toPkgConfig(cfg))
 }
 
-func subagentTools(def subagentDef, env *agentToolEnv) []tools.Tool {
+func subagentTools(def subagentDef, env *agentToolEnv, deferred func() []tools.Tool) []tools.Tool {
 	available := map[string]tools.Tool{
-		"read":       tools.ReadTool(env),
-		"glob":       tools.GlobTool(env),
-		"grep":       tools.GrepTool(env),
-		"ls":         tools.LsTool(env),
-		"write":      tools.WriteTool(env),
-		"edit":       tools.EditTool(env),
-		"bash":       tools.BashTool(env),
-		"job_output": tools.JobOutputTool(env),
-		"job_kill":   tools.JobKillTool(env),
-		"fetch":      tools.FetchTool(env),
-		"todos":      tools.TodosTool(env),
+		"read":         tools.ReadTool(env),
+		"glob":         tools.GlobTool(env),
+		"grep":         tools.GrepTool(env),
+		"ls":           tools.LsTool(env),
+		"write":        tools.WriteTool(env),
+		"edit":         tools.EditTool(env),
+		"bash":         tools.BashTool(env),
+		"job_output":   tools.JobOutputTool(env),
+		"job_kill":     tools.JobKillTool(env),
+		"fetch":        tools.FetchTool(env),
+		"todos":        tools.TodosTool(env),
+		"web_search":   tools.WebSearchTool(env),
+		"search_tools": tools.SearchToolsTool(deferred),
 	}
+	for _, wt := range tools.WorkflowTools(env) {
+		available[wt.Info().Name] = wt
+	}
+	isCore := func(name string) bool {
+		return available[name] != nil
+	}
+	available["invoke_tool"] = tools.InvokeToolTool(deferred, isCore, env)
 	return engine.SubagentTools(def, available)
 }
 

@@ -111,6 +111,22 @@ type todoUpdatedMsg struct {
 	proc  *providerProc
 }
 
+type subagentStartedMsg struct {
+	subagentID  string
+	agentType   string
+	description string
+	background  bool
+	tabID       int
+	proc        *providerProc
+}
+
+type subagentEndedMsg struct {
+	subagentID string
+	isError    bool
+	tabID      int
+	proc       *providerProc
+}
+
 type bgTaskStartedMsg struct {
 	taskID string
 	// toolUseID is the assistant message tool_use_id of the Task call
@@ -624,6 +640,10 @@ type model struct {
 	exitArmed bool
 
 	todos []todoItem
+
+	// activeSubagents tracks currently running subagents in parallel (foreground and background).
+	// Keyed on subagentID; the value is the human-readable description.
+	activeSubagents map[string]string
 
 	// bgTasks tracks live background workers (Agent tool calls launched
 	// with run_in_background=true). Keyed on task_id from the

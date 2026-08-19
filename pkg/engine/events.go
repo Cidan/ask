@@ -14,6 +14,8 @@ const (
 	EventKindCost            EventKind = "cost"
 	EventKindModelInfo       EventKind = "model_info"
 	EventKindTodoUpdate      EventKind = "todo_update"
+	EventKindSubagentStarted EventKind = "subagent_started"
+	EventKindSubagentEnded   EventKind = "subagent_ended"
 	EventKindBgTaskStarted   EventKind = "bg_task_started"
 	EventKindBgTaskEnded     EventKind = "bg_task_ended"
 	EventKindDone            EventKind = "done"
@@ -134,6 +136,26 @@ type TodoUpdateEvent struct {
 }
 
 func (TodoUpdateEvent) Kind() EventKind { return EventKindTodoUpdate }
+
+// SubagentStartedEvent is emitted when a subagent starts execution.
+type SubagentStartedEvent struct {
+	BaseEvent
+	SubagentID  string `json:"subagent_id"`
+	AgentType   string `json:"agent_type"`
+	Description string `json:"description"`
+	Background  bool   `json:"background,omitempty"`
+}
+
+func (SubagentStartedEvent) Kind() EventKind { return EventKindSubagentStarted }
+
+// SubagentEndedEvent is emitted when a subagent completes execution.
+type SubagentEndedEvent struct {
+	BaseEvent
+	SubagentID string `json:"subagent_id"`
+	IsError    bool   `json:"is_error,omitempty"`
+}
+
+func (SubagentEndedEvent) Kind() EventKind { return EventKindSubagentEnded }
 
 // BgTaskStartedEvent is emitted when a background job starts.
 type BgTaskStartedEvent struct {

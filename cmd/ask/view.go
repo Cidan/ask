@@ -5,9 +5,11 @@ import (
 	"image"
 	"image/color"
 	"path/filepath"
-	"github.com/Cidan/ask/pkg/diff"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/Cidan/ask/pkg/diff"
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
@@ -1349,7 +1351,7 @@ func (m model) workflowRunningBannerLines(sourceLabel, cancelClause string) (tit
 }
 
 func (m model) todoBlock() string {
-	if !m.busy() || len(m.todos) == 0 {
+	if !m.busy() || (len(m.todos) == 0 && len(m.activeSubagents) == 0) {
 		return ""
 	}
 	target := 0
@@ -1364,9 +1366,30 @@ func (m model) todoBlock() string {
 			target = w
 		}
 	}
-	lines := make([]string, 0, len(m.todos))
+	subagentIDs := make([]string, 0, len(m.activeSubagents))
+	for id := range m.activeSubagents {
+		subagentIDs = append(subagentIDs, id)
+	}
+	sort.Strings(subagentIDs)
+	for _, id := range subagentIDs {
+		desc := m.activeSubagents[id]
+		w := lipgloss.Width("▸ [agent] " + desc)
+		if w > target {
+			target = w
+		}
+	}
+
+	lines := make([]string, 0, len(m.todos)+len(m.activeSubagents))
 	for _, t := range m.todos {
 		line := renderTodoLine(t)
+		if pad := target - lipgloss.Width(line); pad > 0 {
+			line += strings.Repeat(" ", pad)
+		}
+		lines = append(lines, line)
+	}
+	for _, id := range subagentIDs {
+		desc := m.activeSubagents[id]
+		line := todoProgressStyle.Render("▸ [agent] " + desc)
 		if pad := target - lipgloss.Width(line); pad > 0 {
 			line += strings.Repeat(" ", pad)
 		}
