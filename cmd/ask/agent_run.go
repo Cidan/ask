@@ -464,7 +464,12 @@ func (s *agentSession) runTurn(turn agentTurn) {
 					if event.LLMResponse.Partial {
 						finalResponseText.WriteString(part.Text)
 						s.emit(assistantTextMsg{text: part.Text})
-					} else if finalResponseText.Len() == 0 {
+					} else {
+						// ADK calls GenerateContent with stream=false, so Partial is always
+						// false for agentic turns. We must emit every non-thought text part —
+						// the model may produce multiple non-partial events per turn (e.g. one
+						// for thoughts + one for the final response text), and we cannot gate
+						// on finalResponseText.Len()==0 or we drop all but the first.
 						finalResponseText.WriteString(part.Text)
 						s.emit(assistantTextMsg{text: part.Text})
 					}
