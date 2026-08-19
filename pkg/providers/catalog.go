@@ -1,62 +1,96 @@
 package providers
 
-import (
-	"sync"
+// ModelInfo describes model metadata without external catalog dependencies.
+type ModelInfo struct {
+	ID               string
+	Name             string
+	ContextWindow    int64
+	DefaultMaxTokens int64
+	SupportsImages   bool
+	ReasoningLevels  []string
+}
 
-	"charm.land/catwalk/pkg/catwalk"
-	"charm.land/catwalk/pkg/embedded"
-)
+// MaxOutputTokensGemini is the maximum output token limit for Gemini 3.7 Flash and Gemini models.
+const MaxOutputTokensGemini int64 = 65_536
 
-var catalogProviders = sync.OnceValue(func() map[catwalk.InferenceProvider]catwalk.Provider {
-	idx := make(map[catwalk.InferenceProvider]catwalk.Provider)
-	for _, p := range embedded.GetAll() {
-		idx[p.ID] = p
-	}
-	return idx
-})
-
-// CatalogProviders returns the map of embedded catalog providers.
-func CatalogProviders() map[catwalk.InferenceProvider]catwalk.Provider {
-	return catalogProviders()
+var defaultVertexModels = []ModelInfo{
+	{
+		ID:               "gemini-3.7-flash",
+		Name:             "Gemini 3.7 Flash",
+		ContextWindow:    1_048_576,
+		DefaultMaxTokens: MaxOutputTokensGemini,
+		SupportsImages:   true,
+		ReasoningLevels:  []string{"low", "medium", "high"},
+	},
+	{
+		ID:               "gemini-3.1-pro-preview",
+		Name:             "Gemini 3.1 Pro",
+		ContextWindow:    1_048_576,
+		DefaultMaxTokens: MaxOutputTokensGemini,
+		SupportsImages:   true,
+		ReasoningLevels:  []string{"low", "medium", "high"},
+	},
+	{
+		ID:               "gemini-3.1-pro-preview-customtools",
+		Name:             "Gemini 3.1 Pro (Custom Tools)",
+		ContextWindow:    1_048_576,
+		DefaultMaxTokens: MaxOutputTokensGemini,
+		SupportsImages:   true,
+		ReasoningLevels:  []string{"low", "medium", "high"},
+	},
+	{
+		ID:               "gemini-3-pro-preview",
+		Name:             "Gemini 3 Pro",
+		ContextWindow:    1_048_576,
+		DefaultMaxTokens: MaxOutputTokensGemini,
+		SupportsImages:   true,
+		ReasoningLevels:  []string{"low", "high"},
+	},
+	{
+		ID:               "gemini-3-flash-preview",
+		Name:             "Gemini 3 Flash",
+		ContextWindow:    1_048_576,
+		DefaultMaxTokens: MaxOutputTokensGemini,
+		SupportsImages:   true,
+		ReasoningLevels:  []string{"minimal", "low", "medium", "high"},
+	},
+	{
+		ID:               "gemini-2.5-pro",
+		Name:             "Gemini 2.5 Pro",
+		ContextWindow:    1_048_576,
+		DefaultMaxTokens: MaxOutputTokensGemini,
+		SupportsImages:   true,
+	},
+	{
+		ID:               "gemini-2.5-flash",
+		Name:             "Gemini 2.5 Flash",
+		ContextWindow:    1_048_576,
+		DefaultMaxTokens: MaxOutputTokensGemini,
+		SupportsImages:   true,
+	},
 }
 
 // CatalogModel looks up one model's metadata.
-func CatalogModel(provider catwalk.InferenceProvider, modelID string) (catwalk.Model, bool) {
-	p, ok := catalogProviders()[provider]
-	if !ok {
-		return catwalk.Model{}, false
-	}
-	for _, m := range p.Models {
+func CatalogModel(provider string, modelID string) (ModelInfo, bool) {
+	for _, m := range defaultVertexModels {
 		if m.ID == modelID {
 			return m, true
 		}
 	}
-	return catwalk.Model{}, false
+	return ModelInfo{}, false
 }
 
-// CatalogModelIDs returns the provider's model ids in catalog order
-// (newest first upstream), with the catalog's default model moved to
-// the head so pickers open on a sensible row.
-func CatalogModelIDs(provider catwalk.InferenceProvider) []string {
-	p, ok := catalogProviders()[provider]
-	if !ok {
-		return nil
-	}
-	ids := make([]string, 0, len(p.Models))
-	if p.DefaultLargeModelID != "" {
-		ids = append(ids, p.DefaultLargeModelID)
-	}
-	for _, m := range p.Models {
-		if m.ID == p.DefaultLargeModelID {
-			continue
-		}
-		ids = append(ids, m.ID)
+// CatalogModelIDs returns the provider's model ids in catalog order.
+func CatalogModelIDs(provider string) []string {
+	ids := make([]string, len(defaultVertexModels))
+	for i, m := range defaultVertexModels {
+		ids[i] = m.ID
 	}
 	return ids
 }
 
 // CatalogContextWindow returns the model's context window, or fallback.
-func CatalogContextWindow(provider catwalk.InferenceProvider, modelID string, fallback int64) int64 {
+func CatalogContextWindow(provider string, modelID string, fallback int64) int64 {
 	if m, ok := CatalogModel(provider, modelID); ok && m.ContextWindow > 0 {
 		return m.ContextWindow
 	}
@@ -64,7 +98,7 @@ func CatalogContextWindow(provider catwalk.InferenceProvider, modelID string, fa
 }
 
 // CatalogDefaultMaxTokens returns the model's published default max-output-tokens budget, or fallback.
-func CatalogDefaultMaxTokens(provider catwalk.InferenceProvider, modelID string, fallback int64) int64 {
+func CatalogDefaultMaxTokens(provider string, modelID string, fallback int64) int64 {
 	if m, ok := CatalogModel(provider, modelID); ok && m.DefaultMaxTokens > 0 {
 		return m.DefaultMaxTokens
 	}
@@ -72,7 +106,7 @@ func CatalogDefaultMaxTokens(provider catwalk.InferenceProvider, modelID string,
 }
 
 // CatalogSupportsImages reports image-attachment capability, defaulting to fallback.
-func CatalogSupportsImages(provider catwalk.InferenceProvider, modelID string, fallback ...bool) bool {
+func CatalogSupportsImages(provider string, modelID string, fallback ...bool) bool {
 	fb := false
 	if len(fallback) > 0 {
 		fb = fallback[0]
@@ -87,7 +121,7 @@ func CatalogSupportsImages(provider catwalk.InferenceProvider, modelID string, f
 var GlobalEffortOptions = []string{"low", "medium", "high"}
 
 // CatalogResolveEffort maps global abstract effort levels onto concrete ReasoningLevels.
-func CatalogResolveEffort(providerID catwalk.InferenceProvider, modelID, effort string) string {
+func CatalogResolveEffort(providerID string, modelID, effort string) string {
 	if effort == "" {
 		return ""
 	}
@@ -112,7 +146,7 @@ func CatalogResolveEffort(providerID catwalk.InferenceProvider, modelID, effort 
 }
 
 // CatalogClampEffort clamps a picked effort onto what the model actually offers.
-func CatalogClampEffort(provider catwalk.InferenceProvider, modelID, effort string) string {
+func CatalogClampEffort(provider string, modelID, effort string) string {
 	if effort == "" {
 		return effort
 	}

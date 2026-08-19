@@ -8,7 +8,6 @@ import (
 	"unicode"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/catwalk/pkg/catwalk"
 	lipgloss "charm.land/lipgloss/v2"
 )
 
@@ -60,15 +59,9 @@ func providerNeedsAPIKey(cfg askConfig, providerID string) bool {
 	return conf.APIKey == ""
 }
 
-var catwalkProviderIDs = map[string]catwalk.InferenceProvider{
-	vertexProviderID: catwalk.InferenceProviderVertexAI,
-}
-
 func friendlyModelName(providerID, modelID string) string {
-	if cw, ok := catwalkProviderIDs[providerID]; ok {
-		if mdl, ok := catalogModel(cw, modelID); ok && mdl.Name != "" {
-			return strings.ReplaceAll(mdl.Name, "-", " ")
-		}
+	if mdl, ok := catalogModel(providerID, modelID); ok && mdl.Name != "" {
+		return strings.ReplaceAll(mdl.Name, "-", " ")
 	}
 	return humanizeModelID(modelID)
 }

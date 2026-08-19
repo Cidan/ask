@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Cidan/ask/pkg/providers"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
@@ -71,12 +72,27 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 		s.sessionID = "ses-" + args.Model
 	}
 
+	genConfig := &genai.GenerateContentConfig{
+		MaxOutputTokens: int32(providers.MaxOutputTokensGemini),
+	}
+	if spec, ok := providers.GetAgentProviderSpec(args.Provider); ok && spec != nil && spec.CallOptions != nil {
+		if callOpts, _ := spec.CallOptions(args.Model, args.Effort); callOpts != nil {
+			if callOpts.ThinkingConfig != nil {
+				genConfig.ThinkingConfig = callOpts.ThinkingConfig
+			}
+			if callOpts.MaxOutputTokens > 0 {
+				genConfig.MaxOutputTokens = callOpts.MaxOutputTokens
+			}
+		}
+	}
+
 	adkTools, _ := AsADKTools(tools)
 	agentInstance, err := llmagent.New(llmagent.Config{
-		Name:        "ask_coder",
-		Model:       llm,
-		Instruction: system,
-		Tools:       adkTools,
+		Name:                  "ask_coder",
+		Model:                 llm,
+		Instruction:           system,
+		Tools:                 adkTools,
+		GenerateContentConfig: genConfig,
 	})
 	if err == nil {
 		s.sessSvc = session.InMemoryService()

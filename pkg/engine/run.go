@@ -262,11 +262,16 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		InWorkflow: false,
 	})
 
-	genConfig := &genai.GenerateContentConfig{}
+	genConfig := &genai.GenerateContentConfig{
+		MaxOutputTokens: int32(providers.MaxOutputTokensGemini),
+	}
 	if spec.CallOptions != nil {
 		if callOpts, _ := spec.CallOptions(modelID, effort); callOpts != nil {
 			if callOpts.ThinkingConfig != nil {
 				genConfig.ThinkingConfig = callOpts.ThinkingConfig
+			}
+			if callOpts.MaxOutputTokens > 0 {
+				genConfig.MaxOutputTokens = callOpts.MaxOutputTokens
 			}
 		}
 	}

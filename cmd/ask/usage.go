@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"strings"
-
-	"charm.land/catwalk/pkg/catwalk"
 )
 
 // TokenUsage models token consumption for a generation step.
@@ -18,10 +16,7 @@ type TokenUsage struct {
 // modelContextLimit maps a model name to its context window size.
 func modelContextLimit(model string) int {
 	lower := strings.ToLower(model)
-	if m, ok := catalogModel(catwalk.InferenceProviderVertexAI, model); ok && m.ContextWindow > 0 {
-		return int(m.ContextWindow)
-	}
-	if m, ok := catalogModel(catwalk.InferenceProviderGemini, model); ok && m.ContextWindow > 0 {
+	if m, ok := catalogModel("vertex", model); ok && m.ContextWindow > 0 {
 		return int(m.ContextWindow)
 	}
 	if strings.Contains(lower, "1m") || strings.Contains(lower, "gemini") {
@@ -47,18 +42,13 @@ func contextPercent(used, limit int) int {
 
 // stepCostUSD prices one API call's token usage in dollars.
 func stepCostUSD(providerID, modelID string, u TokenUsage) (float64, bool) {
-	cw, ok := catwalkProviderIDs[providerID]
-	if !ok {
+	if providerID != "vertex" {
 		return 0, false
 	}
-	m, ok := catalogModel(cw, modelID)
-	if !ok {
+	if _, ok := catalogModel("vertex", modelID); !ok {
 		return 0, false
 	}
-	cost := m.CostPer1MInCached/1e6*float64(u.CacheCreationTokens) +
-		m.CostPer1MOutCached/1e6*float64(u.CacheReadTokens) +
-		m.CostPer1MIn/1e6*float64(u.InputTokens) +
-		m.CostPer1MOut/1e6*float64(u.OutputTokens)
+	cost := (0.3/1e6)*float64(u.InputTokens) + (2.5/1e6)*float64(u.OutputTokens)
 	return cost, true
 }
 

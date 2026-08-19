@@ -70,6 +70,9 @@ func TestVertexSpec_Properties(t *testing.T) {
 	if VertexSpec.ContextWindow("gemini-3.1-pro-preview") != 1_048_576 {
 		t.Errorf("context window wrong: %d", VertexSpec.ContextWindow("gemini-3.1-pro-preview"))
 	}
+	if got := VertexSpec.MaxOutputTokens("gemini-3.7-flash"); got != MaxOutputTokensGemini {
+		t.Errorf("gemini-3.7-flash max tokens wrong: %d want %d", got, MaxOutputTokensGemini)
+	}
 
 	cfg := config.Config{}
 	cfg.Vertex.Model = "gemini-vertex"
@@ -86,20 +89,29 @@ func TestVertexSpec_Properties(t *testing.T) {
 }
 
 func TestVertexProviderOptions(t *testing.T) {
-	cfg, temp := VertexProviderOptions("gemini-2.5-pro", "high")
+	cfg, temp := VertexProviderOptions("gemini-3.7-flash", "high")
 	if cfg == nil || cfg.ThinkingConfig == nil {
 		t.Fatal("expected thinking config for high effort")
 	}
 	if !cfg.ThinkingConfig.IncludeThoughts {
 		t.Error("expected IncludeThoughts to be true")
 	}
+	if cfg.MaxOutputTokens != int32(MaxOutputTokensGemini) {
+		t.Errorf("expected MaxOutputTokens=%d, got %d", MaxOutputTokensGemini, cfg.MaxOutputTokens)
+	}
 	if temp != nil {
 		t.Errorf("expected nil temp, got %v", temp)
 	}
 
-	cfgOff, _ := VertexProviderOptions("gemini-2.5-pro", "off")
-	if cfgOff != nil {
-		t.Errorf("expected nil config for off effort, got %+v", cfgOff)
+	cfgOff, _ := VertexProviderOptions("gemini-3.7-flash", "off")
+	if cfgOff == nil {
+		t.Fatal("expected non-nil config for off effort")
+	}
+	if cfgOff.ThinkingConfig != nil {
+		t.Errorf("expected nil thinking config for off effort, got %+v", cfgOff.ThinkingConfig)
+	}
+	if cfgOff.MaxOutputTokens != int32(MaxOutputTokensGemini) {
+		t.Errorf("expected MaxOutputTokens=%d for off effort, got %d", MaxOutputTokensGemini, cfgOff.MaxOutputTokens)
 	}
 }
 

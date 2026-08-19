@@ -5,7 +5,6 @@ go 1.26.5
 require (
 	charm.land/bubbles/v2 v2.1.0
 	charm.land/bubbletea/v2 v2.0.6
-	charm.land/catwalk v0.44.20
 	charm.land/glamour/v2 v2.0.0
 	charm.land/lipgloss/v2 v2.0.3
 	github.com/asg017/sqlite-vec-go-bindings v0.1.6

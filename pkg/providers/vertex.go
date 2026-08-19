@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"charm.land/catwalk/pkg/catwalk"
 	"github.com/Cidan/ask/pkg/config"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/model/gemini"
@@ -16,10 +15,10 @@ import (
 
 const (
 	VertexProviderID              = "vertex"
-	VertexDefaultModel            = "gemini-3.1-pro-preview"
+	VertexDefaultModel            = "gemini-3.7-flash"
 	VertexDefaultLocation         = "global"
 	VertexContextWindow           = 1_048_576
-	VertexFallbackMaxOutputTokens = 32_000
+	VertexFallbackMaxOutputTokens = 65_536
 
 	VertexEnvApplicationCredentials = "GOOGLE_APPLICATION_CREDENTIALS"
 	VertexEnvCloudProject           = "GOOGLE_CLOUD_PROJECT"
@@ -40,7 +39,7 @@ func FilterVertexModelOptions(all []string) []string {
 	return out
 }
 
-var VertexModelOptions = FilterVertexModelOptions(CatalogModelIDs(catwalk.InferenceProviderVertexAI))
+var VertexModelOptions = FilterVertexModelOptions(CatalogModelIDs("vertex"))
 
 // VertexResolveProject: config value wins, then GOOGLE_CLOUD_PROJECT.
 func VertexResolveProject(vc config.VertexConfig) string {
@@ -146,28 +145,28 @@ var ListVertexModels = func(ctx context.Context, vc config.VertexConfig) ([]stri
 	return models, nil
 }
 
-// VertexProviderOptions translates ask's effort picker onto Gemini's thinking controls.
+// VertexProviderOptions translates ask's effort picker onto Gemini's thinking controls and configures max tokens.
 func VertexProviderOptions(modelID, effort string) (*genai.GenerateContentConfig, *float64) {
-	if effort == "" || effort == "off" {
-		return nil, nil
+	cfg := &genai.GenerateContentConfig{
+		MaxOutputTokens: int32(MaxOutputTokensGemini),
 	}
-	resolved := CatalogResolveEffort(catwalk.InferenceProviderVertexAI, modelID, effort)
+	if effort == "" || effort == "off" {
+		return cfg, nil
+	}
+	resolved := CatalogResolveEffort("vertex", modelID, effort)
 	if resolved == "" {
 		resolved = effort
 	}
-	clamped := CatalogClampEffort(catwalk.InferenceProviderVertexAI, modelID, resolved)
+	clamped := CatalogClampEffort("vertex", modelID, resolved)
 	if clamped == "" {
 		clamped = resolved
 	}
-	if clamped == "" || clamped == "off" {
-		return nil, nil
-	}
-	level := genai.ThinkingLevel(strings.ToUpper(clamped))
-	cfg := &genai.GenerateContentConfig{
-		ThinkingConfig: &genai.ThinkingConfig{
+	if clamped != "" && clamped != "off" {
+		level := genai.ThinkingLevel(strings.ToUpper(clamped))
+		cfg.ThinkingConfig = &genai.ThinkingConfig{
 			IncludeThoughts: true,
 			ThinkingLevel:   level,
-		},
+		}
 	}
 	return cfg, nil
 }
@@ -186,13 +185,13 @@ var VertexSpec = AgentProviderSpec{
 	},
 	CallOptions: VertexProviderOptions,
 	SupportsImages: func(modelID string) bool {
-		return CatalogSupportsImages(catwalk.InferenceProviderVertexAI, modelID, true)
+		return CatalogSupportsImages("vertex", modelID, true)
 	},
 	ContextWindow: func(modelID string) int64 {
-		return CatalogContextWindow(catwalk.InferenceProviderVertexAI, modelID, VertexContextWindow)
+		return CatalogContextWindow("vertex", modelID, VertexContextWindow)
 	},
 	MaxOutputTokens: func(modelID string) int64 {
-		return CatalogDefaultMaxTokens(catwalk.InferenceProviderVertexAI, modelID, VertexFallbackMaxOutputTokens)
+		return CatalogDefaultMaxTokens("vertex", modelID, VertexFallbackMaxOutputTokens)
 	},
 	LoadSettings: func(cfg config.Config) ProviderSettings {
 		return ProviderSettings{

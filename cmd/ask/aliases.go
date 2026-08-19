@@ -263,7 +263,6 @@ var (
 	catalogResolveEffort     = providers.CatalogResolveEffort
 	catalogSupportsImages    = providers.CatalogSupportsImages
 	catalogModelIDs          = providers.CatalogModelIDs
-	catalogProviders         = providers.CatalogProviders
 	agentSpecByID            = providers.GetAgentProviderSpec
 	vertexResolveLocation    = providers.VertexResolveLocation
 	vertexResolveProject     = providers.VertexResolveProject
