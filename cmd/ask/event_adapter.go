@@ -68,6 +68,20 @@ func EngineEventToTeaMsg(event engine.EngineEvent) tea.Msg {
 			todos: todos,
 			tabID: tabID,
 		}
+	case engine.SubagentStartedEvent:
+		return subagentStartedMsg{
+			subagentID:  ev.SubagentID,
+			agentType:   ev.AgentType,
+			description: ev.Description,
+			background:  ev.Background,
+			tabID:       tabID,
+		}
+	case engine.SubagentEndedEvent:
+		return subagentEndedMsg{
+			subagentID: ev.SubagentID,
+			isError:    ev.IsError,
+			tabID:      tabID,
+		}
 	case engine.BgTaskStartedEvent:
 		return bgTaskStartedMsg{
 			taskID:    ev.JobID,

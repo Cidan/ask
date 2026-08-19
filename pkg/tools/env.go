@@ -49,6 +49,8 @@ type ToolEnv struct {
 	SkipPermissions       bool
 	GateTodosBeforeMutate bool
 	PlanningMode          bool
+	IsSubagent            bool
+	SubagentID            string
 
 	Emit        engine.EventListener
 	Interaction engine.InteractionHandler
@@ -90,6 +92,35 @@ func NewToolEnv(cwd string, tabID int, skipPermissions bool, gateTodosBeforeMuta
 		WorkflowsAvailable:    len(workflow.ListAll(cwd)) > 0,
 	}
 	env.Approve = env.approveViaInteraction
+	return env
+}
+
+// NewSubagentToolEnv constructs an isolated ToolEnv for a subagent execution.
+func NewSubagentToolEnv(parent *ToolEnv, subagentID string) *ToolEnv {
+	if parent == nil {
+		env := NewToolEnv(".", 0, true, false, nil, nil)
+		env.IsSubagent = true
+		env.SubagentID = subagentID
+		return env
+	}
+	env := &ToolEnv{
+		Cwd:                   parent.Cwd,
+		TabID:                 parent.TabID,
+		SkipPermissions:       true,
+		GateTodosBeforeMutate: false,
+		PlanningMode:          false,
+		IsSubagent:            true,
+		SubagentID:            subagentID,
+		Emit:                  parent.Emit,
+		Interaction:           parent.Interaction,
+		Files:                 parent.Files,
+		Jobs:                  parent.Jobs,
+		WorkflowsAvailable:    parent.WorkflowsAvailable,
+	}
+	env.Approve = parent.Approve
+	if env.Approve == nil {
+		env.Approve = env.approveViaInteraction
+	}
 	return env
 }
 

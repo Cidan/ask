@@ -2,12 +2,14 @@ package engine
 
 import (
 	"context"
+	"iter"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Cidan/ask/pkg/config"
+	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
 
@@ -86,16 +88,75 @@ func TestSubagentTools_GrantSets(t *testing.T) {
 	}
 
 	got := names(SubagentTools(SubagentDef{}, all))
-	if len(got) != 4 || !got["read"] || !got["grep"] || got["bash"] {
-		t.Errorf("default grant must be read-only: %v", got)
+	if !got["read"] || !got["grep"] || !got["bash"] || !got["write"] || !got["edit"] {
+		t.Errorf("default grant must include centralized tools: %v", got)
 	}
 	got = names(SubagentTools(SubagentDef{Tools: []string{"*"}}, all))
-	if !got["bash"] || !got["write"] || !got["edit"] || got["task"] || got["ask_user_question"] {
-		t.Errorf("star grant must be the coding core without task/modal tools: %v", got)
+	if !got["bash"] || !got["write"] || !got["edit"] || !got["read"] {
+		t.Errorf("star grant must include all tools: %v", got)
 	}
 	got = names(SubagentTools(SubagentDef{Tools: []string{"read", "bash", "bogus"}}, all))
 	if len(got) != 2 || !got["read"] || !got["bash"] {
 		t.Errorf("explicit grant must filter unknowns: %v", got)
+	}
+}
+
+func TestBuildResearchSubagent_ADKIntegration(t *testing.T) {
+	fakeLLM := &fakeSubagentLLM{}
+	subagent, err := BuildResearchSubagent(fakeLLM, nil, 4096)
+	if err != nil {
+		t.Fatalf("BuildResearchSubagent failed: %v", err)
+	}
+	if subagent == nil {
+		t.Fatal("expected non-nil subagent")
+	}
+	if subagent.Name() != "research_subagent" {
+		t.Errorf("expected name 'research_subagent', got %q", subagent.Name())
+	}
+
+	agentTool, err := BuildResearchAgentTool(subagent)
+	if err != nil {
+		t.Fatalf("BuildResearchAgentTool failed: %v", err)
+	}
+	if agentTool == nil {
+		t.Fatal("expected non-nil agentTool")
+	}
+}
+
+func TestBuildNamedSubagent_ADKIntegration(t *testing.T) {
+	fakeLLM := &fakeSubagentLLM{}
+	def := SubagentDef{
+		Name:        "custom_agent",
+		Description: "A custom test subagent",
+		Prompt:      "Investigate things.",
+	}
+	subagent, err := BuildNamedSubagent(def, fakeLLM, nil, 2048)
+	if err != nil {
+		t.Fatalf("BuildNamedSubagent failed: %v", err)
+	}
+	if subagent == nil {
+		t.Fatal("expected non-nil subagent")
+	}
+	if subagent.Name() != "custom_agent" {
+		t.Errorf("expected name 'custom_agent', got %q", subagent.Name())
+	}
+}
+
+type fakeSubagentLLM struct{}
+
+func (f *fakeSubagentLLM) Name() string { return "fake-llm" }
+
+func (f *fakeSubagentLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		resp := &adkmodel.LLMResponse{
+			Content: &genai.Content{
+				Role: genai.RoleModel,
+				Parts: []*genai.Part{
+					{Text: "report"},
+				},
+			},
+		}
+		yield(resp, nil)
 	}
 }
 

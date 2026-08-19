@@ -378,6 +378,32 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		delete(m.bgTasks, msg.taskID)
 		return m, nil
 
+	case subagentStartedMsg:
+		if !m.matchesTabID(msg.tabID, msg.proc) {
+			return m, nil
+		}
+		if m.activeSubagents == nil {
+			m.activeSubagents = make(map[string]string)
+		}
+		desc := msg.description
+		if desc == "" {
+			desc = msg.agentType
+		}
+		if desc == "" {
+			desc = "research subagent"
+		}
+		m.activeSubagents[msg.subagentID] = desc
+		return m, nil
+
+	case subagentEndedMsg:
+		if !m.matchesTabID(msg.tabID, msg.proc) {
+			return m, nil
+		}
+		if m.activeSubagents != nil {
+			delete(m.activeSubagents, msg.subagentID)
+		}
+		return m, nil
+
 	case hookSubagentStartMsg:
 		// Observability only: SubagentStart fires for every Task-spawned
 		// sub-agent, including foreground ones, so we can't use it as a
@@ -460,6 +486,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m.pendingWorkflow = nil
 		m.status = ""
 		m.todos = nil
+		m.activeSubagents = nil
 		m.bgTasks = nil
 		m.dismissCancelTurnConfirmIfIdle()
 		if m.mode == modeApproval {
@@ -511,11 +538,13 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			m.status = ""
 			m.pendingWorkflow = nil
 			m.todos = nil
+			m.activeSubagents = nil
 		case msg.res.IsError:
 			m.appendHistory(outputStyle.Render(errStyle.Render("error: " + msg.res.Result)))
 			m.status = ""
 			m.pendingWorkflow = nil
 			m.todos = nil
+			m.activeSubagents = nil
 		}
 		m.refreshPathMatches()
 		return m, nil
@@ -556,6 +585,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m.testBusy = false
 		m.status = ""
 		m.todos = nil
+		m.activeSubagents = nil
 		m.dismissCancelTurnConfirmIfIdle()
 		var pendingWFCmd tea.Cmd
 		if m.pendingWorkflow != nil {

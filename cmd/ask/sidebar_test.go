@@ -332,6 +332,19 @@ func TestSidebarActivityAndBadge(t *testing.T) {
 		t.Errorf("todo activity = %q", got)
 	}
 
+	// Active subagents take priority over todos when parallel research is running.
+	m.activeSubagents = map[string]string{
+		"agent-1": "Investigating auth flow",
+	}
+	if got, _ := m.sidebarActivity(); got != "▸ [agent] Investigating auth flow" {
+		t.Errorf("single subagent activity = %q", got)
+	}
+	m.activeSubagents["agent-2"] = "Scanning db models"
+	if got, _ := m.sidebarActivity(); got != "⟳ 2 subagents running…" {
+		t.Errorf("multi subagent activity = %q", got)
+	}
+	m.activeSubagents = nil
+
 	// Blocked-on-human beats busy.
 	m.mode = modeAskQuestion
 	if got, _ := m.sidebarActivity(); got != "⚠ waiting for your input" {

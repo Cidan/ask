@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,11 @@ import (
 
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/providers"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/llmagent"
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/agenttool"
 	"google.golang.org/genai"
 )
 
@@ -157,21 +163,29 @@ func ResolveSubagentModel(def SubagentDef, parentProviderID string, parent *gena
 	return client, budget, nil
 }
 
+// AllSubagentTools is the full list of tool names available to subagents.
+var AllSubagentTools = []string{
+	"read", "glob", "grep", "ls", "write", "edit", "bash",
+	"job_output", "job_kill", "fetch", "todos", "search_tools", "invoke_tool", "web_search",
+	"workflow_list", "workflow_get", "workflow_create", "workflow_edit", "workflow_delete", "workflow_copy", "clear_plans",
+}
+
 // SubagentToolNames returns the slice of tool names allowed for the subagent.
 func SubagentToolNames(def SubagentDef) []string {
-	readOnly := []string{"read", "glob", "grep", "ls"}
-	full := []string{"read", "glob", "grep", "ls", "write", "edit", "bash", "job_output", "job_kill", "fetch", "todos"}
+	valid := map[string]bool{
+		"read": true, "glob": true, "grep": true, "ls": true,
+		"write": true, "edit": true, "bash": true,
+		"job_output": true, "job_kill": true, "fetch": true, "todos": true,
+		"search_tools": true, "invoke_tool": true, "web_search": true,
+		"workflow_list": true, "workflow_get": true, "workflow_create": true,
+		"workflow_edit": true, "workflow_delete": true, "workflow_copy": true, "clear_plans": true,
+	}
 
 	switch {
-	case len(def.Tools) == 1 && def.Tools[0] == "*":
-		return full
-	case len(def.Tools) > 0:
+	case len(def.Tools) == 0 || (len(def.Tools) == 1 && def.Tools[0] == "*"):
+		return append([]string(nil), AllSubagentTools...)
+	default:
 		var names []string
-		valid := map[string]bool{
-			"read": true, "glob": true, "grep": true, "ls": true,
-			"write": true, "edit": true, "bash": true,
-			"job_output": true, "job_kill": true, "fetch": true, "todos": true,
-		}
 		for _, t := range def.Tools {
 			key := strings.ToLower(strings.TrimSpace(t))
 			if valid[key] {
@@ -179,11 +193,9 @@ func SubagentToolNames(def SubagentDef) []string {
 			}
 		}
 		if len(names) == 0 {
-			return readOnly
+			return append([]string(nil), AllSubagentTools...)
 		}
 		return names
-	default:
-		return readOnly
 	}
 }
 
@@ -197,4 +209,60 @@ func SubagentTools(def SubagentDef, available map[string]Tool) []Tool {
 		}
 	}
 	return out
+}
+
+// BuildResearchSubagent constructs an ADK agent for deep research and investigation.
+func BuildResearchSubagent(llm model.LLM, tools []tool.Tool, maxTokens int32) (agent.Agent, error) {
+	instruction := `You are a research sub-agent inside ask. Your role is to perform deep, thorough investigations on the codebase, read relevant files, execute commands if needed, search broadly, and return a comprehensive, self-contained final report to the calling agent.
+State the answer and findings first, followed by concrete file_path:line_number references. Be concise, precise, and honest.`
+
+	var genConfig *genai.GenerateContentConfig
+	if maxTokens > 0 {
+		genConfig = &genai.GenerateContentConfig{
+			MaxOutputTokens: maxTokens,
+		}
+	}
+
+	return llmagent.New(llmagent.Config{
+		Name:                  "research_subagent",
+		Description:           "Performs thorough code research, file reading, and investigation",
+		Model:                 llm,
+		Instruction:           instruction,
+		Tools:                 tools,
+		GenerateContentConfig: genConfig,
+	})
+}
+
+// BuildNamedSubagent constructs an ADK agent from a SubagentDef.
+func BuildNamedSubagent(def SubagentDef, llm model.LLM, tools []tool.Tool, maxTokens int32) (agent.Agent, error) {
+	prompt := def.Prompt
+	if prompt == "" {
+		prompt = fmt.Sprintf("You are subagent %s. %s", def.Name, def.Description)
+	}
+
+	var genConfig *genai.GenerateContentConfig
+	if maxTokens > 0 {
+		genConfig = &genai.GenerateContentConfig{
+			MaxOutputTokens: maxTokens,
+		}
+	}
+
+	return llmagent.New(llmagent.Config{
+		Name:                  def.Name,
+		Description:           def.Description,
+		Model:                 llm,
+		Instruction:           prompt,
+		Tools:                 tools,
+		GenerateContentConfig: genConfig,
+	})
+}
+
+// BuildResearchAgentTool wraps an ADK agent as a callable ADK tool.
+func BuildResearchAgentTool(agentInstance agent.Agent) (tool.Tool, error) {
+	if agentInstance == nil {
+		return nil, errors.New("agent instance is nil")
+	}
+	return agenttool.New(agentInstance, &agenttool.Config{
+		SkipSummarization: true,
+	}), nil
 }

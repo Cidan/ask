@@ -162,3 +162,34 @@ func TestTodosWorkflowGuard_DisarmedByCheck(t *testing.T) {
 		t.Fatalf("second call after decision guard must apply, got: %q", resp.Content)
 	}
 }
+
+func TestTodosTool_SubagentIsolation(t *testing.T) {
+	var events []engine.EngineEvent
+	parentEnv := NewToolEnv(t.TempDir(), 1, true, false, func(ev engine.EngineEvent) {
+		events = append(events, ev)
+	}, nil)
+
+	subEnv := NewSubagentToolEnv(parentEnv, "sub-123")
+	if !subEnv.IsSubagent || subEnv.SubagentID != "sub-123" {
+		t.Fatalf("subagent env not initialized properly: %+v", subEnv)
+	}
+
+	tool := TodosTool(subEnv)
+	resp := runTool(t, tool, TodosParams{Todos: []TodoEntry{
+		{Content: "sub task 1", Status: "in_progress"},
+		{Content: "sub task 2", Status: "pending"},
+	}})
+
+	if resp.IsError {
+		t.Fatalf("unexpected error response: %s", resp.Content)
+	}
+	if !strings.Contains(resp.Content, "subagent task list ignored") {
+		t.Errorf("expected isolation notice, got %q", resp.Content)
+	}
+	if len(events) > 0 {
+		t.Errorf("subagent todos call must not emit events to parent listener: got %d events", len(events))
+	}
+	if parentEnv.TodosApplied {
+		t.Error("subagent todos call must not set parentEnv.TodosApplied")
+	}
+}

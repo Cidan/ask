@@ -191,7 +191,7 @@ func TestTaskToolExecution(t *testing.T) {
 		}, nil
 	}
 
-	env, _ := newTestToolEnv(t)
+	env, events := newTestToolEnv(t)
 	tool := agentTaskTool(env, func() *agentSession { return nil })
 	resp := runTool(t, tool, agentTaskParams{Prompt: "find it", Description: "search"})
 	if resp.IsError {
@@ -199,6 +199,71 @@ func TestTaskToolExecution(t *testing.T) {
 	}
 	if !strings.Contains(resp.Content, "report findings") {
 		t.Errorf("unexpected content: %q", resp.Content)
+	}
+
+	startedFound := false
+	endedFound := false
+	for _, ev := range *events {
+		if _, ok := ev.(subagentStartedMsg); ok {
+			startedFound = true
+		}
+		if _, ok := ev.(subagentEndedMsg); ok {
+			endedFound = true
+		}
+	}
+	if !startedFound {
+		t.Error("expected subagentStartedMsg to be emitted")
+	}
+	if !endedFound {
+		t.Error("expected subagentEndedMsg to be emitted")
+	}
+}
+
+func TestTaskToolBackgroundExecution(t *testing.T) {
+	origModelBuilder := engine.ModelBuilder
+	defer func() { engine.ModelBuilder = origModelBuilder }()
+
+	engine.ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (adkmodel.LLM, error) {
+		return &mockADKModel{
+			name: modelID,
+			generateFunc: func(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+				return func(yield func(*adkmodel.LLMResponse, error) bool) {
+					yield(&adkmodel.LLMResponse{
+						Content: &genai.Content{
+							Role: genai.RoleModel,
+							Parts: []*genai.Part{
+								genai.NewPartFromText("bg report"),
+							},
+						},
+						FinishReason: genai.FinishReasonStop,
+					}, nil)
+				}
+			},
+		}, nil
+	}
+
+	env, events := newTestToolEnv(t)
+	tool := agentTaskTool(env, func() *agentSession { return nil })
+	resp := runTool(t, tool, agentTaskParams{
+		Prompt:          "bg search",
+		Description:     "bg task",
+		RunInBackground: true,
+	})
+	if resp.IsError {
+		t.Fatalf("task tool failed: %+v", resp)
+	}
+	if !strings.Contains(resp.Content, "started background") {
+		t.Errorf("unexpected background response: %q", resp.Content)
+	}
+
+	startedFound := false
+	for _, ev := range *events {
+		if s, ok := ev.(subagentStartedMsg); ok && s.background {
+			startedFound = true
+		}
+	}
+	if !startedFound {
+		t.Error("expected background subagentStartedMsg to be emitted")
 	}
 }
 

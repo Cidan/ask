@@ -306,6 +306,14 @@ func (m *model) sidebarActivity() (string, lipgloss.Style) {
 		return "⚠ waiting for your input", warnStyle
 	}
 	if m.busy() {
+		if n := len(m.activeSubagents); n > 0 {
+			if n == 1 {
+				for _, desc := range m.activeSubagents {
+					return "▸ [agent] " + desc, todoProgressStyle
+				}
+			}
+			return fmt.Sprintf("⟳ %d subagents running…", n), todoProgressStyle
+		}
 		for _, t := range m.todos {
 			if t.Status == "in_progress" {
 				return "▸ " + nonEmpty(t.ActiveForm, t.Content), todoProgressStyle
