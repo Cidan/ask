@@ -278,6 +278,9 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	genaiConfig := &genai.GenerateContentConfig{
 		SystemInstruction: genai.NewContentFromText(systemPrompt, genai.RoleUser),
 	}
+	if s.maxOutputTokens > 0 {
+		genaiConfig.MaxOutputTokens = int32(s.maxOutputTokens)
+	}
 	if s.callOpts != nil && s.callOpts.ThinkingConfig != nil {
 		genaiConfig.ThinkingConfig = s.callOpts.ThinkingConfig
 	}
@@ -414,9 +417,11 @@ func (s *agentSession) runTurn(turn agentTurn) {
 			s.emit(assistantTextMsg{text: rawText})
 		}
 
-		assistantMsg := engine.NewAssistantMessage(rawText, turnThoughts, turnToolCalls)
-		s.messages = append(s.messages, assistantMsg)
-		contents = append(contents, assistantMsg.ToGenAIContent())
+		if len(turnThoughts) > 0 || len(turnToolCalls) > 0 || rawText != "" {
+			assistantMsg := engine.NewAssistantMessage(rawText, turnThoughts, turnToolCalls)
+			s.messages = append(s.messages, assistantMsg)
+			contents = append(contents, assistantMsg.ToGenAIContent())
+		}
 
 		if len(turnToolCalls) == 0 {
 			break

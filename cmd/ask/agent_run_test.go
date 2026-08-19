@@ -306,3 +306,46 @@ func TestAgentSession_ErrorTurn(t *testing.T) {
 		t.Errorf("error not surfaced: %+v", done)
 	}
 }
+
+func TestAgentSession_EmptyResponse(t *testing.T) {
+	origStream := engine.GenerateStream
+	defer func() { engine.GenerateStream = origStream }()
+
+	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			resp := &genai.GenerateContentResponse{
+				Candidates: []*genai.Candidate{
+					{
+						FinishReason: genai.FinishReasonStop,
+					},
+				},
+			}
+			yield(resp, nil)
+		}
+	}
+
+	s := newTestAgentSession(t, nil)
+	if err := s.queueTurn("do nothing"); err != nil {
+		t.Fatal(err)
+	}
+	msgs := readSessionMsgs(t, s.ch, isTurnComplete)
+
+	// Ensure the session processed it and completed the turn
+	var completeIdx = -1
+	for i, m := range msgs {
+		if isTurnComplete(m) {
+			completeIdx = i
+		}
+	}
+	if completeIdx == -1 {
+		t.Fatalf("turn did not complete")
+	}
+
+	// Verify history doesn't contain an empty assistant message
+	if len(s.messages) == 2 {
+		lastMsg := s.messages[1]
+		if lastMsg.Role == engine.RoleAssistant && lastMsg.Text == "" && len(lastMsg.ToolCalls) == 0 && len(lastMsg.Thoughts) == 0 {
+			t.Errorf("bug reproduced: empty assistant message appended to history")
+		}
+	}
+}
