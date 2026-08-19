@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/providers"
@@ -224,11 +223,19 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		sessionID = uuid.New().String()
 	}
 
-	store := NewSessionStore(providerID)
-	var messages []Message
-	if opts.SessionID != "" {
-		if file, err := store.Load(sessionID); err == nil {
-			messages = file.Messages
+	sessSvc := NewFileSessionService(providerID, opts.Cwd)
+	_, getErr := sessSvc.Get(ctx, &session.GetRequest{
+		AppName:   "ask",
+		UserID:    "user",
+		SessionID: sessionID,
+	})
+	if getErr != nil {
+		if _, createErr := sessSvc.Create(ctx, &session.CreateRequest{
+			AppName:   "ask",
+			UserID:    "user",
+			SessionID: sessionID,
+		}); createErr != nil {
+			return nil, fmt.Errorf("failed to create ADK session: %w", createErr)
 		}
 	}
 
@@ -289,27 +296,6 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		return nil, fmt.Errorf("failed to create ADK agent: %w", err)
 	}
 
-	sessSvc := session.InMemoryService()
-	created, err := sessSvc.Create(ctx, &session.CreateRequest{
-		AppName:   "ask",
-		UserID:    "user",
-		SessionID: sessionID,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create ADK session: %w", err)
-	}
-
-	// Replay history events into the ADK session service if resuming
-	for _, msg := range messages {
-		event := &session.Event{
-			LLMResponse: model.LLMResponse{
-				Content: msg.ToGenAIContent(),
-			},
-			Timestamp: time.Now(),
-		}
-		_ = sessSvc.AppendEvent(ctx, created.Session, event)
-	}
-
 	r, err := RunnerBuilder(agentInstance, sessSvc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ADK runner: %w", err)
@@ -321,9 +307,6 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			userMsg.Parts = append(userMsg.Parts, genai.NewPartFromBytes(f.Data, f.MIMEType))
 		}
 	}
-
-	userMessageObj := NewUserMessage(opts.Prompt, opts.Files...)
-	messages = append(messages, userMessageObj)
 
 	if opts.EventListener != nil {
 		opts.EventListener(ModelInfoEvent{
@@ -337,9 +320,6 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	}
 
 	var finalResponseText strings.Builder
-	var currentTurnThoughts []ThoughtPart
-	var currentTurnToolCalls []ToolCallPart
-	var currentTurnToolResults []ToolResultPart
 
 	for event, err := range r.Run(ctx, "user", sessionID, userMsg, agent.RunConfig{}) {
 		if err != nil {
@@ -355,11 +335,19 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 				})
 				opts.EventListener(TurnCompleteEvent{BaseEvent: BaseEvent{TabID: 0}})
 			}
+			var errMessages []Message
+			if getResp, gErr := sessSvc.Get(ctx, &session.GetRequest{AppName: "ask", UserID: "user", SessionID: sessionID}); gErr == nil && getResp.Session != nil {
+				var events []*session.Event
+				for e := range getResp.Session.Events().All() {
+					events = append(events, e)
+				}
+				errMessages = MessagesFromEvents(events)
+			}
 			return &RunResult{
 				SessionID: sessionID,
 				IsError:   true,
 				Error:     err,
-				Messages:  messages,
+				Messages:  errMessages,
 			}, err
 		}
 		if event == nil {
@@ -381,10 +369,7 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 					continue
 				}
 				if part.Thought {
-					currentTurnThoughts = append(currentTurnThoughts, ThoughtPart{
-						Text:      part.Text,
-						Signature: part.ThoughtSignature,
-					})
+					// Thought part
 				} else if part.Text != "" {
 					if event.LLMResponse.Partial {
 						if opts.EventListener != nil {
@@ -396,18 +381,11 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 					}
 				}
 				if part.FunctionCall != nil {
-					tc := ToolCallPart{
-						ID:               part.FunctionCall.ID,
-						Name:             part.FunctionCall.Name,
-						Args:             part.FunctionCall.Args,
-						ThoughtSignature: part.ThoughtSignature,
-					}
-					currentTurnToolCalls = append(currentTurnToolCalls, tc)
 					if opts.EventListener != nil {
 						opts.EventListener(ToolCallEvent{
 							BaseEvent: BaseEvent{TabID: 0},
-							ToolName:  tc.Name,
-							Input:     tc.Args,
+							ToolName:  part.FunctionCall.Name,
+							Input:     part.FunctionCall.Args,
 						})
 					}
 				}
@@ -420,19 +398,12 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 					if errFlag, ok := part.FunctionResponse.Response["is_error"].(bool); ok {
 						isErr = errFlag
 					}
-					tr := ToolResultPart{
-						ID:      part.FunctionResponse.ID,
-						Name:    part.FunctionResponse.Name,
-						Content: resStr,
-						IsError: isErr,
-					}
-					currentTurnToolResults = append(currentTurnToolResults, tr)
 					if opts.EventListener != nil {
 						opts.EventListener(ToolResultEvent{
 							BaseEvent: BaseEvent{TabID: 0},
-							ToolName:  tr.Name,
-							Output:    tr.Content,
-							IsError:   tr.IsError,
+							ToolName:  part.FunctionResponse.Name,
+							Output:    resStr,
+							IsError:   isErr,
 						})
 					}
 				}
@@ -459,19 +430,17 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 					})
 				}
 			}
-			if len(currentTurnThoughts) > 0 || len(currentTurnToolCalls) > 0 || txt != "" {
-				messages = append(messages, NewAssistantMessage(txt, currentTurnThoughts, currentTurnToolCalls))
-				currentTurnThoughts = nil
-				currentTurnToolCalls = nil
-			}
-			if len(currentTurnToolResults) > 0 {
-				messages = append(messages, NewToolResultMessage(currentTurnToolResults...))
-				currentTurnToolResults = nil
-			}
 		}
 	}
 
-	_ = store.Save(sessionID, opts.Cwd, messages)
+	var resultMessages []Message
+	if getResp, err := sessSvc.Get(ctx, &session.GetRequest{AppName: "ask", UserID: "user", SessionID: sessionID}); err == nil && getResp.Session != nil {
+		var events []*session.Event
+		for e := range getResp.Session.Events().All() {
+			events = append(events, e)
+		}
+		resultMessages = MessagesFromEvents(events)
+	}
 
 	respText := finalResponseText.String()
 	if opts.EventListener != nil {
@@ -488,7 +457,7 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	return &RunResult{
 		SessionID: sessionID,
 		Response:  respText,
-		Messages:  messages,
+		Messages:  resultMessages,
 		IsError:   false,
 	}, nil
 }

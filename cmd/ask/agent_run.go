@@ -66,6 +66,7 @@ type agentSession struct {
 
 	sessionID string
 	store     *agentSessionStore
+	sessSvc   session.Service
 	messages  []engine.Message
 
 	retryMaxRetries    int
@@ -367,32 +368,35 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		return
 	}
 
-	sessSvc := session.InMemoryService()
-	created, err := sessSvc.Create(ctx, &session.CreateRequest{
+	if s.sessSvc == nil {
+		providerID := "vertex"
+		if s.spec != nil && s.spec.ID != "" {
+			providerID = s.spec.ID
+		}
+		s.sessSvc = engine.NewFileSessionService(providerID, s.args.Cwd)
+	}
+
+	_, getErr := s.sessSvc.Get(ctx, &session.GetRequest{
 		AppName:   "ask",
 		UserID:    "user",
 		SessionID: s.sessionID,
 	})
-	if err != nil {
-		s.emit(providerDoneMsg{
-			res: providerResult{SessionID: s.sessionID, IsError: true, Result: err.Error()},
-			err: err,
-		})
-		s.emit(turnCompleteMsg{})
-		return
-	}
-
-	for _, msg := range s.messages {
-		event := &session.Event{
-			LLMResponse: adkmodel.LLMResponse{
-				Content: msg.ToGenAIContent(),
-			},
-			Timestamp: time.Now(),
+	if getErr != nil {
+		if _, createErr := s.sessSvc.Create(ctx, &session.CreateRequest{
+			AppName:   "ask",
+			UserID:    "user",
+			SessionID: s.sessionID,
+		}); createErr != nil {
+			s.emit(providerDoneMsg{
+				res: providerResult{SessionID: s.sessionID, IsError: true, Result: createErr.Error()},
+				err: createErr,
+			})
+			s.emit(turnCompleteMsg{})
+			return
 		}
-		_ = sessSvc.AppendEvent(ctx, created.Session, event)
 	}
 
-	r, err := engine.RunnerBuilder(agentInstance, sessSvc)
+	r, err := engine.RunnerBuilder(agentInstance, s.sessSvc)
 	if err != nil {
 		s.emit(providerDoneMsg{
 			res: providerResult{SessionID: s.sessionID, IsError: true, Result: err.Error()},

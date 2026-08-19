@@ -430,23 +430,24 @@ func TestEngineRun_SessionStoreRoundTrip(t *testing.T) {
 		t.Fatalf("Load failed: %v", err)
 	}
 
-	if len(loaded.Messages) != 3 {
-		t.Fatalf("expected 3 messages, got %d", len(loaded.Messages))
+	msgsLoaded := loaded.Messages()
+	if len(msgsLoaded) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(msgsLoaded))
 	}
-	if loaded.Messages[0].Text != "User question" {
-		t.Errorf("first message text mismatch: %q", loaded.Messages[0].Text)
+	if msgsLoaded[0].Text != "User question" {
+		t.Errorf("first message text mismatch: %q", msgsLoaded[0].Text)
 	}
-	if len(loaded.Messages[0].Files) != 1 {
+	if len(msgsLoaded[0].Files) != 1 {
 		t.Errorf("expected 1 file part in first message")
 	}
-	if len(loaded.Messages[1].Thoughts) != 1 || loaded.Messages[1].Thoughts[0].Text != "Thought" {
-		t.Errorf("thought part mismatch: %+v", loaded.Messages[1].Thoughts)
+	if len(msgsLoaded[1].Thoughts) != 1 || msgsLoaded[1].Thoughts[0].Text != "Thought" {
+		t.Errorf("thought part mismatch: %+v", msgsLoaded[1].Thoughts)
 	}
-	if len(loaded.Messages[1].ToolCalls) != 1 || loaded.Messages[1].ToolCalls[0].Name != "bash" {
-		t.Errorf("tool call mismatch: %+v", loaded.Messages[1].ToolCalls)
+	if len(msgsLoaded[1].ToolCalls) != 1 || msgsLoaded[1].ToolCalls[0].Name != "bash" {
+		t.Errorf("tool call mismatch: %+v", msgsLoaded[1].ToolCalls)
 	}
-	if len(loaded.Messages[2].ToolResults) != 1 || loaded.Messages[2].ToolResults[0].Content != "file.txt" {
-		t.Errorf("tool result mismatch: %+v", loaded.Messages[2].ToolResults)
+	if len(msgsLoaded[2].ToolResults) != 1 || msgsLoaded[2].ToolResults[0].Content != "file.txt" {
+		t.Errorf("tool result mismatch: %+v", msgsLoaded[2].ToolResults)
 	}
 
 	summaries, err := store.List(tmpCwd)
@@ -520,10 +521,11 @@ func TestEngineRun_ThoughtSignaturePreservation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load session failed: %v", err)
 	}
-	if len(loaded.Messages) < 3 {
-		t.Fatalf("expected at least 3 saved messages, got %d", len(loaded.Messages))
+	loadedMsgs := loaded.Messages()
+	if len(loadedMsgs) < 3 {
+		t.Fatalf("expected at least 3 saved messages, got %d", len(loadedMsgs))
 	}
-	assistantMsg := loaded.Messages[1]
+	assistantMsg := loadedMsgs[1]
 	if len(assistantMsg.Thoughts) == 0 || string(assistantMsg.Thoughts[0].Signature) != string(expectedSig) {
 		t.Errorf("saved thought signature mismatch: %+v", assistantMsg.Thoughts)
 	}

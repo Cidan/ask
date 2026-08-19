@@ -1,188 +1,70 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Cidan/ask/pkg/engine"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
 )
 
-// agentSessionStore persists in-process agent transcripts as message arrays.
+// agentSessionStore persists in-process agent transcripts using ADK session persistence.
 type agentSessionStore struct {
 	provider string
 }
 
-type agentSessionFile struct {
-	Version   int              `json:"version"`
-	Cwd       string           `json:"cwd"`
-	CreatedAt time.Time        `json:"createdAt"`
-	UpdatedAt time.Time        `json:"updatedAt"`
-	Messages  []engine.Message `json:"messages"`
+func (st *agentSessionStore) svc(cwd string) *engine.FileSessionService {
+	return engine.NewFileSessionService(st.provider, cwd)
 }
 
 func (st *agentSessionStore) root() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".config", "ask", "agent-sessions", st.provider), nil
+	return st.svc("").Root()
 }
 
 func (st *agentSessionStore) dirFor(cwd string) (string, error) {
-	root, err := st.root()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, encodeClaudeProjectDir(cwd)), nil
+	return st.svc(cwd).DirFor(cwd)
 }
 
 func (st *agentSessionStore) pathFor(id string) (string, error) {
-	root, err := st.root()
-	if err != nil {
-		return "", err
-	}
-	matches, err := filepath.Glob(filepath.Join(root, "*", id+".json"))
-	if err != nil {
-		return "", err
-	}
-	if len(matches) == 0 {
-		return "", fmt.Errorf("no stored agent session %s", id)
-	}
-	return matches[0], nil
+	return st.svc("").PathFor(id)
 }
 
 func (st *agentSessionStore) save(id, cwd string, messages []engine.Message) error {
-	dir, err := st.dirFor(cwd)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	path := filepath.Join(dir, id+".json")
-	now := time.Now()
-	file := agentSessionFile{
-		Version:   1,
-		Cwd:       cwd,
-		CreatedAt: now,
-		UpdatedAt: now,
-		Messages:  messages,
-	}
-	if prev, err := readAgentSessionFile(path); err == nil && !prev.CreatedAt.IsZero() {
-		file.CreatedAt = prev.CreatedAt
-	}
-	data, err := json.Marshal(file)
-	if err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, "."+id+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	return os.Rename(tmpName, path)
+	store := engine.NewSessionStore(st.provider)
+	return store.Save(id, cwd, messages)
 }
 
-func (st *agentSessionStore) load(id string) (agentSessionFile, error) {
-	path, err := st.pathFor(id)
-	if err != nil {
-		return agentSessionFile{}, err
-	}
-	return readAgentSessionFile(path)
+func (st *agentSessionStore) saveEvents(id, cwd string, events []*session.Event) error {
+	store := engine.NewSessionStore(st.provider)
+	return store.SaveEvents(id, cwd, events)
 }
 
-func readAgentSessionFile(path string) (agentSessionFile, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return agentSessionFile{}, err
-	}
-	var file agentSessionFile
-	if err := json.Unmarshal(data, &file); err != nil {
-		return agentSessionFile{}, err
-	}
-	if file.Version != 1 {
-		return agentSessionFile{}, fmt.Errorf("unsupported agent session version %d", file.Version)
-	}
-	return file, nil
+func (st *agentSessionStore) load(id string) (engine.StoredSessionFile, error) {
+	store := engine.NewSessionStore(st.provider)
+	return store.Load(id)
 }
 
 func (st *agentSessionStore) list(cwd string) ([]sessionEntry, error) {
-	dir, err := st.dirFor(cwd)
+	store := engine.NewSessionStore(st.provider)
+	summaries, err := store.List(cwd)
 	if err != nil {
 		return nil, err
 	}
-	dirents, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var sessions []sessionEntry
-	for _, e := range dirents {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") || strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		path := filepath.Join(dir, e.Name())
-		file, err := readAgentSessionFile(path)
-		if err != nil {
-			continue
-		}
-		sessions = append(sessions, sessionEntry{
-			id:      strings.TrimSuffix(e.Name(), ".json"),
-			cwd:     file.Cwd,
-			preview: agentSessionPreview(file.Messages),
-			modTime: info.ModTime(),
-		})
-	}
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].modTime.After(sessions[j].modTime)
-	})
-	return sessions, nil
-}
-
-func agentSessionPreview(messages []engine.Message) string {
-	for _, m := range messages {
-		if m.Role != engine.RoleUser {
-			continue
-		}
-		if m.Text != "" {
-			line := strings.TrimSpace(strings.SplitN(m.Text, "\n", 2)[0])
-			if len(line) > 80 {
-				line = line[:80] + "…"
-			}
-			if line != "" {
-				return line
-			}
+	entries := make([]sessionEntry, len(summaries))
+	for i, s := range summaries {
+		entries[i] = sessionEntry{
+			id:      s.ID,
+			cwd:     s.Cwd,
+			preview: s.Preview,
+			modTime: s.ModTime,
 		}
 	}
-	return "(empty session)"
+	return entries, nil
 }
 
 func (st *agentSessionStore) loadHistory(id string, opts HistoryOpts) ([]historyEntry, error) {
@@ -190,51 +72,115 @@ func (st *agentSessionStore) loadHistory(id string, opts HistoryOpts) ([]history
 	if err != nil {
 		return nil, err
 	}
+	return LoadHistoryEntriesFromEvents(file.Events, opts)
+}
+
+// LoadHistoryEntriesFromEvents maps a slice of session.Event directly to Bubble Tea historyEntry view models.
+func LoadHistoryEntriesFromEvents(events []*session.Event, opts HistoryOpts) ([]historyEntry, error) {
 	mode := opts.ToolOutput
 	showTools := !opts.QuietMode && mode != toolOutputOff
 	var entries []historyEntry
 	lastAssistantIdx := -1
-	for _, m := range file.Messages {
-		switch m.Role {
-		case engine.RoleUser:
-			if strings.TrimSpace(m.Text) == "" {
-				continue
-			}
-			entries = append(entries, historyEntry{kind: histUser, text: m.Text})
-			lastAssistantIdx = -1
-		case engine.RoleAssistant, engine.RoleModel:
+
+	for _, e := range events {
+		if e == nil || e.LLMResponse.Content == nil {
+			continue
+		}
+		content := e.LLMResponse.Content
+		isUser := e.Author == "user" || content.Role == genai.RoleUser
+
+		if isUser {
 			if showTools {
-				for _, tc := range m.ToolCalls {
-					name := tc.Name
-					input := tc.Args
-					if name == "invoke_tool" {
-						name, input = unwrapInvokeToolCall(input)
+				for _, p := range content.Parts {
+					if p == nil {
+						continue
 					}
-					entries = append(entries, historyEntry{
-						kind: histPrerendered,
-						text: renderToolCallBlock(name, input, mode),
-					})
+					if p.FunctionResponse != nil {
+						resStr := ""
+						isErr := false
+						if res, ok := p.FunctionResponse.Response["result"].(string); ok {
+							resStr = res
+						}
+						if errFlag, ok := p.FunctionResponse.Response["is_error"].(bool); ok {
+							isErr = errFlag
+						}
+						entries = append(entries, historyEntry{
+							kind: histPrerendered,
+							text: renderToolResultBlock(resStr, isErr),
+						})
+					}
 				}
 			}
-			if strings.TrimSpace(m.Text) == "" {
-				continue
+
+			var textParts []string
+			for _, p := range content.Parts {
+				if p != nil && p.Text != "" && !p.Thought && p.FunctionResponse == nil && p.FunctionCall == nil {
+					textParts = append(textParts, p.Text)
+				}
 			}
-			if opts.QuietMode && lastAssistantIdx >= 0 {
-				entries[lastAssistantIdx].text = m.Text
-				invalidateEntryRender(&entries[lastAssistantIdx])
-				continue
+			fullText := strings.TrimSpace(strings.Join(textParts, ""))
+			if fullText != "" {
+				entries = append(entries, historyEntry{kind: histUser, text: fullText})
+				lastAssistantIdx = -1
 			}
-			entries = append(entries, historyEntry{kind: histResponse, text: m.Text})
-			lastAssistantIdx = len(entries) - 1
-		case engine.RoleTool:
-			if !showTools {
-				continue
+		} else {
+			// Model / Assistant event
+			if showTools {
+				for _, p := range content.Parts {
+					if p == nil {
+						continue
+					}
+					if p.FunctionCall != nil {
+						name := p.FunctionCall.Name
+						input := p.FunctionCall.Args
+						if name == "invoke_tool" {
+							name, input = unwrapInvokeToolCall(input)
+						}
+						entries = append(entries, historyEntry{
+							kind: histPrerendered,
+							text: renderToolCallBlock(name, input, mode),
+						})
+					}
+				}
 			}
-			for _, tr := range m.ToolResults {
-				entries = append(entries, historyEntry{
-					kind: histPrerendered,
-					text: renderToolResultBlock(tr.Content, tr.IsError),
-				})
+
+			var nonThoughtTexts []string
+			for _, p := range content.Parts {
+				if p != nil && !p.Thought && p.Text != "" {
+					nonThoughtTexts = append(nonThoughtTexts, p.Text)
+				}
+			}
+			msgText := strings.TrimSpace(strings.Join(nonThoughtTexts, ""))
+			if msgText != "" {
+				if opts.QuietMode && lastAssistantIdx >= 0 {
+					entries[lastAssistantIdx].text = msgText
+					invalidateEntryRender(&entries[lastAssistantIdx])
+				} else {
+					entries = append(entries, historyEntry{kind: histResponse, text: msgText})
+					lastAssistantIdx = len(entries) - 1
+				}
+			}
+
+			if showTools {
+				for _, p := range content.Parts {
+					if p == nil {
+						continue
+					}
+					if p.FunctionResponse != nil {
+						resStr := ""
+						isErr := false
+						if res, ok := p.FunctionResponse.Response["result"].(string); ok {
+							resStr = res
+						}
+						if errFlag, ok := p.FunctionResponse.Response["is_error"].(bool); ok {
+							isErr = errFlag
+						}
+						entries = append(entries, historyEntry{
+							kind: histPrerendered,
+							text: renderToolResultBlock(resStr, isErr),
+						})
+					}
+				}
 			}
 		}
 	}
@@ -245,17 +191,30 @@ func (st *agentSessionStore) materialize(workspace string, turns []NeutralTurn) 
 	if workspace == "" {
 		return "", "", errors.New("materialize: workspace is required")
 	}
-	messages := make([]engine.Message, 0, len(turns))
+	var events []*session.Event
+	now := time.Now()
 	for _, turn := range turns {
 		switch turn.Role {
 		case "user":
-			messages = append(messages, engine.NewUserMessage(turn.Text))
+			events = append(events, &session.Event{
+				Author: "user",
+				LLMResponse: adkmodel.LLMResponse{
+					Content: genai.NewContentFromText(turn.Text, genai.RoleUser),
+				},
+				Timestamp: now,
+			})
 		case "assistant":
-			messages = append(messages, engine.NewAssistantMessage(turn.Text, nil, nil))
+			events = append(events, &session.Event{
+				Author: "ask_coder",
+				LLMResponse: adkmodel.LLMResponse{
+					Content: genai.NewContentFromText(turn.Text, genai.RoleModel),
+				},
+				Timestamp: now,
+			})
 		}
 	}
 	id := newUUIDv4()
-	if err := st.save(id, workspace, messages); err != nil {
+	if err := st.saveEvents(id, workspace, events); err != nil {
 		return "", "", err
 	}
 	return id, workspace, nil
@@ -266,11 +225,7 @@ var claudeProjectDirNonAlnum = regexp.MustCompile(`[^a-zA-Z0-9]`)
 const claudeProjectDirMaxLen = 200
 
 func encodeClaudeProjectDir(path string) string {
-	enc := claudeProjectDirNonAlnum.ReplaceAllString(path, "-")
-	if len(enc) <= claudeProjectDirMaxLen {
-		return enc
-	}
-	return enc[:claudeProjectDirMaxLen] + "-" + claudeProjectDirHash(path)
+	return engine.EncodeProjectDir(path)
 }
 
 func claudeProjectDirHash(path string) string {

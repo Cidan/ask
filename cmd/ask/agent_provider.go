@@ -107,6 +107,7 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 		sendCh:        make(chan agentTurn, 8),
 		closed:        make(chan struct{}),
 		store:         store,
+		sessSvc:       engine.NewFileSessionService(p.spec.ID, args.Cwd),
 	}
 	if p.spec.MaxOutputTokens != nil {
 		session.maxOutputTokens = p.spec.MaxOutputTokens(modelID)
@@ -125,7 +126,7 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 			return nil, nil, fmt.Errorf("%s: resume %s: %w", p.spec.ID, short(args.SessionID), err)
 		}
 		session.sessionID = args.SessionID
-		session.messages = file.Messages
+		session.messages = file.Messages()
 	case args.NewSessionID != "":
 		session.sessionID = args.NewSessionID
 	default:
