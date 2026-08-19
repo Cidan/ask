@@ -166,12 +166,14 @@ func NewToolResultMessage(toolResults ...ToolResultPart) Message {
 
 func (m Message) ToGenAIContent() *genai.Content {
 	var parts []*genai.Part
-	for _, th := range m.Thoughts {
-		parts = append(parts, &genai.Part{
-			Text:             th.Text,
-			Thought:          true,
-			ThoughtSignature: th.Signature,
-		})
+	if len(m.ToolCalls) == 0 {
+		for _, th := range m.Thoughts {
+			parts = append(parts, &genai.Part{
+				Text:             th.Text,
+				Thought:          true,
+				ThoughtSignature: th.Signature,
+			})
+		}
 	}
 	if m.Text != "" {
 		parts = append(parts, genai.NewPartFromText(m.Text))

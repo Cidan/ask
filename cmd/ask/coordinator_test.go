@@ -288,7 +288,7 @@ func TestCoordinator_RunWorkflowMissingPlanDirReminder(t *testing.T) {
 		t.Errorf("expected workflow to be marked done")
 	}
 
-	wantSub := "REMINDER: the workflow notes directory is not usable"
+	wantSub := "notes directory is not usable"
 	if receivedPrompt == "" {
 		t.Errorf("did not receive any prompt")
 	} else if !strings.Contains(receivedPrompt, wantSub) {
@@ -323,41 +323,29 @@ func TestCoordinator_RunWorkflowLoopWithDecisionAndFinish(t *testing.T) {
 		case 1:
 			chunk = genaiToolCallChunk("end_turn", map[string]any{"summary": "validated the plan"})
 		case 2:
-			chunk = genaiTextChunk("completed", 10, 10)
-		case 3:
 			chunk = genaiToolCallChunk("read", map[string]any{"file_path": "hello.go", "description": "check if hello.go exists"})
-		case 4:
+		case 3:
 			chunk = genaiToolCallChunk("write", map[string]any{"file_path": "hello.go", "content": "package main\n\nfunc main() {}\n", "description": "create hello.go with main function"})
-		case 5:
+		case 4:
 			chunk = genaiToolCallChunk("end_turn", map[string]any{"summary": "implemented changes"})
-		case 6:
-			chunk = genaiTextChunk("completed", 10, 10)
-		case 7:
+		case 5:
 			chunk = genaiToolCallChunk("read", map[string]any{"file_path": "hello.go", "description": "verify hello.go before continuing"})
-		case 8:
+		case 6:
 			chunk = genaiToolCallChunk("end_turn", map[string]any{"summary": "validated changes", "decision": "continue"})
-		case 9:
-			chunk = genaiTextChunk("completed", 10, 10)
-		case 10:
+		case 7:
 			chunk = genaiToolCallChunk("read", map[string]any{"file_path": "hello.go", "description": "read hello.go before editing"})
-		case 11:
+		case 8:
 			chunk = genaiToolCallChunk("edit", map[string]any{"file_path": "hello.go", "old_string": "package main\n\nfunc main() {}\n", "new_string": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n", "description": "add print to main"})
-		case 12:
+		case 9:
 			chunk = genaiToolCallChunk("end_turn", map[string]any{"summary": "implemented more changes"})
-		case 13:
-			chunk = genaiTextChunk("completed", 10, 10)
-		case 14:
+		case 10:
 			chunk = genaiToolCallChunk("read", map[string]any{"file_path": "hello.go", "description": "verify hello.go before break"})
-		case 15:
+		case 11:
 			chunk = genaiToolCallChunk("end_turn", map[string]any{"summary": "validated and broke loop", "decision": "break"})
-		case 16:
-			chunk = genaiTextChunk("completed", 10, 10)
-		case 17:
+		case 12:
 			chunk = genaiToolCallChunk("finish_workflow", map[string]any{"description": "workflow executed successfully", "artifacts": []any{"hello.go"}})
-		case 18:
+		case 13:
 			chunk = genaiToolCallChunk("end_turn", map[string]any{"summary": "finalized the workflow"})
-		case 19:
-			chunk = genaiTextChunk("completed", 10, 10)
 		default:
 			chunk = genaiTextChunk("done", 10, 10)
 		}

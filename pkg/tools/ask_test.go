@@ -80,6 +80,9 @@ func TestEndTurnTool(t *testing.T) {
 	if resp.IsError || !strings.Contains(resp.Content, "end_turn recorded") {
 		t.Fatalf("end_turn: %+v", resp)
 	}
+	if !resp.StopTurn {
+		t.Fatalf("end_turn must return StopTurn=true")
+	}
 
 	if env.PendingEndTurn == nil {
 		t.Fatalf("PendingEndTurn not set")

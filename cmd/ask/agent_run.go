@@ -312,6 +312,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		var turnThoughts []engine.ThoughtPart
 		var turnToolCalls []engine.ToolCallPart
 		var latestThoughtSig []byte
+		var lastFinishReason genai.FinishReason
 		var streamErr error
 
 		for chunk, err := range stream {
@@ -337,6 +338,9 @@ func (s *agentSession) runTurn(turn agentTurn) {
 			}
 
 			for _, candidate := range chunk.Candidates {
+				if candidate.FinishReason != "" {
+					lastFinishReason = candidate.FinishReason
+				}
 				if candidate.Content == nil {
 					continue
 				}
@@ -409,6 +413,12 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		}
 
 		rawText := turnTextBuf.String()
+		if lastFinishReason == genai.FinishReasonMaxTokens {
+			s.emit(streamStatusMsg{status: "turn stopped at the max_tokens limit"})
+			if rawText == "" && len(turnToolCalls) == 0 {
+				rawText = "[turn stopped at the max_tokens output limit — response was truncated]"
+			}
+		}
 		if rawText != "" {
 			if finalResponseText.Len() > 0 {
 				finalResponseText.WriteString("\n")

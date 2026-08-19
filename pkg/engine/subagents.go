@@ -160,7 +160,7 @@ func ResolveSubagentModel(def SubagentDef, parentProviderID string, parent *gena
 // SubagentToolNames returns the slice of tool names allowed for the subagent.
 func SubagentToolNames(def SubagentDef) []string {
 	readOnly := []string{"read", "glob", "grep", "ls"}
-	full := []string{"read", "glob", "grep", "ls", "write", "edit", "bash", "job_output", "job_kill", "fetch", "todos"}
+	full := []string{"read", "glob", "grep", "ls", "write", "edit", "bash", "job_output", "job_kill", "fetch", "todos", "search_tools", "invoke_tool", "web_search", "workflow_list", "workflow_get", "workflow_create", "workflow_edit", "workflow_delete", "workflow_copy", "clear_plans"}
 
 	switch {
 	case len(def.Tools) == 1 && def.Tools[0] == "*":
@@ -171,6 +171,9 @@ func SubagentToolNames(def SubagentDef) []string {
 			"read": true, "glob": true, "grep": true, "ls": true,
 			"write": true, "edit": true, "bash": true,
 			"job_output": true, "job_kill": true, "fetch": true, "todos": true,
+			"search_tools": true, "invoke_tool": true, "web_search": true,
+			"workflow_list": true, "workflow_get": true, "workflow_create": true,
+			"workflow_edit": true, "workflow_delete": true, "workflow_copy": true, "clear_plans": true,
 		}
 		for _, t := range def.Tools {
 			key := strings.ToLower(strings.TrimSpace(t))

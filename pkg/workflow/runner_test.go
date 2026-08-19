@@ -330,18 +330,28 @@ func TestWorkflow_PromptAssembly(t *testing.T) {
 
 	// Reminders
 	remindSummary := EndTurnReminder(RemindNoSummary, "")
-	if !strings.Contains(remindSummary, "without calling end_turn") {
+	if !strings.Contains(remindSummary, "CRITICAL DIRECTIVE") || !strings.Contains(remindSummary, "DO NOT REPEAT THE WORK") {
 		t.Errorf("unexpected reminder: %s", remindSummary)
 	}
 
 	remindDecision := EndTurnReminder(RemindNoDecision, "")
-	if !strings.Contains(remindDecision, "without a `decision`") {
+	if !strings.Contains(remindDecision, "CRITICAL DIRECTIVE") || !strings.Contains(remindDecision, "decision") {
 		t.Errorf("unexpected reminder: %s", remindDecision)
 	}
 
 	remindDir := EndTurnReminder(RemindFixPlanDir, "not a directory")
 	if !strings.Contains(remindDir, "notes directory is not usable: not a directory") {
 		t.Errorf("unexpected reminder: %s", remindDir)
+	}
+
+	// Test reminder appears at the top of the prompt on retry
+	retryCtx := &StepPromptCtx{
+		Remind: RemindNoSummary,
+		NotesDir: "/tmp/ask/plans/unit-test-step",
+	}
+	retryPrompt := BuildStepPrompt(step, src, prevOutputs, retryCtx)
+	if !strings.HasPrefix(retryPrompt, "CRITICAL DIRECTIVE: You already performed the work") {
+		t.Errorf("expected retry prompt to lead with CRITICAL DIRECTIVE, got:\n%s", retryPrompt[:120])
 	}
 
 	// Helpers
@@ -353,5 +363,65 @@ func TestWorkflow_PromptAssembly(t *testing.T) {
 	meta := ProviderMeta("openai", "gpt-4o")
 	if meta != "openai/gpt-4o" {
 		t.Errorf("expected 'openai/gpt-4o', got %q", meta)
+	}
+}
+
+func TestRunner_StepRetryRecoversWithEndTurn(t *testing.T) {
+	tmpDir := t.TempDir()
+	startDir := filepath.Join(tmpDir, "ask", "plans", "start")
+	if err := os.MkdirAll(startDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(startDir, "plan.md"), []byte("# Plan"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker := NewTracker()
+	var executedPrompts []string
+	exec := &mockStepExecutor{
+		handlers: []func(step Step, prompt string) (StepResult, error){
+			// First call for step 1: forgets to call end_turn (empty summary)
+			func(step Step, prompt string) (StepResult, error) {
+				executedPrompts = append(executedPrompts, prompt)
+				return StepResult{Output: "I edited the files and ran tests.", Summary: "", Decision: ""}, nil
+			},
+			// Second call for step 1 (retry): sees the reminder and calls end_turn
+			func(step Step, prompt string) (StepResult, error) {
+				executedPrompts = append(executedPrompts, prompt)
+				return StepResult{Output: "", Summary: "Finished edits and tests", Decision: ""}, nil
+			},
+			// Step 2: normal completion with end_turn
+			func(step Step, prompt string) (StepResult, error) {
+				executedPrompts = append(executedPrompts, prompt)
+				return StepResult{Output: "Verified changes", Summary: "All verified", Decision: ""}, nil
+			},
+		},
+	}
+	listener := &mockRunnerListener{}
+	runner := NewRunner(tracker, exec, listener)
+
+	def := Def{
+		Name: "retry-recovery-wf",
+		Steps: []Step{
+			{Name: "execute", Prompt: "Follow the plan and edit files."},
+			{Name: "validate", Prompt: "Verify all edits."},
+		},
+	}
+	src := NewTextSource(1, "Execute plan")
+
+	state, err := runner.Run(context.Background(), tmpDir, 1, def, src)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !state.Done {
+		t.Errorf("expected workflow to complete")
+	}
+	if len(executedPrompts) != 3 {
+		t.Fatalf("expected exactly 3 executor calls (1 initial + 1 retry + 1 step2), got %d", len(executedPrompts))
+	}
+
+	// Verify the retry prompt explicitly led with the critical directive
+	if !strings.HasPrefix(executedPrompts[1], "CRITICAL DIRECTIVE: You already performed the work") {
+		t.Errorf("expected retry prompt to start with CRITICAL DIRECTIVE, got:\n%s", executedPrompts[1][:200])
 	}
 }

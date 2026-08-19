@@ -73,6 +73,14 @@ func CoreTools(env *ToolEnv, registry func() []Tool, attachWebSearch bool) []Too
 	return tools
 }
 
+// BuildSubagentTools constructs the complete centralized toolset for a subagent.
+// It sets IsSubagent = true on the environment to ensure task-list isolation.
+func BuildSubagentTools(env *ToolEnv, registry func() []Tool, attachWebSearch bool) []Tool {
+	subEnv := *env
+	subEnv.IsSubagent = true
+	return CoreTools(&subEnv, registry, attachWebSearch)
+}
+
 // IsCoreTool reports whether a tool name belongs to the core toolset.
 func IsCoreTool(name string) bool {
 	switch name {

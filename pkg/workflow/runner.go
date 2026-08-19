@@ -413,6 +413,20 @@ func lastString(s []string) string {
 // BuildStepPrompt assembles the user-message prompt for a single workflow step.
 func BuildStepPrompt(step Step, source Source, prevOutputs []string, pc *StepPromptCtx) string {
 	var b strings.Builder
+
+	var loop *LoopPromptCtx
+	remind := RemindNone
+	if pc != nil {
+		loop = pc.Loop
+		remind = pc.Remind
+	}
+
+	if remind != RemindNone {
+		b.WriteString(EndTurnReminder(remind, pc.RemindDetail))
+		b.WriteString("\n\n---\n\n")
+		b.WriteString("Context for this step (work already performed in previous turn):\n")
+	}
+
 	b.WriteString(strings.TrimSpace(step.Prompt))
 	if ref := source.RefBlock(); ref != "" {
 		b.WriteString("\n\n")
@@ -442,18 +456,8 @@ func BuildStepPrompt(step Step, source Source, prevOutputs []string, pc *StepPro
 			b.WriteString("). Do NOT write a single file named \"start\". The workflow runner verifies the directory exists and contains files before step 1; if it is missing, empty, or a file, this step will be re-prompted to fix the directory before any work is done.")
 		}
 	}
-	var loop *LoopPromptCtx
-	remind := RemindNone
-	if pc != nil {
-		loop = pc.Loop
-		remind = pc.Remind
-	}
 	b.WriteString("\n\n")
 	b.WriteString(EndTurnInstructionBlock(loop))
-	if remind != RemindNone {
-		b.WriteString("\n\n")
-		b.WriteString(EndTurnReminder(remind, pc.RemindDetail))
-	}
 	return strings.TrimSpace(b.String())
 }
 
@@ -468,9 +472,7 @@ func EndTurnInstructionBlock(loop *LoopPromptCtx) string {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("When you have finished this step, you MUST call the end_turn tool as your final action, with " +
-		"a `summary` of 1-3 sentences describing what you did and the outcome. This records your progress in the " +
-		"workflow log; it does not cut your turn short.")
+	b.WriteString("MANDATORY STEP CONCLUSION: When all actions for this step are finished, your final tool call MUST be to invoke the `end_turn` tool with a `summary` of 1-3 sentences describing what you did and the outcome. Calling `end_turn` completes the step and records your report in the workflow log.")
 	if loop != nil {
 		if loop.IsTail {
 			b.WriteString(" You are the final step of this loop iteration, so you MUST also pass a `decision`: " +
@@ -489,21 +491,22 @@ func EndTurnInstructionBlock(loop *LoopPromptCtx) string {
 func EndTurnReminder(k RemindKind, detail string) string {
 	switch k {
 	case RemindNoDecision:
-		return "REMINDER: you called end_turn without a `decision`, which is required for the final step of a " +
-			"loop iteration. You have already done the work shown above — do NOT repeat it. Call end_turn again now " +
-			"with decision=\"continue\" or decision=\"break\"."
+		return "CRITICAL DIRECTIVE: You called end_turn without a `decision`, which is required for the final step of a " +
+			"loop iteration. You have ALREADY done the work — do NOT repeat it, do NOT edit files again, and do NOT run tests again. " +
+			"Call the `end_turn` tool immediately now with a summary and decision=\"continue\" or decision=\"break\"."
 	case RemindFixPlanDir:
-		msg := "REMINDER: the workflow notes directory is not usable"
+		msg := "CRITICAL DIRECTIVE: The workflow notes directory is not usable"
 		if detail != "" {
 			msg += ": " + detail
 		}
-		msg += ". You must make it a directory containing files, then call end_turn."
+		msg += ". You must make it a directory containing files, then call the `end_turn` tool."
 		return msg
 	case RemindNoFinishTool:
-		return "REMINDER: you reached the final step of the workflow without providing final finish data. Call the finish tool or end_turn."
+		return "CRITICAL DIRECTIVE: You reached the final step of the workflow without providing final finish data. Call the `finish_workflow` tool or `end_turn` now."
 	default:
-		return "REMINDER: your previous turn ended without calling end_turn. You have already done the work shown " +
-			"above — do NOT repeat it. Call the end_turn tool now (see the instructions above for what to include)."
+		return "CRITICAL DIRECTIVE: You already performed the work for this step in your previous turn (see transcript below). " +
+			"DO NOT REPEAT THE WORK. Do NOT edit files again and do NOT run commands again. " +
+			"Your ONLY action on this turn is to immediately invoke the `end_turn` tool now with a 1-3 sentence summary of what was accomplished."
 	}
 }
 

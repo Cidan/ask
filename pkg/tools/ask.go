@@ -63,7 +63,7 @@ Call this once, as the final action of your turn, with:
   - summary: 1-3 sentences describing what you did this step and the outcome (plus anything left to do). This becomes this step's entry in the workflow log — write it for a human following along, not as a note to yourself.
   - decision: ONLY when your step prompt says you are the final step of a workflow loop iteration. Pass "continue" to run another iteration or "break" to end the loop. Breaking should be exceptional — only when the loop's exit goal is met. Omit decision when you are not inside a loop, or not its final step (unless you are deliberately breaking the loop early).
 
-Calling this RECORDS your report; it does NOT end your turn early or exit a loop immediately. Finish your turn normally — the workflow acts on what you registered when your turn completes. If your turn ends without calling end_turn (or, as a loop's final step, without a decision), you will be re-prompted to provide it.`
+Calling this tool completes your turn for this workflow step.`
 
 type AskOption struct {
 	Label   string `json:"label" description:"short label for the option"`
@@ -184,8 +184,8 @@ func EndTurnTool(env *ToolEnv) Tool {
 			if decision != "" {
 				note += " (decision: " + decision + ")"
 			}
-			note += ". Finish your turn normally; the workflow acts on it when your turn ends."
-			return NewTextResponse(note), nil
+			note += ". Step complete."
+			return ToolResponse{Content: note, StopTurn: true}, nil
 		},
 	)
 }

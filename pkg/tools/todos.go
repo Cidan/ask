@@ -64,6 +64,9 @@ func TodosTool(env *ToolEnv) Tool {
 			if notice := env.WorkflowGuardNotice(); notice != "" {
 				return NewTextResponse(notice), nil
 			}
+			if env.IsSubagent {
+				return NewTextResponse("Task list updates are ignored in subagents; report findings back to parent agent."), nil
+			}
 			inProgress := 0
 			completed := 0
 			items := make([]engine.TodoItem, 0, len(p.Todos))

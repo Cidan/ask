@@ -834,7 +834,13 @@ Search the web and return ranked results (title, URL, and snippet) for a query. 
 
 ## end_turn
 
-Report the end of your turn for the current workflow step. REQUIRED on every step inside a workflow loop iteration. Pass "continue" to run another iteration or "break" to end the loop.
+Report the end of your turn for the current workflow step. REQUIRED on every step of an automated workflow.
+
+Call this once, as the final action of your turn, with:
+  - summary: 1-3 sentences describing what you did this step and the outcome (plus anything left to do). This becomes this step's entry in the workflow log.
+  - decision: ONLY when your step prompt says you are the final step of a workflow loop iteration. Pass "continue" to run another iteration or "break" to end the loop. Omit decision when you are not inside a loop or not its final step.
+
+Calling this tool marks your step as completed and records your report in the workflow log.
 
 <tool_call_hygiene>
 ## Tool Call Hygiene
@@ -1063,6 +1069,12 @@ func BuildSystemPrompt(opts PromptOptions) string {
 		promptStr = strings.ReplaceAll(promptStr,
 			"checking the project's workflows is a hard precondition, not a suggestion. The moment a request looks like it needs more than one step — before you write a plan, before you reach for the todos tool, before you touch a file — call workflow_list to see this project's defined workflows.",
 			"You are running as a step in an automated workflow. All changes are pre-cleared by the user.")
+		promptStr = strings.ReplaceAll(promptStr,
+			"Text you write between tool calls may not be shown to the user. Everything the user needs from this turn — answers, summaries, findings, conclusions, deliverables — must be in the final text message of your turn, with no tool calls after it. Keep text between tool calls to brief status notes. If something important appeared only mid-turn or in your thinking, restate it in that final message.",
+			"In automated workflow mode, your turn MUST conclude by calling the end_turn tool with a 1-3 sentence summary of what was accomplished (and a decision if on a loop tail step).")
+		promptStr = strings.ReplaceAll(promptStr,
+			"Before ending your turn, check your last paragraph. If it is a plan, an analysis, a question, a list of next steps, or a promise about work you have not done ('I'll…', 'let me know when…'), do that work now with tool calls. That includes retrying after errors and gathering missing information yourself. Do not stop because the context or session is long. End your turn only when the task is complete or you are blocked on input only the user can provide.",
+			"You are executing an automated workflow step. Perform all actions needed for this step (reading files, making edits, running tests) autonomously. When the step's work is finished, your final action MUST be calling the end_turn tool with a summary of the outcome.")
 	}
 
 	b.WriteString(promptStr)
