@@ -435,6 +435,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
+		m.responseActive = false
 		if m.renderDiffs && !m.quietMode && m.workflowRun == nil {
 			m.appendHistory(renderDiffBlock(msg.filePath, msg.hunks))
 		}
@@ -444,6 +445,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
+		m.responseActive = false
 		if m.shouldRenderToolCall(msg) {
 			m.appendHistory(renderToolCallBlock(msg.name, msg.input, m.toolOutputMode))
 		}
@@ -453,6 +455,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
+		m.responseActive = false
 		if m.shouldRenderToolResult(msg) {
 			m.appendHistory(renderToolResultBlock(msg.output, msg.isError))
 		}
@@ -474,6 +477,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
+		m.responseActive = false
 		m.testBusy = false
 		m.proc = nil
 		m.streamCh = nil
@@ -517,6 +521,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
+		m.responseActive = false
 		m.testBusy = false
 		debugLog("providerDoneMsg err=%v isError=%v resultLen=%d",
 			msg.err, msg.res.IsError, len(msg.res.Result))
@@ -566,7 +571,13 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		case m.quietMode:
 			m.turnBuffer = append(m.turnBuffer, msg.text)
 		default:
-			m.appendResponse(msg.text)
+			if m.responseActive && len(m.history) > 0 && m.history[len(m.history)-1].kind == histResponse {
+				m.history[len(m.history)-1].text += msg.text
+				invalidateEntryRender(&m.history[len(m.history)-1])
+			} else {
+				m.appendResponse(msg.text)
+				m.responseActive = true
+			}
 		}
 		var cmds []tea.Cmd
 		if wasIdle {
@@ -581,6 +592,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
+		m.responseActive = false
 		m.flushTurnBuffer()
 		m.testBusy = false
 		m.status = ""
@@ -1694,6 +1706,7 @@ func (m model) cancelTurn() (model, tea.Cmd) {
 	if !m.busy() {
 		return m, nil
 	}
+	m.responseActive = false
 	globalCoordinator.CancelWorkflow(m.id)
 	m.appendHistory(outputStyle.Render(dimStyle.Render("✗ cancelled")))
 	return m, nil
@@ -2206,6 +2219,7 @@ func (m model) sendToProvider(line string) (tea.Model, tea.Cmd) {
 }
 
 func (m model) dispatchProviderTurn(line string) (tea.Model, tea.Cmd) {
+	m.responseActive = false
 	nAtt := len(m.pending)
 	(&m).clearSelection()
 	if m.workflowRun == nil {

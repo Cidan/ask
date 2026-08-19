@@ -617,6 +617,7 @@ type model struct {
 	addedDirs []string
 
 	turnBuffer []string
+	responseActive bool
 
 	lastContentFP string
 
@@ -1068,9 +1069,11 @@ func (m *model) flushTurnBuffer() {
 	if len(m.turnBuffer) == 0 {
 		return
 	}
-	last := m.turnBuffer[len(m.turnBuffer)-1]
+	combined := strings.Join(m.turnBuffer, "")
 	m.turnBuffer = nil
-	m.appendResponse(last)
+	if combined != "" {
+		m.appendResponse(combined)
+	}
 }
 
 func drainProviderStream(ch chan tea.Msg) {
