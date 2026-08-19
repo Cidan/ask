@@ -90,10 +90,20 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 	}
 
 	adkTools, _ := AsADKTools(tools)
+	instructionProvider := func(ctx agent.ReadonlyContext) (string, error) {
+		if system != "" {
+			return system, nil
+		}
+		return BuildSystemPrompt(PromptOptions{
+			Cwd:        args.Cwd,
+			InWorkflow: args.InWorkflow,
+		}), nil
+	}
+
 	agentInstance, err := llmagent.New(llmagent.Config{
 		Name:                  "ask_coder",
 		Model:                 llm,
-		Instruction:           system,
+		InstructionProvider:   instructionProvider,
 		Tools:                 adkTools,
 		GenerateContentConfig: genConfig,
 	})

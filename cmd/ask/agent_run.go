@@ -5,7 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"iter"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +13,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/tools"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/llmagent"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
@@ -33,6 +37,7 @@ type agentSession struct {
 	args          ProviderSessionArgs
 	spec          *agentProviderSpec
 	client        *genai.Client
+	model         adkmodel.LLM
 	env           *agentToolEnv
 	sysMu         sync.RWMutex
 	system        string
@@ -244,6 +249,44 @@ func (s *agentSession) run() {
 	}
 }
 
+type streamToADKModel struct {
+	modelID string
+	client  *genai.Client
+}
+
+func (m *streamToADKModel) Name() string { return m.modelID }
+
+func (m *streamToADKModel) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		for chunk, err := range engine.GenerateStream(ctx, m.client, m.modelID, req.Contents, req.Config) {
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			if chunk == nil {
+				continue
+			}
+			var parts []*genai.Part
+			for _, c := range chunk.Candidates {
+				if c.Content != nil {
+					parts = append(parts, c.Content.Parts...)
+				}
+			}
+			resp := &adkmodel.LLMResponse{
+				Content: &genai.Content{
+					Role:  genai.RoleModel,
+					Parts: parts,
+				},
+				UsageMetadata: chunk.UsageMetadata,
+				Partial:       stream,
+			}
+			if !yield(resp, nil) {
+				return
+			}
+		}
+	}
+}
+
 func (s *agentSession) runTurn(turn agentTurn) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.setTurnCancel(cancel)
@@ -254,10 +297,6 @@ func (s *agentSession) runTurn(turn agentTurn) {
 
 	s.emit(streamStatusMsg{status: "thinking…"})
 
-	s.sysMu.RLock()
-	systemPrompt := s.system
-	s.sysMu.RUnlock()
-
 	if expanded, ok := expandSkillInvocation(s.args.Cwd, turn.text); ok {
 		turn.text = expanded
 	}
@@ -266,226 +305,245 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	}
 
 	activeTools := s.currentTools()
-	var functionDecls []*genai.FunctionDeclaration
-	toolMap := make(map[string]tools.Tool, len(activeTools))
-	for _, t := range activeTools {
-		toolMap[t.Info().Name] = t
-		if decl := t.Declaration(); decl != nil {
-			functionDecls = append(functionDecls, decl)
-		}
+	adkTools, err := engine.AsADKTools(activeTools)
+	if err != nil {
+		s.emit(providerDoneMsg{
+			res: providerResult{SessionID: s.sessionID, IsError: true, Result: err.Error()},
+			err: err,
+		})
+		s.emit(turnCompleteMsg{})
+		return
 	}
 
-	genaiConfig := &genai.GenerateContentConfig{
-		SystemInstruction: genai.NewContentFromText(systemPrompt, genai.RoleUser),
-	}
+	genaiConfig := &genai.GenerateContentConfig{}
 	if s.maxOutputTokens > 0 {
 		genaiConfig.MaxOutputTokens = int32(s.maxOutputTokens)
 	}
 	if s.callOpts != nil && s.callOpts.ThinkingConfig != nil {
 		genaiConfig.ThinkingConfig = s.callOpts.ThinkingConfig
 	}
-	if len(functionDecls) > 0 {
-		genaiConfig.Tools = []*genai.Tool{
-			{FunctionDeclarations: functionDecls},
-		}
+
+	instructionProvider := func(ctx agent.ReadonlyContext) (string, error) {
+		s.sysMu.RLock()
+		sys := s.system
+		s.sysMu.RUnlock()
+		return sys, nil
 	}
 
-	var contents []*genai.Content
+	llm := s.model
+	if llm == nil {
+		cfg, _ := loadConfig()
+		if s.spec != nil && s.spec.BuildModel != nil {
+			built, err := engine.ModelBuilder(ctx, s.spec, toPkgConfig(cfg), s.modelID)
+			if err == nil {
+				llm = built
+				s.model = built
+			}
+		}
+	}
+	if llm == nil {
+		llm = &streamToADKModel{modelID: s.modelID, client: s.client}
+	}
+
+	agentInstance, err := llmagent.New(llmagent.Config{
+		Name:                  "ask_coder",
+		Model:                 llm,
+		InstructionProvider:   instructionProvider,
+		Tools:                 adkTools,
+		GenerateContentConfig: genaiConfig,
+	})
+	if err != nil {
+		s.emit(providerDoneMsg{
+			res: providerResult{SessionID: s.sessionID, IsError: true, Result: err.Error()},
+			err: err,
+		})
+		s.emit(turnCompleteMsg{})
+		return
+	}
+
+	sessSvc := session.InMemoryService()
+	created, err := sessSvc.Create(ctx, &session.CreateRequest{
+		AppName:   "ask",
+		UserID:    "user",
+		SessionID: s.sessionID,
+	})
+	if err != nil {
+		s.emit(providerDoneMsg{
+			res: providerResult{SessionID: s.sessionID, IsError: true, Result: err.Error()},
+			err: err,
+		})
+		s.emit(turnCompleteMsg{})
+		return
+	}
+
 	for _, msg := range s.messages {
-		contents = append(contents, msg.ToGenAIContent())
+		event := &session.Event{
+			LLMResponse: adkmodel.LLMResponse{
+				Content: msg.ToGenAIContent(),
+			},
+			Timestamp: time.Now(),
+		}
+		_ = sessSvc.AppendEvent(ctx, created.Session, event)
+	}
+
+	r, err := engine.RunnerBuilder(agentInstance, sessSvc)
+	if err != nil {
+		s.emit(providerDoneMsg{
+			res: providerResult{SessionID: s.sessionID, IsError: true, Result: err.Error()},
+			err: err,
+		})
+		s.emit(turnCompleteMsg{})
+		return
 	}
 
 	userMsg := engine.NewUserMessage(turn.text, turn.files...)
 	s.messages = append(s.messages, userMsg)
-	contents = append(contents, userMsg.ToGenAIContent())
 
-	const maxSteps = 50
+	adkUserMsg := userMsg.ToGenAIContent()
+
 	var finalResponseText strings.Builder
-	stepSignatures := make([][32]byte, 0)
+	var turnThoughts []engine.ThoughtPart
+	var turnToolCalls []engine.ToolCallPart
+	var latestThoughtSig []byte
+
 	displayNames := make(map[string]string)
 	backgroundCalls := make(map[string]bool)
 
-	for stepIdx := 0; stepIdx < maxSteps; stepIdx++ {
-		stream := engine.GenerateStream(ctx, s.client, s.modelID, contents, genaiConfig)
-
-		var turnTextBuf strings.Builder
-		var turnThoughts []engine.ThoughtPart
-		var turnToolCalls []engine.ToolCallPart
-		var latestThoughtSig []byte
-		var streamErr error
-
-		for chunk, err := range stream {
-			if err != nil {
-				streamErr = err
-				break
-			}
-			if chunk == nil {
-				continue
-			}
-
-			if chunk.UsageMetadata != nil {
-				usage := TokenUsage{
-					InputTokens:  int(chunk.UsageMetadata.PromptTokenCount),
-					OutputTokens: int(chunk.UsageMetadata.CandidatesTokenCount),
-				}
-				cost, known := s.stepCost(usage)
-				s.emit(usageMsg{
-					tokens:    usage.InputTokens + usage.OutputTokens,
-					costUSD:   cost,
-					costKnown: known,
-				})
-			}
-
-			for _, candidate := range chunk.Candidates {
-				if candidate.Content == nil {
-					continue
-				}
-				for _, part := range candidate.Content.Parts {
-					if part.Thought {
-						if len(part.ThoughtSignature) > 0 {
-							latestThoughtSig = part.ThoughtSignature
-						}
-						turnThoughts = append(turnThoughts, engine.ThoughtPart{
-							Text:      part.Text,
-							Signature: part.ThoughtSignature,
-						})
-						s.emit(streamStatusMsg{status: "thinking…"})
-					} else if part.Text != "" {
-						turnTextBuf.WriteString(part.Text)
-					}
-					if part.FunctionCall != nil {
-						sig := part.ThoughtSignature
-						if len(sig) == 0 {
-							sig = latestThoughtSig
-						}
-						inputMap := part.FunctionCall.Args
-						name := part.FunctionCall.Name
-						if name == "invoke_tool" {
-							name, inputMap = unwrapInvokeToolCall(inputMap)
-						}
-						displayNames[part.FunctionCall.Name] = name
-						bg, _ := inputMap["run_in_background"].(bool)
-						if bg {
-							backgroundCalls[part.FunctionCall.Name] = true
-						}
-
-						id := ""
-						if part.FunctionCall != nil {
-							id = part.FunctionCall.ID
-						}
-						turnToolCalls = append(turnToolCalls, engine.ToolCallPart{
-							ID:               id,
-							Name:             part.FunctionCall.Name,
-							Args:             part.FunctionCall.Args,
-							ThoughtSignature: sig,
-						})
-						s.emit(toolCallMsg{
-							name:       name,
-							input:      inputMap,
-							background: bg,
-						})
-						status := "running " + name + "…"
-						if phrase := toolCallPhrase(inputMap); phrase != "" {
-							status = name + ": " + phrase
-						}
-						s.emit(streamStatusMsg{status: status})
-					}
-				}
-			}
-		}
-
-		if streamErr != nil {
-			if isAgentCancel(streamErr) {
+	for event, err := range r.Run(ctx, "user", s.sessionID, adkUserMsg, agent.RunConfig{}) {
+		if err != nil {
+			if isAgentCancel(err) {
 				s.emit(providerDoneMsg{res: providerResult{SessionID: s.sessionID}})
 				s.emit(turnCompleteMsg{})
 				return
 			}
 			s.emit(providerDoneMsg{
-				res: providerResult{SessionID: s.sessionID, IsError: true, Result: streamErr.Error()},
-				err: streamErr,
+				res: providerResult{SessionID: s.sessionID, IsError: true, Result: err.Error()},
+				err: err,
 			})
 			s.emit(turnCompleteMsg{})
 			return
 		}
+		if event == nil {
+			continue
+		}
 
-		rawText := turnTextBuf.String()
-		if rawText != "" {
-			if finalResponseText.Len() > 0 {
-				finalResponseText.WriteString("\n")
+		if event.UsageMetadata != nil {
+			usage := TokenUsage{
+				InputTokens:  int(event.UsageMetadata.PromptTokenCount),
+				OutputTokens: int(event.UsageMetadata.CandidatesTokenCount),
 			}
-			finalResponseText.WriteString(rawText)
-			s.emit(assistantTextMsg{text: rawText})
+			cost, known := s.stepCost(usage)
+			s.emit(usageMsg{
+				tokens:    usage.InputTokens + usage.OutputTokens,
+				costUSD:   cost,
+				costKnown: known,
+			})
 		}
 
-		if len(turnThoughts) > 0 || len(turnToolCalls) > 0 || rawText != "" {
-			assistantMsg := engine.NewAssistantMessage(rawText, turnThoughts, turnToolCalls)
-			s.messages = append(s.messages, assistantMsg)
-			contents = append(contents, assistantMsg.ToGenAIContent())
-		}
+		if event.LLMResponse.Content != nil {
+			for _, part := range event.LLMResponse.Content.Parts {
+				if part == nil {
+					continue
+				}
+				if part.Thought {
+					if len(part.ThoughtSignature) > 0 {
+						latestThoughtSig = part.ThoughtSignature
+					}
+					turnThoughts = append(turnThoughts, engine.ThoughtPart{
+						Text:      part.Text,
+						Signature: part.ThoughtSignature,
+					})
+					s.emit(streamStatusMsg{status: "thinking…"})
+				} else if part.Text != "" {
+					if event.LLMResponse.Partial {
+						finalResponseText.WriteString(part.Text)
+						s.emit(assistantTextMsg{text: part.Text})
+					} else if finalResponseText.Len() == 0 {
+						finalResponseText.WriteString(part.Text)
+						s.emit(assistantTextMsg{text: part.Text})
+					}
+				}
+				if part.FunctionCall != nil {
+					sig := part.ThoughtSignature
+					if len(sig) == 0 {
+						sig = latestThoughtSig
+					}
+					inputMap := part.FunctionCall.Args
+					name := part.FunctionCall.Name
+					if name == "invoke_tool" {
+						name, inputMap = unwrapInvokeToolCall(inputMap)
+					}
+					displayNames[part.FunctionCall.Name] = name
+					bg, _ := inputMap["run_in_background"].(bool)
+					if bg {
+						backgroundCalls[part.FunctionCall.Name] = true
+					}
 
-		if len(turnToolCalls) == 0 {
-			break
-		}
+					id := ""
+					if part.FunctionCall != nil {
+						id = part.FunctionCall.ID
+					}
+					turnToolCalls = append(turnToolCalls, engine.ToolCallPart{
+						ID:               id,
+						Name:             part.FunctionCall.Name,
+						Args:             part.FunctionCall.Args,
+						ThoughtSignature: sig,
+					})
+					s.emit(toolCallMsg{
+						name:       name,
+						input:      inputMap,
+						background: bg,
+					})
+					status := "running " + name + "…"
+					if phrase := toolCallPhrase(inputMap); phrase != "" {
+						status = name + ": " + phrase
+					}
+					s.emit(streamStatusMsg{status: status})
+				}
+				if part.FunctionResponse != nil {
+					resStr := ""
+					isErr := false
+					if res, ok := part.FunctionResponse.Response["result"].(string); ok {
+						resStr = res
+					}
+					if errFlag, ok := part.FunctionResponse.Response["is_error"].(bool); ok {
+						isErr = errFlag
+					}
+					dispName := part.FunctionResponse.Name
+					if dn, ok := displayNames[part.FunctionResponse.Name]; ok {
+						dispName = dn
+					}
+					s.emit(toolResultMsg{
+						name:       dispName,
+						output:     resStr,
+						isError:    isErr,
+						background: backgroundCalls[part.FunctionResponse.Name],
+					})
 
-		// Loop detection
-		sig := stepSignatureFromToolCalls(turnToolCalls)
-		stepSignatures = append(stepSignatures, sig)
-		if checkLoopDetection(stepSignatures) {
-			s.emit(providerDoneMsg{res: providerResult{
-				SessionID: s.sessionID,
-				IsError:   true,
-				Result:    "stopped: repeated identical tool call loop detected",
-			}})
-			s.emit(turnCompleteMsg{})
-			return
-		}
+					if len(turnToolCalls) > 0 {
+						assistantMsg := engine.NewAssistantMessage("", turnThoughts, turnToolCalls)
+						s.messages = append(s.messages, assistantMsg)
+						turnThoughts = nil
+						turnToolCalls = nil
+					}
 
-		var toolResultParts []engine.ToolResultPart
-		var stopTurnRequested bool
-
-		for _, tc := range turnToolCalls {
-			tool, ok := toolMap[tc.Name]
-			var resp tools.ToolResponse
-			var runErr error
-			if !ok {
-				resp = tools.NewTextErrorResponse(fmt.Sprintf("unknown tool %s", tc.Name))
-			} else {
-				resp, runErr = tool.Run(ctx, tc.Args)
-				if runErr != nil {
-					resp = tools.NewTextErrorResponse(fmt.Sprintf("tool %s error: %s", tc.Name, runErr.Error()))
+					tr := engine.ToolResultPart{
+						ID:      part.FunctionResponse.ID,
+						Name:    part.FunctionResponse.Name,
+						Content: resStr,
+						IsError: isErr,
+					}
+					toolResultMsg := engine.NewToolResultMessage(tr)
+					s.messages = append(s.messages, toolResultMsg)
 				}
 			}
-
-			dispName := tc.Name
-			if dn, ok := displayNames[tc.Name]; ok {
-				dispName = dn
-			}
-
-			s.emit(toolResultMsg{
-				name:       dispName,
-				output:     resp.Content,
-				isError:    resp.IsError,
-				background: backgroundCalls[tc.Name],
-			})
-
-			toolResultParts = append(toolResultParts, engine.ToolResultPart{
-				Name:    tc.Name,
-				Content: resp.Content,
-				IsError: resp.IsError,
-			})
-
-			if resp.StopTurn {
-				stopTurnRequested = true
-			}
 		}
+	}
 
-		toolMsg := engine.NewToolResultMessage(toolResultParts...)
-		s.messages = append(s.messages, toolMsg)
-		contents = append(contents, toolMsg.ToGenAIContent())
-
-		if stopTurnRequested {
-			break
-		}
+	rawText := finalResponseText.String()
+	if len(turnThoughts) > 0 || len(turnToolCalls) > 0 || rawText != "" {
+		assistantMsg := engine.NewAssistantMessage(rawText, turnThoughts, turnToolCalls)
+		s.messages = append(s.messages, assistantMsg)
 	}
 
 	s.persist()

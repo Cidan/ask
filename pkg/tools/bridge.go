@@ -7,6 +7,9 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 )
 
@@ -41,12 +44,50 @@ func NativeBridgeTool[In, Out any](name, description string,
 		}
 		required = append(required, "description")
 	}
+
+	adkTool, _ := functiontool.New[In, any](
+		functiontool.Config{
+			Name:        name,
+			Description: description,
+		},
+		func(actx agent.Context, in In) (any, error) {
+			res, out, err := run(actx, in)
+			if err != nil {
+				return nil, err
+			}
+			body := MCPResultText(res)
+			if res != nil && res.IsError {
+				if strings.TrimSpace(body) == "" {
+					body = "(empty error result)"
+				}
+				return map[string]any{
+					"result":   body,
+					"is_error": true,
+				}, nil
+			}
+			if j, err := json.Marshal(out); err == nil {
+				js := string(j)
+				switch {
+				case js == "{}" || js == "null":
+				case strings.TrimSpace(body) == "" || body == js:
+					body = js
+				default:
+					body = body + "\n" + js
+				}
+			}
+			return map[string]any{
+				"result": body,
+			}, nil
+		},
+	)
+
 	return &BridgeTool[In, Out]{
 		NameVal:        name,
 		DescriptionVal: description,
 		PropertiesVal:  properties,
 		RequiredVal:    required,
 		RunVal:         run,
+		adkTool:        adkTool,
 	}
 }
 
@@ -86,10 +127,18 @@ type BridgeTool[In, Out any] struct {
 	PropertiesVal  map[string]any
 	RequiredVal    []string
 	RunVal         func(ctx context.Context, in In) (*mcp.CallToolResult, Out, error)
+	adkTool        tool.Tool
 }
 
 func (t *BridgeTool[In, Out]) Name() string        { return t.NameVal }
 func (t *BridgeTool[In, Out]) Description() string { return t.DescriptionVal }
+func (t *BridgeTool[In, Out]) IsLongRunning() bool { return false }
+func (t *BridgeTool[In, Out]) ADKTool() tool.Tool {
+	if t.adkTool != nil {
+		return t.adkTool
+	}
+	return t
+}
 func (t *BridgeTool[In, Out]) Info() ToolInfo {
 	required := t.RequiredVal
 	if required == nil {
