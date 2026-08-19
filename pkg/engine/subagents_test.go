@@ -144,3 +144,45 @@ func TestDiscoverSubagents_LinkedDocs(t *testing.T) {
 		t.Errorf("linked doc must use <file path=...> format: %q", prompt)
 	}
 }
+
+func TestBuildSubagentAndAgentTool(t *testing.T) {
+	ctx := context.Background()
+	mockModel := &mockLLM{name: "mock"}
+
+	researcher, err := BuildResearchSubagent(ctx, mockModel, nil)
+	if err != nil {
+		t.Fatalf("BuildResearchSubagent failed: %v", err)
+	}
+	if researcher.Name() != "researcher" {
+		t.Errorf("expected researcher name 'researcher', got %q", researcher.Name())
+	}
+
+	researchTool, err := BuildResearchAgentTool(ctx, mockModel, nil)
+	if err != nil {
+		t.Fatalf("BuildResearchAgentTool failed: %v", err)
+	}
+	if researchTool.Name() != "researcher" {
+		t.Errorf("expected tool name 'researcher', got %q", researchTool.Name())
+	}
+
+	def := SubagentDef{
+		Name:        "reviewer",
+		Description: "Code reviewer subagent",
+		Prompt:      "Review code carefully",
+	}
+	namedAgent, err := BuildNamedSubagent(ctx, def, mockModel, nil)
+	if err != nil {
+		t.Fatalf("BuildNamedSubagent failed: %v", err)
+	}
+	if namedAgent.Name() != "reviewer" {
+		t.Errorf("expected named agent name 'reviewer', got %q", namedAgent.Name())
+	}
+
+	namedTool, err := BuildNamedAgentTool(ctx, def, mockModel, nil)
+	if err != nil {
+		t.Fatalf("BuildNamedAgentTool failed: %v", err)
+	}
+	if namedTool.Name() != "reviewer" {
+		t.Errorf("expected tool name 'reviewer', got %q", namedTool.Name())
+	}
+}

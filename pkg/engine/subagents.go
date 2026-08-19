@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,11 @@ import (
 
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/providers"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/llmagent"
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/agenttool"
 	"google.golang.org/genai"
 )
 
@@ -197,4 +203,53 @@ func SubagentTools(def SubagentDef, available map[string]Tool) []Tool {
 		}
 	}
 	return out
+}
+
+const ResearchSubagentInstruction = `You are a specialized research subagent inside ask.
+Your role is to perform deep investigations, code sweeps, searches, and file readings.
+Investigate the task you are given thoroughly: search broadly, read the relevant files, and chase cross-references until you can answer with confidence.
+Your final response is returned verbatim to the calling agent as data, so make it a complete, self-contained report: state the answer first, then the supporting evidence as file_path:line_number references. Report honestly when something cannot be found.`
+
+// BuildResearchSubagent creates the default research subagent as an ADK agent.Agent.
+func BuildResearchSubagent(ctx context.Context, llm model.LLM, tools []tool.Tool) (agent.Agent, error) {
+	return llmagent.New(llmagent.Config{
+		Name:        "researcher",
+		Description: "A specialized research subagent for file investigation, code sweeps, and deep searches.",
+		Model:       llm,
+		Instruction: ResearchSubagentInstruction,
+		Tools:       tools,
+	})
+}
+
+// BuildNamedSubagent creates an ADK agent.Agent for a discovered SubagentDef.
+func BuildNamedSubagent(ctx context.Context, def SubagentDef, llm model.LLM, tools []tool.Tool) (agent.Agent, error) {
+	instruction := def.Prompt
+	if instruction == "" {
+		instruction = ResearchSubagentInstruction
+	}
+	return llmagent.New(llmagent.Config{
+		Name:        def.Name,
+		Description: def.Description,
+		Model:       llm,
+		Instruction: instruction,
+		Tools:       tools,
+	})
+}
+
+// BuildResearchAgentTool wraps the research subagent as an ADK tool.Tool using agenttool.
+func BuildResearchAgentTool(ctx context.Context, llm model.LLM, tools []tool.Tool) (tool.Tool, error) {
+	sub, err := BuildResearchSubagent(ctx, llm, tools)
+	if err != nil {
+		return nil, err
+	}
+	return agenttool.New(sub, &agenttool.Config{SkipSummarization: true}), nil
+}
+
+// BuildNamedAgentTool wraps a named subagent as an ADK tool.Tool using agenttool.
+func BuildNamedAgentTool(ctx context.Context, def SubagentDef, llm model.LLM, tools []tool.Tool) (tool.Tool, error) {
+	sub, err := BuildNamedSubagent(ctx, def, llm, tools)
+	if err != nil {
+		return nil, err
+	}
+	return agenttool.New(sub, &agenttool.Config{SkipSummarization: true}), nil
 }

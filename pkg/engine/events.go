@@ -16,6 +16,8 @@ const (
 	EventKindTodoUpdate      EventKind = "todo_update"
 	EventKindBgTaskStarted   EventKind = "bg_task_started"
 	EventKindBgTaskEnded     EventKind = "bg_task_ended"
+	EventKindSubagentStarted EventKind = "subagent_started"
+	EventKindSubagentEnded   EventKind = "subagent_ended"
 	EventKindDone            EventKind = "done"
 	EventKindExited          EventKind = "exited"
 	EventKindTurnComplete    EventKind = "turn_complete"
@@ -152,6 +154,27 @@ type BgTaskEndedEvent struct {
 }
 
 func (BgTaskEndedEvent) Kind() EventKind { return EventKindBgTaskEnded }
+
+// SubagentStartedEvent is emitted when a subagent begins running.
+type SubagentStartedEvent struct {
+	BaseEvent
+	AgentName   string `json:"agent_name"`
+	TaskID      string `json:"task_id"`
+	Description string `json:"description"`
+}
+
+func (SubagentStartedEvent) Kind() EventKind { return EventKindSubagentStarted }
+
+// SubagentEndedEvent is emitted when a subagent completes running.
+type SubagentEndedEvent struct {
+	BaseEvent
+	AgentName string `json:"agent_name"`
+	TaskID    string `json:"task_id"`
+	Output    string `json:"output,omitempty"`
+	IsError   bool   `json:"is_error,omitempty"`
+}
+
+func (SubagentEndedEvent) Kind() EventKind { return EventKindSubagentEnded }
 
 // ResultSummary contains the outcome of a provider turn.
 type ResultSummary struct {

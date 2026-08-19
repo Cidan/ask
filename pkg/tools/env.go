@@ -49,6 +49,8 @@ type ToolEnv struct {
 	SkipPermissions       bool
 	GateTodosBeforeMutate bool
 	PlanningMode          bool
+	IsSubagent            bool
+	ParentSessionID       string
 
 	Emit        engine.EventListener
 	Interaction engine.InteractionHandler

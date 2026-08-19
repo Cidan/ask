@@ -162,3 +162,24 @@ func TestTodosWorkflowGuard_DisarmedByCheck(t *testing.T) {
 		t.Fatalf("second call after decision guard must apply, got: %q", resp.Content)
 	}
 }
+
+func TestTodosTool_SubagentIsolation(t *testing.T) {
+	env, events := newTestToolEnv(t)
+	env.IsSubagent = true
+	tool := TodosTool(env)
+	resp := runTool(t, tool, TodosParams{Todos: []TodoEntry{
+		{Content: "subagent work", Status: "in_progress"},
+	}})
+	if resp.IsError {
+		t.Fatalf("subagent todos should not error: %s", resp.Content)
+	}
+	if !strings.Contains(resp.Content, "subagent task list ignored") {
+		t.Errorf("expected subagent ignored notice, got %q", resp.Content)
+	}
+	if len(*events) != 0 {
+		t.Errorf("subagent todos must not emit events to UI, got %d events", len(*events))
+	}
+	if env.TodosApplied {
+		t.Errorf("subagent todos must not set env.TodosApplied on parent")
+	}
+}

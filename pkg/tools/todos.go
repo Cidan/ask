@@ -61,6 +61,9 @@ func TodosTool(env *ToolEnv) Tool {
 		"todos",
 		TodosToolDescription,
 		func(ctx context.Context, p TodosParams) (ToolResponse, error) {
+			if env != nil && env.IsSubagent {
+				return NewTextResponse("(subagent task list ignored: subagents do not modify the top-level task list)"), nil
+			}
 			if notice := env.WorkflowGuardNotice(); notice != "" {
 				return NewTextResponse(notice), nil
 			}
