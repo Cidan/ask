@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Cidan/ask/pkg/config"
+	"github.com/Cidan/ask/pkg/workflow"
 	"google.golang.org/adk/v2/model"
 )
 
@@ -98,5 +99,59 @@ func TestEngine_SessionStreamEvents(t *testing.T) {
 	if !gotTextDelta || !gotAssistantText || !gotDone {
 		t.Errorf("missing events: delta=%v text=%v done=%v (total events: %d)",
 			gotTextDelta, gotAssistantText, gotDone, len(events))
+	}
+}
+
+func TestEngine_CoordinatorExecuteStep(t *testing.T) {
+	var mu sync.Mutex
+	callIdx := 0
+	mockModel := &mockLLM{
+		name: "mock-model",
+		generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+			mu.Lock()
+			idx := callIdx
+			callIdx++
+			mu.Unlock()
+
+			if idx == 0 {
+				return mockLLMSequence(
+					thoughtAndFunctionCallResponse("thinking", "end_turn", map[string]any{
+						"summary":  "Verified plan and executed step",
+						"decision": "continue",
+					}, nil),
+				)
+			}
+			return mockLLMSequence(textResponse("Step done"))
+		},
+	}
+
+	coord := NewCoordinator(HeadlessInteractionHandler{AutoApproveTools: true}, nil)
+	session := NewSession(
+		SessionArgs{TabID: 2, Cwd: t.TempDir(), Model: "mock-model"},
+		mockModel,
+		"system prompt",
+		nil,
+		nil,
+		HeadlessInteractionHandler{AutoApproveTools: true},
+	)
+	defer session.Close()
+	coord.SetSession(2, session)
+
+	step := workflow.Step{
+		Name:     "Test Step",
+		Provider: "vertex",
+		Model:    "mock-model",
+	}
+
+	res, err := coord.ExecuteStep(context.Background(), t.TempDir(), 2, step, "run step", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if res.Summary != "Verified plan and executed step" {
+		t.Errorf("expected summary 'Verified plan and executed step', got %q", res.Summary)
+	}
+	if res.Decision != "continue" {
+		t.Errorf("expected decision 'continue', got %q", res.Decision)
 	}
 }
