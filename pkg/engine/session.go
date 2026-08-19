@@ -55,12 +55,13 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 	if interaction == nil {
 		interaction = HeadlessInteractionHandler{AutoApproveTools: true}
 	}
+	modelID := providers.CanonicalVertexModelID(args.Model, providers.VertexDefaultModel)
 	s := &Session{
 		args:          args,
 		llm:           llm,
 		system:        system,
 		contextWindow: 1_048_576,
-		modelID:       args.Model,
+		modelID:       modelID,
 		tools:         tools,
 		sendCh:        make(chan Turn, 8),
 		closed:        make(chan struct{}),
@@ -69,14 +70,14 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 		sessionID:     args.SessionID,
 	}
 	if s.sessionID == "" {
-		s.sessionID = "ses-" + args.Model
+		s.sessionID = "ses-" + modelID
 	}
 
 	genConfig := &genai.GenerateContentConfig{
 		MaxOutputTokens: int32(providers.MaxOutputTokensGemini),
 	}
 	if spec, ok := providers.GetAgentProviderSpec(args.Provider); ok && spec != nil && spec.CallOptions != nil {
-		if callOpts, _ := spec.CallOptions(args.Model, args.Effort); callOpts != nil {
+		if callOpts, _ := spec.CallOptions(modelID, args.Effort); callOpts != nil {
 			if callOpts.ThinkingConfig != nil {
 				genConfig.ThinkingConfig = callOpts.ThinkingConfig
 			}

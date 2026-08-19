@@ -201,10 +201,10 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		return nil, fmt.Errorf("unknown provider %q", providerID)
 	}
 
-	modelID := strings.TrimSpace(opts.Model)
+	modelID := providers.CanonicalVertexModelID(opts.Model, "")
 	if modelID == "" {
 		settings := spec.LoadSettings(opts.Config)
-		modelID = strings.TrimSpace(settings.Model)
+		modelID = providers.CanonicalVertexModelID(settings.Model, spec.DefaultModel)
 	}
 	if modelID == "" {
 		modelID = spec.DefaultModel

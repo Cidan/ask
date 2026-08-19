@@ -86,10 +86,7 @@ func (p agentAPIProvider) store() *agentSessionStore {
 
 func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
 	cfg, _ := loadConfig()
-	modelID := args.Model
-	if modelID == "" {
-		modelID = p.spec.DefaultModel
-	}
+	modelID := providers.CanonicalVertexModelID(args.Model, p.spec.DefaultModel)
 	client, err := p.spec.BuildClient(toPkgConfig(cfg))
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", p.spec.ID, err)

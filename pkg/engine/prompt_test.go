@@ -82,8 +82,20 @@ func TestBuildSystemPrompt_InWorkflow(t *testing.T) {
 		t.Error("prompt should not require confirmation for side effects when already in a workflow")
 	}
 
+	if strings.Contains(prompt, "Don't implement until the user agrees") {
+		t.Error("prompt should not contain 'Don't implement until the user agrees' when already in a workflow")
+	}
+
+	if strings.Contains(prompt, "Report your findings and stop. Don't apply a fix until they ask for one") {
+		t.Error("prompt should not contain 'Report your findings and stop' when already in a workflow")
+	}
+
 	if !strings.Contains(prompt, "You are running as a step in an automated workflow. All changes are pre-cleared by the user") {
 		t.Error("prompt should state that steps are pre-cleared in automated workflow")
+	}
+
+	if !strings.Contains(prompt, "When you have finished the step's tasks, you MUST call the end_turn tool") {
+		t.Error("workflow prompt should explicitly require calling end_turn tool")
 	}
 
 	if strings.Contains(prompt, "<planning_mode>") {

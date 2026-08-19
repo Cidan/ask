@@ -1,5 +1,7 @@
 package providers
 
+import "strings"
+
 // ModelInfo describes model metadata without external catalog dependencies.
 type ModelInfo struct {
 	ID               string
@@ -70,10 +72,51 @@ var defaultVertexModels = []ModelInfo{
 	},
 }
 
+// NormalizeModelID trims provider prefixes ("vertex/", "publishers/google/models/", "models/")
+// to ensure model identifiers match registered catalog IDs.
+func NormalizeModelID(modelID string) string {
+	m := strings.TrimSpace(modelID)
+	m = strings.TrimPrefix(m, "vertex/")
+	m = strings.TrimPrefix(m, "publishers/google/models/")
+	m = strings.TrimPrefix(m, "models/")
+	return m
+}
+
+// CanonicalVertexModelID normalizes the model ID and falls back to fallback (or VertexDefaultModel)
+// if the model ID is empty or represents a legacy/unrecognized model from another provider.
+func CanonicalVertexModelID(modelID string, fallback ...string) string {
+	fb := VertexDefaultModel
+	if len(fallback) > 0 && fallback[0] != "" {
+		fb = fallback[0]
+	}
+	norm := NormalizeModelID(modelID)
+	if norm == "" {
+		return fb
+	}
+	if _, ok := CatalogModel("vertex", norm); ok {
+		return norm
+	}
+	lower := strings.ToLower(norm)
+	if strings.HasPrefix(lower, "claude-") ||
+		strings.HasPrefix(lower, "gpt-") ||
+		strings.HasPrefix(lower, "o1") ||
+		strings.HasPrefix(lower, "o3") ||
+		strings.HasPrefix(lower, "deepseek-") ||
+		strings.HasPrefix(lower, "kimi-") ||
+		strings.HasPrefix(lower, "minimax-") ||
+		strings.HasPrefix(lower, "anthropic/") ||
+		strings.HasPrefix(lower, "openai/") ||
+		strings.HasPrefix(lower, "deepseek/") {
+		return fb
+	}
+	return norm
+}
+
 // CatalogModel looks up one model's metadata.
 func CatalogModel(provider string, modelID string) (ModelInfo, bool) {
+	norm := NormalizeModelID(modelID)
 	for _, m := range defaultVertexModels {
-		if m.ID == modelID {
+		if m.ID == norm {
 			return m, true
 		}
 	}

@@ -1054,7 +1054,15 @@ func BuildSystemPrompt(opts PromptOptions) string {
 	promptStr := AgentCoderPrompt
 
 	if opts.InWorkflow {
-		promptStr = strings.ReplaceAll(promptStr, "checking the project's workflows is a hard precondition, not a suggestion. The moment a request looks like it needs more than one step — before you write a plan, before you reach for the todos tool, before you touch a file — call workflow_list to see this project's defined workflows.", "You are running as a step in an automated workflow. All changes are pre-cleared by the user.")
+		promptStr = strings.ReplaceAll(promptStr,
+			"For exploratory questions (\"what could we do about X?\", \"how should we approach this?\", \"what do you think?\"), respond in 2-3 sentences with a recommendation and the main tradeoff. Present it as something the user can redirect, not a decided plan. Don't implement until the user agrees.",
+			"You are running as a step in an automated workflow. All changes are pre-cleared by the user — proceed with implementing changes directly and autonomously.")
+		promptStr = strings.ReplaceAll(promptStr,
+			"Exception: when the user is describing a problem, asking a question, or thinking out loud rather than requesting a change, the deliverable is your assessment. Report your findings and stop. Don't apply a fix until they ask for one.",
+			"You are running as a step in an automated workflow. Perform the requested work, implement necessary changes, and call end_turn when finished.")
+		promptStr = strings.ReplaceAll(promptStr,
+			"checking the project's workflows is a hard precondition, not a suggestion. The moment a request looks like it needs more than one step — before you write a plan, before you reach for the todos tool, before you touch a file — call workflow_list to see this project's defined workflows.",
+			"You are running as a step in an automated workflow. All changes are pre-cleared by the user.")
 	}
 
 	b.WriteString(promptStr)

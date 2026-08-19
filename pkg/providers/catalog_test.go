@@ -9,8 +9,54 @@ func TestCatalogModelLookup(t *testing.T) {
 	if !ok || m.ContextWindow != 1_048_576 || !m.SupportsImages || m.DefaultMaxTokens != MaxOutputTokensGemini {
 		t.Errorf("gemini-3.7-flash lookup wrong: ok=%v %+v", ok, m)
 	}
+	// Verify prefixed lookup resolves identically
+	if mPrefix, okPrefix := CatalogModel("vertex", "vertex/gemini-3.7-flash"); !okPrefix || mPrefix.ID != "gemini-3.7-flash" {
+		t.Errorf("vertex/gemini-3.7-flash lookup failed: ok=%v %+v", okPrefix, mPrefix)
+	}
+	if mPub, okPub := CatalogModel("vertex", "publishers/google/models/gemini-3.7-flash"); !okPub || mPub.ID != "gemini-3.7-flash" {
+		t.Errorf("publishers/google/models/gemini-3.7-flash lookup failed: ok=%v %+v", okPub, mPub)
+	}
 	if _, ok := CatalogModel("vertex", "no-such-model"); ok {
 		t.Error("unknown model must miss")
+	}
+}
+
+func TestNormalizeModelID(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"gemini-3.7-flash", "gemini-3.7-flash"},
+		{"vertex/gemini-3.7-flash", "gemini-3.7-flash"},
+		{"publishers/google/models/gemini-3.7-flash", "gemini-3.7-flash"},
+		{"models/gemini-3.7-flash", "gemini-3.7-flash"},
+		{"  vertex/gemini-3.1-pro-preview  ", "gemini-3.1-pro-preview"},
+	}
+	for _, tt := range tests {
+		if got := NormalizeModelID(tt.input); got != tt.want {
+			t.Errorf("NormalizeModelID(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestCanonicalVertexModelID(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"gemini-3.7-flash", "gemini-3.7-flash"},
+		{"vertex/gemini-3.7-flash", "gemini-3.7-flash"},
+		{"publishers/google/models/gemini-3.7-flash", "gemini-3.7-flash"},
+		{"claude-3-7-sonnet-20250219", VertexDefaultModel},
+		{"deepseek-reasoner", VertexDefaultModel},
+		{"gpt-4o", VertexDefaultModel},
+		{"", VertexDefaultModel},
+		{"custom-experimental-gemini", "custom-experimental-gemini"},
+	}
+	for _, tt := range tests {
+		if got := CanonicalVertexModelID(tt.input); got != tt.want {
+			t.Errorf("CanonicalVertexModelID(%q) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }
 
