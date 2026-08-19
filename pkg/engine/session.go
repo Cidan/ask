@@ -108,12 +108,19 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 		GenerateContentConfig: genConfig,
 	})
 	if err == nil {
-		s.sessSvc = session.InMemoryService()
-		_, _ = s.sessSvc.Create(context.Background(), &session.CreateRequest{
+		s.sessSvc = NewFileSessionService(args.Provider, args.Cwd)
+		_, getErr := s.sessSvc.Get(context.Background(), &session.GetRequest{
 			AppName:   "ask",
 			UserID:    "user",
 			SessionID: s.sessionID,
 		})
+		if getErr != nil {
+			_, _ = s.sessSvc.Create(context.Background(), &session.CreateRequest{
+				AppName:   "ask",
+				UserID:    "user",
+				SessionID: s.sessionID,
+			})
+		}
 		s.runner, _ = RunnerBuilder(agentInstance, s.sessSvc)
 	}
 
@@ -206,6 +213,19 @@ func (s *Session) SessionID() string {
 func (s *Session) Messages() []Message {
 	s.turnMu.Lock()
 	defer s.turnMu.Unlock()
+	if s.sessSvc != nil && s.sessionID != "" {
+		if getResp, err := s.sessSvc.Get(context.Background(), &session.GetRequest{
+			AppName:   "ask",
+			UserID:    "user",
+			SessionID: s.sessionID,
+		}); err == nil && getResp.Session != nil {
+			var events []*session.Event
+			for e := range getResp.Session.Events().All() {
+				events = append(events, e)
+			}
+			return MessagesFromEvents(events)
+		}
+	}
 	out := make([]Message, len(s.messages))
 	copy(out, s.messages)
 	return out

@@ -349,3 +349,106 @@ func TestAgentSession_EmptyResponse(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentSession_MultiTurnResumption(t *testing.T) {
+	isolateHome(t)
+	store := &agentSessionStore{provider: "vertex"}
+	cwd := t.TempDir()
+
+	mock := &mockScriptedStream{
+		turns: [][]*genai.GenerateContentResponse{
+			{genaiTextChunk("Turn 1 response", 100, 10)},
+			{genaiTextChunk("Turn 2 response", 100, 10)},
+		},
+	}
+
+	origStream := engine.GenerateStream
+	defer func() { engine.GenerateStream = origStream }()
+
+	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+		return mock.Next()
+	}
+
+	// Turn 1
+	s1 := &agentSession{
+		args:          ProviderSessionArgs{Cwd: cwd, TabID: 1, SkipAllPermissions: true},
+		system:        "test system prompt",
+		contextWindow: 1_048_576,
+		modelID:       "fake-model",
+		ch:            make(chan tea.Msg, 256),
+		sendCh:        make(chan agentTurn, 8),
+		closed:        make(chan struct{}),
+		sessionID:     "sess-multi-resumption",
+		store:         store,
+	}
+	s1.env = newAgentToolEnv(s1.args.Cwd, 1, true, true, s1.emit)
+	s1.proc = &providerProc{stdin: agentStdin{s: s1}, stderr: &stderrBuf{}, payload: s1}
+	go s1.run()
+
+	if err := s1.queueTurn("Turn 1 question"); err != nil {
+		t.Fatal(err)
+	}
+	msgs1 := readSessionMsgs(t, s1.ch, isTurnComplete)
+	var done1 providerDoneMsg
+	for _, m := range msgs1 {
+		if v, ok := m.(providerDoneMsg); ok {
+			done1 = v
+		}
+	}
+	if done1.res.Result != "Turn 1 response" {
+		t.Errorf("Turn 1 unexpected response: %v", done1)
+	}
+	s1.proc.kill()
+	drainProviderStream(s1.ch)
+
+	// Resume session in Turn 2
+	s2 := &agentSession{
+		args:          ProviderSessionArgs{Cwd: cwd, TabID: 1, SkipAllPermissions: true, SessionID: "sess-multi-resumption"},
+		system:        "test system prompt",
+		contextWindow: 1_048_576,
+		modelID:       "fake-model",
+		ch:            make(chan tea.Msg, 256),
+		sendCh:        make(chan agentTurn, 8),
+		closed:        make(chan struct{}),
+		sessionID:     "sess-multi-resumption",
+		store:         store,
+	}
+	s2.env = newAgentToolEnv(s2.args.Cwd, 1, true, true, s2.emit)
+	s2.proc = &providerProc{stdin: agentStdin{s: s2}, stderr: &stderrBuf{}, payload: s2}
+	// Rehydrate messages
+	file, err := store.load("sess-multi-resumption")
+	if err != nil {
+		t.Fatalf("load session for resume: %v", err)
+	}
+	s2.messages = file.Messages()
+	go s2.run()
+	defer func() { s2.proc.kill(); drainProviderStream(s2.ch) }()
+
+	if err := s2.queueTurn("Turn 2 question"); err != nil {
+		t.Fatal(err)
+	}
+	msgs2 := readSessionMsgs(t, s2.ch, isTurnComplete)
+	var done2 providerDoneMsg
+	for _, m := range msgs2 {
+		if v, ok := m.(providerDoneMsg); ok {
+			done2 = v
+		}
+	}
+	if done2.res.Result != "Turn 2 response" {
+		t.Errorf("Turn 2 unexpected response: %v", done2)
+	}
+
+	// Verify stored session has 4 events, all with non-empty Author
+	fileFinal, err := store.load("sess-multi-resumption")
+	if err != nil {
+		t.Fatalf("load final session: %v", err)
+	}
+	if len(fileFinal.Events) < 4 {
+		t.Fatalf("expected at least 4 events in final session, got %d", len(fileFinal.Events))
+	}
+	for i, ev := range fileFinal.Events {
+		if ev.Author == "" {
+			t.Errorf("event %d has empty Author", i)
+		}
+	}
+}
