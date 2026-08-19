@@ -204,6 +204,14 @@ func TestRunner_LoopWorkflow_Break(t *testing.T) {
 	if len(exec.calls) != 4 {
 		t.Errorf("expected 4 step executions across 2 iterations, got %d", len(exec.calls))
 	}
+	if len(listener.notes) == 0 {
+		t.Errorf("expected loop notes to be recorded")
+	}
+	for _, note := range listener.notes {
+		if !strings.HasPrefix(note, "   ") {
+			t.Errorf("expected note to start with 3-space margin, got %q", note)
+		}
+	}
 }
 
 func TestRunner_LoopWorkflow_MaxIterations(t *testing.T) {
@@ -353,5 +361,20 @@ func TestWorkflow_PromptAssembly(t *testing.T) {
 	meta := ProviderMeta("openai", "gpt-4o")
 	if meta != "openai/gpt-4o" {
 		t.Errorf("expected 'openai/gpt-4o', got %q", meta)
+	}
+}
+
+func TestWorkflowNoteLine_Margin(t *testing.T) {
+	if got, want := WorkflowNoteLine("test message", ""), "   test message"; got != want {
+		t.Errorf("WorkflowNoteLine without detail: got %q, want %q", got, want)
+	}
+	if got, want := WorkflowNoteLine("test message", "detail"), "   test message: detail"; got != want {
+		t.Errorf("WorkflowNoteLine with detail: got %q, want %q", got, want)
+	}
+	if got, want := LoopNoteLine("my-loop", "started", "max 5 iteration(s)"), "   ⟳ loop \"my-loop\" started: max 5 iteration(s)"; got != want {
+		t.Errorf("LoopNoteLine started: got %q, want %q", got, want)
+	}
+	if got, want := LoopNoteLine("my-loop", "break", ""), "   ⟳ loop \"my-loop\" break"; got != want {
+		t.Errorf("LoopNoteLine break: got %q, want %q", got, want)
 	}
 }

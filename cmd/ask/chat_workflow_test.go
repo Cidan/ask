@@ -430,17 +430,51 @@ func TestViewAskBody_RendersPickerWhenOpen(t *testing.T) {
 	}
 }
 
-// TestWorkflowBannerSourceLabel_Variants pins the banner-source
-// labelling. Issue sources keep the historical "issue <ref>"
-// prefix; chat sources fall through to the source's own display
-// text (already prefixed with "chat ").
-func TestWorkflowBannerSourceLabel_Variants(t *testing.T) {
-	is := issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1})
-	if got, want := workflowBannerSourceLabel(is), "issue ow/r#1"; got != want {
-		t.Errorf("issue label: got %q want %q", got, want)
+// TestWorkflowRun_RendersChatPromptNotBanner verifies that an active
+// workflow tab renders the standard chat prompt textarea rather than
+// a workflow banner.
+func TestWorkflowRun_RendersChatPromptNotBanner(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{
+			Name: "test-wf",
+			Steps: []workflowStep{
+				{Name: "step-1", Prompt: "prompt-1"},
+			},
+		},
+		Source: chatWorkflowSource(1, []historyEntry{{kind: histUser, text: "hi"}}),
 	}
-	cs := chatWorkflowSource(2, []historyEntry{{kind: histUser, text: "x"}})
-	if got, want := workflowBannerSourceLabel(cs), "chat (1 turn)"; got != want {
-		t.Errorf("chat label: got %q want %q", got, want)
+
+	body := m.viewAskBody()
+	inputView := m.input.View()
+	if !strings.Contains(body, inputView) {
+		t.Errorf("expected viewAskBody to contain input textarea view %q during workflow run", inputView)
+	}
+	if strings.Contains(body, "▸ workflow") {
+		t.Errorf("viewAskBody should not render workflow banner title, got %q", body)
+	}
+	if strings.Contains(body, "to close") {
+		t.Errorf("viewAskBody should not render banner close clause, got %q", body)
+	}
+}
+
+// TestWorkflowRun_InputAreaHeightMatchesInput verifies that
+// inputAreaHeight() returns m.input.Height() even when a workflow is active.
+func TestWorkflowRun_InputAreaHeightMatchesInput(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	if got, want := m.inputAreaHeight(), m.input.Height(); got != want {
+		t.Errorf("initial inputAreaHeight: got %d, want %d", got, want)
+	}
+
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{
+			Name: "test-wf",
+			Steps: []workflowStep{
+				{Name: "step-1", Prompt: "prompt-1"},
+			},
+		},
+	}
+	if got, want := m.inputAreaHeight(), m.input.Height(); got != want {
+		t.Errorf("workflow running inputAreaHeight: got %d, want %d", got, want)
 	}
 }

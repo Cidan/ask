@@ -273,7 +273,7 @@ func (r *Runner) Run(ctx context.Context, cwd string, tabID int, def Def, src So
 			if stepErrorRetry < 3 {
 				stepErrorRetry++
 				wait := time.Duration(stepErrorRetry) * time.Second
-				r.listener.OnNote(tabID, fmt.Sprintf("step %q failed: %v — retrying (attempt %d of 3)", step.Name, err, stepErrorRetry))
+				r.listener.OnNote(tabID, WorkflowNoteLine(fmt.Sprintf("step %q failed: %v", step.Name, err), fmt.Sprintf("retrying (attempt %d of 3)", stepErrorRetry)))
 				select {
 				case <-time.After(wait):
 				case <-ctx.Done():
@@ -295,7 +295,7 @@ func (r *Runner) Run(ctx context.Context, cwd string, tabID int, def Def, src So
 				linearRetry++
 				linearText = res.Output
 				remind = RemindNoSummary
-				r.listener.OnNote(tabID, "| Re-prompting "+step.Name+" for end_turn")
+				r.listener.OnNote(tabID, "   | Re-prompting "+step.Name+" for end_turn")
 				continue
 			}
 
@@ -320,7 +320,7 @@ func (r *Runner) Run(ctx context.Context, cwd string, tabID int, def Def, src So
 			loopFrame.Retry++
 			loopFrame.RetryText = res.Output
 			remind = RemindNoSummary
-			r.listener.OnNote(tabID, "| Re-prompting "+step.Name+" for end_turn")
+			r.listener.OnNote(tabID, "   | Re-prompting "+step.Name+" for end_turn")
 			continue
 		}
 
@@ -358,7 +358,7 @@ func (r *Runner) Run(ctx context.Context, cwd string, tabID int, def Def, src So
 			loopFrame.Retry++
 			loopFrame.RetryText = res.Output
 			remind = RemindNoDecision
-			r.listener.OnNote(tabID, "| Re-prompting final step for a decision")
+			r.listener.OnNote(tabID, "   | Re-prompting final step for a decision")
 			continue
 		}
 
@@ -509,10 +509,11 @@ func EndTurnReminder(k RemindKind, detail string) string {
 
 // WorkflowNoteLine formats a single-line status note.
 func WorkflowNoteLine(msg, detail string) string {
+	res := "   " + msg
 	if strings.TrimSpace(detail) != "" {
-		msg += ": " + strings.TrimSpace(detail)
+		res += ": " + strings.TrimSpace(detail)
 	}
-	return msg
+	return res
 }
 
 // LoopNoteLine formats a loop transition note.

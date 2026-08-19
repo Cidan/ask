@@ -1198,11 +1198,7 @@ func (m model) viewAskBody() string {
 		b.WriteString("\n")
 	}
 	is := time.Now()
-	if m.workflowRun != nil {
-		b.WriteString(m.renderWorkflowBanner())
-	} else {
-		b.WriteString(m.input.View())
-	}
+	b.WriteString(m.input.View())
 	if debugOn {
 		debugTrace("    vb.input.View", is)
 	}
@@ -1210,146 +1206,9 @@ func (m model) viewAskBody() string {
 }
 
 // inputAreaHeight returns the row count layout() should reserve for
-// the bottom input region. Regular tabs expose a textarea
-// (m.input.Height() — dynamic with content). Workflow tabs render
-// the read-only banner instead, which has a fixed 4-row footprint
-// (top border, two content lines, bottom border). Without this
-// hand-off `layout()` would size the viewport against the textarea
-// height while the actual rendered output uses the banner — a
-// mismatch that pushes the tab-bar row off screen, hides the
-// scrollbar's last cell, etc.
+// the bottom input region (m.input.Height() — dynamic with content).
 func (m model) inputAreaHeight() int {
-	if m.workflowRun != nil {
-		return workflowBannerHeight
-	}
 	return m.input.Height()
-}
-
-// workflowBannerHeight is the fixed row count of the read-only
-// banner rendered by renderWorkflowBanner: rounded border (2) +
-// title + line2 = 4. Kept as a constant so layout() and the renderer
-// agree without each one re-measuring lipgloss output.
-const workflowBannerHeight = 4
-
-// workflowBannerSourceLabel returns the per-source string the banner
-// prepends to its second line. Issue sources get the historical
-// "issue <project>#<n>" prefix; chat sources fall through to their
-// own pre-formatted display label so the banner reads "chat (N
-// turns) · …" without an extra prefix.
-func workflowBannerSourceLabel(s workflowSource) string {
-	switch s.Kind {
-	case workflowSourceIssue:
-		return "issue " + s.Display()
-	}
-	return s.Display()
-}
-
-// renderWorkflowBanner renders the read-only stripe that replaces the
-// chat input on a workflow tab. While the chain runs the banner shows
-// the current step; on completion it swaps to a "complete" message;
-// on failure it carries the error. The user has no input affordance
-// — closing the tab (ActionTabClose) is the only action.
-func (m model) renderWorkflowBanner() string {
-	r := m.workflowRun
-	if r == nil {
-		return ""
-	}
-	width := m.width - 4
-	if width < 20 {
-		width = 20
-	}
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Padding(0, 1).
-		Width(width)
-	closeClause := keyClause(ActionTabClose, "to close")
-	if closeClause == "" {
-		closeClause = "close tab from /config"
-	}
-	cancelClause := keyClause(ActionTabClose, "cancel")
-	if cancelClause == "" {
-		cancelClause = "cancel from /config"
-	}
-	// A supplanted run hands the tab back to the chat it took over on
-	// Enter; surface that as the primary action.
-	returnClause := ""
-	if r.supplanted != nil {
-		returnClause = "enter return to chat"
-	}
-	var title, line2 string
-	sourceLabel := workflowBannerSourceLabel(r.Source)
-	switch {
-	case r.failed:
-		box = box.BorderForeground(activeTheme.errorFG)
-		title = errStyle.Render("workflow failed: ") + r.Workflow.Name
-		reason := r.failedReason
-		if reason == "" {
-			reason = "step error"
-		}
-		line2 = dimStyle.Render(joinHintClauses(
-			sourceLabel,
-			fmt.Sprintf("step %d", r.StepIdx+1),
-			reason,
-			"r to retry",
-			returnClause,
-			closeClause,
-		))
-	case r.done:
-		box = box.BorderForeground(activeTheme.accent)
-		title = promptStyle.Render("✓ workflow complete: ") + r.Workflow.Name
-		if returnClause == "" {
-			returnClause = "enter to close"
-		}
-		line2 = dimStyle.Render(joinHintClauses(
-			sourceLabel,
-			fmt.Sprintf("%d step(s)", len(r.Workflow.Steps)),
-			returnClause,
-		))
-	default:
-		box = box.BorderForeground(activeTheme.accent)
-		title, line2 = m.workflowRunningBannerLines(sourceLabel, cancelClause)
-	}
-	return box.Render(title + "\n" + line2)
-}
-
-// workflowRunningBannerLines builds the two banner lines for the active
-// (not done/failed) state. Inside a loop the title surfaces the loop's
-// name, the current iteration, and the running inner step; the tail
-// re-prompt count is shown so the user can see the runner hammering a
-// step that hasn't registered a loop decision.
-func (m model) workflowRunningBannerLines(sourceLabel, cancelClause string) (title, line2 string) {
-	r := m.workflowRun
-	stepName, stepProvider, stepModel := currentWorkflowStepMeta(r)
-	if stepName == "" {
-		stepName = "(unnamed)"
-	}
-	stepLabel := stepName
-	if r.StepIdx < len(r.Workflow.Steps) {
-		top := r.Workflow.Steps[r.StepIdx]
-		if r.loop != nil && top.IsLoop() && r.loop.innerIdx < len(top.Steps) {
-			loopName := top.Name
-			if loopName == "" {
-				loopName = "loop"
-			}
-			stepLabel = fmt.Sprintf("⟳ %s · iter %d/%d · %s",
-				loopName, r.loop.iteration, top.EffectiveMaxIterations(), stepName)
-			if r.loop.retry > 0 {
-				stepLabel += fmt.Sprintf(" · re-prompt #%d", r.loop.retry)
-			}
-		} else {
-			if r.linearRetry > 0 {
-				stepLabel += fmt.Sprintf(" · re-prompt #%d", r.linearRetry)
-			}
-		}
-	}
-	runMeta := stepProvider
-	if stepModel != "" {
-		runMeta += "/" + stepModel
-	}
-	title = promptStyle.Render("▸ workflow ") + r.Workflow.Name +
-		dimStyle.Render(fmt.Sprintf(" · step %d/%d: %s", r.StepIdx+1, len(r.Workflow.Steps), stepLabel))
-	line2 = dimStyle.Render(joinHintClauses(sourceLabel, runMeta, cancelClause))
-	return title, line2
 }
 
 func (m model) todoBlock() string {
