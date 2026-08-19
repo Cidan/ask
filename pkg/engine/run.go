@@ -257,10 +257,12 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		return nil, fmt.Errorf("failed to convert tools to ADK: %w", err)
 	}
 
-	systemPrompt := BuildSystemPrompt(PromptOptions{
-		Cwd:        opts.Cwd,
-		InWorkflow: false,
-	})
+	instructionProvider := func(ctx agent.ReadonlyContext) (string, error) {
+		return BuildSystemPrompt(PromptOptions{
+			Cwd:        opts.Cwd,
+			InWorkflow: false,
+		}), nil
+	}
 
 	genConfig := &genai.GenerateContentConfig{
 		MaxOutputTokens: int32(providers.MaxOutputTokensGemini),
@@ -279,7 +281,7 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	agentInstance, err := llmagent.New(llmagent.Config{
 		Name:                  "ask_coder",
 		Model:                 llm,
-		Instruction:           systemPrompt,
+		InstructionProvider:   instructionProvider,
 		Tools:                 adkTools,
 		GenerateContentConfig: genConfig,
 	})

@@ -29,6 +29,7 @@ type SessionArgs struct {
 type Turn struct {
 	Text  string
 	Files []FilePart
+	Done  chan struct{}
 }
 
 type Session struct {
@@ -39,6 +40,7 @@ type Session struct {
 	modelID       string
 	tools         []Tool
 	messages      []Message
+	lastResponse  string
 	sendCh        chan Turn
 	closed        chan struct{}
 	closeOnce     sync.Once
@@ -88,10 +90,20 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 	}
 
 	adkTools, _ := AsADKTools(tools)
+	instructionProvider := func(ctx agent.ReadonlyContext) (string, error) {
+		if system != "" {
+			return system, nil
+		}
+		return BuildSystemPrompt(PromptOptions{
+			Cwd:        args.Cwd,
+			InWorkflow: args.InWorkflow,
+		}), nil
+	}
+
 	agentInstance, err := llmagent.New(llmagent.Config{
 		Name:                  "ask_coder",
 		Model:                 llm,
-		Instruction:           system,
+		InstructionProvider:   instructionProvider,
 		Tools:                 adkTools,
 		GenerateContentConfig: genConfig,
 	})
@@ -156,6 +168,55 @@ func (s *Session) QueueTurn(text string, files ...[]FilePart) error {
 	}
 }
 
+// QueueTurnSync sends a turn to the session and blocks until turn execution is completed.
+func (s *Session) QueueTurnSync(ctx context.Context, text string, files ...[]FilePart) error {
+	done := make(chan struct{})
+	turn := Turn{Text: text, Done: done}
+	for _, f := range files {
+		turn.Files = append(turn.Files, f...)
+	}
+	select {
+	case <-s.closed:
+		return errors.New("session is closed")
+	default:
+	}
+	select {
+	case s.sendCh <- turn:
+	case <-s.closed:
+		return errors.New("session is closed")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		s.InterruptTurn()
+		return ctx.Err()
+	case <-s.closed:
+		return errors.New("session is closed")
+	}
+}
+
+func (s *Session) SessionID() string {
+	return s.sessionID
+}
+
+func (s *Session) Messages() []Message {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	out := make([]Message, len(s.messages))
+	copy(out, s.messages)
+	return out
+}
+
+func (s *Session) LastResponse() string {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	return s.lastResponse
+}
+
 func (s *Session) run() {
 	first := true
 	for {
@@ -185,6 +246,9 @@ func (s *Session) runTurn(turn Turn) {
 	s.turnMu.Unlock()
 
 	defer func() {
+		if turn.Done != nil {
+			close(turn.Done)
+		}
 		s.turnMu.Lock()
 		s.turnCancel = nil
 		s.turnMu.Unlock()
@@ -341,6 +405,9 @@ func (s *Session) runTurn(turn Turn) {
 	}
 
 	respText := finalResponseText.String()
+	s.turnMu.Lock()
+	s.lastResponse = respText
+	s.turnMu.Unlock()
 	s.Emit(DoneEvent{
 		BaseEvent: BaseEvent{TabID: s.args.TabID},
 		Result: ResultSummary{

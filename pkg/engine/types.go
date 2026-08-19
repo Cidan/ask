@@ -44,10 +44,18 @@ type Tool interface {
 	Run(ctx context.Context, args map[string]any) (ToolResponse, error)
 }
 
-// AsADKTool converts a native ask Tool into an ADK Tool.
+// AsADKTool converts an ask Tool into an ADK Tool.
 func AsADKTool(t Tool) (tool.Tool, error) {
 	if t == nil {
 		return nil, nil
+	}
+	if adkProvider, ok := t.(interface{ ADKTool() tool.Tool }); ok {
+		if at := adkProvider.ADKTool(); at != nil {
+			return at, nil
+		}
+	}
+	if at, ok := t.(tool.Tool); ok {
+		return at, nil
 	}
 	info := t.Info()
 	var inputSchema *jsonschema.Schema

@@ -111,6 +111,11 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 	if p.spec.MaxOutputTokens != nil {
 		session.maxOutputTokens = p.spec.MaxOutputTokens(modelID)
 	}
+	if p.spec.BuildModel != nil {
+		if llm, err := p.spec.BuildModel(context.Background(), toPkgConfig(cfg), modelID); err == nil {
+			session.model = llm
+		}
+	}
 	session.retryMaxRetries, session.retryInitialDelay, session.retryBackoffFactor = agentRetryOptions(cfg)
 
 	switch {

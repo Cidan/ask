@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/Cidan/ask/pkg/memory"
+	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 )
 
@@ -51,8 +52,15 @@ type MemoryAwareTool struct {
 
 func (m *MemoryAwareTool) Name() string                             { return m.Inner.Name() }
 func (m *MemoryAwareTool) Description() string                      { return m.Inner.Description() }
+func (m *MemoryAwareTool) IsLongRunning() bool                      { return false }
 func (m *MemoryAwareTool) Info() ToolInfo                           { return m.Inner.Info() }
 func (m *MemoryAwareTool) Declaration() *genai.FunctionDeclaration { return m.Inner.Declaration() }
+func (m *MemoryAwareTool) ADKTool() tool.Tool {
+	if at, ok := m.Inner.(interface{ ADKTool() tool.Tool }); ok {
+		return at.ADKTool()
+	}
+	return m
+}
 
 // WrapFileToolsWithMemory decorates read, edit, and write tools with memory recall.
 func WrapFileToolsWithMemory(tools []Tool, cwd string) []Tool {
