@@ -524,6 +524,7 @@ func (m model) renderResponse(raw string) string {
 }
 
 func (m *model) appendHistory(entry string) {
+	m.responseActive = false
 	m.history = append(m.history, historyEntry{kind: histPrerendered, text: entry})
 }
 
@@ -532,6 +533,7 @@ func (m *model) appendResponse(raw string) {
 }
 
 func (m *model) appendUser(text string) {
+	m.responseActive = false
 	m.history = append(m.history, historyEntry{kind: histUser, text: text})
 }
 

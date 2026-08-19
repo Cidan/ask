@@ -64,13 +64,120 @@ func TestUpdate_AssistantTextMsgBuffersInQuietMode(t *testing.T) {
 	if len(m2.turnBuffer) != 2 || m2.turnBuffer[1] != "second" {
 		t.Errorf("turnBuffer=%v want [first second]", m2.turnBuffer)
 	}
-	// Flush buffer — emits last.
+	// Flush buffer — emits combined text.
 	m3, _ := runUpdate(t, m2, turnCompleteMsg{proc: m2.proc})
-	if len(m3.history) != 1 || m3.history[0].kind != histResponse || m3.history[0].text != "second" {
-		t.Errorf("flush should emit last text as response; got %+v", m3.history)
+	if len(m3.history) != 1 || m3.history[0].kind != histResponse || m3.history[0].text != "firstsecond" {
+		t.Errorf("flush should emit combined text as response; got %+v", m3.history)
 	}
 	if m3.busy() {
 		t.Errorf("turnCompleteMsg should clear busy")
+	}
+}
+
+func TestUpdate_AssistantTextMsgStreamingInPlaceNonQuiet(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.quietMode = false
+
+	m1, _ := runUpdate(t, m, assistantTextMsg{text: "# Heading\n", proc: m.proc})
+	if len(m1.history) != 1 {
+		t.Fatalf("want 1 history entry, got %d", len(m1.history))
+	}
+	if m1.history[0].text != "# Heading\n" {
+		t.Fatalf("entry text = %q, want %q", m1.history[0].text, "# Heading\n")
+	}
+
+	// Pre-populate render cache on history[0] to test cache invalidation
+	m1.history[0].rendered = "rendered heading"
+	m1.history[0].wrapped = []string{"rendered heading"}
+
+	m2, _ := runUpdate(t, m1, assistantTextMsg{text: "Paragraph text", proc: m1.proc})
+	if len(m2.history) != 1 {
+		t.Fatalf("want 1 history entry after second delta, got %d", len(m2.history))
+	}
+	if m2.history[0].text != "# Heading\nParagraph text" {
+		t.Fatalf("entry text = %q, want %q", m2.history[0].text, "# Heading\nParagraph text")
+	}
+	if m2.history[0].rendered != "" || m2.history[0].wrapped != nil {
+		t.Fatalf("expected render cache to be invalidated, got rendered=%q, wrapped=%v", m2.history[0].rendered, m2.history[0].wrapped)
+	}
+}
+
+func TestUpdate_AssistantTextMsgStreamingInterruptedByToolCall(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.quietMode = false
+
+	// Stream chunk 1
+	m1, _ := runUpdate(t, m, assistantTextMsg{text: "Let me check the files.", proc: m.proc})
+	if len(m1.history) != 1 || m1.history[0].kind != histResponse {
+		t.Fatalf("want 1 response entry, got %+v", m1.history)
+	}
+
+	// Tool call arrives
+	m2, _ := runUpdate(t, m1, toolCallMsg{name: "read", input: map[string]any{"file_path": "main.go"}, proc: m1.proc})
+	if len(m2.history) != 2 || m2.history[1].kind != histPrerendered {
+		t.Fatalf("want 2 entries (response + tool call), got %+v", m2.history)
+	}
+
+	// Stream chunk 2 (new response block)
+	m3, _ := runUpdate(t, m2, assistantTextMsg{text: "The file contains:", proc: m2.proc})
+	if len(m3.history) != 3 || m3.history[2].kind != histResponse || m3.history[2].text != "The file contains:" {
+		t.Fatalf("want 3 entries (response + tool + new response), got %+v", m3.history)
+	}
+
+	// Stream chunk 3 (appends in-place to the second response block)
+	m4, _ := runUpdate(t, m3, assistantTextMsg{text: " package main", proc: m3.proc})
+	if len(m4.history) != 3 || m4.history[2].text != "The file contains: package main" {
+		t.Fatalf("want 3 entries with combined second response, got %+v", m4.history)
+	}
+}
+
+func TestUpdate_QuietModeFlushesMultipleChunksAndClears(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.quietMode = true
+
+	chunks := []string{
+		"# Summary\n\n",
+		"- Item 1\n",
+		"- Item 2\n",
+		"- Item 3\n\n",
+		"All done!",
+	}
+	cur := m
+	for _, ch := range chunks {
+		cur, _ = runUpdate(t, cur, assistantTextMsg{text: ch, proc: cur.proc})
+	}
+
+	if len(cur.history) != 0 {
+		t.Fatalf("expected 0 history entries before flush, got %d", len(cur.history))
+	}
+	if len(cur.turnBuffer) != len(chunks) {
+		t.Fatalf("turnBuffer len = %d, want %d", len(cur.turnBuffer), len(chunks))
+	}
+
+	flushed, _ := runUpdate(t, cur, turnCompleteMsg{proc: cur.proc})
+	if len(flushed.history) != 1 {
+		t.Fatalf("expected 1 history entry after flush, got %d", len(flushed.history))
+	}
+	expected := "# Summary\n\n- Item 1\n- Item 2\n- Item 3\n\nAll done!"
+	if flushed.history[0].text != expected {
+		t.Fatalf("history[0].text = %q, want %q", flushed.history[0].text, expected)
+	}
+	if flushed.turnBuffer != nil {
+		t.Fatalf("turnBuffer should be nil after flush, got %v", flushed.turnBuffer)
+	}
+}
+
+func TestUpdate_QuietModeEmptyBufferNoOp(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.quietMode = true
+
+	m2, _ := runUpdate(t, m, turnCompleteMsg{proc: m.proc})
+	if len(m2.history) != 0 {
+		t.Fatalf("expected 0 history entries for empty turn buffer, got %d", len(m2.history))
 	}
 }
 
