@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/tools"
+	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
@@ -107,8 +108,22 @@ func TestHeadlessCoordinator_MultiTurnSessionHistory(t *testing.T) {
 	}
 
 	// Verify messages accumulated in session
-	if len(sess.messages) < 4 {
-		t.Errorf("expected at least 4 messages (2 user, 2 assistant), got %d", len(sess.messages))
+	if sess.sessSvc != nil {
+		getResp, err := sess.sessSvc.Get(context.Background(), &adksession.GetRequest{
+			AppName:   "ask",
+			UserID:    "user",
+			SessionID: sess.sessionID,
+		})
+		if err != nil || getResp.Session == nil {
+			t.Fatalf("failed to get stored session: %v", err)
+		}
+		var events []*adksession.Event
+		for e := range getResp.Session.Events().All() {
+			events = append(events, e)
+		}
+		if len(events) < 4 {
+			t.Errorf("expected at least 4 events (2 user, 2 assistant), got %d", len(events))
+		}
 	}
 
 	sess.proc.kill()

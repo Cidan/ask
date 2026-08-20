@@ -68,7 +68,6 @@ type agentSession struct {
 	sessionID string
 	store     *agentSessionStore
 	sessSvc   session.Service
-	messages  []engine.Message
 
 	retryMaxRetries    int
 	retryInitialDelay  time.Duration
@@ -328,12 +327,11 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		genaiConfig.ThinkingConfig = s.callOpts.ThinkingConfig
 	}
 
-	instructionProvider := func(ctx agent.ReadonlyContext) (string, error) {
-		s.sysMu.RLock()
-		sys := s.system
-		s.sysMu.RUnlock()
-		return sys, nil
-	}
+	instructionProvider := engine.BuildInstructionProvider(engine.PromptOptions{
+		Cwd:          s.args.Cwd,
+		InWorkflow:   s.args.InWorkflow,
+		SystemPrompt: s.system,
+	})
 
 	llm := s.model
 	if llm == nil {
@@ -413,14 +411,14 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		return
 	}
 
-	userMsg := engine.NewUserMessage(turn.text, turn.files...)
-	s.messages = append(s.messages, userMsg)
-
-	adkUserMsg := userMsg.ToGenAIContent()
+	adkUserMsg := genai.NewContentFromText(turn.text, genai.RoleUser)
+	for _, f := range turn.files {
+		if len(f.Data) > 0 {
+			adkUserMsg.Parts = append(adkUserMsg.Parts, genai.NewPartFromBytes(f.Data, f.MIMEType))
+		}
+	}
 
 	var finalResponseText strings.Builder
-	var turnThoughts []engine.ThoughtPart
-	var turnToolCalls []engine.ToolCallPart
 	var latestThoughtSig []byte
 
 	displayNames := make(map[string]string)
@@ -466,30 +464,17 @@ func (s *agentSession) runTurn(turn agentTurn) {
 					if len(part.ThoughtSignature) > 0 {
 						latestThoughtSig = part.ThoughtSignature
 					}
-					turnThoughts = append(turnThoughts, engine.ThoughtPart{
-						Text:      part.Text,
-						Signature: part.ThoughtSignature,
-					})
 					s.emit(streamStatusMsg{status: "thinking…"})
 				} else if part.Text != "" {
 					if event.LLMResponse.Partial {
 						finalResponseText.WriteString(part.Text)
 						s.emit(assistantTextMsg{text: part.Text})
 					} else {
-						// ADK calls GenerateContent with stream=false, so Partial is always
-						// false for agentic turns. We must emit every non-thought text part —
-						// the model may produce multiple non-partial events per turn (e.g. one
-						// for thoughts + one for the final response text), and we cannot gate
-						// on finalResponseText.Len()==0 or we drop all but the first.
 						finalResponseText.WriteString(part.Text)
 						s.emit(assistantTextMsg{text: part.Text})
 					}
 				}
 				if part.FunctionCall != nil {
-					sig := part.ThoughtSignature
-					if len(sig) == 0 {
-						sig = latestThoughtSig
-					}
 					inputMap := part.FunctionCall.Args
 					name := part.FunctionCall.Name
 					if name == "invoke_tool" {
@@ -501,16 +486,6 @@ func (s *agentSession) runTurn(turn agentTurn) {
 						backgroundCalls[part.FunctionCall.Name] = true
 					}
 
-					id := ""
-					if part.FunctionCall != nil {
-						id = part.FunctionCall.ID
-					}
-					turnToolCalls = append(turnToolCalls, engine.ToolCallPart{
-						ID:               id,
-						Name:             part.FunctionCall.Name,
-						Args:             part.FunctionCall.Args,
-						ThoughtSignature: sig,
-					})
 					s.emit(toolCallMsg{
 						name:       name,
 						input:      inputMap,
@@ -541,34 +516,12 @@ func (s *agentSession) runTurn(turn agentTurn) {
 						isError:    isErr,
 						background: backgroundCalls[part.FunctionResponse.Name],
 					})
-
-					if len(turnToolCalls) > 0 {
-						assistantMsg := engine.NewAssistantMessage("", turnThoughts, turnToolCalls)
-						s.messages = append(s.messages, assistantMsg)
-						turnThoughts = nil
-						turnToolCalls = nil
-					}
-
-					tr := engine.ToolResultPart{
-						ID:      part.FunctionResponse.ID,
-						Name:    part.FunctionResponse.Name,
-						Content: resStr,
-						IsError: isErr,
-					}
-					toolResultMsg := engine.NewToolResultMessage(tr)
-					s.messages = append(s.messages, toolResultMsg)
 				}
 			}
 		}
 	}
 
-	rawText := finalResponseText.String()
-	if len(turnThoughts) > 0 || len(turnToolCalls) > 0 || rawText != "" {
-		assistantMsg := engine.NewAssistantMessage(rawText, turnThoughts, turnToolCalls)
-		s.messages = append(s.messages, assistantMsg)
-	}
-
-	s.persist()
+	_ = latestThoughtSig
 
 	respText := strings.TrimSpace(finalResponseText.String())
 	s.emit(providerDoneMsg{
@@ -578,15 +531,6 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		},
 	})
 	s.emit(turnCompleteMsg{})
-}
-
-func (s *agentSession) persist() {
-	if s.store == nil || s.sessionID == "" {
-		return
-	}
-	if err := s.store.save(s.sessionID, s.args.Cwd, s.messages); err != nil {
-		debugLog("agent session persist: %v", err)
-	}
 }
 
 func isAgentCancel(err error) bool {

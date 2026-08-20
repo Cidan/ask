@@ -13,6 +13,7 @@ import (
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/memory"
 	"github.com/Cidan/ask/pkg/providers"
+	"google.golang.org/adk/v2/agent"
 )
 
 // AgentCoderPrompt is the static head of the harness system prompt.
@@ -374,6 +375,7 @@ type PromptOptions struct {
 	InWorkflow          bool
 	GitStatusFn         func(string) string
 	DisableSkillsPrompt bool
+	SystemPrompt        string
 }
 
 // AgentContextFiles loads the project's instruction files
@@ -521,4 +523,51 @@ func BuildSystemPrompt(opts PromptOptions) string {
 	}))
 
 	return b.String()
+}
+
+// BuildInstructionProvider creates an ADK agent.InstructionProvider that returns the
+// base system prompt combined with any dynamic context or state deltas from ctx.ReadonlyState().
+func BuildInstructionProvider(opts PromptOptions) func(ctx agent.ReadonlyContext) (string, error) {
+	basePrompt := opts.SystemPrompt
+	if basePrompt == "" {
+		basePrompt = BuildSystemPrompt(opts)
+	}
+
+	return func(ctx agent.ReadonlyContext) (string, error) {
+		if ctx == nil {
+			return basePrompt, nil
+		}
+		state := ctx.ReadonlyState()
+		if state == nil {
+			return basePrompt, nil
+		}
+
+		var dynamicSuffix strings.Builder
+		if reminder, err := state.Get("system_reminder"); err == nil && reminder != nil {
+			if remStr, ok := reminder.(string); ok && strings.TrimSpace(remStr) != "" {
+				dynamicSuffix.WriteString("\n\n<system_reminder>\n")
+				dynamicSuffix.WriteString(strings.TrimSpace(remStr))
+				dynamicSuffix.WriteString("\n</system_reminder>")
+			}
+		}
+		if incomplete, err := state.Get("step_incomplete"); err == nil && incomplete != nil {
+			if incStr, ok := incomplete.(string); ok && strings.TrimSpace(incStr) != "" {
+				dynamicSuffix.WriteString("\n\n<step_incomplete>\n")
+				dynamicSuffix.WriteString(strings.TrimSpace(incStr))
+				dynamicSuffix.WriteString("\n</step_incomplete>")
+			}
+		}
+		if extraPrompt, err := state.Get("extra_instructions"); err == nil && extraPrompt != nil {
+			if extraStr, ok := extraPrompt.(string); ok && strings.TrimSpace(extraStr) != "" {
+				dynamicSuffix.WriteString("\n\n<extra_instructions>\n")
+				dynamicSuffix.WriteString(strings.TrimSpace(extraStr))
+				dynamicSuffix.WriteString("\n</extra_instructions>")
+			}
+		}
+
+		if dynamicSuffix.Len() > 0 {
+			return basePrompt + dynamicSuffix.String(), nil
+		}
+		return basePrompt, nil
+	}
 }

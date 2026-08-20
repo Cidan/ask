@@ -593,3 +593,43 @@ func TestEngineRun_ADKMemoryIntegration(t *testing.T) {
 		t.Errorf("unexpected response: %s", res.Response)
 	}
 }
+
+func TestEngineRun_DynamicInstructionProvider(t *testing.T) {
+	isolateTestHome(t)
+	tmpCwd := t.TempDir()
+
+	var capturedInstruction string
+	origBuilder := ModelBuilder
+	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+		return &mockLLM{
+			name: modelID,
+			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+				if req != nil && req.Config != nil && req.Config.SystemInstruction != nil {
+					for _, p := range req.Config.SystemInstruction.Parts {
+						if p != nil && p.Text != "" {
+							capturedInstruction += p.Text
+						}
+					}
+				}
+				return mockLLMSequence(textResponse("Acknowledged dynamic instruction"))
+			},
+		}, nil
+	}
+	defer func() { ModelBuilder = origBuilder }()
+
+	res, err := Run(context.Background(), RunOptions{
+		Prompt:   "Verify system instructions",
+		Cwd:      tmpCwd,
+		Provider: "vertex",
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	if res.Response != "Acknowledged dynamic instruction" {
+		t.Errorf("unexpected response: %s", res.Response)
+	}
+	if capturedInstruction == "" {
+		t.Errorf("expected non-empty dynamic system instruction captured by model")
+	}
+}

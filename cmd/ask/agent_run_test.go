@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/tools"
+	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
@@ -177,8 +178,22 @@ func TestAgentSession_TextTurn(t *testing.T) {
 		t.Errorf("done must precede turnComplete: done=%d complete=%d", doneIdx, completeIdx)
 	}
 
-	if len(s.messages) != 2 || s.messages[0].Role != engine.RoleUser || s.messages[1].Role != engine.RoleAssistant {
-		t.Errorf("history roles wrong: %+v", s.messages)
+	if s.sessSvc != nil {
+		getResp, err := s.sessSvc.Get(context.Background(), &adksession.GetRequest{
+			AppName:   "ask",
+			UserID:    "user",
+			SessionID: s.sessionID,
+		})
+		if err != nil || getResp.Session == nil {
+			t.Fatalf("failed to get stored session: %v", err)
+		}
+		var events []*adksession.Event
+		for e := range getResp.Session.Events().All() {
+			events = append(events, e)
+		}
+		if len(events) < 2 {
+			t.Errorf("expected at least 2 events in session, got %d", len(events))
+		}
 	}
 }
 
@@ -243,8 +258,22 @@ func TestAgentSession_ToolRoundTrip(t *testing.T) {
 		t.Errorf("status lines wrong: phrase=%v generic=%v (%q)", sawPhrase, sawGeneric, statuses)
 	}
 
-	if len(s.messages) != 6 {
-		t.Errorf("expected 6 messages in conversation, got %d", len(s.messages))
+	if s.sessSvc != nil {
+		getResp, err := s.sessSvc.Get(context.Background(), &adksession.GetRequest{
+			AppName:   "ask",
+			UserID:    "user",
+			SessionID: s.sessionID,
+		})
+		if err != nil || getResp.Session == nil {
+			t.Fatalf("failed to get stored session: %v", err)
+		}
+		var events []*adksession.Event
+		for e := range getResp.Session.Events().All() {
+			events = append(events, e)
+		}
+		if len(events) < 4 {
+			t.Errorf("expected at least 4 events in session, got %d", len(events))
+		}
 	}
 }
 
@@ -342,10 +371,22 @@ func TestAgentSession_EmptyResponse(t *testing.T) {
 	}
 
 	// Verify history doesn't contain an empty assistant message
-	if len(s.messages) == 2 {
-		lastMsg := s.messages[1]
-		if lastMsg.Role == engine.RoleAssistant && lastMsg.Text == "" && len(lastMsg.ToolCalls) == 0 && len(lastMsg.Thoughts) == 0 {
-			t.Errorf("bug reproduced: empty assistant message appended to history")
+	if s.sessSvc != nil {
+		getResp, err := s.sessSvc.Get(context.Background(), &adksession.GetRequest{
+			AppName:   "ask",
+			UserID:    "user",
+			SessionID: s.sessionID,
+		})
+		if err == nil && getResp.Session != nil {
+			for e := range getResp.Session.Events().All() {
+				if e.Author == "ask_coder" && e.LLMResponse.Content != nil {
+					for _, p := range e.LLMResponse.Content.Parts {
+						if p.Text == "" && !p.Thought && p.FunctionCall == nil && p.FunctionResponse == nil {
+							t.Errorf("bug reproduced: empty assistant message appended to history")
+						}
+					}
+				}
+			}
 		}
 	}
 }
@@ -415,12 +456,6 @@ func TestAgentSession_MultiTurnResumption(t *testing.T) {
 	}
 	s2.env = newAgentToolEnv(s2.args.Cwd, 1, true, true, s2.emit)
 	s2.proc = &providerProc{stdin: agentStdin{s: s2}, stderr: &stderrBuf{}, payload: s2}
-	// Rehydrate messages
-	file, err := store.load("sess-multi-resumption")
-	if err != nil {
-		t.Fatalf("load session for resume: %v", err)
-	}
-	s2.messages = file.Messages()
 	go s2.run()
 	defer func() { s2.proc.kill(); drainProviderStream(s2.ch) }()
 

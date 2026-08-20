@@ -39,7 +39,6 @@ type Session struct {
 	contextWindow int64
 	modelID       string
 	tools         []Tool
-	messages      []Message
 	lastResponse  string
 	sendCh        chan Turn
 	closed        chan struct{}
@@ -90,15 +89,11 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 	}
 
 	adkTools, _ := AsADKTools(tools)
-	instructionProvider := func(ctx agent.ReadonlyContext) (string, error) {
-		if system != "" {
-			return system, nil
-		}
-		return BuildSystemPrompt(PromptOptions{
-			Cwd:        args.Cwd,
-			InWorkflow: args.InWorkflow,
-		}), nil
-	}
+	instructionProvider := BuildInstructionProvider(PromptOptions{
+		Cwd:          args.Cwd,
+		InWorkflow:   args.InWorkflow,
+		SystemPrompt: system,
+	})
 
 	agentInstance, err := llmagent.New(llmagent.Config{
 		Name:                  "ask_coder",
@@ -226,9 +221,7 @@ func (s *Session) Messages() []Message {
 			return MessagesFromEvents(events)
 		}
 	}
-	out := make([]Message, len(s.messages))
-	copy(out, s.messages)
-	return out
+	return nil
 }
 
 func (s *Session) LastResponse() string {
@@ -301,13 +294,7 @@ func (s *Session) runTurn(turn Turn) {
 		}
 	}
 
-	userMessageObj := NewUserMessage(turn.Text, turn.Files...)
-	s.messages = append(s.messages, userMessageObj)
-
 	var finalResponseText strings.Builder
-	var currentTurnThoughts []ThoughtPart
-	var currentTurnToolCalls []ToolCallPart
-	var currentTurnToolResults []ToolResultPart
 
 	for event, err := range s.runner.Run(ctx, "user", s.sessionID, userMsg, agent.RunConfig{}) {
 		if err != nil {
@@ -342,10 +329,7 @@ func (s *Session) runTurn(turn Turn) {
 					continue
 				}
 				if part.Thought {
-					currentTurnThoughts = append(currentTurnThoughts, ThoughtPart{
-						Text:      part.Text,
-						Signature: part.ThoughtSignature,
-					})
+					// Thought processed
 				} else if part.Text != "" {
 					if event.LLMResponse.Partial {
 						s.Emit(TextDeltaEvent{
@@ -355,17 +339,10 @@ func (s *Session) runTurn(turn Turn) {
 					}
 				}
 				if part.FunctionCall != nil {
-					tc := ToolCallPart{
-						ID:               part.FunctionCall.ID,
-						Name:             part.FunctionCall.Name,
-						Args:             part.FunctionCall.Args,
-						ThoughtSignature: part.ThoughtSignature,
-					}
-					currentTurnToolCalls = append(currentTurnToolCalls, tc)
 					s.Emit(ToolCallEvent{
 						BaseEvent: BaseEvent{TabID: s.args.TabID},
-						ToolName:  tc.Name,
-						Input:     tc.Args,
+						ToolName:  part.FunctionCall.Name,
+						Input:     part.FunctionCall.Args,
 					})
 				}
 				if part.FunctionResponse != nil {
@@ -377,18 +354,11 @@ func (s *Session) runTurn(turn Turn) {
 					if errFlag, ok := part.FunctionResponse.Response["is_error"].(bool); ok {
 						isErr = errFlag
 					}
-					tr := ToolResultPart{
-						ID:      part.FunctionResponse.ID,
-						Name:    part.FunctionResponse.Name,
-						Content: resStr,
-						IsError: isErr,
-					}
-					currentTurnToolResults = append(currentTurnToolResults, tr)
 					s.Emit(ToolResultEvent{
 						BaseEvent: BaseEvent{TabID: s.args.TabID},
-						ToolName:  tr.Name,
-						Output:    tr.Content,
-						IsError:   tr.IsError,
+						ToolName:  part.FunctionResponse.Name,
+						Output:    resStr,
+						IsError:   isErr,
 					})
 				}
 			}
@@ -411,15 +381,6 @@ func (s *Session) runTurn(turn Turn) {
 					BaseEvent: BaseEvent{TabID: s.args.TabID},
 					Text:      txt,
 				})
-			}
-			if len(currentTurnThoughts) > 0 || len(currentTurnToolCalls) > 0 || txt != "" {
-				s.messages = append(s.messages, NewAssistantMessage(txt, currentTurnThoughts, currentTurnToolCalls))
-				currentTurnThoughts = nil
-				currentTurnToolCalls = nil
-			}
-			if len(currentTurnToolResults) > 0 {
-				s.messages = append(s.messages, NewToolResultMessage(currentTurnToolResults...))
-				currentTurnToolResults = nil
 			}
 		}
 	}

@@ -1,10 +1,15 @@
 package engine
 
 import (
+	"context"
+	"iter"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
 )
 
 func stubGitStatus(t *testing.T, out string) {
@@ -205,5 +210,111 @@ func TestBuildSystemPrompt_ContextLinks(t *testing.T) {
 	}
 	if !strings.Contains(prompt, `path="`+filepath.Join(cwd, "docs", "guide.md")+`"`) {
 		t.Error("linked doc path must appear in the prompt")
+	}
+}
+
+type mockReadonlyContext struct {
+	context.Context
+	state session.ReadonlyState
+}
+
+func (m *mockReadonlyContext) AppName() string {
+	return "ask"
+}
+func (m *mockReadonlyContext) UserID() string {
+	return "user"
+}
+func (m *mockReadonlyContext) Branch() string {
+	return ""
+}
+func (m *mockReadonlyContext) ReadonlyState() session.ReadonlyState {
+	return m.state
+}
+func (m *mockReadonlyContext) UserContent() *genai.Content {
+	return nil
+}
+func (m *mockReadonlyContext) AgentName() string {
+	return "ask_coder"
+}
+func (m *mockReadonlyContext) InvocationID() string {
+	return "inv-1"
+}
+func (m *mockReadonlyContext) SessionID() string {
+	return "ses-1"
+}
+
+type mockReadonlyState struct {
+	data map[string]any
+}
+
+func (m *mockReadonlyState) Get(key string) (any, error) {
+	if v, ok := m.data[key]; ok {
+		return v, nil
+	}
+	return nil, session.ErrStateKeyNotExist
+}
+
+func (m *mockReadonlyState) All() iter.Seq2[string, any] {
+	return func(yield func(string, any) bool) {
+		for k, v := range m.data {
+			if !yield(k, v) {
+				return
+			}
+		}
+	}
+}
+
+func TestBuildInstructionProvider_DynamicState(t *testing.T) {
+	cwd := t.TempDir()
+	opts := PromptOptions{
+		Cwd:          cwd,
+		SystemPrompt: "Base system prompt.",
+	}
+	provider := BuildInstructionProvider(opts)
+
+	// Test with nil context
+	resNil, err := provider(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resNil != "Base system prompt." {
+		t.Errorf("expected base prompt, got %q", resNil)
+	}
+
+	// Test with empty state
+	ctxEmpty := &mockReadonlyContext{Context: context.Background(), state: &mockReadonlyState{data: map[string]any{}}}
+	resEmpty, err := provider(ctxEmpty)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resEmpty != "Base system prompt." {
+		t.Errorf("expected base prompt, got %q", resEmpty)
+	}
+
+	// Test with dynamic state reminders and extra instructions
+	stateWithDeltas := &mockReadonlyState{
+		data: map[string]any{
+			"system_reminder":    "Remember to run tests before finishing.",
+			"step_incomplete":    "Step validation requires reviewing diff.",
+			"extra_instructions": "Follow Go formatting rules strictly.",
+		},
+	}
+	ctxWithDeltas := &mockReadonlyContext{Context: context.Background(), state: stateWithDeltas}
+	resDeltas, err := provider(ctxWithDeltas)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.HasPrefix(resDeltas, "Base system prompt.") {
+		t.Errorf("expected prompt to start with base prompt, got %q", resDeltas)
+	}
+	if !strings.Contains(resDeltas, "<system_reminder>\nRemember to run tests before finishing.\n</system_reminder>") {
+		t.Errorf("missing system_reminder block in %q", resDeltas)
+	}
+	if !strings.Contains(resDeltas, "<step_incomplete>\nStep validation requires reviewing diff.\n</step_incomplete>") {
+		t.Errorf("missing step_incomplete block in %q", resDeltas)
+	}
+	if !strings.Contains(resDeltas, "<extra_instructions>\nFollow Go formatting rules strictly.\n</extra_instructions>") {
+		t.Errorf("missing extra_instructions block in %q", resDeltas)
 	}
 }
