@@ -14,7 +14,12 @@ import (
 	"github.com/Cidan/ask/pkg/config"
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	_ "github.com/mattn/go-sqlite3"
+	adkmemory "google.golang.org/adk/v2/memory"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
 )
+
+var _ adkmemory.Service = (*Service)(nil)
 
 var (
 	defaultMu  sync.RWMutex
@@ -254,14 +259,26 @@ func (s *Service) Recall(ctx context.Context, cwd, prompt string, k int) ([]Reca
 		pid = cwd
 	}
 
-	rows, err := db.QueryContext(ctx, `
-		SELECT p.id, p.project_id, p.text_payload, p.last_recalled_at, vec_distance_cosine(v.embedding, ?) as dist
-		FROM vec_memory v
-		JOIN project_memory p ON p.id = v.rowid
-		WHERE p.project_id = ? AND dist < 0.4
-		ORDER BY dist ASC
-		LIMIT ?
-	`, SerializeVector(emb), pid, k)
+	var rows *sql.Rows
+	if pid != "" {
+		rows, err = db.QueryContext(ctx, `
+			SELECT p.id, p.project_id, p.text_payload, p.last_recalled_at, vec_distance_cosine(v.embedding, ?) as dist
+			FROM vec_memory v
+			JOIN project_memory p ON p.id = v.rowid
+			WHERE p.project_id = ? AND dist < 0.4
+			ORDER BY dist ASC
+			LIMIT ?
+		`, SerializeVector(emb), pid, k)
+	} else {
+		rows, err = db.QueryContext(ctx, `
+			SELECT p.id, p.project_id, p.text_payload, p.last_recalled_at, vec_distance_cosine(v.embedding, ?) as dist
+			FROM vec_memory v
+			JOIN project_memory p ON p.id = v.rowid
+			WHERE dist < 0.4
+			ORDER BY dist ASC
+			LIMIT ?
+		`, SerializeVector(emb), k)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -290,6 +307,96 @@ func (s *Service) Recall(ctx context.Context, cwd, prompt string, k int) ([]Reca
 	}
 
 	return hits, nil
+}
+
+// AddSessionToMemory ingests a session's conversation turns into vector memory.
+func (s *Service) AddSessionToMemory(ctx context.Context, sess session.Session) error {
+	if s == nil || !s.IsOpen() {
+		return errors.New("memory service closed")
+	}
+	if sess == nil {
+		return nil
+	}
+
+	var cwd string
+	if state := sess.State(); state != nil {
+		if val, err := state.Get("cwd"); err == nil {
+			if str, ok := val.(string); ok {
+				cwd = str
+			}
+		}
+		if cwd == "" {
+			if val, err := state.Get("project_id"); err == nil {
+				if str, ok := val.(string); ok {
+					cwd = str
+				}
+			}
+		}
+	}
+
+	events := sess.Events()
+	if events == nil {
+		return nil
+	}
+
+	for event := range events.All() {
+		if event == nil || event.Content == nil {
+			continue
+		}
+		var textParts []string
+		for _, part := range event.Content.Parts {
+			if part == nil || part.Thought {
+				continue
+			}
+			if part.Text != "" {
+				textParts = append(textParts, part.Text)
+			}
+		}
+		if len(textParts) == 0 {
+			continue
+		}
+		fullText := strings.TrimSpace(strings.Join(textParts, "\n"))
+		if fullText == "" {
+			continue
+		}
+		if err := s.Index(ctx, cwd, fullText); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// SearchMemory searches vector memory for entries matching the request.
+func (s *Service) SearchMemory(ctx context.Context, req *adkmemory.SearchRequest) (*adkmemory.SearchResponse, error) {
+	if s == nil || !s.IsOpen() {
+		return &adkmemory.SearchResponse{}, nil
+	}
+	if req == nil || strings.TrimSpace(req.Query) == "" {
+		return &adkmemory.SearchResponse{}, nil
+	}
+
+	hits, err := s.Recall(ctx, "", req.Query, DefaultRecallK)
+	if err != nil {
+		return nil, err
+	}
+
+	entries := make([]adkmemory.Entry, 0, len(hits))
+	for _, h := range hits {
+		entries = append(entries, adkmemory.Entry{
+			ID:        fmt.Sprintf("%d", h.ID),
+			Content:   genai.NewContentFromText(h.Text, genai.RoleModel),
+			Timestamp: h.LastRecall,
+			CustomMetadata: map[string]any{
+				"project_id": h.ProjectID,
+				"distance":   h.Distance,
+			},
+		})
+	}
+
+	return &adkmemory.SearchResponse{
+		Memories: entries,
+	}, nil
 }
 
 // Sweep prunes memory records older than 30 days.

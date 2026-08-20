@@ -161,6 +161,8 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		agentJobKillTool(env),
 		agentFetchTool(env),
 		agentTodosTool(env),
+		agentLoadMemoryTool(),
+		agentPreloadMemoryTool(),
 		agentTaskTool(env,
 			func() *agentSession { return s }),
 		agentAskUserQuestionTool(env),

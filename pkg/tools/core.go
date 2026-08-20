@@ -96,7 +96,7 @@ func IsCoreTool(name string) bool {
 	case "read", "write", "edit", "glob", "grep", "ls", "bash", "job_output", "job_kill",
 		"fetch", "todos", "task", "ask_user_question", "end_turn", "search_tools", "invoke_tool",
 		"web_search", "workflow_list", "workflow_get", "workflow_create", "workflow_edit",
-		"workflow_delete", "workflow_copy", "clear_plans":
+		"workflow_delete", "workflow_copy", "clear_plans", "load_memory", "preload_memory":
 		return true
 	default:
 		return false

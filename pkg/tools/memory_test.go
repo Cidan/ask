@@ -115,3 +115,33 @@ func TestTool_MemoryAwareTool(t *testing.T) {
 		t.Errorf("did not expect memory block in glob tool output: %s", resp.Content)
 	}
 }
+
+func TestTool_LoadMemoryTool(t *testing.T) {
+	tool := LoadMemoryTool()
+	if tool == nil {
+		t.Fatal("expected non-nil LoadMemoryTool")
+	}
+	if tool.Name() != "load_memory" {
+		t.Errorf("expected tool name load_memory, got %s", tool.Name())
+	}
+	if tool.Description() == "" {
+		t.Error("expected non-empty description for LoadMemoryTool")
+	}
+	info := ExtractToolInfo(tool)
+	if info.Name != "load_memory" {
+		t.Errorf("expected ExtractToolInfo name load_memory, got %s", info.Name)
+	}
+}
+
+func TestTool_PreloadMemoryTool(t *testing.T) {
+	tool := PreloadMemoryTool()
+	if tool == nil {
+		t.Fatal("expected non-nil PreloadMemoryTool")
+	}
+	if tool.Name() != "preload_memory" {
+		t.Errorf("expected tool name preload_memory, got %s", tool.Name())
+	}
+	if tool.Description() == "" {
+		t.Error("expected non-empty description for PreloadMemoryTool")
+	}
+}

@@ -187,6 +187,8 @@ var (
 	agentSearchToolsTool     = tools.SearchToolsTool
 	agentInvokeToolTool      = tools.InvokeToolTool
 	agentWebSearchTool       = tools.WebSearchTool
+	agentLoadMemoryTool      = tools.LoadMemoryTool
+	agentPreloadMemoryTool   = tools.PreloadMemoryTool
 )
 
 const (

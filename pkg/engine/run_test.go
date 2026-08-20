@@ -5,12 +5,16 @@ import (
 	"errors"
 	"iter"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/Cidan/ask/pkg/config"
+	pkgmemory "github.com/Cidan/ask/pkg/memory"
 	"github.com/Cidan/ask/pkg/providers"
 	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/tool/loadmemorytool"
+	"google.golang.org/adk/v2/tool/preloadmemorytool"
 	"google.golang.org/genai"
 )
 
@@ -298,9 +302,9 @@ type mockCustomTool struct {
 	ran bool
 }
 
-func (m *mockCustomTool) Name() string           { return "custom_calc" }
-func (m *mockCustomTool) Description() string    { return "a custom calculation tool" }
-func (m *mockCustomTool) IsLongRunning() bool    { return false }
+func (m *mockCustomTool) Name() string        { return "custom_calc" }
+func (m *mockCustomTool) Description() string { return "a custom calculation tool" }
+func (m *mockCustomTool) IsLongRunning() bool { return false }
 func (m *mockCustomTool) Info() ToolInfo {
 	return ToolInfo{
 		Name:        "custom_calc",
@@ -532,5 +536,60 @@ func TestEngineRun_ThoughtSignaturePreservation(t *testing.T) {
 	}
 	if len(assistantMsg.ToolCalls) == 0 || string(assistantMsg.ToolCalls[0].ThoughtSignature) != string(expectedSig) {
 		t.Errorf("saved tool call thought signature mismatch: %+v", assistantMsg.ToolCalls)
+	}
+}
+
+func TestEngineRun_ADKMemoryIntegration(t *testing.T) {
+	isolateTestHome(t)
+	tmpCwd := t.TempDir()
+	dbPath := filepath.Join(tmpCwd, "engine_mem.db")
+
+	embedder := pkgmemory.NewFakeEmbedder(32)
+	_ = pkgmemory.Close()
+	defer pkgmemory.Close()
+
+	if err := pkgmemory.Open(pkgmemory.Options{DBPath: dbPath, Embedder: embedder}); err != nil {
+		t.Fatalf("pkgmemory.Open failed: %v", err)
+	}
+
+	// Index a memory in the project
+	if err := pkgmemory.Index(context.Background(), tmpCwd, "Rule: Always run tests before PR"); err != nil {
+		t.Fatalf("pkgmemory.Index failed: %v", err)
+	}
+
+	loadTool := loadmemorytool.New()
+	preloadTool := preloadmemorytool.New()
+
+	step := 0
+	origBuilder := ModelBuilder
+	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+		return &mockLLM{
+			name: modelID,
+			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+				step++
+				if step == 1 {
+					// The model decides to search long term memory using load_memory
+					return mockLLMSequence(
+						functionCallResponse("load_memory", map[string]any{"query": "PR test rules"}, nil),
+					)
+				}
+				return mockLLMSequence(textResponse("Found memory: Always run tests before PR"))
+			},
+		}, nil
+	}
+	defer func() { ModelBuilder = origBuilder }()
+
+	res, err := Run(context.Background(), RunOptions{
+		Prompt:   "What is our PR testing rule?",
+		Cwd:      tmpCwd,
+		Provider: "vertex",
+		Tools:    []Tool{loadTool, preloadTool},
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	if res.Response != "Found memory: Always run tests before PR" {
+		t.Errorf("unexpected response: %s", res.Response)
 	}
 }
