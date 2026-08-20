@@ -167,7 +167,7 @@ ADK 2.0 provides `google.golang.org/adk/v2/tool/agenttool`. `agenttool.New(agent
 
 ---
 
-### PR 5: Standard Human-In-The-Loop Confirmation via `tool/toolconfirmation`
+### PR 5: Standard Human-In-The-Loop Confirmation via `tool/toolconfirmation` (COMPLETED & MERGED - PR #130)
 
 #### Problem Statement
 Ask currently handles tool approval and permission rules through custom wrapper functions in `pkg/tools/env.go`, `pkg/engine/interaction.go`, and `cmd/ask/approval.go`. This decouples tool approval from the runner's native event stream.
@@ -193,7 +193,7 @@ ADK 2.0 provides native Human-In-The-Loop confirmation:
 
 ---
 
-### PR 6: Dynamic Instruction Interpolation via `util/instructionutil`
+### PR 6: Dynamic Instruction Interpolation via `util/instructionutil` (COMPLETED & MERGED - PR #130)
 
 #### Problem Statement
 System prompts and step instructions in `pkg/engine/prompt.go` and `pkg/workflow/plans.go` currently use manual Go string interpolation and ad-hoc concatenation to inject environment variables, reminders, and notes directories.
@@ -214,7 +214,7 @@ ADK 2.0 provides `google.golang.org/adk/v2/util/instructionutil.InjectSessionSta
 
 ---
 
-### PR 7: Session Artifact Management via `artifact.Service` & `loadartifactstool`
+### PR 7: Session Artifact Management via `artifact.Service` & `loadartifactstool` (COMPLETED & MERGED - PR #130)
 
 #### Problem Statement
 Workflows and coding agents currently write plans, diffs, and intermediate notes directly to disk under `.ask/plans/<notesDir>`. Downstream steps must know exact filesystem paths to read previous outputs, and artifacts are not tracked in session history.
@@ -238,7 +238,7 @@ ADK 2.0 provides `google.golang.org/adk/v2/artifact.Service` (`artifact.InMemory
 
 ---
 
-### PR 8: Graph-Based Workflow Engine via `google.golang.org/adk/v2/workflow`
+### PR 8: Graph-Based Workflow Engine via `google.golang.org/adk/v2/workflow` (COMPLETED & MERGED - PR #130)
 
 #### Problem Statement
 Ask's `pkg/workflow/runner.go` maintains a custom handwritten step execution loop for running workflows, tracking loop iterations, and handling step transitions. This duplicates the execution graph logic provided by ADK 2.0.
@@ -270,7 +270,7 @@ ADK 2.0 includes a comprehensive DAG workflow engine in `google.golang.org/adk/v
 - [x] **PR 2**: Self-Healing Tool Recovery via `plugin/retryandreflect` ([#129](https://github.com/Cidan/ask/pull/129))
 - [x] **PR 3**: Tool Parameter Augmentation via `plugin/functioncallmodifier` ([#129](https://github.com/Cidan/ask/pull/129))
 - [x] **PR 4**: Native Subagent Delegation via `tool/agenttool` ([#129](https://github.com/Cidan/ask/pull/129))
-- [x] **PR 5**: Standard Human-In-The-Loop Confirmation via `tool/toolconfirmation`
-- [x] **PR 6**: Dynamic Instruction Interpolation via `util/instructionutil`
-- [x] **PR 7**: Session Artifact Management via `artifact.Service` & `loadartifactstool`
-- [x] **PR 8**: Graph-Based Workflow Engine via `google.golang.org/adk/v2/workflow`
+- [x] **PR 5**: Standard Human-In-The-Loop Confirmation via `tool/toolconfirmation` ([#130](https://github.com/Cidan/ask/pull/130))
+- [x] **PR 6**: Dynamic Instruction Interpolation via `util/instructionutil` ([#130](https://github.com/Cidan/ask/pull/130))
+- [x] **PR 7**: Session Artifact Management via `artifact.Service` & `loadartifactstool` ([#130](https://github.com/Cidan/ask/pull/130))
+- [x] **PR 8**: Graph-Based Workflow Engine via `google.golang.org/adk/v2/workflow` ([#130](https://github.com/Cidan/ask/pull/130))
