@@ -62,7 +62,7 @@ Each section is designed as an independent, reviewable pull request (PR) milesto
 
 ---
 
-### PR 1: Runner Session Lifecycle & Auto-Creation (`AutoCreateSession: true`)
+### PR 1: Runner Session Lifecycle & Auto-Creation (`AutoCreateSession: true`) (COMPLETED & MERGED - PR #128)
 
 #### Problem Statement
 Currently, `pkg/engine/run.go` (lines 240-256) and `cmd/ask/agent_run.go` (lines 375-390) manually query `sessSvc.Get(...)` and, upon a not-found error, issue a manual `sessSvc.Create(...)` before instantiating `runner.New(...)`. This creates boilerplate and redundant session lookups on every single user turn.
@@ -266,7 +266,7 @@ ADK 2.0 includes a comprehensive DAG workflow engine in `google.golang.org/adk/v
 
 ## 4. Execution Checklist
 
-- [ ] **PR 1**: Runner Session Lifecycle & Auto-Creation (`AutoCreateSession: true`)
+- [x] **PR 1**: Runner Session Lifecycle & Auto-Creation (`AutoCreateSession: true`) ([#128](https://github.com/Cidan/ask/pull/128))
 - [ ] **PR 2**: Self-Healing Tool Recovery via `plugin/retryandreflect`
 - [ ] **PR 3**: Tool Parameter Augmentation via `plugin/functioncallmodifier`
 - [ ] **PR 4**: Native Subagent Delegation via `tool/agenttool`
