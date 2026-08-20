@@ -266,3 +266,14 @@ func BuildResearchAgentTool(agentInstance agent.Agent) (tool.Tool, error) {
 		SkipSummarization: true,
 	}), nil
 }
+
+// BuildNamedAgentTool constructs and wraps a named subagent as a callable ADK tool.
+func BuildNamedAgentTool(def SubagentDef, llm model.LLM, tools []tool.Tool, maxTokens int32) (tool.Tool, error) {
+	ag, err := BuildNamedSubagent(def, llm, tools, maxTokens)
+	if err != nil {
+		return nil, err
+	}
+	return agenttool.New(ag, &agenttool.Config{
+		SkipSummarization: true,
+	}), nil
+}

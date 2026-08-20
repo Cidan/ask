@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
@@ -155,6 +156,9 @@ var RunnerBuilder RunnerBuilderFunc = func(agentInstance agent.Agent, sessSvc se
 		SessionService:    sessSvc,
 		AutoCreateSession: true,
 		MemoryService:     memSvc,
+		PluginConfig: runner.PluginConfig{
+			Plugins: DefaultPlugins(),
+		},
 	})
 }
 
@@ -398,9 +402,19 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 					isErr := false
 					if res, ok := part.FunctionResponse.Response["result"].(string); ok {
 						resStr = res
+					} else if guid, ok := part.FunctionResponse.Response["reflection_guidance"].(string); ok {
+						resStr = guid
+						isErr = true
+					} else if len(part.FunctionResponse.Response) > 0 {
+						if raw, rErr := json.Marshal(part.FunctionResponse.Response); rErr == nil {
+							resStr = string(raw)
+						}
 					}
 					if errFlag, ok := part.FunctionResponse.Response["is_error"].(bool); ok {
 						isErr = errFlag
+					}
+					if rt, ok := part.FunctionResponse.Response["response_type"].(string); ok && rt == "ERROR_HANDLED_BY_REFLECT_AND_RETRY_PLUGIN" {
+						isErr = true
 					}
 					if opts.EventListener != nil {
 						opts.EventListener(ToolResultEvent{

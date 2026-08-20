@@ -267,9 +267,9 @@ ADK 2.0 includes a comprehensive DAG workflow engine in `google.golang.org/adk/v
 ## 4. Execution Checklist
 
 - [x] **PR 1**: Runner Session Lifecycle & Auto-Creation (`AutoCreateSession: true`) ([#128](https://github.com/Cidan/ask/pull/128))
-- [ ] **PR 2**: Self-Healing Tool Recovery via `plugin/retryandreflect`
-- [ ] **PR 3**: Tool Parameter Augmentation via `plugin/functioncallmodifier`
-- [ ] **PR 4**: Native Subagent Delegation via `tool/agenttool`
+- [x] **PR 2**: Self-Healing Tool Recovery via `plugin/retryandreflect` (Completed in Combined PR)
+- [x] **PR 3**: Tool Parameter Augmentation via `plugin/functioncallmodifier` (Completed in Combined PR)
+- [x] **PR 4**: Native Subagent Delegation via `tool/agenttool` (Completed in Combined PR)
 - [ ] **PR 5**: Standard Human-In-The-Loop Confirmation via `tool/toolconfirmation`
 - [ ] **PR 6**: Dynamic Instruction Interpolation via `util/instructionutil`
 - [ ] **PR 7**: Session Artifact Management via `artifact.Service` & `loadartifactstool`
