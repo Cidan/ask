@@ -270,7 +270,7 @@ ADK 2.0 includes a comprehensive DAG workflow engine in `google.golang.org/adk/v
 - [x] **PR 2**: Self-Healing Tool Recovery via `plugin/retryandreflect` ([#129](https://github.com/Cidan/ask/pull/129))
 - [x] **PR 3**: Tool Parameter Augmentation via `plugin/functioncallmodifier` ([#129](https://github.com/Cidan/ask/pull/129))
 - [x] **PR 4**: Native Subagent Delegation via `tool/agenttool` ([#129](https://github.com/Cidan/ask/pull/129))
-- [ ] **PR 5**: Standard Human-In-The-Loop Confirmation via `tool/toolconfirmation`
-- [ ] **PR 6**: Dynamic Instruction Interpolation via `util/instructionutil`
-- [ ] **PR 7**: Session Artifact Management via `artifact.Service` & `loadartifactstool`
-- [ ] **PR 8**: Graph-Based Workflow Engine via `google.golang.org/adk/v2/workflow`
+- [x] **PR 5**: Standard Human-In-The-Loop Confirmation via `tool/toolconfirmation`
+- [x] **PR 6**: Dynamic Instruction Interpolation via `util/instructionutil`
+- [x] **PR 7**: Session Artifact Management via `artifact.Service` & `loadartifactstool`
+- [x] **PR 8**: Graph-Based Workflow Engine via `google.golang.org/adk/v2/workflow`

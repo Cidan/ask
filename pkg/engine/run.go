@@ -15,6 +15,7 @@ import (
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/google/uuid"
 	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/artifact"
 	"google.golang.org/adk/v2/agent/llmagent"
 	adkmemory "google.golang.org/adk/v2/memory"
 	"google.golang.org/adk/v2/model"
@@ -156,6 +157,7 @@ var RunnerBuilder RunnerBuilderFunc = func(agentInstance agent.Agent, sessSvc se
 		SessionService:    sessSvc,
 		AutoCreateSession: true,
 		MemoryService:     memSvc,
+		ArtifactService:   artifact.InMemoryService(),
 		PluginConfig: runner.PluginConfig{
 			Plugins: DefaultPlugins(),
 		},

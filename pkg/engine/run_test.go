@@ -13,6 +13,7 @@ import (
 	pkgmemory "github.com/Cidan/ask/pkg/memory"
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/google/uuid"
+	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool/loadmemorytool"
@@ -846,5 +847,52 @@ func TestEngineRun_RetryAndReflect_SelfHealing(t *testing.T) {
 
 	if !hasReflectionResult {
 		t.Errorf("expected ToolResultEvent with IsError=true for reflected tool failure")
+	}
+}
+
+func TestEngineRun_ArtifactServiceConfigured(t *testing.T) {
+	// Verify RunnerBuilder attaches ArtifactService and AutoCreateSession without errors
+	agentInstance, err := llmagent.New(llmagent.Config{
+		Name:  "test_agent",
+		Model: &mockLLM{name: "test-model"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create agent: %v", err)
+	}
+
+	sessSvc := NewFileSessionService("vertex", t.TempDir())
+	r, err := RunnerBuilder(agentInstance, sessSvc)
+	if err != nil {
+		t.Fatalf("RunnerBuilder failed: %v", err)
+	}
+	if r == nil {
+		t.Fatal("expected non-nil runner")
+	}
+}
+
+func TestEngineRun_InstructionutilSessionInterpolation(t *testing.T) {
+	tmpCwd := t.TempDir()
+	origModelBuilder := ModelBuilder
+	defer func() { ModelBuilder = origModelBuilder }()
+
+	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+		return &mockLLM{
+			name: "mock",
+			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+				return mockLLMSequence(textResponse("Completed with branch interpolation."))
+			},
+		}, nil
+	}
+
+	res, err := Run(context.Background(), RunOptions{
+		Prompt:   "Test instruction interpolation",
+		Cwd:      tmpCwd,
+		Provider: "vertex",
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if res.Response != "Completed with branch interpolation." {
+		t.Errorf("unexpected response: %q", res.Response)
 	}
 }

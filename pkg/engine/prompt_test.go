@@ -318,3 +318,27 @@ func TestBuildInstructionProvider_DynamicState(t *testing.T) {
 		t.Errorf("missing extra_instructions block in %q", resDeltas)
 	}
 }
+
+func TestBuildInstructionProvider_InstructionutilInterpolation_Fallback(t *testing.T) {
+	opts := PromptOptions{
+		SystemPrompt: "You are working on branch {current_branch}. Notes are at {notes_dir?}.",
+	}
+	provider := BuildInstructionProvider(opts)
+
+	state := &mockReadonlyState{
+		data: map[string]any{
+			"current_branch": "feature/adk-upgrade",
+		},
+	}
+	ctx := &mockReadonlyContext{Context: context.Background(), state: state}
+
+	// Custom mockReadonlyContext returns basePrompt safely via error fallback
+	res, err := provider(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(res, "You are working on branch {current_branch}.") {
+		t.Errorf("expected fallback prompt to contain template when non-ADK context is passed, got %q", res)
+	}
+}
