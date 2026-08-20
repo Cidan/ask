@@ -14,6 +14,10 @@ import (
 
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/mcptoolset"
 	"google.golang.org/genai"
 )
 
@@ -150,6 +154,20 @@ func (m *MCPManager) Attach(ctx context.Context, srv MCPServer) error {
 	return nil
 }
 
+// Toolsets returns all active ADK mcptoolset.Toolset instances.
+func (m *MCPManager) Toolsets() []tool.Toolset {
+	m.mu.Lock()
+	conns := append([]*mcpServerConn(nil), m.conns...)
+	m.mu.Unlock()
+	var out []tool.Toolset
+	for _, c := range conns {
+		if ts := c.getToolset(); ts != nil {
+			out = append(out, ts)
+		}
+	}
+	return out
+}
+
 // Tools returns the snapshot of all current tools across all connected servers.
 func (m *MCPManager) Tools() []Tool {
 	m.mu.Lock()
@@ -186,7 +204,14 @@ type mcpServerConn struct {
 
 	mu      sync.Mutex
 	session *mcp.ClientSession
+	toolset tool.Toolset
 	tools   []Tool
+}
+
+func (c *mcpServerConn) getToolset() tool.Toolset {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.toolset
 }
 
 func (c *mcpServerConn) connect(ctx context.Context) error {
@@ -204,8 +229,33 @@ func (c *mcpServerConn) connect(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("connect %s: %w", c.srv.Name, err)
 	}
+
+	filter := func(ctx agent.ReadonlyContext, t tool.Tool) bool {
+		if c.srv.Skip != nil && c.srv.Skip[t.Name()] {
+			return false
+		}
+		return MCPToolAllowed(c.srv.Cfg, t.Name())
+	}
+
+	tsTransport, err := MCPTransportFor(c.srv, c.oauth)
+	if err != nil {
+		_ = session.Close()
+		return fmt.Errorf("transport for mcptoolset %s: %w", c.srv.Name, err)
+	}
+
+	ts, err := mcptoolset.New(mcptoolset.Config{
+		Client:     client,
+		Transport:  tsTransport,
+		ToolFilter: filter,
+	})
+	if err != nil {
+		_ = session.Close()
+		return fmt.Errorf("mcptoolset %s: %w", c.srv.Name, err)
+	}
+
 	c.mu.Lock()
 	c.session = session
+	c.toolset = ts
 	c.mu.Unlock()
 	return nil
 }
@@ -282,6 +332,7 @@ func (c *mcpServerConn) close() {
 	c.mu.Lock()
 	session := c.session
 	c.session = nil
+	c.toolset = nil
 	c.mu.Unlock()
 	if session != nil {
 		_ = session.Close()
@@ -465,9 +516,9 @@ func newMCPAgentTool(conn *mcpServerConn, t *mcp.Tool) *mcpAgentTool {
 	}
 }
 
-func (m *mcpAgentTool) Name() string           { return m.name }
-func (m *mcpAgentTool) Description() string    { return m.description }
-func (m *mcpAgentTool) IsLongRunning() bool    { return false }
+func (m *mcpAgentTool) Name() string        { return m.name }
+func (m *mcpAgentTool) Description() string { return m.description }
+func (m *mcpAgentTool) IsLongRunning() bool { return false }
 func (m *mcpAgentTool) Info() ToolInfo {
 	required := m.required
 	if required == nil {
@@ -496,7 +547,11 @@ func (m *mcpAgentTool) Declaration() *genai.FunctionDeclaration {
 	}
 }
 
-func (m *mcpAgentTool) Run(ctx context.Context, args map[string]any) (any, error) {
+func (m *mcpAgentTool) ProcessRequest(ctx agent.Context, req *model.LLMRequest) error {
+	return nil
+}
+
+func (m *mcpAgentTool) Run(ctx agent.Context, args any) (map[string]any, error) {
 	session, err := m.conn.ensure(ctx)
 	if err != nil {
 		return map[string]any{"result": m.name + ": server unavailable: " + err.Error(), "is_error": true}, nil

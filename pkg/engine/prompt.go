@@ -370,9 +370,10 @@ func GitStatusSnapshot(ctx context.Context, cwd string) string {
 }
 
 type PromptOptions struct {
-	Cwd         string
-	InWorkflow  bool
-	GitStatusFn func(string) string
+	Cwd                 string
+	InWorkflow          bool
+	GitStatusFn         func(string) string
+	DisableSkillsPrompt bool
 }
 
 // AgentContextFiles loads the project's instruction files
@@ -502,9 +503,11 @@ func BuildSystemPrompt(opts PromptOptions) string {
 		cancel()
 	}
 
-	if block := SkillsPromptBlock(DiscoverSkills(cwd)); block != "" {
-		b.WriteString("\n\n")
-		b.WriteString(block)
+	if !opts.DisableSkillsPrompt {
+		if block := SkillsPromptBlock(DiscoverSkills(cwd)); block != "" {
+			b.WriteString("\n\n")
+			b.WriteString(block)
+		}
 	}
 	if block := SubagentsPromptBlock(DiscoverSubagents(cwd)); block != "" {
 		b.WriteString("\n\n")

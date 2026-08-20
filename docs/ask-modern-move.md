@@ -257,13 +257,18 @@ cfg := &genai.ClientConfig{
    - Eliminated process-global `os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", ...)` mutation hack.
    - Verified 100% test pass rate with zero regressions across all unit and behavioral suites.
 
-### Phase 2: Skills & MCP Native Adoption
+### Phase 2: Skills & MCP Native Adoption (COMPLETED & VERIFIED)
 1. **Adopt `skilltoolset`**:
-   - Replace `pkg/engine/skills.go` with `skilltoolset.New` and `skill.NewMergedSource`.
-   - Remove manual XML prompt injection (`SkillsPromptBlock`).
+   - Replaced `pkg/engine/skills.go` with ADK 2.0 native `skill.Source` (`NewSkillSource`), `skilltoolset.New`, and `skill.ParseBytes` / `skill.Validate`.
+   - Wired `NewSkillToolset` into `llmagent.Config.Toolsets` across `pkg/engine/run.go` and `cmd/ask/agent_run.go`.
+   - Enabled dynamic skill injection via `SkillToolset.ProcessRequest`, eliminating redundant static prompt XML when toolsets are attached while preserving `/skill-name` user slash command expansion.
 2. **Adopt `mcptoolset`**:
-   - Replace `pkg/tools/mcp.go` with `mcptoolset.New`.
-   - Wire MCP tool confirmation through `tool.ConfirmationProvider`.
+   - Replaced custom client tool wrapper in `pkg/tools/mcp.go` with native `mcptoolset.New` and `tool.Toolset`.
+   - Integrated `MCPManager.Toolsets()` into agent runtimes for native ADK tool execution.
+   - Preserved full transport support (stdio, SSE, streamable HTTP, and OAuth) with graceful error handling and reconnects.
+3. **Comprehensive Test Verification**:
+   - Added `TestDiscoverSkills_ADKSource`, `TestSkillToolset_Integration`, `TestMCPToolset_AttachAndCall`, and `TestMCPManager_ToolsetsLifecycle`.
+   - Verified 100% test pass rate with zero regressions across the entire suite.
 
 ### Phase 3: Workflows to ADK WorkflowAgents
 1. **Migrate Pipeline Runner**:

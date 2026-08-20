@@ -17,6 +17,7 @@ import (
 	"google.golang.org/adk/v2/agent/llmagent"
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
+	adktool "google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 )
 
@@ -352,11 +353,20 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		llm = &streamToADKModel{modelID: s.modelID, client: s.client}
 	}
 
+	var toolsets []adktool.Toolset
+	if s.mcp != nil {
+		toolsets = append(toolsets, s.mcp.Toolsets()...)
+	}
+	if skillTS, err := engine.NewSkillToolset(ctx, s.args.Cwd); err == nil && skillTS != nil {
+		toolsets = append(toolsets, skillTS)
+	}
+
 	agentInstance, err := llmagent.New(llmagent.Config{
 		Name:                  "ask_coder",
 		Model:                 llm,
 		InstructionProvider:   instructionProvider,
 		Tools:                 adkTools,
+		Toolsets:              toolsets,
 		GenerateContentConfig: genaiConfig,
 	})
 	if err != nil {

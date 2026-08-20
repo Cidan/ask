@@ -1,10 +1,14 @@
 package engine
 
 import (
+	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"google.golang.org/adk/v2/tool/skilltoolset/skill"
 )
 
 func writeTestSkill(t *testing.T, root, name, frontmatterExtra, body string) string {
@@ -61,6 +65,94 @@ func TestDiscoverSkills_ValidationAndPrecedence(t *testing.T) {
 	}
 	if !byName["secret"].DisableModelInvocation {
 		t.Error("disable-model-invocation must be honoured")
+	}
+}
+
+func TestDiscoverSkills_ADKSource(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cwd := t.TempDir()
+	ctx := context.Background()
+
+	globalDir := filepath.Join(home, ".claude", "skills")
+	projectDir := filepath.Join(cwd, ".claude", "skills")
+	writeTestSkill(t, globalDir, "deploy", "", "global instructions")
+	writeTestSkill(t, projectDir, "deploy", "", "project instructions")
+
+	refDir := filepath.Join(projectDir, "deploy", "references")
+	_ = os.MkdirAll(refDir, 0o755)
+	_ = os.WriteFile(filepath.Join(refDir, "guide.txt"), []byte("deploy guide"), 0o644)
+
+	src := NewSkillSource(cwd)
+	fms, err := src.ListFrontmatters(ctx)
+	if err != nil {
+		t.Fatalf("ListFrontmatters error: %v", err)
+	}
+	if len(fms) != 1 || fms[0].Name != "deploy" {
+		t.Fatalf("unexpected frontmatters: %+v", fms)
+	}
+
+	fm, err := src.LoadFrontmatter(ctx, "deploy")
+	if err != nil || fm.Name != "deploy" {
+		t.Fatalf("LoadFrontmatter failed: %v, %+v", err, fm)
+	}
+
+	instructions, err := src.LoadInstructions(ctx, "deploy")
+	if err != nil || !strings.Contains(instructions, "project instructions") {
+		t.Fatalf("LoadInstructions failed: %v, %q", err, instructions)
+	}
+
+	resList, err := src.ListResources(ctx, "deploy", ".")
+	if err != nil {
+		t.Fatalf("ListResources failed: %v", err)
+	}
+	if len(resList) != 1 || resList[0] != "references/guide.txt" {
+		t.Errorf("expected references/guide.txt, got %v", resList)
+	}
+
+	rc, err := src.LoadResource(ctx, "deploy", "references/guide.txt")
+	if err != nil {
+		t.Fatalf("LoadResource failed: %v", err)
+	}
+	defer rc.Close()
+	content, _ := io.ReadAll(rc)
+	if string(content) != "deploy guide" {
+		t.Errorf("resource content mismatch: %q", string(content))
+	}
+
+	// Invalid resource path
+	if _, err := src.LoadResource(ctx, "deploy", "invalid/path.txt"); err == nil {
+		t.Errorf("expected error on invalid resource path")
+	}
+
+	// Non-existent skill
+	if _, err := src.LoadFrontmatter(ctx, "nonexistent"); err != skill.ErrSkillNotFound {
+		t.Errorf("expected ErrSkillNotFound, got %v", err)
+	}
+}
+
+func TestSkillToolset_Integration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cwd := t.TempDir()
+	ctx := context.Background()
+
+	writeTestSkill(t, filepath.Join(cwd, ".claude", "skills"), "deploy", "", "instructions")
+
+	toolset, err := NewSkillToolset(ctx, cwd)
+	if err != nil {
+		t.Fatalf("NewSkillToolset error: %v", err)
+	}
+	if toolset.Name() != "SkillToolset" {
+		t.Errorf("expected toolset name SkillToolset, got %q", toolset.Name())
+	}
+
+	tools, err := toolset.Tools(nil)
+	if err != nil {
+		t.Fatalf("Tools error: %v", err)
+	}
+	if len(tools) != 3 {
+		t.Fatalf("expected 3 skill tools (list_skills, load_skill, load_skill_resource), got %d", len(tools))
 	}
 }
 
