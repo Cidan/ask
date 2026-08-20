@@ -2,7 +2,13 @@ package engine
 
 import (
 	"context"
+
+	"google.golang.org/adk/v2/tool/toolconfirmation"
+	"google.golang.org/genai"
 )
+
+// ConfirmationFunctionCallName is the wire function call name used by ADK for HITL confirmations.
+const ConfirmationFunctionCallName = toolconfirmation.FunctionCallName
 
 // QuestionOption represents a single choice in a question modal.
 type QuestionOption struct {
@@ -106,4 +112,24 @@ func (h HeadlessInteractionHandler) ConfirmPlan(ctx context.Context, tabID int, 
 
 func (h HeadlessInteractionHandler) RequestSudoPassword(ctx context.Context, tabID int, prompt string) (SudoPasswordResponse, error) {
 	return SudoPasswordResponse{Cancelled: true}, nil
+}
+
+// IsConfirmationCall reports whether a function call is an ADK tool confirmation request.
+func IsConfirmationCall(fc *genai.FunctionCall) bool {
+	if fc == nil {
+		return false
+	}
+	return fc.Name == toolconfirmation.FunctionCallName
+}
+
+// UnwrapConfirmationCall extracts the underlying function call from an ADK confirmation wrapper.
+func UnwrapConfirmationCall(fc *genai.FunctionCall) (*genai.FunctionCall, error) {
+	return toolconfirmation.OriginalCallFrom(fc)
+}
+
+// FormatConfirmationResponse constructs the standard ADK confirmation response payload.
+func FormatConfirmationResponse(confirmed bool) map[string]any {
+	return map[string]any{
+		"confirmed": confirmed,
+	}
 }

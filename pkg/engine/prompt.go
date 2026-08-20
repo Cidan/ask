@@ -14,6 +14,7 @@ import (
 	"github.com/Cidan/ask/pkg/memory"
 	"github.com/Cidan/ask/pkg/providers"
 	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/util/instructionutil"
 )
 
 // AgentCoderPrompt is the static head of the harness system prompt.
@@ -538,36 +539,35 @@ func BuildInstructionProvider(opts PromptOptions) func(ctx agent.ReadonlyContext
 			return basePrompt, nil
 		}
 		state := ctx.ReadonlyState()
-		if state == nil {
-			return basePrompt, nil
-		}
 
 		var dynamicSuffix strings.Builder
-		if reminder, err := state.Get("system_reminder"); err == nil && reminder != nil {
-			if remStr, ok := reminder.(string); ok && strings.TrimSpace(remStr) != "" {
-				dynamicSuffix.WriteString("\n\n<system_reminder>\n")
-				dynamicSuffix.WriteString(strings.TrimSpace(remStr))
-				dynamicSuffix.WriteString("\n</system_reminder>")
+		if state != nil {
+			if reminder, err := state.Get("system_reminder"); err == nil && reminder != nil {
+				if remStr, ok := reminder.(string); ok && strings.TrimSpace(remStr) != "" {
+					dynamicSuffix.WriteString("\n\n<system_reminder>\n" + strings.TrimSpace(remStr) + "\n</system_reminder>")
+				}
 			}
-		}
-		if incomplete, err := state.Get("step_incomplete"); err == nil && incomplete != nil {
-			if incStr, ok := incomplete.(string); ok && strings.TrimSpace(incStr) != "" {
-				dynamicSuffix.WriteString("\n\n<step_incomplete>\n")
-				dynamicSuffix.WriteString(strings.TrimSpace(incStr))
-				dynamicSuffix.WriteString("\n</step_incomplete>")
+			if incomplete, err := state.Get("step_incomplete"); err == nil && incomplete != nil {
+				if incStr, ok := incomplete.(string); ok && strings.TrimSpace(incStr) != "" {
+					dynamicSuffix.WriteString("\n\n<step_incomplete>\n" + strings.TrimSpace(incStr) + "\n</step_incomplete>")
+				}
 			}
-		}
-		if extraPrompt, err := state.Get("extra_instructions"); err == nil && extraPrompt != nil {
-			if extraStr, ok := extraPrompt.(string); ok && strings.TrimSpace(extraStr) != "" {
-				dynamicSuffix.WriteString("\n\n<extra_instructions>\n")
-				dynamicSuffix.WriteString(strings.TrimSpace(extraStr))
-				dynamicSuffix.WriteString("\n</extra_instructions>")
+			if extraPrompt, err := state.Get("extra_instructions"); err == nil && extraPrompt != nil {
+				if extraStr, ok := extraPrompt.(string); ok && strings.TrimSpace(extraStr) != "" {
+					dynamicSuffix.WriteString("\n\n<extra_instructions>\n" + strings.TrimSpace(extraStr) + "\n</extra_instructions>")
+				}
 			}
 		}
 
+		fullPrompt := basePrompt
 		if dynamicSuffix.Len() > 0 {
-			return basePrompt + dynamicSuffix.String(), nil
+			fullPrompt = basePrompt + dynamicSuffix.String()
 		}
-		return basePrompt, nil
+
+		// Dynamically interpolate session state variables ({key_name}, {var?}, {artifact.key}) using ADK instructionutil
+		if interpolated, err := instructionutil.InjectSessionState(ctx, fullPrompt); err == nil {
+			return interpolated, nil
+		}
+		return fullPrompt, nil
 	}
 }
