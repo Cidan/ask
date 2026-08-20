@@ -86,7 +86,7 @@ ADK 2.0 provides `runner.Config{AutoCreateSession: true}`. When set, `runner.Run
 
 ---
 
-### PR 2: Self-Healing Tool Recovery via `plugin/retryandreflect`
+### PR 2: Self-Healing Tool Recovery via `plugin/retryandreflect` (COMPLETED & MERGED - PR #129)
 
 #### Problem Statement
 When a tool call fails (e.g., regex error in grep, invalid path in read, or syntax error in edit), the current behavior either returns a raw error string in the tool result or relies on the next turn prompt to instruct the model to recover. LLMs often surrender, apologize, or stop early rather than correcting their arguments.
@@ -114,7 +114,7 @@ ADK 2.0 provides `google.golang.org/adk/v2/plugin/retryandreflect`. When a tool 
 
 ---
 
-### PR 3: Tool Parameter Augmentation via `plugin/functioncallmodifier`
+### PR 3: Tool Parameter Augmentation via `plugin/functioncallmodifier` (COMPLETED & MERGED - PR #129)
 
 #### Problem Statement
 Ask currently mutates tool declarations and wraps handler functions in `pkg/tools/types.go` and `pkg/tools/bridge.go` to inject required metadata fields (such as the mandatory `description` phrase for UI headlines). Hand-rolling AST schema modifications risks normalization incompatibilities with GenAI schema converters.
@@ -146,7 +146,7 @@ ADK 2.0 provides `google.golang.org/adk/v2/plugin/functioncallmodifier`. This pl
 
 ---
 
-### PR 4: Native Subagent Delegation via `tool/agenttool`
+### PR 4: Native Subagent Delegation via `tool/agenttool` (COMPLETED & MERGED - PR #129)
 
 #### Problem Statement
 In `cmd/ask/agent_tools_task.go` and `pkg/engine/subagents.go`, synchronous subagents (such as the default researcher or named subagents) are launched through custom execution runners that manually construct sub-sessions, extract results, and format outputs.
@@ -267,9 +267,9 @@ ADK 2.0 includes a comprehensive DAG workflow engine in `google.golang.org/adk/v
 ## 4. Execution Checklist
 
 - [x] **PR 1**: Runner Session Lifecycle & Auto-Creation (`AutoCreateSession: true`) ([#128](https://github.com/Cidan/ask/pull/128))
-- [x] **PR 2**: Self-Healing Tool Recovery via `plugin/retryandreflect` (Completed in Combined PR)
-- [x] **PR 3**: Tool Parameter Augmentation via `plugin/functioncallmodifier` (Completed in Combined PR)
-- [x] **PR 4**: Native Subagent Delegation via `tool/agenttool` (Completed in Combined PR)
+- [x] **PR 2**: Self-Healing Tool Recovery via `plugin/retryandreflect` ([#129](https://github.com/Cidan/ask/pull/129))
+- [x] **PR 3**: Tool Parameter Augmentation via `plugin/functioncallmodifier` ([#129](https://github.com/Cidan/ask/pull/129))
+- [x] **PR 4**: Native Subagent Delegation via `tool/agenttool` ([#129](https://github.com/Cidan/ask/pull/129))
 - [ ] **PR 5**: Standard Human-In-The-Loop Confirmation via `tool/toolconfirmation`
 - [ ] **PR 6**: Dynamic Instruction Interpolation via `util/instructionutil`
 - [ ] **PR 7**: Session Artifact Management via `artifact.Service` & `loadartifactstool`
