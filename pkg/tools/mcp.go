@@ -465,8 +465,9 @@ func newMCPAgentTool(conn *mcpServerConn, t *mcp.Tool) *mcpAgentTool {
 	}
 }
 
-func (m *mcpAgentTool) Name() string        { return m.name }
-func (m *mcpAgentTool) Description() string { return m.description }
+func (m *mcpAgentTool) Name() string           { return m.name }
+func (m *mcpAgentTool) Description() string    { return m.description }
+func (m *mcpAgentTool) IsLongRunning() bool    { return false }
 func (m *mcpAgentTool) Info() ToolInfo {
 	required := m.required
 	if required == nil {
@@ -495,10 +496,10 @@ func (m *mcpAgentTool) Declaration() *genai.FunctionDeclaration {
 	}
 }
 
-func (m *mcpAgentTool) Run(ctx context.Context, args map[string]any) (ToolResponse, error) {
+func (m *mcpAgentTool) Run(ctx context.Context, args map[string]any) (any, error) {
 	session, err := m.conn.ensure(ctx)
 	if err != nil {
-		return NewTextErrorResponse(m.name + ": server unavailable: " + err.Error()), nil
+		return map[string]any{"result": m.name + ": server unavailable: " + err.Error(), "is_error": true}, nil
 	}
 	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: m.remoteName, Arguments: args})
 	if err != nil {
@@ -506,10 +507,14 @@ func (m *mcpAgentTool) Run(ctx context.Context, args map[string]any) (ToolRespon
 			res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: m.remoteName, Arguments: args})
 		}
 		if err != nil {
-			return NewTextErrorResponse(m.name + ": " + err.Error()), nil
+			return map[string]any{"result": m.name + ": " + err.Error(), "is_error": true}, nil
 		}
 	}
-	return m.convertResult(res), nil
+	resp := m.convertResult(res)
+	if resp.IsError {
+		return map[string]any{"result": resp.Content, "is_error": true}, nil
+	}
+	return map[string]any{"result": resp.Content}, nil
 }
 
 func (m *mcpAgentTool) convertResult(res *mcp.CallToolResult) ToolResponse {

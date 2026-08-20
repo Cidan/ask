@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/adk/v2/agent"
 	"google.golang.org/genai"
 )
 
@@ -14,9 +15,10 @@ type testRegistryTool struct {
 	fn   func(ctx context.Context, args map[string]any) (ToolResponse, error)
 }
 
-func (t *testRegistryTool) Name() string        { return t.info.Name }
-func (t *testRegistryTool) Description() string { return t.info.Description }
-func (t *testRegistryTool) Info() ToolInfo      { return t.info }
+func (t *testRegistryTool) Name() string           { return t.info.Name }
+func (t *testRegistryTool) Description() string    { return t.info.Description }
+func (t *testRegistryTool) IsLongRunning() bool    { return false }
+func (t *testRegistryTool) Info() ToolInfo         { return t.info }
 func (t *testRegistryTool) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{
 		Name:                 t.info.Name,
@@ -24,8 +26,21 @@ func (t *testRegistryTool) Declaration() *genai.FunctionDeclaration {
 		ParametersJsonSchema: map[string]any{"type": "object", "properties": t.info.Parameters, "required": t.info.Required},
 	}
 }
-func (t *testRegistryTool) Run(ctx context.Context, args map[string]any) (ToolResponse, error) {
-	return t.fn(ctx, args)
+func (t *testRegistryTool) Run(ctx agent.Context, args any) (map[string]any, error) {
+	argsMap, _ := args.(map[string]any)
+	if argsMap == nil {
+		if raw, err := json.Marshal(args); err == nil {
+			_ = json.Unmarshal(raw, &argsMap)
+		}
+	}
+	resp, err := t.fn(ctx, argsMap)
+	if err != nil {
+		return nil, err
+	}
+	if resp.IsError {
+		return map[string]any{"result": resp.Content, "is_error": true}, nil
+	}
+	return map[string]any{"result": resp.Content}, nil
 }
 
 func staticRegistry(tools ...Tool) func() []Tool {

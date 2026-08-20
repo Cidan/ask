@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/Cidan/ask/pkg/config"
+	"google.golang.org/adk/v2/agent"
 	"google.golang.org/genai"
 )
 
@@ -236,10 +236,16 @@ type ContextAwareTool struct {
 	seenCtx    map[string]bool
 }
 
-func (ct *ContextAwareTool) Name() string                             { return ct.Inner.Name() }
-func (ct *ContextAwareTool) Description() string                      { return ct.Inner.Description() }
-func (ct *ContextAwareTool) Info() ToolInfo                           { return ct.Inner.Info() }
-func (ct *ContextAwareTool) Declaration() *genai.FunctionDeclaration { return ct.Inner.Declaration() }
+func (ct *ContextAwareTool) Name() string           { return ct.Inner.Name() }
+func (ct *ContextAwareTool) Description() string    { return ct.Inner.Description() }
+func (ct *ContextAwareTool) IsLongRunning() bool    { return ct.Inner.IsLongRunning() }
+func (ct *ContextAwareTool) Info() ToolInfo         { return ExtractToolInfo(ct.Inner) }
+func (ct *ContextAwareTool) Declaration() *genai.FunctionDeclaration {
+	if dp, ok := ct.Inner.(interface{ Declaration() *genai.FunctionDeclaration }); ok {
+		return dp.Declaration()
+	}
+	return nil
+}
 
 func WrapContextAwareTools(tools []Tool, cwd string, rules []Rule) []Tool {
 	var scoped []Rule
@@ -257,7 +263,7 @@ func WrapContextAwareTools(tools []Tool, cwd string, rules []Rule) []Tool {
 	seenCtx := map[string]bool{}
 	out := make([]Tool, len(tools))
 	for i, t := range tools {
-		name := t.Info().Name
+		name := t.Name()
 		if name == "read" || name == "glob" || name == "grep" || name == "ls" {
 			out[i] = &ContextAwareTool{
 				Inner:      t,
@@ -275,20 +281,30 @@ func WrapContextAwareTools(tools []Tool, cwd string, rules []Rule) []Tool {
 	return out
 }
 
-func (ct *ContextAwareTool) Run(ctx context.Context, args map[string]any) (ToolResponse, error) {
-	resp, err := ct.Inner.Run(ctx, args)
-	if err != nil || resp.IsError {
+func (ct *ContextAwareTool) Run(ctx agent.Context, args any) (map[string]any, error) {
+	resp, err := RunADKTool(ctx, ct.Inner, args)
+	if err != nil {
+		return resp, err
+	}
+	if isErr, _ := resp["is_error"].(bool); isErr {
 		return resp, err
 	}
 
+	argsMap, _ := args.(map[string]any)
+	if argsMap == nil {
+		if raw, err := json.Marshal(args); err == nil {
+			_ = json.Unmarshal(raw, &argsMap)
+		}
+	}
+
 	var targetPath string
-	name := ct.Info().Name
+	name := ct.Inner.Name()
 	if name == "read" {
-		if p, ok := args["file_path"].(string); ok {
+		if p, ok := argsMap["file_path"].(string); ok {
 			targetPath = p
 		}
 	} else {
-		if p, ok := args["path"].(string); ok && p != "" {
+		if p, ok := argsMap["path"].(string); ok && p != "" {
 			targetPath = p
 		}
 		if targetPath == "" {
@@ -389,7 +405,15 @@ func (ct *ContextAwareTool) Run(ctx context.Context, args map[string]any) (ToolR
 	}
 
 	if len(add) > 0 {
-		resp.Content = resp.Content + "\n\n" + strings.Join(add, "\n\n")
+		block := strings.Join(add, "\n\n")
+		if resp == nil {
+			resp = make(map[string]any)
+		}
+		if s, ok := resp["result"].(string); ok && s != "" {
+			resp["result"] = s + "\n\n" + block
+		} else {
+			resp["result"] = block
+		}
 	}
 
 	return resp, err

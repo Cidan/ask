@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 
+	"cloud.google.com/go/auth"
+	"cloud.google.com/go/auth/credentials"
 	"github.com/Cidan/ask/pkg/config"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/model/gemini"
@@ -57,13 +59,15 @@ func VertexResolveLocation(vc config.VertexConfig) string {
 	return VertexDefaultLocation
 }
 
-// VertexApplyEnv is the testable seam for the SA-key env-mutation strategy.
-var VertexApplyEnv = func(path string) {
-	_ = os.Setenv(VertexEnvApplicationCredentials, path)
+// VertexCredentialsLoader is the swappable loader for service account *auth.Credentials.
+var VertexCredentialsLoader = func(path string) (*auth.Credentials, error) {
+	return credentials.NewCredentialsFromFile(credentials.ServiceAccount, path, &credentials.DetectOptions{
+		Scopes: []string{"https://www.googleapis.com/auth/cloud-platform"},
+	})
 }
 
-// VertexPrepareCredentials resolves SA key path, validates it is readable, and applies env.
-var VertexPrepareCredentials = func(vc config.VertexConfig) (string, error) {
+// VertexPrepareCredentials resolves SA key path, validates it is readable, and loads *auth.Credentials.
+var VertexPrepareCredentials = func(vc config.VertexConfig) (*auth.Credentials, error) {
 	saKeyPath := vc.ServiceAccountKey
 	if saKeyPath == "" {
 		saKeyPath = vc.ServiceAccount
@@ -72,13 +76,12 @@ var VertexPrepareCredentials = func(vc config.VertexConfig) (string, error) {
 		saKeyPath = os.Getenv(VertexEnvApplicationCredentials)
 	}
 	if saKeyPath == "" {
-		return "", nil
+		return nil, nil
 	}
 	if _, err := os.Stat(saKeyPath); err != nil {
-		return "", fmt.Errorf("vertex: read service account key %s: %w", saKeyPath, err)
+		return nil, fmt.Errorf("vertex: read service account key %s: %w", saKeyPath, err)
 	}
-	VertexApplyEnv(saKeyPath)
-	return saKeyPath, nil
+	return VertexCredentialsLoader(saKeyPath)
 }
 
 // VertexModel constructs a model.LLM backed by Vertex AI via ADK's gemini package.
@@ -90,13 +93,15 @@ var VertexModel = func(ctx context.Context, vc config.VertexConfig, modelID stri
 	}
 	location := VertexResolveLocation(vc)
 
-	if _, err := VertexPrepareCredentials(vc); err != nil {
+	creds, err := VertexPrepareCredentials(vc)
+	if err != nil {
 		return nil, err
 	}
 	cfg := &genai.ClientConfig{
-		Backend:  genai.BackendVertexAI,
-		Project:  project,
-		Location: location,
+		Backend:     genai.BackendVertexAI,
+		Project:     project,
+		Location:    location,
+		Credentials: creds,
 	}
 	return gemini.NewModel(ctx, modelID, cfg)
 }
@@ -110,13 +115,15 @@ var VertexNewClient = func(ctx context.Context, vc config.VertexConfig) (*genai.
 	}
 	location := VertexResolveLocation(vc)
 
-	if _, err := VertexPrepareCredentials(vc); err != nil {
+	creds, err := VertexPrepareCredentials(vc)
+	if err != nil {
 		return nil, err
 	}
 	return genai.NewClient(ctx, &genai.ClientConfig{
-		Backend:  genai.BackendVertexAI,
-		Project:  project,
-		Location: location,
+		Backend:     genai.BackendVertexAI,
+		Project:     project,
+		Location:    location,
+		Credentials: creds,
 	})
 }
 

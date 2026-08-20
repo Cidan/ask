@@ -45,14 +45,14 @@ Do this now:
 The task list is the live progress UI the user watches, and creating it is also the moment the project's workflows are checked. Even a one-file change needs a one-item list first.`
 
 type TodoEntry struct {
-	Content    string `json:"content" description:"imperative description of the task"`
-	Status     string `json:"status" enum:"pending,in_progress,completed" description:"current state of the task"`
-	ActiveForm string `json:"active_form,omitempty" description:"present-continuous label shown while the task is in_progress"`
+	Content    string `json:"content" jsonschema:"imperative description of the task"`
+	Status     string `json:"status" jsonschema:"current state of the task (pending, in_progress, completed)"`
+	ActiveForm string `json:"active_form,omitempty" jsonschema:"present-continuous label shown while the task is in_progress"`
 }
 
 type TodosParams struct {
-	Todos       []TodoEntry `json:"todos" description:"the complete task list, replacing any previous list"`
-	Description string      `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
+	Todos       []TodoEntry `json:"todos" jsonschema:"the complete task list, replacing any previous list"`
+	Description string      `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 // TodosTool returns the native task list management tool.

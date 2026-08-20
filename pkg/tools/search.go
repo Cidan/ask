@@ -19,9 +19,9 @@ import (
 const GlobToolDescription = `Find files by glob pattern, relative to the search path. Supports ** for crossing directories and {a,b} alternation (e.g. "**/*.go", "src/**/*.{ts,tsx}"). Results are sorted by modification time, newest first.`
 
 type GlobParams struct {
-	Pattern     string `json:"pattern" description:"glob pattern matched against paths relative to the search directory"`
-	Path        string `json:"path,omitempty" description:"directory to search (default: working directory)"`
-	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
+	Pattern     string `json:"pattern" jsonschema:"glob pattern matched against paths relative to the search directory"`
+	Path        string `json:"path,omitempty" jsonschema:"directory to search (default: working directory)"`
+	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 // GlobTool returns the native glob tool.
@@ -170,11 +170,11 @@ func splitBraceAlts(s string) []string {
 const GrepToolDescription = `Search file contents with a regular expression. Returns matching lines grouped by file, newest files first, capped at 100 matches. Set literal_text for exact-string search; use include to filter files (e.g. "*.go", "*.{ts,tsx}"). Uses ripgrep when available (respects .gitignore).`
 
 type GrepParams struct {
-	Pattern     string `json:"pattern" description:"regular expression to search for (exact string when literal_text is set)"`
-	Path        string `json:"path,omitempty" description:"directory or file to search (default: working directory)"`
-	Include     string `json:"include,omitempty" description:"only search files matching this glob, e.g. *.go or *.{ts,tsx}"`
-	LiteralText bool   `json:"literal_text,omitempty" description:"treat pattern as a literal string instead of a regexp"`
-	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
+	Pattern     string `json:"pattern" jsonschema:"regular expression to search for (exact string when literal_text is set)"`
+	Path        string `json:"path,omitempty" jsonschema:"directory or file to search (default: working directory)"`
+	Include     string `json:"include,omitempty" jsonschema:"only search files matching this glob, e.g. *.go or *.{ts,tsx}"`
+	LiteralText bool   `json:"literal_text,omitempty" jsonschema:"treat pattern as a literal string instead of a regexp"`
+	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 var RgPath, _ = exec.LookPath("rg")
@@ -382,9 +382,9 @@ func grepWithGo(ctx context.Context, p GrepParams, root string) ([]GrepMatch, st
 const LsToolDescription = `List a directory as a tree. Directories end with /. Use depth to limit recursion; output is capped at 1000 entries.`
 
 type LsParams struct {
-	Path        string `json:"path,omitempty" description:"directory to list (default: working directory)"`
-	Depth       int    `json:"depth,omitempty" description:"maximum directory depth to descend (0 = unlimited)"`
-	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
+	Path        string `json:"path,omitempty" jsonschema:"directory to list (default: working directory)"`
+	Depth       int    `json:"depth,omitempty" jsonschema:"maximum directory depth to descend (0 = unlimited)"`
+	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 // LsTool returns the native ls tool.

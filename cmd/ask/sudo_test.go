@@ -200,7 +200,7 @@ func TestSudoEnv_AgentBashToolAndAskPassHelper(t *testing.T) {
 
 	tool := agentBashTool(env)
 	ctx := context.Background()
-	_, err := tool.Run(ctx, map[string]any{"command": "echo test", "description": "test"})
+	_, err := tools.RunToolWithJSON(ctx, tool, `{"command":"echo test","description":"test"}`)
 	if err != nil {
 		t.Fatalf("tool.Run failed: %v", err)
 	}

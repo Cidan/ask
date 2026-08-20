@@ -3,12 +3,18 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/memory"
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
+	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/genai"
 )
 
@@ -35,29 +41,192 @@ type ToolInfo struct {
 	Required    []string       `json:"required,omitempty"`
 }
 
-// Tool represents an executable GenAI/ADK tool.
-type Tool interface {
-	Name() string
-	Description() string
-	Info() ToolInfo
-	Declaration() *genai.FunctionDeclaration
-	Run(ctx context.Context, args map[string]any) (ToolResponse, error)
+// Tool represents an executable GenAI/ADK tool, aliasing ADK's native tool.Tool.
+type Tool = tool.Tool
+
+// ExtractToolInfo extracts ToolInfo from any ADK Tool.
+func ExtractToolInfo(t tool.Tool) ToolInfo {
+	if t == nil {
+		return ToolInfo{}
+	}
+	if infoProvider, ok := t.(interface{ Info() ToolInfo }); ok {
+		return infoProvider.Info()
+	}
+	info := ToolInfo{
+		Name:        t.Name(),
+		Description: t.Description(),
+	}
+	if declProvider, ok := t.(interface{ Declaration() *genai.FunctionDeclaration }); ok {
+		if decl := declProvider.Declaration(); decl != nil {
+			if decl.ParametersJsonSchema != nil {
+				if raw, err := json.Marshal(decl.ParametersJsonSchema); err == nil {
+					var m map[string]any
+					if json.Unmarshal(raw, &m) == nil {
+						if props, ok := m["properties"].(map[string]any); ok {
+							info.Parameters = props
+						}
+						if reqs, ok := m["required"].([]any); ok {
+							for _, r := range reqs {
+								if s, ok := r.(string); ok {
+									info.Required = append(info.Required, s)
+								}
+							}
+						}
+					}
+				}
+			} else if decl.Parameters != nil {
+				if decl.Parameters.Properties != nil {
+					props := make(map[string]any, len(decl.Parameters.Properties))
+					for k, v := range decl.Parameters.Properties {
+						props[k] = v
+					}
+					info.Parameters = props
+				}
+				info.Required = decl.Parameters.Required
+			}
+		}
+	}
+	return info
 }
 
-// AsADKTool converts an ask Tool into an ADK Tool.
+type standaloneAgentContext struct {
+	context.Context
+}
+
+func (s *standaloneAgentContext) UserContent() *genai.Content                                     { return nil }
+func (s *standaloneAgentContext) InvocationID() string                                            { return "" }
+func (s *standaloneAgentContext) AgentName() string                                               { return "" }
+func (s *standaloneAgentContext) ReadonlyState() session.ReadonlyState                            { return nil }
+func (s *standaloneAgentContext) UserID() string                                                  { return "" }
+func (s *standaloneAgentContext) AppName() string                                                 { return "ask" }
+func (s *standaloneAgentContext) SessionID() string                                               { return "" }
+func (s *standaloneAgentContext) Branch() string                                                  { return "" }
+func (s *standaloneAgentContext) Agent() agent.Agent                                              { return nil }
+func (s *standaloneAgentContext) Artifacts() agent.Artifacts                                      { return nil }
+func (s *standaloneAgentContext) Memory() agent.Memory                                            { return nil }
+func (s *standaloneAgentContext) Session() session.Session                                        { return nil }
+func (s *standaloneAgentContext) IsolationScope() string                                          { return "" }
+func (s *standaloneAgentContext) RunConfig() *agent.RunConfig                                     { return nil }
+func (s *standaloneAgentContext) EndInvocation()                                                  {}
+func (s *standaloneAgentContext) Ended() bool                                                     { return false }
+func (s *standaloneAgentContext) ResumedInput(interruptID string) (any, bool)                     { return nil, false }
+func (s *standaloneAgentContext) WithContext(ctx context.Context) agent.InvocationContext          { return &standaloneAgentContext{Context: ctx} }
+func (s *standaloneAgentContext) WithICDelta(d *agent.InvocationContextDelta) agent.InvocationContext { return s }
+func (s *standaloneAgentContext) State() session.State                                            { return nil }
+func (s *standaloneAgentContext) FunctionCallID() string                                          { return "" }
+func (s *standaloneAgentContext) Actions() *session.EventActions                                  { return &session.EventActions{} }
+func (s *standaloneAgentContext) SearchMemory(ctx context.Context, query string) (*memory.SearchResponse, error) {
+	return nil, nil
+}
+func (s *standaloneAgentContext) ToolConfirmation() *toolconfirmation.ToolConfirmation {
+	return nil
+}
+func (s *standaloneAgentContext) RequestConfirmation(hint string, payload any) error {
+	return nil
+}
+func (s *standaloneAgentContext) Path() string                                                    { return "" }
+func (s *standaloneAgentContext) RunID() string                                                   { return "" }
+func (s *standaloneAgentContext) SubScheduler() agent.DynamicSubScheduler                         { return nil }
+func (s *standaloneAgentContext) WithAgentContext(ctx context.Context) agent.Context              { return &standaloneAgentContext{Context: ctx} }
+func (s *standaloneAgentContext) WithAgentTimeout(timeout time.Duration) (agent.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(s.Context, timeout)
+	return &standaloneAgentContext{Context: ctx}, cancel
+}
+func (s *standaloneAgentContext) WithAgentCancel() (agent.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(s.Context)
+	return &standaloneAgentContext{Context: ctx}, cancel
+}
+func (s *standaloneAgentContext) OutputForAncestors() []string                                    { return nil }
+func (s *standaloneAgentContext) WithDelta(d *agent.CommonContextDelta) agent.Context             { return s }
+
+// NewStandaloneAgentContext wraps a context.Context with a compliant agent.Context implementation.
+func NewStandaloneAgentContext(ctx context.Context) agent.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if actx, ok := ctx.(agent.Context); ok {
+		return actx
+	}
+	return &standaloneAgentContext{Context: ctx}
+}
+
+// RunADKTool executes an ADK tool with the provided arguments.
+func RunADKTool(ctx context.Context, t tool.Tool, args any) (map[string]any, error) {
+	if ct, ok := t.(interface {
+		Run(ctx agent.Context, args any) (map[string]any, error)
+	}); ok {
+		return ct.Run(NewStandaloneAgentContext(ctx), args)
+	}
+	if ct, ok := t.(interface {
+		Run(ctx agent.Context, args any) (any, error)
+	}); ok {
+		res, err := ct.Run(NewStandaloneAgentContext(ctx), args)
+		return wrapAnyResult(res), err
+	}
+	if ct, ok := t.(interface {
+		Run(ctx context.Context, args map[string]any) (map[string]any, error)
+	}); ok {
+		m, _ := args.(map[string]any)
+		return ct.Run(ctx, m)
+	}
+	if ct, ok := t.(interface {
+		Run(ctx context.Context, args map[string]any) (any, error)
+	}); ok {
+		m, _ := args.(map[string]any)
+		res, err := ct.Run(ctx, m)
+		return wrapAnyResult(res), err
+	}
+	if ct, ok := t.(interface {
+		Run(ctx context.Context, args map[string]any) (ToolResponse, error)
+	}); ok {
+		m, _ := args.(map[string]any)
+		tr, err := ct.Run(ctx, m)
+		if err != nil {
+			return nil, err
+		}
+		res := map[string]any{"result": tr.Content}
+		if tr.IsError {
+			res["is_error"] = true
+		}
+		if tr.StopTurn {
+			res["stop_turn"] = true
+		}
+		return res, nil
+	}
+	return nil, fmt.Errorf("tool %s does not implement Run", t.Name())
+}
+
+func wrapAnyResult(res any) map[string]any {
+	if res == nil {
+		return nil
+	}
+	if m, ok := res.(map[string]any); ok {
+		return m
+	}
+	if tr, ok := res.(ToolResponse); ok {
+		m := map[string]any{"result": tr.Content}
+		if tr.IsError {
+			m["is_error"] = true
+		}
+		if tr.StopTurn {
+			m["stop_turn"] = true
+		}
+		return m
+	}
+	return map[string]any{"result": res}
+}
+
+// AsADKTool passes through an ADK Tool or adapts it to ensure llmagent compatibility.
 func AsADKTool(t Tool) (tool.Tool, error) {
 	if t == nil {
 		return nil, nil
 	}
-	if adkProvider, ok := t.(interface{ ADKTool() tool.Tool }); ok {
-		if at := adkProvider.ADKTool(); at != nil {
-			return at, nil
-		}
+	if _, ok := t.(interface {
+		ProcessRequest(ctx agent.Context, req *model.LLMRequest) error
+	}); ok {
+		return t, nil
 	}
-	if at, ok := t.(tool.Tool); ok {
-		return at, nil
-	}
-	info := t.Info()
+	info := ExtractToolInfo(t)
 	var inputSchema *jsonschema.Schema
 	if info.Parameters != nil {
 		if raw, err := json.Marshal(info.Parameters); err == nil {
@@ -74,24 +243,27 @@ func AsADKTool(t Tool) (tool.Tool, error) {
 			InputSchema: inputSchema,
 		},
 		func(actx agent.Context, args map[string]any) (any, error) {
-			resp, err := t.Run(actx, args)
+			res, err := RunADKTool(actx, t, args)
 			if err != nil {
 				return nil, err
 			}
-			return resp.Content, nil
+			return res, nil
 		},
 	)
 }
 
-// AsADKTools converts a slice of native ask Tools into ADK Tools.
+// AsADKTools converts a slice of Tools into ADK Tools.
 func AsADKTools(tools []Tool) ([]tool.Tool, error) {
+	if tools == nil {
+		return nil, nil
+	}
 	out := make([]tool.Tool, 0, len(tools))
 	for _, t := range tools {
-		at, err := AsADKTool(t)
-		if err != nil {
-			return nil, err
-		}
-		if at != nil {
+		if t != nil {
+			at, err := AsADKTool(t)
+			if err != nil {
+				return nil, err
+			}
 			out = append(out, at)
 		}
 	}

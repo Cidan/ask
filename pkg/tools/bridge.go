@@ -8,52 +8,41 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/adk/v2/agent"
-	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
-	"google.golang.org/genai"
 )
 
-// NativeBridgeTool adapts an MCP handler core to our Tool interface.
+// NativeBridgeTool adapts an MCP handler core to an ADK Tool.
 func NativeBridgeTool[In, Out any](name, description string,
 	run func(ctx context.Context, in In) (*mcp.CallToolResult, Out, error),
 ) Tool {
-	properties := map[string]any{}
-	var required []string
-	if schema, err := jsonschema.For[In](nil); err == nil {
-		if raw, err := json.Marshal(schema); err == nil {
-			var m map[string]any
-			if json.Unmarshal(raw, &m) == nil {
-				if props, ok := m["properties"].(map[string]any); ok {
-					properties = props
-				}
-				if reqs, ok := m["required"].([]any); ok {
-					for _, r := range reqs {
-						if s, ok := r.(string); ok {
-							required = append(required, s)
-						}
-					}
-				}
+	var inputSchema *jsonschema.Schema
+	if s, err := jsonschema.For[In](nil); err == nil {
+		inputSchema = s
+		if inputSchema.Properties == nil {
+			inputSchema.Properties = map[string]*jsonschema.Schema{}
+		}
+		if _, exists := inputSchema.Properties["description"]; !exists {
+			inputSchema.Properties["description"] = &jsonschema.Schema{
+				Type:        "string",
+				Description: ToolPhraseFieldDoc,
 			}
+			inputSchema.Required = append(inputSchema.Required, "description")
 		}
-	}
-	FlattenNullableTypes(properties)
-	if _, exists := properties["description"]; !exists {
-		properties["description"] = map[string]any{
-			"type":        "string",
-			"description": ToolPhraseFieldDoc,
-		}
-		required = append(required, "description")
 	}
 
-	adkTool, _ := functiontool.New[In, any](
+	adkTool, err := functiontool.New[In, any](
 		functiontool.Config{
 			Name:        name,
 			Description: description,
+			InputSchema: inputSchema,
 		},
 		func(actx agent.Context, in In) (any, error) {
 			res, out, err := run(actx, in)
 			if err != nil {
-				return nil, err
+				return map[string]any{
+					"result":   name + ": " + err.Error(),
+					"is_error": true,
+				}, nil
 			}
 			body := MCPResultText(res)
 			if res != nil && res.IsError {
@@ -75,23 +64,21 @@ func NativeBridgeTool[In, Out any](name, description string,
 					body = body + "\n" + js
 				}
 			}
+			if strings.TrimSpace(body) == "" {
+				body = "(empty result)"
+			}
 			return map[string]any{
-				"result": body,
+				"result": TruncateMiddle(body),
 			}, nil
 		},
 	)
-
-	return &BridgeTool[In, Out]{
-		NameVal:        name,
-		DescriptionVal: description,
-		PropertiesVal:  properties,
-		RequiredVal:    required,
-		RunVal:         run,
-		adkTool:        adkTool,
+	if err != nil {
+		panic("failed to create bridge tool " + name + ": " + err.Error())
 	}
+	return adkTool
 }
 
-// FlattenNullableTypes drops "null" from type arrays in json schema maps.
+// FlattenNullableTypes drops "null" from type arrays in json schema maps for backward compatibility.
 func FlattenNullableTypes(v any) {
 	switch n := v.(type) {
 	case map[string]any:
@@ -119,90 +106,6 @@ func FlattenNullableTypes(v any) {
 			FlattenNullableTypes(item)
 		}
 	}
-}
-
-type BridgeTool[In, Out any] struct {
-	NameVal        string
-	DescriptionVal string
-	PropertiesVal  map[string]any
-	RequiredVal    []string
-	RunVal         func(ctx context.Context, in In) (*mcp.CallToolResult, Out, error)
-	adkTool        tool.Tool
-}
-
-func (t *BridgeTool[In, Out]) Name() string        { return t.NameVal }
-func (t *BridgeTool[In, Out]) Description() string { return t.DescriptionVal }
-func (t *BridgeTool[In, Out]) IsLongRunning() bool { return false }
-func (t *BridgeTool[In, Out]) ADKTool() tool.Tool {
-	if t.adkTool != nil {
-		return t.adkTool
-	}
-	return t
-}
-func (t *BridgeTool[In, Out]) Info() ToolInfo {
-	required := t.RequiredVal
-	if required == nil {
-		required = []string{}
-	}
-	return ToolInfo{
-		Name:        t.NameVal,
-		Description: t.DescriptionVal,
-		Parameters:  t.PropertiesVal,
-		Required:    required,
-	}
-}
-
-func (t *BridgeTool[In, Out]) Declaration() *genai.FunctionDeclaration {
-	schemaObj := map[string]any{
-		"type":       "object",
-		"properties": t.PropertiesVal,
-	}
-	if len(t.RequiredVal) > 0 {
-		schemaObj["required"] = t.RequiredVal
-	}
-	return &genai.FunctionDeclaration{
-		Name:                 t.NameVal,
-		Description:          t.DescriptionVal,
-		ParametersJsonSchema: schemaObj,
-	}
-}
-
-func (t *BridgeTool[In, Out]) Run(ctx context.Context, args map[string]any) (ToolResponse, error) {
-	var in In
-	if len(args) > 0 {
-		raw, err := json.Marshal(args)
-		if err != nil {
-			return NewTextErrorResponse("invalid parameters: " + err.Error()), nil
-		}
-		if err := json.Unmarshal(raw, &in); err != nil {
-			return NewTextErrorResponse("invalid parameters: " + err.Error()), nil
-		}
-	}
-	res, out, err := t.RunVal(ctx, in)
-	if err != nil {
-		return NewTextErrorResponse(t.NameVal + ": " + err.Error()), nil
-	}
-	body := MCPResultText(res)
-	if res != nil && res.IsError {
-		if strings.TrimSpace(body) == "" {
-			body = "(empty error result)"
-		}
-		return NewTextErrorResponse(body), nil
-	}
-	if j, err := json.Marshal(out); err == nil {
-		js := string(j)
-		switch {
-		case js == "{}" || js == "null":
-		case strings.TrimSpace(body) == "" || body == js:
-			body = js
-		default:
-			body = body + "\n" + js
-		}
-	}
-	if strings.TrimSpace(body) == "" {
-		body = "(empty result)"
-	}
-	return NewTextResponse(TruncateMiddle(body)), nil
 }
 
 func MCPResultText(res *mcp.CallToolResult) string {

@@ -2,16 +2,17 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	"github.com/Cidan/ask/pkg/memory"
-	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/agent"
 	"google.golang.org/genai"
 )
 
 type memoryIndexParams struct {
-	Text        string `json:"text" description:"the text to embed and store in long term memory"`
-	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
+	Text        string `json:"text" jsonschema:"the text to embed and store in long term memory"`
+	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 // MemoryIndexTool returns the Tool for storing text in vector memory.
@@ -50,23 +51,22 @@ type MemoryAwareTool struct {
 	Cwd   string
 }
 
-func (m *MemoryAwareTool) Name() string                             { return m.Inner.Name() }
-func (m *MemoryAwareTool) Description() string                      { return m.Inner.Description() }
-func (m *MemoryAwareTool) IsLongRunning() bool                      { return false }
-func (m *MemoryAwareTool) Info() ToolInfo                           { return m.Inner.Info() }
-func (m *MemoryAwareTool) Declaration() *genai.FunctionDeclaration { return m.Inner.Declaration() }
-func (m *MemoryAwareTool) ADKTool() tool.Tool {
-	if at, ok := m.Inner.(interface{ ADKTool() tool.Tool }); ok {
-		return at.ADKTool()
+func (m *MemoryAwareTool) Name() string        { return m.Inner.Name() }
+func (m *MemoryAwareTool) Description() string { return m.Inner.Description() }
+func (m *MemoryAwareTool) IsLongRunning() bool { return m.Inner.IsLongRunning() }
+func (m *MemoryAwareTool) Info() ToolInfo      { return ExtractToolInfo(m.Inner) }
+func (m *MemoryAwareTool) Declaration() *genai.FunctionDeclaration {
+	if dp, ok := m.Inner.(interface{ Declaration() *genai.FunctionDeclaration }); ok {
+		return dp.Declaration()
 	}
-	return m
+	return nil
 }
 
 // WrapFileToolsWithMemory decorates read, edit, and write tools with memory recall.
 func WrapFileToolsWithMemory(tools []Tool, cwd string) []Tool {
 	out := make([]Tool, len(tools))
 	for i, t := range tools {
-		switch t.Info().Name {
+		switch t.Name() {
 		case "read", "edit", "write":
 			out[i] = &MemoryAwareTool{Inner: t, Cwd: cwd}
 		default:
@@ -77,12 +77,23 @@ func WrapFileToolsWithMemory(tools []Tool, cwd string) []Tool {
 }
 
 // Run executes the underlying tool and appends file-specific memory recall when available.
-func (m *MemoryAwareTool) Run(ctx context.Context, args map[string]any) (ToolResponse, error) {
-	resp, err := m.Inner.Run(ctx, args)
-	if err != nil || resp.IsError || !memory.IsOpen() {
+func (m *MemoryAwareTool) Run(ctx agent.Context, args any) (map[string]any, error) {
+	resp, err := RunADKTool(ctx, m.Inner, args)
+	if err != nil || !memory.IsOpen() {
 		return resp, err
 	}
-	path, _ := args["file_path"].(string)
+	if isErr, _ := resp["is_error"].(bool); isErr {
+		return resp, err
+	}
+
+	argsMap, _ := args.(map[string]any)
+	if argsMap == nil {
+		if raw, err := json.Marshal(args); err == nil {
+			_ = json.Unmarshal(raw, &argsMap)
+		}
+	}
+
+	path, _ := argsMap["file_path"].(string)
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return resp, err
@@ -93,8 +104,18 @@ func (m *MemoryAwareTool) Run(ctx context.Context, args map[string]any) (ToolRes
 	if rerr != nil {
 		return resp, err
 	}
-	if block := memory.FormatRecallContext(hits, "Memory for "+path); block != "" {
-		resp.Content = resp.Content + "\n\n" + block
+	block := memory.FormatRecallContext(hits, "Memory for "+path)
+	if block == "" {
+		return resp, err
+	}
+
+	if resp == nil {
+		resp = make(map[string]any)
+	}
+	if s, ok := resp["result"].(string); ok && s != "" {
+		resp["result"] = s + "\n\n" + block
+	} else {
+		resp["result"] = block
 	}
 	return resp, err
 }

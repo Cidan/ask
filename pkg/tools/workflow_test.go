@@ -11,7 +11,7 @@ import (
 func workflowToolByName(t *testing.T, env *ToolEnv, name string) Tool {
 	t.Helper()
 	for _, tool := range WorkflowTools(env) {
-		if tool.Info().Name == name {
+		if tool.Name() == name {
 			return tool
 		}
 	}
@@ -28,7 +28,7 @@ func TestWorkflowTools_CoversEveryWorkflowTool(t *testing.T) {
 	}
 	got := map[string]bool{}
 	for _, tool := range WorkflowTools(env) {
-		got[tool.Info().Name] = true
+		got[tool.Name()] = true
 	}
 	for _, name := range want {
 		if !got[name] {

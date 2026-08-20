@@ -21,8 +21,8 @@ const InvokeToolDescription = `Invoke a tool from the tool registry by name.
 Registry tools (discovered via search_tools) are called through this tool: pass the registry tool's exact name as tool_name and its arguments as the params object, matching the input_schema search_tools returned. The result is the underlying tool's own result, returned verbatim. Core tools are NOT callable this way — call them directly.`
 
 type SearchToolsParams struct {
-	Query       string `json:"query" description:"\"*\" lists every registry tool; a trailing * does prefix matching (e.g. linear_*); anything else is a case-insensitive substring match on tool names and descriptions"`
-	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
+	Query       string `json:"query" jsonschema:"\"*\" lists every registry tool; a trailing * does prefix matching (e.g. linear_*); anything else is a case-insensitive substring match on tool names and descriptions"`
+	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 type SearchToolsEntry struct {
@@ -41,7 +41,7 @@ func SearchToolsTool(registry func() []Tool) Tool {
 			matches := make([]SearchToolsEntry, 0, len(tools))
 			var allNames []string
 			for _, t := range tools {
-				info := t.Info()
+				info := ExtractToolInfo(t)
 				allNames = append(allNames, info.Name)
 				if !searchToolsMatch(p.Query, info) {
 					continue
@@ -109,8 +109,9 @@ func InvokeToolTool(registry func() []Tool, isCore func(string) bool, env *ToolE
 	return &invokeToolImpl{registry: registry, isCore: isCore, env: env}
 }
 
-func (t *invokeToolImpl) Name() string        { return "invoke_tool" }
-func (t *invokeToolImpl) Description() string { return InvokeToolDescription }
+func (t *invokeToolImpl) Name() string           { return "invoke_tool" }
+func (t *invokeToolImpl) Description() string    { return InvokeToolDescription }
+func (t *invokeToolImpl) IsLongRunning() bool    { return false }
 
 func (t *invokeToolImpl) Info() ToolInfo {
 	return ToolInfo{
@@ -149,42 +150,44 @@ func (t *invokeToolImpl) Declaration() *genai.FunctionDeclaration {
 	}
 }
 
-func (t *invokeToolImpl) Run(ctx context.Context, args map[string]any) (ToolResponse, error) {
+func (t *invokeToolImpl) Run(ctx context.Context, args map[string]any) (any, error) {
 	name, _ := args["tool_name"].(string)
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return NewTextErrorResponse("tool_name is required"), nil
+		return map[string]any{"result": "tool_name is required", "is_error": true}, nil
 	}
 	var inner Tool
 	for _, candidate := range t.registry() {
-		if candidate.Info().Name == name {
+		if candidate.Name() == name {
 			inner = candidate
 			break
 		}
 	}
 	if inner == nil {
 		if t.isCore != nil && t.isCore(name) {
-			return NewTextErrorResponse(name + " is a core tool — call it directly, not through invoke_tool"), nil
+			return map[string]any{"result": name + " is a core tool — call it directly, not through invoke_tool", "is_error": true}, nil
 		}
-		return NewTextErrorResponse("unknown tool " + name + " — use search_tools to discover what the registry offers"), nil
+		return map[string]any{"result": "unknown tool " + name + " — use search_tools to discover what the registry offers", "is_error": true}, nil
 	}
 
 	params, _ := args["params"].(map[string]any)
 	if params == nil {
 		params = map[string]any{}
 	}
-	info := inner.Info()
+	info := ExtractToolInfo(inner)
 	desc, _ := args["description"].(string)
 	if _, has := params["description"]; !has && desc != "" && requiresField(info, "description") {
 		params["description"] = desc
 	}
 	for _, required := range info.Required {
 		if _, ok := params[required]; !ok {
-			return NewTextErrorResponse(fmt.Sprintf(
-				"missing required parameter %q for %s — check its input_schema via search_tools", required, name)), nil
+			return map[string]any{
+				"result":   fmt.Sprintf("missing required parameter %q for %s — check its input_schema via search_tools", required, name),
+				"is_error": true,
+			}, nil
 		}
 	}
-	return inner.Run(ctx, params)
+	return RunADKTool(ctx, inner, params)
 }
 
 func requiresField(info ToolInfo, field string) bool {

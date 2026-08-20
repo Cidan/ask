@@ -14,10 +14,10 @@ import (
 const ReadToolDescription = `Read a file from the filesystem. Returns the content with 1-based line numbers (cat -n format). Use offset/limit for large files; lines longer than 2000 chars are truncated. Reading a file is required before editing or overwriting it.`
 
 type ReadParams struct {
-	FilePath    string `json:"file_path" description:"absolute or cwd-relative path of the file to read"`
-	Offset      int    `json:"offset,omitempty" description:"1-based line number to start reading from (default 1)"`
-	Limit       int    `json:"limit,omitempty" description:"maximum number of lines to return (default 2000)"`
-	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
+	FilePath    string `json:"file_path" jsonschema:"absolute or cwd-relative path of the file to read"`
+	Offset      int    `json:"offset,omitempty" jsonschema:"1-based line number to start reading from (default 1)"`
+	Limit       int    `json:"limit,omitempty" jsonschema:"maximum number of lines to return (default 2000)"`
+	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 // ReadTool returns the native read tool.
@@ -113,9 +113,9 @@ func ReadTool(env *ToolEnv) Tool {
 const WriteToolDescription = `Create or overwrite a file with the given content. Overwriting an existing file requires reading it first in this session. Parent directories are created automatically.`
 
 type WriteParams struct {
-	FilePath    string `json:"file_path" description:"absolute or cwd-relative path of the file to write"`
-	Content     string `json:"content" description:"the full new content of the file"`
-	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
+	FilePath    string `json:"file_path" jsonschema:"absolute or cwd-relative path of the file to write"`
+	Content     string `json:"content" jsonschema:"the full new content of the file"`
+	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 // WriteTool returns the native write tool.
@@ -182,11 +182,11 @@ func WriteTool(env *ToolEnv) Tool {
 const EditToolDescription = `Replace an exact string in a file. old_string must match the file content exactly, including whitespace and indentation, and must be unique in the file unless replace_all is set. Use an empty old_string to create a new file. The file must have been read in this session before editing.`
 
 type EditParams struct {
-	FilePath    string `json:"file_path" description:"absolute or cwd-relative path of the file to edit"`
-	OldString   string `json:"old_string" description:"the exact text to replace; empty creates a new file with new_string as its content"`
-	NewString   string `json:"new_string" description:"the replacement text"`
-	ReplaceAll  bool   `json:"replace_all,omitempty" description:"replace every occurrence of old_string instead of requiring uniqueness"`
-	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
+	FilePath    string `json:"file_path" jsonschema:"absolute or cwd-relative path of the file to edit"`
+	OldString   string `json:"old_string" jsonschema:"the exact text to replace; empty creates a new file with new_string as its content"`
+	NewString   string `json:"new_string" jsonschema:"the replacement text"`
+	ReplaceAll  bool   `json:"replace_all,omitempty" jsonschema:"replace every occurrence of old_string instead of requiring uniqueness"`
+	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 // EditTool returns the native edit tool.

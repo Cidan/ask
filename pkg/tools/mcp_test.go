@@ -48,7 +48,7 @@ func newEchoMCPServer(t *testing.T) (*mcp.Server, *httptest.Server) {
 
 func toolByName(tools []Tool, name string) Tool {
 	for _, tool := range tools {
-		if tool.Info().Name == name {
+		if tool.Name() == name {
 			return tool
 		}
 	}
@@ -76,7 +76,7 @@ func TestMCPManager_AttachListCallAndSkip(t *testing.T) {
 	if tool == nil {
 		t.Fatal("echo tool missing")
 	}
-	info := tool.Info()
+	info := ExtractToolInfo(tool)
 	if _, ok := info.Parameters["text"]; !ok {
 		t.Errorf("schema properties not extracted: %+v", info.Parameters)
 	}
