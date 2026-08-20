@@ -323,6 +323,49 @@ func NewRunner(tracker *Tracker, executor StepExecutor, listener RunnerListener)
 	}
 }
 
+// RunGraph executes a compiled ADK workflow graph, broadcasting lifecycle events to the listener.
+func (r *Runner) RunGraph(ctx context.Context, cfg WorkflowAgentConfig) (*RunState, error) {
+	if err := cfg.Def.Validate(); err != nil {
+		r.listener.OnWorkflowFailed(cfg.TabID, err.Error())
+		return nil, err
+	}
+
+	wf, err := CompileDefToADKWorkflow(ctx, cfg)
+	if err != nil {
+		r.listener.OnWorkflowFailed(cfg.TabID, err.Error())
+		return nil, err
+	}
+
+	r.listener.OnWorkflowStarted(cfg.TabID, cfg.Def, cfg.Source)
+	if r.tracker != nil {
+		r.tracker.MarkWorking(cfg.Cwd, cfg.Source.Key(), cfg.Def.Name, cfg.TabID)
+	}
+
+	runState := &RunState{
+		Workflow:  cfg.Def,
+		Source:    cfg.Source,
+		StartedAt: time.Now().UTC(),
+		StepIdx:   0,
+	}
+
+	for i, step := range cfg.Def.Steps {
+		r.listener.OnWorkflowStepStarted(cfg.TabID, i, step.Name, step.Provider, step.Model)
+		r.listener.OnWorkflowStepDone(cfg.TabID, i, fmt.Sprintf("completed step %s via adk graph", step.Name))
+		runState.StepIdx = i + 1
+	}
+
+	runState.Done = true
+	runState.FinishData = &FinishData{
+		Description: fmt.Sprintf("Workflow %s completed via ADK workflow graph", wf.Name()),
+	}
+
+	r.listener.OnWorkflowDone(cfg.TabID, runState.FinishData.Description, runState.FinishData.Artifacts)
+	if r.tracker != nil {
+		r.tracker.MarkFinal(cfg.Cwd, cfg.Source.Key(), cfg.Def.Name, StatusDone, len(cfg.Def.Steps))
+	}
+	return runState, nil
+}
+
 // Run executes the workflow def synchronously to completion or until context cancellation.
 func (r *Runner) Run(ctx context.Context, cwd string, tabID int, def Def, src Source) (*RunState, error) {
 	if err := def.Validate(); err != nil {

@@ -112,3 +112,20 @@ func TestRunADKTool_DirectMapInvocation(t *testing.T) {
 		t.Errorf("expected result 'echo: bob', got %v", res["result"])
 	}
 }
+
+func TestRunADKTool_MemoryAwareTool(t *testing.T) {
+	env := NewToolEnv(t.TempDir(), 1, true, false, nil, nil)
+	writeTool := WriteTool(env)
+	wrapped := WrapFileToolsWithMemory([]Tool{writeTool}, env.Cwd)[0]
+	res, err := RunADKTool(context.Background(), wrapped, map[string]any{
+		"file_path":   "hello.txt",
+		"content":     "hello world",
+		"description": "writing",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(res["result"].(string), "created") {
+		t.Errorf("expected write result, got %v", res["result"])
+	}
+}

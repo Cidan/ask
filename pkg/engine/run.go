@@ -391,11 +391,19 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 					}
 				}
 				if part.FunctionCall != nil {
+					toolName := part.FunctionCall.Name
+					toolInput := part.FunctionCall.Args
+					if IsConfirmationCall(part.FunctionCall) {
+						if orig, err := UnwrapConfirmationCall(part.FunctionCall); err == nil && orig != nil {
+							toolName = orig.Name
+							toolInput = orig.Args
+						}
+					}
 					if opts.EventListener != nil {
 						opts.EventListener(ToolCallEvent{
 							BaseEvent: BaseEvent{TabID: 0},
-							ToolName:  part.FunctionCall.Name,
-							Input:     part.FunctionCall.Args,
+							ToolName:  toolName,
+							Input:     toolInput,
 						})
 					}
 				}
@@ -404,6 +412,13 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 					isErr := false
 					if res, ok := part.FunctionResponse.Response["result"].(string); ok {
 						resStr = res
+					} else if confirmed, ok := part.FunctionResponse.Response["confirmed"].(bool); ok {
+						if confirmed {
+							resStr = "confirmed"
+						} else {
+							resStr = "rejected by user"
+							isErr = true
+						}
 					} else if guid, ok := part.FunctionResponse.Response["reflection_guidance"].(string); ok {
 						resStr = guid
 						isErr = true

@@ -157,6 +157,29 @@ func NewStandaloneAgentContext(ctx context.Context) agent.Context {
 // RunADKTool executes an ADK tool with the provided arguments.
 func RunADKTool(ctx context.Context, t tool.Tool, args any) (map[string]any, error) {
 	if ct, ok := t.(interface {
+		Run(ctx agent.Context, args map[string]any) (map[string]any, error)
+	}); ok {
+		m, _ := args.(map[string]any)
+		if m == nil && args != nil {
+			if raw, err := json.Marshal(args); err == nil {
+				_ = json.Unmarshal(raw, &m)
+			}
+		}
+		return ct.Run(NewStandaloneAgentContext(ctx), m)
+	}
+	if ct, ok := t.(interface {
+		Run(ctx agent.Context, args map[string]any) (any, error)
+	}); ok {
+		m, _ := args.(map[string]any)
+		if m == nil && args != nil {
+			if raw, err := json.Marshal(args); err == nil {
+				_ = json.Unmarshal(raw, &m)
+			}
+		}
+		res, err := ct.Run(NewStandaloneAgentContext(ctx), m)
+		return wrapAnyResult(res), err
+	}
+	if ct, ok := t.(interface {
 		Run(ctx agent.Context, args any) (map[string]any, error)
 	}); ok {
 		return ct.Run(NewStandaloneAgentContext(ctx), args)
