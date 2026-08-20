@@ -487,3 +487,62 @@ func TestAgentSession_MultiTurnResumption(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentRun_AutoCreatesSession(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	store := &agentSessionStore{provider: "vertex"}
+
+	mock := &mockScriptedStream{
+		turns: [][]*genai.GenerateContentResponse{
+			{genaiTextChunk("Auto created agent turn response", 100, 10)},
+		},
+	}
+	origStream := engine.GenerateStream
+	defer func() { engine.GenerateStream = origStream }()
+	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+		return mock.Next()
+	}
+
+	freshSessionID := "sess-agentrun-autocreate"
+	s := &agentSession{
+		args:          ProviderSessionArgs{Cwd: cwd, TabID: 1, SkipAllPermissions: true, SessionID: freshSessionID},
+		system:        "test system prompt",
+		contextWindow: 1_048_576,
+		modelID:       "fake-model",
+		ch:            make(chan tea.Msg, 256),
+		sendCh:        make(chan agentTurn, 8),
+		closed:        make(chan struct{}),
+		sessionID:     freshSessionID,
+		store:         store,
+	}
+	s.env = newAgentToolEnv(s.args.Cwd, 1, true, true, s.emit)
+	s.proc = &providerProc{stdin: agentStdin{s: s}, stderr: &stderrBuf{}, payload: s}
+	go s.run()
+	defer func() { s.proc.kill(); drainProviderStream(s.ch) }()
+
+	if err := s.queueTurn("Execute first turn"); err != nil {
+		t.Fatal(err)
+	}
+	msgs := readSessionMsgs(t, s.ch, isTurnComplete)
+	var done providerDoneMsg
+	for _, m := range msgs {
+		if v, ok := m.(providerDoneMsg); ok {
+			done = v
+		}
+	}
+	if done.res.IsError {
+		t.Fatalf("turn failed unexpectedly: %s", done.res.Result)
+	}
+	if done.res.Result != "Auto created agent turn response" {
+		t.Errorf("unexpected turn result: %v", done)
+	}
+
+	sess, err := store.load(freshSessionID)
+	if err != nil {
+		t.Fatalf("load auto-created session failed: %v", err)
+	}
+	if len(sess.Events) == 0 {
+		t.Errorf("expected non-empty events in auto-created session")
+	}
+}

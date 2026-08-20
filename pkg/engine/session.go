@@ -104,18 +104,6 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 	})
 	if err == nil {
 		s.sessSvc = NewFileSessionService(args.Provider, args.Cwd)
-		_, getErr := s.sessSvc.Get(context.Background(), &session.GetRequest{
-			AppName:   "ask",
-			UserID:    "user",
-			SessionID: s.sessionID,
-		})
-		if getErr != nil {
-			_, _ = s.sessSvc.Create(context.Background(), &session.CreateRequest{
-				AppName:   "ask",
-				UserID:    "user",
-				SessionID: s.sessionID,
-			})
-		}
 		s.runner, _ = RunnerBuilder(agentInstance, s.sessSvc)
 	}
 
