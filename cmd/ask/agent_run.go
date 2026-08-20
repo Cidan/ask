@@ -381,26 +381,6 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		s.sessSvc = engine.NewFileSessionService(providerID, s.args.Cwd)
 	}
 
-	_, getErr := s.sessSvc.Get(ctx, &session.GetRequest{
-		AppName:   "ask",
-		UserID:    "user",
-		SessionID: s.sessionID,
-	})
-	if getErr != nil {
-		if _, createErr := s.sessSvc.Create(ctx, &session.CreateRequest{
-			AppName:   "ask",
-			UserID:    "user",
-			SessionID: s.sessionID,
-		}); createErr != nil {
-			s.emit(providerDoneMsg{
-				res: providerResult{SessionID: s.sessionID, IsError: true, Result: createErr.Error()},
-				err: createErr,
-			})
-			s.emit(turnCompleteMsg{})
-			return
-		}
-	}
-
 	r, err := engine.RunnerBuilder(agentInstance, s.sessSvc)
 	if err != nil {
 		s.emit(providerDoneMsg{

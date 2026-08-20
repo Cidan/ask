@@ -150,10 +150,11 @@ var RunnerBuilder RunnerBuilderFunc = func(agentInstance agent.Agent, sessSvc se
 		memSvc = adkmemory.InMemoryService()
 	}
 	return runner.New(runner.Config{
-		AppName:        "ask",
-		Agent:          agentInstance,
-		SessionService: sessSvc,
-		MemoryService:  memSvc,
+		AppName:           "ask",
+		Agent:             agentInstance,
+		SessionService:    sessSvc,
+		AutoCreateSession: true,
+		MemoryService:     memSvc,
 	})
 }
 
@@ -234,20 +235,6 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	}
 
 	sessSvc := NewFileSessionService(providerID, opts.Cwd)
-	_, getErr := sessSvc.Get(ctx, &session.GetRequest{
-		AppName:   "ask",
-		UserID:    "user",
-		SessionID: sessionID,
-	})
-	if getErr != nil {
-		if _, createErr := sessSvc.Create(ctx, &session.CreateRequest{
-			AppName:   "ask",
-			UserID:    "user",
-			SessionID: sessionID,
-		}); createErr != nil {
-			return nil, fmt.Errorf("failed to create ADK session: %w", createErr)
-		}
-	}
 
 	llm, err := ModelBuilder(ctx, spec, opts.Config, modelID)
 	if err != nil {

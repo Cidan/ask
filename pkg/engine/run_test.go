@@ -12,7 +12,9 @@ import (
 	"github.com/Cidan/ask/pkg/config"
 	pkgmemory "github.com/Cidan/ask/pkg/memory"
 	"github.com/Cidan/ask/pkg/providers"
+	"github.com/google/uuid"
 	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool/loadmemorytool"
 	"google.golang.org/adk/v2/tool/preloadmemorytool"
 	"google.golang.org/genai"
@@ -631,5 +633,120 @@ func TestEngineRun_DynamicInstructionProvider(t *testing.T) {
 	}
 	if capturedInstruction == "" {
 		t.Errorf("expected non-empty dynamic system instruction captured by model")
+	}
+}
+
+func TestEngineRun_AutoCreateSession(t *testing.T) {
+	isolateTestHome(t)
+	tmpCwd := t.TempDir()
+
+	origBuilder := ModelBuilder
+	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+		return &mockLLM{
+			name: modelID,
+			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+				return mockLLMSequence(textResponse("Auto created session response"))
+			},
+		}, nil
+	}
+	defer func() { ModelBuilder = origBuilder }()
+
+	freshSessionID := "sess-auto-create-" + uuid.New().String()
+
+	// Verify session does not exist before Run
+	sessSvc := NewFileSessionService("vertex", tmpCwd)
+	if _, err := sessSvc.Get(context.Background(), &session.GetRequest{
+		AppName:   "ask",
+		UserID:    "user",
+		SessionID: freshSessionID,
+	}); err == nil {
+		t.Fatal("expected session to not exist before Run")
+	}
+
+	res, err := Run(context.Background(), RunOptions{
+		Prompt:    "Hello world",
+		Cwd:       tmpCwd,
+		Provider:  "vertex",
+		SessionID: freshSessionID,
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if res.SessionID != freshSessionID {
+		t.Errorf("expected session ID %s, got %s", freshSessionID, res.SessionID)
+	}
+	if res.Response != "Auto created session response" {
+		t.Errorf("unexpected response: %s", res.Response)
+	}
+
+	// Verify session was auto-created and contains events
+	getResp, err := sessSvc.Get(context.Background(), &session.GetRequest{
+		AppName:   "ask",
+		UserID:    "user",
+		SessionID: freshSessionID,
+	})
+	if err != nil {
+		t.Fatalf("expected session to be created by runner, got error: %v", err)
+	}
+	if getResp.Session == nil {
+		t.Fatal("expected non-nil session")
+	}
+	var eventCount int
+	for ev := range getResp.Session.Events().All() {
+		if ev != nil {
+			eventCount++
+		}
+	}
+	if eventCount < 2 {
+		t.Errorf("expected at least 2 events (user prompt + assistant turn), got %d", eventCount)
+	}
+}
+
+func TestRunner_AutoCreateSession(t *testing.T) {
+	isolateTestHome(t)
+	tmpCwd := t.TempDir()
+
+	origBuilder := ModelBuilder
+	mockInstance := &mockLLM{
+		name: "fake-model",
+		generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+			return mockLLMSequence(textResponse("Session object auto created"))
+		},
+	}
+	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+		return mockInstance, nil
+	}
+	defer func() { ModelBuilder = origBuilder }()
+
+	freshSessionID := "sess-runner-auto-" + uuid.New().String()
+	sess := NewSession(SessionArgs{
+		Provider:  "vertex",
+		SessionID: freshSessionID,
+		Cwd:       tmpCwd,
+	}, mockInstance, "system prompt", nil, nil, nil)
+	defer sess.Close()
+
+	if err := sess.QueueTurnSync(context.Background(), "Run sync turn"); err != nil {
+		t.Fatalf("QueueTurnSync failed: %v", err)
+	}
+
+	sessSvc := NewFileSessionService("vertex", tmpCwd)
+	getResp, err := sessSvc.Get(context.Background(), &session.GetRequest{
+		AppName:   "ask",
+		UserID:    "user",
+		SessionID: freshSessionID,
+	})
+	if err != nil {
+		t.Fatalf("Get session failed after QueueTurnSync: %v", err)
+	}
+	if getResp.Session == nil {
+		t.Fatal("expected non-nil session")
+	}
+	var count int
+	for range getResp.Session.Events().All() {
+		count++
+	}
+	if count == 0 {
+		t.Errorf("expected non-zero events in auto-created session")
 	}
 }
