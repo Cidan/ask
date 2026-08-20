@@ -17,6 +17,7 @@ import (
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 )
 
@@ -264,10 +265,16 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		return nil, fmt.Errorf("failed to convert tools to ADK: %w", err)
 	}
 
+	var toolsets []tool.Toolset
+	if skillTS, err := NewSkillToolset(ctx, opts.Cwd); err == nil && skillTS != nil {
+		toolsets = append(toolsets, skillTS)
+	}
+
 	instructionProvider := func(ctx agent.ReadonlyContext) (string, error) {
 		return BuildSystemPrompt(PromptOptions{
-			Cwd:        opts.Cwd,
-			InWorkflow: false,
+			Cwd:                 opts.Cwd,
+			InWorkflow:          false,
+			DisableSkillsPrompt: len(toolsets) > 0,
 		}), nil
 	}
 
@@ -290,6 +297,7 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		Model:                 llm,
 		InstructionProvider:   instructionProvider,
 		Tools:                 adkTools,
+		Toolsets:              toolsets,
 		GenerateContentConfig: genConfig,
 	})
 	if err != nil {
