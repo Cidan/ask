@@ -298,10 +298,17 @@ cfg := &genai.ClientConfig{
    - Added end-to-end integration test in `pkg/engine/run_test.go`: `TestEngineRun_ADKMemoryIntegration`.
    - Verified 100% test pass rate across all packages via `make test`.
 
-### Phase 5: Session Single Source of Truth & Dynamic Instructions
-1. **Unify Session Persistence**:
-   - Eliminate `s.messages` in `cmd/ask/agent_run.go` and remove `s.persist()`.
-   - Rely solely on `FileSessionService` event appending during `runner.Run`.
-2. **Dynamic `InstructionProvider`**:
-   - Move dynamic context injection (rules, git status, environment, state deltas) into `llmagent.Config.InstructionProvider`.
-   - Remove static tool descriptions from the system prompt to avoid token bloat and schema drift.
+### Phase 5: Session Single Source of Truth & Dynamic Instructions (COMPLETED & VERIFIED)
+1. **Unify Session Persistence (`session.Service` as Single Source of Truth)**:
+   - Eliminated redundant in-memory `messages []Message` arrays in `Session` (`pkg/engine/session.go`) and `agentSession` (`cmd/ask/agent_run.go`).
+   - Removed duplicate disk-writes by eliminating manual `s.persist()` calls at turn completion; `runner.Runner` directly appends and persists atomic events and state deltas to `FileSessionService` (`session.Service`).
+   - Standardized session rehydration and resumption across `cmd/ask/agent_provider.go` and `pkg/engine/session.go` to load history directly from `session.Service` (`LoadHistoryEntriesFromEvents` / `MessagesFromEvents`).
+2. **Dynamic `InstructionProvider` (`google.golang.org/adk/v2/agent`)**:
+   - Implemented `BuildInstructionProvider(PromptOptions)` in `pkg/engine/prompt.go` returning `func(ctx agent.ReadonlyContext) (string, error)`.
+   - Leveraged dynamic state resolution (`ctx.ReadonlyState()`) to append runtime reminders (`system_reminder`, `step_incomplete`, `extra_instructions`) without mutating conversation history turns.
+   - Preserved deterministic prefix-cache byte stability across Gemini and DeepSeek while enabling dynamic context evolution.
+3. **Comprehensive Test Coverage**:
+   - Added unit tests in `pkg/engine/prompt_test.go`: `TestBuildInstructionProvider_DynamicState` verifying nil context fallbacks, empty state handling, and dynamic reminder/instruction block injection.
+   - Added integration test in `pkg/engine/run_test.go`: `TestEngineRun_DynamicInstructionProvider` verifying runner system instruction delivery.
+   - Updated and verified multi-turn and session persistence tests across `cmd/ask/agent_run_test.go` (`TestAgentSession_TextTurn`, `TestAgentSession_ToolRoundTrip`, `TestAgentSession_MultiTurnResumption`) and `cmd/ask/engine_headless_test.go`.
+   - Verified 100% test pass rate across all packages via `make test`.

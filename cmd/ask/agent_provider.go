@@ -10,6 +10,7 @@ import (
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/tools"
+	adksession "google.golang.org/adk/v2/session"
 )
 
 // agentProviderSpec describes one in-process API provider.
@@ -121,12 +122,14 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 
 	switch {
 	case args.SessionID != "":
-		file, err := store.load(args.SessionID)
-		if err != nil {
+		if _, err := session.sessSvc.Get(context.Background(), &adksession.GetRequest{
+			AppName:   "ask",
+			UserID:    "user",
+			SessionID: args.SessionID,
+		}); err != nil {
 			return nil, nil, fmt.Errorf("%s: resume %s: %w", p.spec.ID, short(args.SessionID), err)
 		}
 		session.sessionID = args.SessionID
-		session.messages = file.Messages()
 	case args.NewSessionID != "":
 		session.sessionID = args.NewSessionID
 	default:
