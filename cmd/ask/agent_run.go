@@ -104,7 +104,7 @@ func (s *agentSession) isCoreToolName(name string) bool {
 	s.toolsMu.Lock()
 	defer s.toolsMu.Unlock()
 	for _, t := range s.coreTools {
-		if t.Info().Name == name {
+		if t.Name() == name {
 			return true
 		}
 	}

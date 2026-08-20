@@ -6,12 +6,13 @@ import (
 	"testing"
 
 	"github.com/Cidan/ask/pkg/tools"
+	"google.golang.org/genai"
 )
 
 func bridgeToolByName(t *testing.T, env *agentToolEnv, name string) tools.Tool {
 	t.Helper()
 	for _, tool := range agentLinearTools(env) {
-		if tool.Info().Name == name {
+		if tool.Name() == name {
 			return tool
 		}
 	}
@@ -29,7 +30,7 @@ func TestAgentLinearTools_CoversEveryLinearTool(t *testing.T) {
 	}
 	got := map[string]bool{}
 	for _, tool := range agentLinearTools(env) {
-		got[tool.Info().Name] = true
+		got[tool.Name()] = true
 	}
 	for _, name := range want {
 		if !got[name] {
@@ -43,7 +44,7 @@ func TestAgentLinearTools_CoversEveryLinearTool(t *testing.T) {
 
 func TestNativeBridgeTool_SchemaCarriesJSONSchemaTags(t *testing.T) {
 	env, _ := newTestToolEnv(t)
-	info := bridgeToolByName(t, env, "linear_list_issues").Info()
+	info := tools.ExtractToolInfo(bridgeToolByName(t, env, "linear_list_issues"))
 	q, ok := info.Parameters["query"].(map[string]any)
 	if !ok {
 		t.Fatalf("query property missing: %+v", info.Parameters)
@@ -52,7 +53,7 @@ func TestNativeBridgeTool_SchemaCarriesJSONSchemaTags(t *testing.T) {
 		t.Errorf("jsonschema field doc must reach the model: %+v", q)
 	}
 
-	get := bridgeToolByName(t, env, "linear_get_issue").Info()
+	get := tools.ExtractToolInfo(bridgeToolByName(t, env, "linear_get_issue"))
 	var requiredNumber bool
 	for _, r := range get.Required {
 		if r == "number" {
@@ -69,7 +70,7 @@ func TestNativeBridgeTool_InjectsDescriptionPhrase(t *testing.T) {
 
 	// Tools without their own description param get the injected
 	// required phrase param so their calls render a headline too.
-	info := bridgeToolByName(t, env, "linear_list_issues").Info()
+	info := tools.ExtractToolInfo(bridgeToolByName(t, env, "linear_list_issues"))
 	prop, ok := info.Parameters["description"].(map[string]any)
 	if !ok {
 		t.Fatalf("injected description param missing: %+v", info.Parameters)
@@ -90,7 +91,7 @@ func TestNativeBridgeTool_InjectsDescriptionPhrase(t *testing.T) {
 	// Tools whose input already uses "description" as real payload
 	// (linear_update_issue: the issue's Markdown body) keep their own
 	// schema untouched — no clobber, no forced requirement.
-	upd := bridgeToolByName(t, env, "linear_update_issue").Info()
+	upd := tools.ExtractToolInfo(bridgeToolByName(t, env, "linear_update_issue"))
 	uprop, ok := upd.Parameters["description"].(map[string]any)
 	if !ok {
 		t.Fatalf("linear_update_issue description param missing: %+v", upd.Parameters)
@@ -137,7 +138,7 @@ func TestSetupAgentSessionTools_NoLoopbackAttachAndNativesPresent(t *testing.T) 
 	env, _ := newTestToolEnv(t)
 	names := map[string]bool{}
 	for _, tool := range agentLinearTools(env) {
-		names[tool.Info().Name] = true
+		names[tool.Name()] = true
 	}
 	if !names["linear_list_issues"] {
 		t.Error("linear_* native bridge twins must be present in the deferred registry")
@@ -147,7 +148,7 @@ func TestSetupAgentSessionTools_NoLoopbackAttachAndNativesPresent(t *testing.T) 
 func TestClearPlans_NotInLinearTools(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 	for _, tool := range agentLinearTools(env) {
-		if tool.Info().Name == "clear_plans" {
+		if tool.Name() == "clear_plans" {
 			t.Fatal("clear_plans must not live in agentLinearTools")
 		}
 	}
@@ -156,10 +157,11 @@ func TestClearPlans_NotInLinearTools(t *testing.T) {
 func TestNativeBridgeTool_AllWireSchemasClean(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 	for _, tool := range agentLinearTools(env) {
-		decl := tool.Declaration()
-		if decl == nil {
-			t.Fatalf("tool %s missing declaration", tool.Info().Name)
+		declProvider, ok := tool.(interface{ Declaration() *genai.FunctionDeclaration })
+		if !ok || declProvider.Declaration() == nil {
+			t.Fatalf("tool %s missing declaration", tool.Name())
 		}
-		walkForItemsAnyOfConflict(t, tool.Info().Name, decl.ParametersJsonSchema)
+		decl := declProvider.Declaration()
+		walkForItemsAnyOfConflict(t, tool.Name(), decl.ParametersJsonSchema)
 	}
 }

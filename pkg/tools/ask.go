@@ -66,20 +66,20 @@ Call this once, as the final action of your turn, with:
 Calling this RECORDS your report; it does NOT end your turn early or exit a loop immediately. Finish your turn normally — the workflow acts on what you registered when your turn completes. If your turn ends without calling end_turn (or, as a loop's final step, without a decision), you will be re-prompted to provide it.`
 
 type AskOption struct {
-	Label   string `json:"label" description:"short label for the option"`
-	Diagram string `json:"diagram,omitempty" description:"required only for pick_diagram kind: monospace box-drawing art, max 40 cols x 12 rows"`
+	Label   string `json:"label" jsonschema:"short label for the option"`
+	Diagram string `json:"diagram,omitempty" jsonschema:"required only for pick_diagram kind: monospace box-drawing art, max 40 cols x 12 rows"`
 }
 
 type AskQuestion struct {
-	Kind        string      `json:"kind" enum:"pick_one,pick_many,pick_diagram" description:"one of pick_one, pick_many, pick_diagram"`
-	Prompt      string      `json:"prompt" description:"the question shown to the user"`
-	Options     []AskOption `json:"options" description:"list of options for the user to choose from"`
-	AllowCustom bool        `json:"allow_custom,omitempty" description:"append an Enter-your-own free-text option (pick_one and pick_many only)"`
+	Kind        string      `json:"kind" jsonschema:"one of pick_one, pick_many, pick_diagram"`
+	Prompt      string      `json:"prompt" jsonschema:"the question shown to the user"`
+	Options     []AskOption `json:"options" jsonschema:"list of options for the user to choose from"`
+	AllowCustom bool        `json:"allow_custom,omitempty" jsonschema:"append an Enter-your-own free-text option (pick_one and pick_many only)"`
 }
 
 type AskParams struct {
-	Questions   []AskQuestion `json:"questions" description:"one or more questions to ask the user together in a tabbed modal"`
-	Description string        `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what is being asked"`
+	Questions   []AskQuestion `json:"questions" jsonschema:"one or more questions to ask the user together in a tabbed modal"`
+	Description string        `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what is being asked"`
 }
 
 type AskOutput struct {
@@ -134,8 +134,8 @@ func AskUserQuestionTool(env *ToolEnv) Tool {
 }
 
 type FinishWorkflowParams struct {
-	Description string   `json:"description" description:"required: summary of the workflow outcome"`
-	Artifacts   []string `json:"artifacts,omitempty" description:"list of created/modified artifacts (e.g. PR link). If a PR was created, it MUST be a part of the artifacts"`
+	Description string   `json:"description" jsonschema:"required: summary of the workflow outcome"`
+	Artifacts   []string `json:"artifacts,omitempty" jsonschema:"list of created/modified artifacts (e.g. PR link). If a PR was created, it MUST be a part of the artifacts"`
 }
 
 // FinishWorkflowTool records final workflow artifacts and outcome description.
@@ -160,8 +160,8 @@ func FinishWorkflowTool(env *ToolEnv) Tool {
 }
 
 type EndTurnParams struct {
-	Summary  string `json:"summary" description:"required: 1-3 sentence summary of what you did this step (and what remains), recorded as this step's line in the workflow log"`
-	Decision string `json:"decision,omitempty" enum:",continue,break" description:"loop control, required only on the final step of a loop iteration: 'continue' to run another iteration or 'break' to end the loop; omit when not the final step of a loop"`
+	Summary  string `json:"summary" jsonschema:"required: 1-3 sentence summary of what you did this step (and what remains), recorded as this step's line in the workflow log"`
+	Decision string `json:"decision,omitempty" jsonschema:"loop control, required only on the final step of a loop iteration: 'continue' to run another iteration or 'break' to end the loop; omit when not the final step of a loop"`
 }
 
 // EndTurnTool registers the workflow step summary and loop decision.
@@ -191,9 +191,9 @@ func EndTurnTool(env *ToolEnv) Tool {
 }
 
 type FinalizedPlanParams struct {
-	Plan            string `json:"plan" description:"required: the full markdown plan covering the necessary file changes, tests, and verification steps. MUST include detailed rationale explaining what will be changed and why, not just a list of steps. Note that workflow execution runs as a separate subagent context that CANNOT read the current chat history; your plan MUST be completely self-contained, including all necessary context, code locations, reasoning, and intent."`
-	Explanation     string `json:"explanation" description:"required: one or two sentences explaining why this plan is optimal"`
-	DefaultWorkflow string `json:"default_workflow,omitempty" description:"optional: the matched/suggested workflow name (e.g. 'ship') if any matches the plan"`
+	Plan            string `json:"plan" jsonschema:"required: the full markdown plan covering the necessary file changes, tests, and verification steps. MUST include detailed rationale explaining what will be changed and why, not just a list of steps. Note that workflow execution runs as a separate subagent context that CANNOT read the current chat history; your plan MUST be completely self-contained, including all necessary context, code locations, reasoning, and intent."`
+	Explanation     string `json:"explanation" jsonschema:"required: one or two sentences explaining why this plan is optimal"`
+	DefaultWorkflow string `json:"default_workflow,omitempty" jsonschema:"optional: the matched/suggested workflow name (e.g. 'ship') if any matches the plan"`
 }
 
 // FinalizedPlanTool presents a finalized plan for confirmation or workflow dispatch.

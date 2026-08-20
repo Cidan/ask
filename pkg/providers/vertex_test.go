@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"cloud.google.com/go/auth"
 	"github.com/Cidan/ask/pkg/config"
 )
 
@@ -43,15 +44,49 @@ func TestVertexPrepareCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var applied string
-	prev := VertexApplyEnv
-	VertexApplyEnv = func(path string) { applied = path }
-	defer func() { VertexApplyEnv = prev }()
+	fakeCreds := &auth.Credentials{}
+	var loadedPath string
+	prevLoader := VertexCredentialsLoader
+	VertexCredentialsLoader = func(path string) (*auth.Credentials, error) {
+		loadedPath = path
+		return fakeCreds, nil
+	}
+	defer func() { VertexCredentialsLoader = prevLoader }()
+
+	// Ensure GOOGLE_APPLICATION_CREDENTIALS is not set initially
+	t.Setenv(VertexEnvApplicationCredentials, "")
 
 	vc := config.VertexConfig{ServiceAccountKey: keyFile}
-	path, err := VertexPrepareCredentials(vc)
-	if err != nil || path != keyFile || applied != keyFile {
-		t.Fatalf("credentials prep failed: path=%s applied=%s err=%v", path, applied, err)
+	creds, err := VertexPrepareCredentials(vc)
+	if err != nil {
+		t.Fatalf("credentials prep failed: %v", err)
+	}
+	if creds != fakeCreds {
+		t.Errorf("expected returned creds to match loader output")
+	}
+	if loadedPath != keyFile {
+		t.Errorf("expected loadedPath=%s, got %s", keyFile, loadedPath)
+	}
+
+	// Verify env was NOT mutated
+	if envVal := os.Getenv(VertexEnvApplicationCredentials); envVal != "" {
+		t.Errorf("VertexPrepareCredentials must NOT mutate %s; got %q", VertexEnvApplicationCredentials, envVal)
+	}
+
+	// Test missing file returns error
+	vcMissing := config.VertexConfig{ServiceAccountKey: filepath.Join(tmp, "nonexistent.json")}
+	if _, err := VertexPrepareCredentials(vcMissing); err == nil {
+		t.Error("expected error for non-existent service account key")
+	}
+
+	// Test empty SA returns nil credentials without error
+	vcEmpty := config.VertexConfig{}
+	emptyCreds, err := VertexPrepareCredentials(vcEmpty)
+	if err != nil {
+		t.Fatalf("unexpected error for empty config: %v", err)
+	}
+	if emptyCreds != nil {
+		t.Errorf("expected nil creds for empty config, got %v", emptyCreds)
 	}
 }
 

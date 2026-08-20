@@ -329,7 +329,7 @@ func subagentTools(def subagentDef, env *agentToolEnv, deferred func() []tools.T
 		"search_tools": tools.SearchToolsTool(deferred),
 	}
 	for _, wt := range tools.WorkflowTools(env) {
-		available[wt.Info().Name] = wt
+		available[wt.Name()] = wt
 	}
 	isCore := func(name string) bool {
 		return available[name] != nil

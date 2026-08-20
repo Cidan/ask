@@ -298,8 +298,9 @@ type mockCustomTool struct {
 	ran bool
 }
 
-func (m *mockCustomTool) Name() string        { return "custom_calc" }
-func (m *mockCustomTool) Description() string { return "a custom calculation tool" }
+func (m *mockCustomTool) Name() string           { return "custom_calc" }
+func (m *mockCustomTool) Description() string    { return "a custom calculation tool" }
+func (m *mockCustomTool) IsLongRunning() bool    { return false }
 func (m *mockCustomTool) Info() ToolInfo {
 	return ToolInfo{
 		Name:        "custom_calc",

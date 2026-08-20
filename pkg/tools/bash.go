@@ -192,11 +192,11 @@ func (m *JobManager) KillAll() {
 const BashToolDescription = `Run a shell command in the working directory and return its combined stdout/stderr (interleaved, truncated middle-out past 30000 chars). Standard noisy command output is automatically compressed to save tokens; set disable_token_savings to true if you strictly need raw uncompressed output. Commands run in independent shells — no state persists between calls, so prefer absolute paths over cd. Set run_in_background for servers and long builds, then poll with job_output and stop with job_kill. Quote paths containing spaces.`
 
 type BashParams struct {
-	Command             string `json:"command" description:"the shell command to execute"`
-	Description         string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this command does"`
-	Timeout             int    `json:"timeout,omitempty" description:"max seconds to wait before the command is killed (default 120, max 600)"`
-	RunInBackground     bool   `json:"run_in_background,omitempty" description:"start the command as a background job and return its job id immediately"`
-	DisableTokenSavings bool   `json:"disable_token_savings,omitempty" description:"set to true to disable standard output filtering for this command if raw uncompressed output is strictly needed"`
+	Command             string `json:"command" jsonschema:"the shell command to execute"`
+	Description         string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this command does"`
+	Timeout             int    `json:"timeout,omitempty" jsonschema:"max seconds to wait before the command is killed (default 120, max 600)"`
+	RunInBackground     bool   `json:"run_in_background,omitempty" jsonschema:"start the command as a background job and return its job id immediately"`
+	DisableTokenSavings bool   `json:"disable_token_savings,omitempty" jsonschema:"set to true to disable standard output filtering for this command if raw uncompressed output is strictly needed"`
 }
 
 // BashTool returns the native bash tool.
@@ -344,9 +344,9 @@ func bashResponse(output string, rawTruncated bool, res ShellResult) ToolRespons
 const JobOutputToolDescription = `Read the accumulated output of a background job started with bash run_in_background. Set wait to block until the job exits (up to 30s).`
 
 type JobOutputParams struct {
-	JobID       string `json:"job_id" description:"the job id returned when the background command started"`
-	Wait        bool   `json:"wait,omitempty" description:"block until the job finishes (30s cap) before returning output"`
-	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
+	JobID       string `json:"job_id" jsonschema:"the job id returned when the background command started"`
+	Wait        bool   `json:"wait,omitempty" jsonschema:"block until the job finishes (30s cap) before returning output"`
+	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 // JobOutputTool returns the native job_output tool.
@@ -406,8 +406,8 @@ func JobOutputTool(env *ToolEnv) Tool {
 const JobKillToolDescription = `Kill a background job started with bash run_in_background. The job's whole process group receives SIGKILL.`
 
 type JobKillParams struct {
-	JobID       string `json:"job_id" description:"the job id to kill"`
-	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
+	JobID       string `json:"job_id" jsonschema:"the job id to kill"`
+	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 // JobKillTool returns the native job_kill tool.

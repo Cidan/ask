@@ -31,9 +31,9 @@ const (
 const FetchToolDescription = `Fetch a URL over HTTP GET and return its content. HTML pages are reduced to readable text; other content types return raw (capped at 100KB). Use for documentation, APIs, and references the task points at.`
 
 type FetchParams struct {
-	URL         string `json:"url" description:"the http(s) URL to fetch"`
-	Timeout     int    `json:"timeout,omitempty" description:"max seconds to wait (default 30, max 120)"`
-	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
+	URL         string `json:"url" jsonschema:"the http(s) URL to fetch"`
+	Timeout     int    `json:"timeout,omitempty" jsonschema:"max seconds to wait (default 30, max 120)"`
+	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 // FetchClient is swappable in tests.
@@ -174,9 +174,9 @@ func CollapseBlankLines(s string) string {
 const WebSearchToolDescription = `Search the web and return ranked results (title, URL, and snippet) for a query. Use this to find current information, documentation, releases, or anything outside your training data — then follow up with the fetch tool to read a promising result in full.`
 
 type WebSearchParams struct {
-	Query       string `json:"query" description:"the search query"`
-	Count       int    `json:"count,omitempty" description:"max number of results to return (default 8, max 20)"`
-	Description string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
+	Query       string `json:"query" jsonschema:"the search query"`
+	Count       int    `json:"count,omitempty" jsonschema:"max number of results to return (default 8, max 20)"`
+	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 // BraveSearchClient is swappable in tests.

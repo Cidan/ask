@@ -29,8 +29,8 @@ func TestTool_MemoryIndexTool(t *testing.T) {
 	}
 
 	tool := MemoryIndexTool(cwd, approvalHandler)
-	if tool.Info().Name != "memory_index" {
-		t.Fatalf("expected tool name memory_index, got %s", tool.Info().Name)
+	if tool.Name() != "memory_index" {
+		t.Fatalf("expected tool name memory_index, got %s", tool.Name())
 	}
 
 	// Empty text should return error

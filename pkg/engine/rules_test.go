@@ -81,8 +81,9 @@ type fakeRuleTestTool struct {
 	cwd string
 }
 
-func (f *fakeRuleTestTool) Name() string        { return "read" }
-func (f *fakeRuleTestTool) Description() string { return "read file" }
+func (f *fakeRuleTestTool) Name() string           { return "read" }
+func (f *fakeRuleTestTool) Description() string    { return "read file" }
+func (f *fakeRuleTestTool) IsLongRunning() bool    { return false }
 func (f *fakeRuleTestTool) Info() ToolInfo {
 	return ToolInfo{
 		Name:        "read",
@@ -118,42 +119,45 @@ func TestWrapContextAwareTools_JITInjectionAndDedup(t *testing.T) {
 	read := wrapped[0]
 
 	// Read matching file
-	resp, err := read.Run(context.Background(), map[string]any{
+	resp, err := RunADKTool(context.Background(), read, map[string]any{
 		"file_path":   "src/api/handler.go",
 		"description": "read handler",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(resp.Content, "API rule body.") {
-		t.Errorf("matching read should inject the rule:\n%s", resp.Content)
+	content := resp["result"].(string)
+	if !strings.Contains(content, "API rule body.") {
+		t.Errorf("matching read should inject the rule:\n%s", content)
 	}
-	if strings.Contains(resp.Content, "Eager body.") {
+	if strings.Contains(content, "Eager body.") {
 		t.Error("eager rule must never be injected JIT")
 	}
 
 	// Read again -> dedup
-	resp, err = read.Run(context.Background(), map[string]any{
+	resp, err = RunADKTool(context.Background(), read, map[string]any{
 		"file_path":   "src/api/handler.go",
 		"description": "read handler again",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(resp.Content, "API rule body.") {
+	content = resp["result"].(string)
+	if strings.Contains(content, "API rule body.") {
 		t.Error("rule must inject at most once per session")
 	}
 
 	// Read non-matching
-	resp, err = read.Run(context.Background(), map[string]any{
+	resp, err = RunADKTool(context.Background(), read, map[string]any{
 		"file_path":   "README.md",
 		"description": "read readme",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(resp.Content, "API rule body.") {
-		t.Error("non-matching file must not get the api rule")
+	content = resp["result"].(string)
+	if strings.Contains(content, "API rule body.") || strings.Contains(content, "Eager body.") {
+		t.Error("non-matching read must not inject rules")
 	}
 }
 

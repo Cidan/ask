@@ -78,7 +78,7 @@ func CoreTools(env *ToolEnv, registry func() []Tool, attachWebSearch bool) []Too
 
 	coreMap := make(map[string]bool, len(tools)+1)
 	for _, t := range tools {
-		coreMap[t.Info().Name] = true
+		coreMap[t.Name()] = true
 	}
 	coreMap["invoke_tool"] = true
 

@@ -130,7 +130,7 @@ func TestTodosWorkflowGuard_DisarmedByCheck(t *testing.T) {
 	wfTools := WorkflowTools(env)
 	var listTool Tool
 	for _, wt := range wfTools {
-		if wt.Info().Name == "workflow_list" {
+		if wt.Name() == "workflow_list" {
 			listTool = wt
 			break
 		}
