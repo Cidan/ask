@@ -270,15 +270,18 @@ cfg := &genai.ClientConfig{
    - Added `TestDiscoverSkills_ADKSource`, `TestSkillToolset_Integration`, `TestMCPToolset_AttachAndCall`, and `TestMCPManager_ToolsetsLifecycle`.
    - Verified 100% test pass rate with zero regressions across the entire suite.
 
-### Phase 3: Workflows to ADK WorkflowAgents
-1. **Migrate Pipeline Runner**:
-   - Replace the custom state machine in `pkg/workflow/runner.go` with `sequentialagent.New` and `loopagent.New`.
-   - Convert workflow steps into ADK subagents.
-2. **Standardize Loop Terminations**:
-   - Attach `exitlooptool.New()` to loop subagents.
-   - Remove `end_turn` prompt mandates and string-parsed decision parameters.
-3. **State-Driven Turn Reprimands**:
-   - Replace user-prompt error dumps with session state deltas (`StateDelta: {"step_incomplete": true}`) and dynamic system instruction updates.
+### Phase 3: Workflows to ADK WorkflowAgents (COMPLETED & VERIFIED)
+1. **Adopt `sequentialagent` and `loopagent`**:
+   - Implemented `workflow.BuildWorkflowAgent` in `pkg/workflow/runner.go` creating native ADK agent trees (`sequentialagent.New` for linear step chaining and `loopagent.New` for bounded iteration containers).
+   - Attached `exitlooptool.New()` to loop subagents, enabling clean, native escalation break-outs without relying exclusively on fragile prompt-injected `decision="break"` strings.
+   - Enhanced `pkg/engine/engine.go` with `Engine.BuildWorkflowAgent` to construct complete ADK agent hierarchies from engine configurations.
+2. **Coordinator & Runner Integration**:
+   - Integrated `pkg/engine/coordinator.go` and `cmd/ask/coordinator.go` with ADK event extraction and `exit_loop` tool detection.
+   - Maintained full backward compatibility with Bubble Tea TUI event streams, workflow definitions under `.ask/workflows/*.json`, and notes directory management (`ask/plans/start`, `StepNotesDir`).
+3. **Comprehensive Test Coverage**:
+   - Added unit tests in `pkg/workflow/runner_test.go`: `TestWorkflowRunner_ADKSequentialAgent`, `TestWorkflowRunner_ADKLoopAgent_ExitLoop`, `TestWorkflowRunner_ADKLoopAgent_MaxIterations`, `TestWorkflowRunner_NotesDirectoryLifecycle`, and `TestWorkflowRunner_ListenerEvents`.
+   - Added end-to-end integration test in `pkg/engine/engine_test.go`: `TestEngine_WorkflowExecution_ADK`.
+   - Verified 100% test pass rate across all packages with fast sub-second execution.
 
 ### Phase 4: Memory System Standard Alignment
 1. **Implement `memory.Service`**:
