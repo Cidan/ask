@@ -7,6 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/llmagent"
+	"google.golang.org/adk/v2/agent/workflowagents/loopagent"
+	"google.golang.org/adk/v2/agent/workflowagents/sequentialagent"
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/exitlooptool"
 )
 
 // Loop decision constants.
@@ -101,12 +109,197 @@ type RunnerListener interface {
 // NoopRunnerListener provides a default empty implementation of RunnerListener.
 type NoopRunnerListener struct{}
 
-func (NoopRunnerListener) OnWorkflowStarted(int, Def, Source)                 {}
+func (NoopRunnerListener) OnWorkflowStarted(int, Def, Source)                     {}
 func (NoopRunnerListener) OnWorkflowStepStarted(int, int, string, string, string) {}
-func (NoopRunnerListener) OnWorkflowStepDone(int, int, string)                {}
-func (NoopRunnerListener) OnWorkflowDone(int, string, []string)               {}
-func (NoopRunnerListener) OnWorkflowFailed(int, string)                       {}
-func (NoopRunnerListener) OnNote(int, string)                                 {}
+func (NoopRunnerListener) OnWorkflowStepDone(int, int, string)                    {}
+func (NoopRunnerListener) OnWorkflowDone(int, string, []string)                   {}
+func (NoopRunnerListener) OnWorkflowFailed(int, string)                           {}
+func (NoopRunnerListener) OnNote(int, string)                                     {}
+
+// WorkflowAgentConfig configures the construction of an ADK workflow agent hierarchy.
+type WorkflowAgentConfig struct {
+	Def                Def
+	Source             Source
+	Cwd                string
+	TabID              int
+	ModelBuilder       func(ctx context.Context, step Step) (model.LLM, error)
+	ToolsBuilder       func(ctx context.Context, step Step, isLoop bool) ([]tool.Tool, error)
+	ToolsetsBuilder    func(ctx context.Context, step Step, isLoop bool) ([]tool.Toolset, error)
+	InstructionBuilder func(step Step, isStart bool, isFinal bool, loopCtx *LoopPromptCtx, notesDir, prevNotesDir string) string
+}
+
+// BuildWorkflowAgent constructs an ADK agent hierarchy conforming to the workflow definition.
+// Top-level linear steps are chained using sequentialagent, while kind: "loop" steps are
+// encapsulated in loopagent containers with exitlooptool attached to their sub-agents.
+func BuildWorkflowAgent(ctx context.Context, cfg WorkflowAgentConfig) (agent.Agent, error) {
+	if err := cfg.Def.Validate(); err != nil {
+		return nil, err
+	}
+	if cfg.ModelBuilder == nil {
+		return nil, errors.New("model builder is required")
+	}
+
+	var topAgents []agent.Agent
+	var prevNotesDir string
+
+	for i, top := range cfg.Def.Steps {
+		isFinalStep := i == len(cfg.Def.Steps)-1
+
+		if top.Kind == "loop" {
+			if len(top.Steps) == 0 {
+				continue
+			}
+			var innerAgents []agent.Agent
+			for innerIdx, innerStep := range top.Steps {
+				isLoopStart := i == 0 && innerIdx == 0
+				var notesDir string
+				if isLoopStart {
+					notesDir = StartPlanDir(cfg.Cwd)
+				} else {
+					notesDir = StepNotesDir(cfg.Cwd, innerStep.Name, top.Name, 1)
+				}
+
+				llm, err := cfg.ModelBuilder(ctx, innerStep)
+				if err != nil {
+					return nil, fmt.Errorf("failed to build model for step %q: %w", innerStep.Name, err)
+				}
+
+				var tools []tool.Tool
+				if cfg.ToolsBuilder != nil {
+					builtTools, err := cfg.ToolsBuilder(ctx, innerStep, true)
+					if err != nil {
+						return nil, fmt.Errorf("failed to build tools for step %q: %w", innerStep.Name, err)
+					}
+					tools = append(tools, builtTools...)
+				}
+
+				// Attach ADK's native exitlooptool for clean early break out of loop containers
+				exitTool, err := exitlooptool.New()
+				if err != nil {
+					return nil, fmt.Errorf("failed to create exitloop tool: %w", err)
+				}
+				hasExitTool := false
+				for _, t := range tools {
+					if t != nil && t.Name() == exitTool.Name() {
+						hasExitTool = true
+						break
+					}
+				}
+				if !hasExitTool {
+					tools = append(tools, exitTool)
+				}
+
+				var toolsets []tool.Toolset
+				if cfg.ToolsetsBuilder != nil {
+					ts, err := cfg.ToolsetsBuilder(ctx, innerStep, true)
+					if err != nil {
+						return nil, fmt.Errorf("failed to build toolsets for step %q: %w", innerStep.Name, err)
+					}
+					toolsets = ts
+				}
+
+				instruction := innerStep.Prompt
+				if cfg.InstructionBuilder != nil {
+					loopCtx := &LoopPromptCtx{
+						Name:          top.Name,
+						Iteration:     1,
+						MaxIterations: cfg.Def.EffectiveMaxIterations(top),
+						ExitCondition: top.ExitCondition,
+						IsTail:        innerIdx == len(top.Steps)-1,
+					}
+					instruction = cfg.InstructionBuilder(innerStep, isLoopStart, isFinalStep, loopCtx, notesDir, prevNotesDir)
+				}
+
+				innerAg, err := llmagent.New(llmagent.Config{
+					Name:        innerStep.Name,
+					Description: innerStep.Prompt,
+					Model:       llm,
+					Instruction: instruction,
+					Tools:       tools,
+					Toolsets:    toolsets,
+				})
+				if err != nil {
+					return nil, fmt.Errorf("failed to create inner step agent %q: %w", innerStep.Name, err)
+				}
+				innerAgents = append(innerAgents, innerAg)
+				prevNotesDir = notesDir
+			}
+
+			loopAg, err := loopagent.New(loopagent.Config{
+				AgentConfig: agent.Config{
+					Name:        top.Name,
+					Description: top.ExitCondition,
+					SubAgents:   innerAgents,
+				},
+				MaxIterations: uint(cfg.Def.EffectiveMaxIterations(top)),
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to create loop agent %q: %w", top.Name, err)
+			}
+			topAgents = append(topAgents, loopAg)
+			continue
+		}
+
+		// Linear step
+		isStart := i == 0
+		var notesDir string
+		if isStart {
+			notesDir = StartPlanDir(cfg.Cwd)
+		} else {
+			notesDir = StepNotesDir(cfg.Cwd, top.Name, "", 0)
+		}
+
+		llm, err := cfg.ModelBuilder(ctx, top)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build model for step %q: %w", top.Name, err)
+		}
+
+		var tools []tool.Tool
+		if cfg.ToolsBuilder != nil {
+			builtTools, err := cfg.ToolsBuilder(ctx, top, false)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build tools for step %q: %w", top.Name, err)
+			}
+			tools = append(tools, builtTools...)
+		}
+
+		var toolsets []tool.Toolset
+		if cfg.ToolsetsBuilder != nil {
+			ts, err := cfg.ToolsetsBuilder(ctx, top, false)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build toolsets for step %q: %w", top.Name, err)
+			}
+			toolsets = ts
+		}
+
+		instruction := top.Prompt
+		if cfg.InstructionBuilder != nil {
+			instruction = cfg.InstructionBuilder(top, isStart, isFinalStep, nil, notesDir, prevNotesDir)
+		}
+
+		stepAg, err := llmagent.New(llmagent.Config{
+			Name:        top.Name,
+			Description: top.Prompt,
+			Model:       llm,
+			Instruction: instruction,
+			Tools:       tools,
+			Toolsets:    toolsets,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create step agent %q: %w", top.Name, err)
+		}
+		topAgents = append(topAgents, stepAg)
+		prevNotesDir = notesDir
+	}
+
+	return sequentialagent.New(sequentialagent.Config{
+		AgentConfig: agent.Config{
+			Name:        cfg.Def.Name,
+			Description: cfg.Def.Description,
+			SubAgents:   topAgents,
+		},
+	})
+}
 
 // Runner executes multi-step workflow pipelines.
 type Runner struct {
@@ -326,7 +519,8 @@ func (r *Runner) Run(ctx context.Context, cwd string, tabID int, def Def, src So
 
 		r.listener.OnWorkflowStepDone(tabID, runState.StepIdx, res.Summary)
 
-		if isTail && res.Decision == LoopBreak {
+		// Loop termination: either explicitly via decision="break", or native exit_loop tool invocation
+		if res.Decision == LoopBreak {
 			if isFinalStep && res.FinishData != nil {
 				runState.FinishData = res.FinishData
 			}
@@ -544,3 +738,4 @@ func ProviderMeta(provider, model string) string {
 		return provider + "/" + model
 	}
 }
+

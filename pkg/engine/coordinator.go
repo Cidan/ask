@@ -137,6 +137,11 @@ func extractStepResultFromMessages(output string, messages []Message) workflow.S
 					decision = d
 				}
 			}
+			if tc.Name == "exit_loop" {
+				if decision == "" {
+					decision = workflow.LoopBreak
+				}
+			}
 			if tc.Name == "finish_workflow" && finishData == nil {
 				desc, _ := tc.Args["description"].(string)
 				var arts []string

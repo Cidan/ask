@@ -3,12 +3,40 @@ package workflow
 import (
 	"context"
 	"errors"
+	"iter"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
 )
+
+type mockWorkflowLLM struct {
+	name         string
+	generateFunc func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error]
+}
+
+func (m *mockWorkflowLLM) Name() string { return m.name }
+func (m *mockWorkflowLLM) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+	if m.generateFunc != nil {
+		return m.generateFunc(ctx, req, stream)
+	}
+	return func(yield func(*model.LLMResponse, error) bool) {
+		yield(&model.LLMResponse{
+			Content: &genai.Content{
+				Role:  genai.RoleModel,
+				Parts: []*genai.Part{genai.NewPartFromText("mock response")},
+			},
+			FinishReason: genai.FinishReasonStop,
+		}, nil)
+	}
+}
 
 type mockStepExecutor struct {
 	mu       sync.Mutex
@@ -376,5 +404,228 @@ func TestWorkflowNoteLine_Margin(t *testing.T) {
 	}
 	if got, want := LoopNoteLine("my-loop", "break", ""), "   ⟳ loop \"my-loop\" break"; got != want {
 		t.Errorf("LoopNoteLine break: got %q, want %q", got, want)
+	}
+}
+
+func TestWorkflowRunner_ADKSequentialAgent(t *testing.T) {
+	tmpDir := t.TempDir()
+	def := Def{
+		Name:        "adk-seq-pipeline",
+		Description: "Sequential pipeline test",
+		Steps: []Step{
+			{Name: "step-1", Prompt: "Analysis"},
+			{Name: "step-2", Prompt: "Implementation"},
+		},
+	}
+	src := NewTextSource(1, "ADK Sequential Agent Test")
+
+	agentInstance, err := BuildWorkflowAgent(context.Background(), WorkflowAgentConfig{
+		Def:    def,
+		Source: src,
+		Cwd:    tmpDir,
+		ModelBuilder: func(ctx context.Context, step Step) (model.LLM, error) {
+			return &mockWorkflowLLM{name: "mock-llm-" + step.Name}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to build ADK workflow agent: %v", err)
+	}
+
+	if agentInstance.Name() != "adk-seq-pipeline" {
+		t.Errorf("expected agent name 'adk-seq-pipeline', got %q", agentInstance.Name())
+	}
+	if len(agentInstance.SubAgents()) != 2 {
+		t.Fatalf("expected 2 subagents, got %d", len(agentInstance.SubAgents()))
+	}
+	if agentInstance.SubAgents()[0].Name() != "step-1" || agentInstance.SubAgents()[1].Name() != "step-2" {
+		t.Errorf("unexpected subagent names: %s, %s", agentInstance.SubAgents()[0].Name(), agentInstance.SubAgents()[1].Name())
+	}
+
+	sessSvc := session.InMemoryService()
+	sess, err := sessSvc.Create(context.Background(), &session.CreateRequest{
+		AppName:   "ask",
+		UserID:    "user",
+		SessionID: "test-sess-seq",
+	})
+	if err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+
+	r, err := runner.New(runner.Config{
+		AppName:        "ask",
+		Agent:          agentInstance,
+		SessionService: sessSvc,
+	})
+	if err != nil {
+		t.Fatalf("failed to create runner: %v", err)
+	}
+
+	userMsg := genai.NewContentFromText("Start workflow", genai.RoleUser)
+	for _, err := range r.Run(context.Background(), "user", sess.Session.ID(), userMsg, agent.RunConfig{}) {
+		if err != nil {
+			t.Fatalf("error during ADK workflow execution: %v", err)
+		}
+	}
+}
+
+func TestWorkflowRunner_ADKLoopAgent_ExitLoop(t *testing.T) {
+	tmpDir := t.TempDir()
+	def := Def{
+		Name: "adk-loop-pipeline",
+		Steps: []Step{
+			{
+				Name:          "validation-loop",
+				Kind:          "loop",
+				MaxIterations: 4,
+				ExitCondition: "all tests pass",
+				Steps: []Step{
+					{Name: "test-runner", Prompt: "Run tests"},
+					{Name: "fixer", Prompt: "Apply fixes"},
+				},
+			},
+		},
+	}
+	src := NewTextSource(1, "ADK Loop Agent Test")
+
+	agentInstance, err := BuildWorkflowAgent(context.Background(), WorkflowAgentConfig{
+		Def:    def,
+		Source: src,
+		Cwd:    tmpDir,
+		ModelBuilder: func(ctx context.Context, step Step) (model.LLM, error) {
+			return &mockWorkflowLLM{name: "mock-llm-" + step.Name}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to build loop agent: %v", err)
+	}
+
+	if len(agentInstance.SubAgents()) != 1 {
+		t.Fatalf("expected 1 top subagent (the loop), got %d", len(agentInstance.SubAgents()))
+	}
+	loopAg := agentInstance.SubAgents()[0]
+	if loopAg.Name() != "validation-loop" {
+		t.Errorf("expected loop agent name 'validation-loop', got %q", loopAg.Name())
+	}
+	if len(loopAg.SubAgents()) != 2 {
+		t.Fatalf("expected 2 inner subagents in loop, got %d", len(loopAg.SubAgents()))
+	}
+}
+
+func TestWorkflowRunner_ADKLoopAgent_MaxIterations(t *testing.T) {
+	tmpDir := t.TempDir()
+	def := Def{
+		Name: "max-iters-pipeline",
+		Steps: []Step{
+			{
+				Name:          "repeat-loop",
+				Kind:          "loop",
+				MaxIterations: 3,
+				Steps: []Step{
+					{Name: "step-inner", Prompt: "Iterate task"},
+				},
+			},
+		},
+	}
+	src := NewTextSource(1, "Max Iterations Test")
+
+	agentInstance, err := BuildWorkflowAgent(context.Background(), WorkflowAgentConfig{
+		Def:    def,
+		Source: src,
+		Cwd:    tmpDir,
+		ModelBuilder: func(ctx context.Context, step Step) (model.LLM, error) {
+			return &mockWorkflowLLM{name: "mock-" + step.Name}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to build workflow agent: %v", err)
+	}
+
+	if agentInstance.Name() != "max-iters-pipeline" {
+		t.Errorf("expected agent name 'max-iters-pipeline', got %q", agentInstance.Name())
+	}
+}
+
+func TestWorkflowRunner_NotesDirectoryLifecycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	startDir := filepath.Join(tmpDir, "ask", "plans", "start")
+	if err := os.MkdirAll(startDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	planFile := filepath.Join(startDir, "plan.md")
+	if err := os.WriteFile(planFile, []byte("# Plan"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker := NewTracker()
+	exec := &mockStepExecutor{}
+	listener := &mockRunnerListener{}
+	runnerInstance := NewRunner(tracker, exec, listener)
+
+	def := Def{
+		Name: "lifecycle-pipeline",
+		Steps: []Step{
+			{Name: "step-1", Prompt: "Do analysis"},
+		},
+	}
+	src := NewTextSource(1, "Test Lifecycle")
+
+	state, err := runnerInstance.Run(context.Background(), tmpDir, 1, def, src)
+	if err != nil {
+		t.Fatalf("unexpected error running workflow: %v", err)
+	}
+	if !state.Done {
+		t.Errorf("expected workflow to complete")
+	}
+
+	// Verify plans directory was cleaned up
+	plansDir := filepath.Join(tmpDir, "ask", "plans")
+	if _, err := os.Stat(plansDir); !os.IsNotExist(err) {
+		t.Errorf("expected plans directory to be removed after workflow completion")
+	}
+}
+
+func TestWorkflowRunner_ListenerEvents(t *testing.T) {
+	tmpDir := t.TempDir()
+	startDir := filepath.Join(tmpDir, "ask", "plans", "start")
+	if err := os.MkdirAll(startDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(startDir, "plan.md"), []byte("# Plan"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker := NewTracker()
+	exec := &mockStepExecutor{}
+	listener := &mockRunnerListener{}
+	runnerInstance := NewRunner(tracker, exec, listener)
+
+	def := Def{
+		Name: "events-pipeline",
+		Steps: []Step{
+			{Name: "step-a", Prompt: "Prompt A"},
+			{Name: "step-b", Prompt: "Prompt B"},
+		},
+	}
+	src := NewTextSource(1, "Events Test")
+
+	state, err := runnerInstance.Run(context.Background(), tmpDir, 1, def, src)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !state.Done {
+		t.Errorf("expected workflow to finish")
+	}
+
+	if !listener.started {
+		t.Errorf("expected OnWorkflowStarted to be called")
+	}
+	if len(listener.stepsStarted) != 2 || listener.stepsStarted[0] != "step-a" || listener.stepsStarted[1] != "step-b" {
+		t.Errorf("unexpected steps started: %+v", listener.stepsStarted)
+	}
+	if len(listener.stepsDone) != 2 {
+		t.Errorf("expected 2 steps done, got %+v", listener.stepsDone)
+	}
+	if !listener.done {
+		t.Errorf("expected OnWorkflowDone to be called")
 	}
 }

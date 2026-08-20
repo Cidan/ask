@@ -2,9 +2,14 @@ package engine
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/Cidan/ask/pkg/config"
+	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/workflow"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/tool"
 )
 
 // Options holds configuration and handlers for the ask Engine.
@@ -45,6 +50,70 @@ func (e *Engine) SystemPrompt(cwd string, inWorkflow bool) string {
 		Cwd:        cwd,
 		InWorkflow: inWorkflow,
 	})
+}
+
+// BuildWorkflowAgent constructs an ADK agent hierarchy (sequentialagent, loopagent, exitlooptool)
+// for the given workflow definition using the engine's model and tool configuration.
+func (e *Engine) BuildWorkflowAgent(ctx context.Context, cwd string, def workflow.Def, src workflow.Source) (agent.Agent, error) {
+	cfg := workflow.WorkflowAgentConfig{
+		Def:    def,
+		Source: src,
+		Cwd:    cwd,
+		ModelBuilder: func(ctx context.Context, step workflow.Step) (model.LLM, error) {
+			providerID := step.Provider
+			if providerID == "" {
+				providerID = e.opts.Config.Provider
+			}
+			if providerID == "" {
+				providerID = "vertex"
+			}
+			spec, ok := providers.GetAgentProviderSpec(providerID)
+			if !ok || spec == nil {
+				return nil, fmt.Errorf("unknown provider %q", providerID)
+			}
+			modelID := providers.CanonicalVertexModelID(step.Model, "")
+			if modelID == "" {
+				settings := spec.LoadSettings(e.opts.Config)
+				modelID = providers.CanonicalVertexModelID(settings.Model, spec.DefaultModel)
+			}
+			if modelID == "" {
+				modelID = spec.DefaultModel
+			}
+			return ModelBuilder(ctx, spec, e.opts.Config, modelID)
+		},
+		ToolsBuilder: func(ctx context.Context, step workflow.Step, isLoop bool) ([]tool.Tool, error) {
+			var agentTools []Tool
+			if tf := GetDefaultToolFactory(); tf != nil {
+				agentTools = tf(ToolFactoryArgs{
+					Cwd:                cwd,
+					TabID:              0,
+					SkipPermissions:    true,
+					EventListener:      e.opts.EventListener,
+					InteractionHandler: e.opts.InteractionHandler,
+					AttachWebSearch:    true,
+				})
+			}
+			return AsADKTools(agentTools)
+		},
+		ToolsetsBuilder: func(ctx context.Context, step workflow.Step, isLoop bool) ([]tool.Toolset, error) {
+			var toolsets []tool.Toolset
+			if skillTS, err := NewSkillToolset(ctx, cwd); err == nil && skillTS != nil {
+				toolsets = append(toolsets, skillTS)
+			}
+			return toolsets, nil
+		},
+		InstructionBuilder: func(step workflow.Step, isStart bool, isFinal bool, loopCtx *workflow.LoopPromptCtx, notesDir, prevNotesDir string) string {
+			pc := &workflow.StepPromptCtx{
+				Loop:                loopCtx,
+				NotesDir:            notesDir,
+				PrevNotesDir:        prevNotesDir,
+				IsStartStep:         isStart,
+				IsWorkflowFinalStep: isFinal,
+			}
+			return workflow.BuildStepPrompt(step, src, nil, pc)
+		},
+	}
+	return workflow.BuildWorkflowAgent(ctx, cfg)
 }
 
 type engineWorkflowListener struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	tea "charm.land/bubbletea/v2"
@@ -346,6 +347,13 @@ stepLoop:
 	if session.env.PendingEndTurn != nil {
 		summary = session.env.PendingEndTurn.Summary
 		decision = session.env.PendingEndTurn.Decision
+	}
+	if summary == "" && strings.TrimSpace(stepResult) != "" {
+		firstLine := strings.TrimSpace(strings.Split(strings.TrimSpace(stepResult), "\n")[0])
+		if len(firstLine) > 200 {
+			firstLine = firstLine[:200] + "…"
+		}
+		summary = firstLine
 	}
 
 	var finishData *workflow.FinishData
