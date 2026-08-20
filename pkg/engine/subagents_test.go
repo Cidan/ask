@@ -141,6 +141,17 @@ func TestBuildNamedSubagent_ADKIntegration(t *testing.T) {
 	if subagent.Name() != "custom_agent" {
 		t.Errorf("expected name 'custom_agent', got %q", subagent.Name())
 	}
+
+	agentTool, err := BuildNamedAgentTool(def, fakeLLM, nil, 2048)
+	if err != nil {
+		t.Fatalf("BuildNamedAgentTool failed: %v", err)
+	}
+	if agentTool == nil {
+		t.Fatal("expected non-nil agentTool")
+	}
+	if agentTool.Name() != "custom_agent" {
+		t.Errorf("expected tool name 'custom_agent', got %q", agentTool.Name())
+	}
 }
 
 type fakeSubagentLLM struct{}

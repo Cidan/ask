@@ -750,3 +750,101 @@ func TestRunner_AutoCreateSession(t *testing.T) {
 		t.Errorf("expected non-zero events in auto-created session")
 	}
 }
+
+type mockSelfHealingTool struct {
+	calls int
+}
+
+func (m *mockSelfHealingTool) Name() string        { return "flaky_tool" }
+func (m *mockSelfHealingTool) Description() string { return "a flaky tool for testing reflection" }
+func (m *mockSelfHealingTool) IsLongRunning() bool { return false }
+func (m *mockSelfHealingTool) Info() ToolInfo {
+	return ToolInfo{
+		Name:        "flaky_tool",
+		Description: "a flaky tool for testing reflection",
+		Parameters:  map[string]any{"should_fail": map[string]any{"type": "boolean"}},
+	}
+}
+func (m *mockSelfHealingTool) Declaration() *genai.FunctionDeclaration {
+	return &genai.FunctionDeclaration{
+		Name:        "flaky_tool",
+		Description: "a flaky tool for testing reflection",
+	}
+}
+func (m *mockSelfHealingTool) Run(ctx context.Context, args map[string]any) (ToolResponse, error) {
+	m.calls++
+	if shouldFail, _ := args["should_fail"].(bool); shouldFail {
+		return NewTextErrorResponse("simulated failure: invalid argument value"), errors.New("simulated tool failure")
+	}
+	return NewTextResponse("tool executed successfully"), nil
+}
+
+func TestEngineRun_RetryAndReflect_SelfHealing(t *testing.T) {
+	isolateTestHome(t)
+	tmpCwd := t.TempDir()
+
+	tool := &mockSelfHealingTool{}
+
+	step := 0
+	origBuilder := ModelBuilder
+	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+		return &mockLLM{
+			name: modelID,
+			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+				step++
+				if step == 1 {
+					// Step 1: Model calls flaky_tool with should_fail: true
+					return mockLLMSequence(functionCallResponse("flaky_tool", map[string]any{"should_fail": true}, nil))
+				}
+				if step == 2 {
+					// Step 2: Model received reflection guidance, retries with corrected arguments
+					return mockLLMSequence(functionCallResponse("flaky_tool", map[string]any{"should_fail": false}, nil))
+				}
+				// Step 3: Tool succeeded, model produces final answer
+				return mockLLMSequence(textResponse("Self healed successfully!"))
+			},
+		}, nil
+	}
+	defer func() { ModelBuilder = origBuilder }()
+
+	var mu sync.Mutex
+	var events []EngineEvent
+	listener := func(ev EngineEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, ev)
+	}
+
+	res, err := Run(context.Background(), RunOptions{
+		Prompt:        "Run the self healing tool test",
+		Cwd:           tmpCwd,
+		Provider:      "vertex",
+		Tools:         []Tool{tool},
+		EventListener: listener,
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	if tool.calls != 2 {
+		t.Errorf("expected tool to be called 2 times, got %d", tool.calls)
+	}
+	if res.Response != "Self healed successfully!" {
+		t.Errorf("unexpected response: %q", res.Response)
+	}
+
+	var hasReflectionResult bool
+	mu.Lock()
+	for _, ev := range events {
+		if tr, ok := ev.(ToolResultEvent); ok {
+			if tr.IsError && tr.ToolName == "flaky_tool" {
+				hasReflectionResult = true
+			}
+		}
+	}
+	mu.Unlock()
+
+	if !hasReflectionResult {
+		t.Errorf("expected ToolResultEvent with IsError=true for reflected tool failure")
+	}
+}
