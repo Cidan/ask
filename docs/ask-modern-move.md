@@ -283,13 +283,20 @@ cfg := &genai.ClientConfig{
    - Added end-to-end integration test in `pkg/engine/engine_test.go`: `TestEngine_WorkflowExecution_ADK`.
    - Verified 100% test pass rate across all packages with fast sub-second execution.
 
-### Phase 4: Memory System Standard Alignment
+### Phase 4: Memory System Standard Alignment (COMPLETED & VERIFIED)
 1. **Implement `memory.Service`**:
-   - Refactor `pkg/memory/memory.go` so `memory.Service` implements `google.golang.org/adk/v2/memory.Service` (`AddSessionToMemory`, `SearchMemory`).
+   - Implemented `google.golang.org/adk/v2/memory.Service` interface on `pkg/memory.Service` (`AddSessionToMemory` and `SearchMemory`).
+   - `AddSessionToMemory` automatically extracts non-thought text turns from `session.Session` events and indexes them into `sqlite-vec` vector storage and SQLite metadata tables.
+   - `SearchMemory` executes cosine similarity vector queries against `sqlite-vec` and constructs standardized `memory.Entry` objects with timestamps, project IDs, and distance metadata.
 2. **Attach Native Memory Tools**:
-   - Register `loadmemorytool.New()` and `preloadmemorytool.New()` in the toolset.
-   - Pass the memory service to `runner.Config{MemoryService: ...}`.
-   - Remove side-channel tool wrappers and prompt-string concatenations.
+   - Exported `tools.LoadMemoryTool()` and `tools.PreloadMemoryTool()` wrapping ADK's native `loadmemorytool.New()` and `preloadmemorytool.New()`.
+   - Wired `runner.Config{MemoryService: ...}` across `pkg/engine/run.go` and `cmd/ask/agent_run.go`, falling back to `memory.InMemoryService()` when custom persistent vector storage is closed.
+   - Eliminated side-channel prompt string concatenations (`turn.text = turn.text + "\n\n" + mem`).
+3. **Comprehensive Test Coverage**:
+   - Added unit tests in `pkg/memory/memory_test.go`: `TestMemoryService_ADKServiceCompliance`, `TestMemoryService_AddSessionToMemory`, and `TestMemoryService_SearchMemory`.
+   - Added tool tests in `pkg/tools/memory_test.go`: `TestTool_LoadMemoryTool` and `TestTool_PreloadMemoryTool`.
+   - Added end-to-end integration test in `pkg/engine/run_test.go`: `TestEngineRun_ADKMemoryIntegration`.
+   - Verified 100% test pass rate across all packages via `make test`.
 
 ### Phase 5: Session Single Source of Truth & Dynamic Instructions
 1. **Unify Session Persistence**:

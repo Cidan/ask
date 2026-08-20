@@ -308,9 +308,6 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	if expanded, ok := expandSkillInvocation(s.args.Cwd, turn.text); ok {
 		turn.text = expanded
 	}
-	if mem := agentMemoryPromptContext(s.args.Cwd, turn.text); mem != "" {
-		turn.text = turn.text + "\n\n" + mem
-	}
 
 	activeTools := s.currentTools()
 	adkTools, err := engine.AsADKTools(activeTools)

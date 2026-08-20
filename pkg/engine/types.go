@@ -16,6 +16,7 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/genai"
+	pkgmemory "github.com/Cidan/ask/pkg/memory"
 )
 
 // ToolResponse represents the result of executing a tool.
@@ -116,6 +117,9 @@ func (s *standaloneAgentContext) State() session.State                          
 func (s *standaloneAgentContext) FunctionCallID() string                                          { return "" }
 func (s *standaloneAgentContext) Actions() *session.EventActions                                  { return &session.EventActions{} }
 func (s *standaloneAgentContext) SearchMemory(ctx context.Context, query string) (*memory.SearchResponse, error) {
+	if memSvc := pkgmemory.Default(); memSvc != nil && memSvc.IsOpen() {
+		return memSvc.SearchMemory(ctx, &memory.SearchRequest{Query: query})
+	}
 	return nil, nil
 }
 func (s *standaloneAgentContext) ToolConfirmation() *toolconfirmation.ToolConfirmation {

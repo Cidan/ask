@@ -10,10 +10,12 @@ import (
 	"sync"
 
 	"github.com/Cidan/ask/pkg/config"
+	pkgmemory "github.com/Cidan/ask/pkg/memory"
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/google/uuid"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
+	adkmemory "google.golang.org/adk/v2/memory"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
@@ -141,10 +143,17 @@ var ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, 
 type RunnerBuilderFunc func(agentInstance agent.Agent, sessSvc session.Service) (*runner.Runner, error)
 
 var RunnerBuilder RunnerBuilderFunc = func(agentInstance agent.Agent, sessSvc session.Service) (*runner.Runner, error) {
+	var memSvc adkmemory.Service
+	if pkgMem := pkgmemory.Default(); pkgMem != nil && pkgMem.IsOpen() {
+		memSvc = pkgMem
+	} else {
+		memSvc = adkmemory.InMemoryService()
+	}
 	return runner.New(runner.Config{
 		AppName:        "ask",
 		Agent:          agentInstance,
 		SessionService: sessSvc,
+		MemoryService:  memSvc,
 	})
 }
 

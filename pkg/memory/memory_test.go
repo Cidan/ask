@@ -5,8 +5,13 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+
+	adkmemory "google.golang.org/adk/v2/memory"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
 )
 
 type fakeEmbedder struct {
@@ -257,6 +262,142 @@ func TestPromptContext_And_SystemBlock(t *testing.T) {
 	prompt := PromptContext(ctx, cwd, "Database migration guidelines")
 	if prompt == "" {
 		t.Error("expected non-empty prompt recall context")
+	}
+}
+
+func TestMemoryService_ADKServiceCompliance(t *testing.T) {
+	var _ adkmemory.Service = (*Service)(nil)
+
+	// Closed service calls should fail gracefully or return empty response
+	var closedSvc *Service
+	if err := closedSvc.AddSessionToMemory(context.Background(), nil); err == nil {
+		t.Error("expected error when adding session to closed service")
+	}
+	resp, err := closedSvc.SearchMemory(context.Background(), &adkmemory.SearchRequest{Query: "test"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Memories) != 0 {
+		t.Errorf("expected 0 memories for closed service, got %d", len(resp.Memories))
+	}
+}
+
+func TestMemoryService_AddSessionToMemory(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "session_mem.db")
+
+	embedder := newFakeEmbedder(64)
+	svc, err := NewService(Options{
+		DBPath:   dbPath,
+		Embedder: embedder,
+	})
+	if err != nil {
+		t.Fatalf("NewService failed: %v", err)
+	}
+	defer svc.Close()
+
+	ctx := context.Background()
+	sessSvc := session.InMemoryService()
+	sess, err := sessSvc.Create(ctx, &session.CreateRequest{
+		AppName:   "ask",
+		UserID:    "user",
+		SessionID: "sess-123",
+	})
+	if err != nil {
+		t.Fatalf("session create failed: %v", err)
+	}
+
+	// Append user and model events
+	userEvent := session.NewEvent(ctx, "inv-1")
+	userEvent.Content = genai.NewContentFromText("I prefer snake_case naming conventions across all Go packages.", genai.RoleUser)
+	_ = sessSvc.AppendEvent(ctx, sess.Session, userEvent)
+
+	modelEvent := session.NewEvent(ctx, "inv-2")
+	modelEvent.Content = genai.NewContentFromText("Acknowledged, I will follow snake_case naming conventions.", genai.RoleModel)
+	_ = sessSvc.AppendEvent(ctx, sess.Session, modelEvent)
+
+	// Ingest session
+	if err := svc.AddSessionToMemory(ctx, sess.Session); err != nil {
+		t.Fatalf("AddSessionToMemory failed: %v", err)
+	}
+
+	// Query via SearchMemory
+	searchResp, err := svc.SearchMemory(ctx, &adkmemory.SearchRequest{
+		Query: "snake_case naming conventions",
+	})
+	if err != nil {
+		t.Fatalf("SearchMemory failed: %v", err)
+	}
+	if len(searchResp.Memories) == 0 {
+		t.Fatal("expected at least 1 memory entry, got 0")
+	}
+
+	found := false
+	for _, m := range searchResp.Memories {
+		if m.Content != nil && len(m.Content.Parts) > 0 && m.Content.Parts[0].Text != "" {
+			if strings.Contains(m.Content.Parts[0].Text, "snake_case") {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Error("expected to find ingested snake_case memory in SearchMemory response")
+	}
+}
+
+func TestMemoryService_SearchMemory(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "search_mem.db")
+
+	embedder := newFakeEmbedder(64)
+	svc, err := NewService(Options{
+		DBPath:   dbPath,
+		Embedder: embedder,
+	})
+	if err != nil {
+		t.Fatalf("NewService failed: %v", err)
+	}
+	defer svc.Close()
+
+	ctx := context.Background()
+	cwd := filepath.Join(tmpDir, "myproj")
+
+	if err := svc.Index(ctx, cwd, "Deploy pipeline requires staging validation first"); err != nil {
+		t.Fatalf("Index failed: %v", err)
+	}
+
+	// Search matching query
+	resp, err := svc.SearchMemory(ctx, &adkmemory.SearchRequest{
+		Query: "staging validation pipeline",
+	})
+	if err != nil {
+		t.Fatalf("SearchMemory failed: %v", err)
+	}
+	if len(resp.Memories) != 1 {
+		t.Fatalf("expected 1 memory entry, got %d", len(resp.Memories))
+	}
+
+	entry := resp.Memories[0]
+	if entry.ID == "" {
+		t.Error("expected non-empty memory entry ID")
+	}
+	if entry.Content == nil || len(entry.Content.Parts) == 0 || entry.Content.Parts[0].Text != "Deploy pipeline requires staging validation first" {
+		t.Errorf("unexpected content in memory entry: %+v", entry.Content)
+	}
+	if entry.CustomMetadata == nil || entry.CustomMetadata["project_id"] == "" {
+		t.Errorf("expected project_id in custom metadata: %+v", entry.CustomMetadata)
+	}
+
+	// Search empty query
+	emptyResp, err := svc.SearchMemory(ctx, &adkmemory.SearchRequest{
+		Query: "",
+	})
+	if err != nil {
+		t.Fatalf("SearchMemory empty query failed: %v", err)
+	}
+	if len(emptyResp.Memories) != 0 {
+		t.Errorf("expected 0 memories for empty query, got %d", len(emptyResp.Memories))
 	}
 }
 

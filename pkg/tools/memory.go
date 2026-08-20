@@ -7,8 +7,20 @@ import (
 
 	"github.com/Cidan/ask/pkg/memory"
 	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool/loadmemorytool"
+	"google.golang.org/adk/v2/tool/preloadmemorytool"
 	"google.golang.org/genai"
 )
+
+// LoadMemoryTool returns the native ADK load_memory tool for querying long-term memory.
+func LoadMemoryTool() Tool {
+	return loadmemorytool.New()
+}
+
+// PreloadMemoryTool returns the native ADK preload_memory tool for automatic turn recall.
+func PreloadMemoryTool() Tool {
+	return preloadmemorytool.New()
+}
 
 type memoryIndexParams struct {
 	Text        string `json:"text" jsonschema:"the text to embed and store in long term memory"`
