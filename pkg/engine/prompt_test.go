@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
@@ -175,6 +176,105 @@ func TestAgentContextFiles_DedupeAndCap(t *testing.T) {
 	}
 	if !strings.Contains(out, "… (truncated)") {
 		t.Error("oversized context file must be truncated")
+	}
+}
+
+func TestTruncateInstructionDoc(t *testing.T) {
+	t.Run("under the limit is returned verbatim", func(t *testing.T) {
+		body := "line one\nline two\n"
+		if got := TruncateInstructionDoc("/p/CLAUDE.md", body, 1000); got != body {
+			t.Errorf("body must not be altered under the cap, got %q", got)
+		}
+	})
+
+	t.Run("names the file and the dropped byte count", func(t *testing.T) {
+		body := strings.Repeat("abcdefgh\n", 200) // 1800 bytes
+		got := TruncateInstructionDoc("/proj/docs/CLAUDE.md", body, 500)
+		if !strings.Contains(got, "… (truncated)") {
+			t.Fatalf("missing truncation marker:\n%s", got)
+		}
+		for _, want := range []string{"CLAUDE.md", "1800 bytes", "/proj/docs/CLAUDE.md"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("notice must mention %q:\n%s", want, got)
+			}
+		}
+	})
+
+	t.Run("cuts on a line boundary", func(t *testing.T) {
+		body := strings.Repeat("0123456789\n", 100)
+		got := TruncateInstructionDoc("/p/r.md", body, 55)
+		head, _, _ := strings.Cut(got, "\n\n… (truncated)")
+		if head == "" || strings.HasSuffix(head, "0") && !strings.HasSuffix(head, "9") {
+			t.Errorf("expected whole lines, got %q", head)
+		}
+		for _, line := range strings.Split(head, "\n") {
+			if line != "0123456789" {
+				t.Errorf("partial line survived truncation: %q", line)
+			}
+		}
+	})
+
+	t.Run("never splits a UTF-8 rune", func(t *testing.T) {
+		// No newline anywhere, so the line-boundary path cannot help and
+		// the cut lands inside a 3-byte rune.
+		body := strings.Repeat("あ", 400) // 1200 bytes, 3 bytes per rune
+		for _, limit := range []int{100, 101, 102, 103} {
+			got := TruncateInstructionDoc("/p/CLAUDE.md", body, limit)
+			if !utf8.ValidString(got) {
+				t.Errorf("limit %d produced invalid UTF-8", limit)
+			}
+			head, _, _ := strings.Cut(got, "\n\n… (truncated)")
+			if strings.ContainsRune(head, utf8.RuneError) {
+				t.Errorf("limit %d left a replacement char in the body", limit)
+			}
+		}
+	})
+
+	t.Run("a cap of zero or less disables truncation", func(t *testing.T) {
+		body := strings.Repeat("x", 100)
+		if got := TruncateInstructionDoc("/p/a.md", body, 0); got != body {
+			t.Error("cap 0 must pass the body through")
+		}
+	})
+}
+
+// The cap is a backstop for pathological files, not a budget that trims
+// hand-written instructions. ask's own CLAUDE.md was 83KB and lost ~42%
+// of its body at the old 48_000.
+func TestAgentContextFileCap_FitsRealInstructionFiles(t *testing.T) {
+	if AgentContextFileCap < 100_000 {
+		t.Errorf("cap %d is too small for a real hand-written CLAUDE.md", AgentContextFileCap)
+	}
+}
+
+// End to end: a CLAUDE.md that overflows the cap still gets its @-linked
+// docs into <included_docs>, even when the link itself sits in the part
+// that was cut.
+func TestBuildSystemPrompt_FollowsContextLinkPastCap(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stubGitStatus(t, "")
+	cwd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestDoc(t, cwd, "docs/guide.md", "# Guide\nguide-marker\n")
+	writeTestDoc(t, cwd, "CLAUDE.md",
+		strings.Repeat("filler line\n", AgentContextFileCap/12+50)+"\nSee @docs/guide.md.\n")
+
+	prompt := BuildSystemPrompt(PromptOptions{Cwd: cwd})
+	if !strings.Contains(prompt, "… (truncated)") {
+		t.Fatal("precondition: the oversized CLAUDE.md should be truncated")
+	}
+	if strings.Contains(prompt, "See @docs/guide.md.") {
+		t.Fatal("precondition: the link line should have been cut from the body")
+	}
+	if !strings.Contains(prompt, "<included_docs>") || !strings.Contains(prompt, "guide-marker") {
+		t.Error("an @-link past the cap must still be resolved into <included_docs>")
+	}
+	// The truncation notice has to be actionable: it names the file so
+	// the model can read the part that did not fit.
+	if !strings.Contains(prompt, filepath.Join(cwd, "CLAUDE.md")) {
+		t.Error("truncation notice must name the file to read")
 	}
 }
 

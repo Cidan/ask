@@ -17,7 +17,14 @@ var contextLinkRe = regexp.MustCompile(`@([A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0
 // document resolved during prompt assembly.
 type LoadedContextDoc struct {
 	Path string
+	// Body is what goes into the prompt, capped by
+	// TruncateInstructionDoc.
 	Body string
+	// Links are the @-references found in the document's FULL body,
+	// before any truncation. Body alone is not a safe source for them:
+	// a link past the cap is still a real dependency of the
+	// instructions and must still be followed.
+	Links []string
 }
 
 // ExtractContextLinks finds all @path/to/file.md references in body.
@@ -101,22 +108,37 @@ func ResolveContextLink(repoRoot, link string) (string, bool) {
 	return abs, true
 }
 
-// LoadContextLinks walks the @-link graph breadth-first: it starts from
-// the links in sourceBodies, resolves each against repoRoot, loads the
-// file, and repeats for links found in the loaded files.
+// LoadContextLinks walks the @-link graph breadth-first starting from
+// the links in sourceBodies. Callers that already hold a document's
+// untruncated link list should prefer LoadContextLinksFrom — passing a
+// capped Body here would lose every link past the cap.
 func LoadContextLinks(repoRoot string, sourceBodies []string) []LoadedContextDoc {
+	var links []string
+	for _, body := range sourceBodies {
+		links = append(links, ExtractContextLinks(body)...)
+	}
+	return LoadContextLinksFrom(repoRoot, links)
+}
+
+// LoadContextLinksFrom walks the @-link graph breadth-first from an
+// explicit seed list: it resolves each link against repoRoot, loads the
+// file, and repeats for the links found inside it. Each loaded file is
+// scanned for further links BEFORE it is truncated, so a deep @-chain
+// survives a large intermediate document.
+func LoadContextLinksFrom(repoRoot string, links []string) []LoadedContextDoc {
 	if repoRoot == "" {
 		return nil
 	}
 	seen := map[string]bool{}
-	queue := make([]string, 0)
-	for _, body := range sourceBodies {
-		for _, link := range ExtractContextLinks(body) {
-			if abs, ok := ResolveContextLink(repoRoot, link); ok && !seen[abs] {
-				seen[abs] = true
-				queue = append(queue, abs)
-			}
+	queue := make([]string, 0, len(links))
+	enqueue := func(link string) {
+		if abs, ok := ResolveContextLink(repoRoot, link); ok && !seen[abs] {
+			seen[abs] = true
+			queue = append(queue, abs)
 		}
+	}
+	for _, link := range links {
+		enqueue(link)
 	}
 	var docs []LoadedContextDoc
 	for i := 0; i < len(queue); i++ {
@@ -125,20 +147,15 @@ func LoadContextLinks(repoRoot string, sourceBodies []string) []LoadedContextDoc
 		if err != nil {
 			continue
 		}
-		body := string(data)
-		if strings.TrimSpace(body) == "" {
+		full := string(data)
+		if strings.TrimSpace(full) == "" {
 			continue
 		}
-		if len(body) > AgentContextFileCap {
-			body = body[:AgentContextFileCap] + "\n… (truncated)"
-		}
-		body = strings.TrimRight(body, "\n")
-		docs = append(docs, LoadedContextDoc{Path: abs, Body: body})
-		for _, link := range ExtractContextLinks(body) {
-			if abs2, ok := ResolveContextLink(repoRoot, link); ok && !seen[abs2] {
-				seen[abs2] = true
-				queue = append(queue, abs2)
-			}
+		nested := ExtractContextLinks(full)
+		body := strings.TrimRight(TruncateInstructionDoc(abs, full, AgentContextFileCap), "\n")
+		docs = append(docs, LoadedContextDoc{Path: abs, Body: body, Links: nested})
+		for _, link := range nested {
+			enqueue(link)
 		}
 	}
 	return docs
