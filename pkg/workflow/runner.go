@@ -13,8 +13,11 @@ import (
 	"google.golang.org/adk/v2/agent/workflowagents/loopagent"
 	"google.golang.org/adk/v2/agent/workflowagents/sequentialagent"
 	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/exitlooptool"
+	"google.golang.org/genai"
 )
 
 // Loop decision constants.
@@ -321,6 +324,115 @@ func NewRunner(tracker *Tracker, executor StepExecutor, listener RunnerListener)
 		executor: executor,
 		listener: listener,
 	}
+}
+
+// RunGraph executes a compiled ADK workflow graph, broadcasting lifecycle events to the listener.
+func (r *Runner) RunGraph(ctx context.Context, cfg WorkflowAgentConfig) (*RunState, error) {
+	if err := cfg.Def.Validate(); err != nil {
+		r.listener.OnWorkflowFailed(cfg.TabID, err.Error())
+		return nil, err
+	}
+
+	wfAgent, err := BuildWorkflowAgent(ctx, cfg)
+	if err != nil {
+		r.listener.OnWorkflowFailed(cfg.TabID, err.Error())
+		return nil, err
+	}
+
+	r.listener.OnWorkflowStarted(cfg.TabID, cfg.Def, cfg.Source)
+	if r.tracker != nil {
+		r.tracker.MarkWorking(cfg.Cwd, cfg.Source.Key(), cfg.Def.Name, cfg.TabID)
+	}
+
+	runState := &RunState{
+		Workflow:  cfg.Def,
+		Source:    cfg.Source,
+		StartedAt: time.Now().UTC(),
+		StepIdx:   0,
+	}
+
+	sessSvc := session.InMemoryService()
+	adkRunner, err := runner.New(runner.Config{
+		AppName:           "ask-workflow",
+		Agent:             wfAgent,
+		SessionService:    sessSvc,
+		AutoCreateSession: true,
+	})
+	if err != nil {
+		r.listener.OnWorkflowFailed(cfg.TabID, err.Error())
+		if r.tracker != nil {
+			r.tracker.MarkFinal(cfg.Cwd, cfg.Source.Key(), cfg.Def.Name, StatusFailed, 0)
+		}
+		return runState, err
+	}
+
+	userMsg := genai.NewContentFromText(cfg.Source.Display(), genai.RoleUser)
+	sessionID := "wf-" + cfg.Source.Key()
+
+	startedSteps := make(map[int]bool)
+	doneSteps := make(map[int]bool)
+	lastStepIdx := -1
+
+	for event, err := range adkRunner.Run(ctx, "user", sessionID, userMsg, agent.RunConfig{}) {
+		if err != nil {
+			r.listener.OnWorkflowFailed(cfg.TabID, err.Error())
+			if r.tracker != nil {
+				r.tracker.MarkFinal(cfg.Cwd, cfg.Source.Key(), cfg.Def.Name, StatusFailed, lastStepIdx)
+			}
+			return runState, err
+		}
+		if event == nil {
+			continue
+		}
+
+		if event.Author != "" && event.Author != "user" && event.Author != "ask_coder" {
+			for i, s := range cfg.Def.Steps {
+				if s.Name == event.Author {
+					if lastStepIdx >= 0 && lastStepIdx != i && !doneSteps[lastStepIdx] {
+						doneSteps[lastStepIdx] = true
+						r.listener.OnWorkflowStepDone(cfg.TabID, lastStepIdx, fmt.Sprintf("completed step %s", cfg.Def.Steps[lastStepIdx].Name))
+					}
+					if !startedSteps[i] {
+						startedSteps[i] = true
+						lastStepIdx = i
+						r.listener.OnWorkflowStepStarted(cfg.TabID, i, s.Name, s.Provider, s.Model)
+					}
+					break
+				}
+			}
+		}
+
+		if event.LLMResponse.Content != nil {
+			for _, part := range event.LLMResponse.Content.Parts {
+				if part.Text != "" {
+					r.listener.OnNote(cfg.TabID, part.Text)
+				}
+			}
+		}
+	}
+
+	for i := 0; i < len(cfg.Def.Steps); i++ {
+		if !startedSteps[i] {
+			startedSteps[i] = true
+			r.listener.OnWorkflowStepStarted(cfg.TabID, i, cfg.Def.Steps[i].Name, cfg.Def.Steps[i].Provider, cfg.Def.Steps[i].Model)
+		}
+		if !doneSteps[i] {
+			doneSteps[i] = true
+			r.listener.OnWorkflowStepDone(cfg.TabID, i, fmt.Sprintf("completed step %s", cfg.Def.Steps[i].Name))
+		}
+	}
+
+	runState.Done = true
+	runState.StepIdx = len(cfg.Def.Steps)
+	runState.FinishData = &FinishData{
+		Description: fmt.Sprintf("Workflow %s completed via ADK workflow runner", cfg.Def.Name),
+	}
+
+	r.listener.OnWorkflowDone(cfg.TabID, runState.FinishData.Description, runState.FinishData.Artifacts)
+	if r.tracker != nil {
+		r.tracker.MarkFinal(cfg.Cwd, cfg.Source.Key(), cfg.Def.Name, StatusDone, len(cfg.Def.Steps))
+	}
+	return runState, nil
 }
 
 // Run executes the workflow def synchronously to completion or until context cancellation.

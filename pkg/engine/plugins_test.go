@@ -3,6 +3,7 @@ package engine
 import (
 	"testing"
 
+	"google.golang.org/adk/v2/plugin"
 	"google.golang.org/genai"
 )
 
@@ -92,4 +93,33 @@ func TestNewFunctionCallModifierPlugin(t *testing.T) {
 			t.Fatalf("expected valid FunctionCallModifierPlugin, got %v", p)
 		}
 	})
+}
+
+func TestFunctionCallModifier_ActiveParameterInjection(t *testing.T) {
+	plugins := DefaultPlugins()
+	var modPlugin *plugin.Plugin
+	for _, p := range plugins {
+		if p != nil && p.Name() == "FunctionCallModifierPlugin" {
+			modPlugin = p
+			break
+		}
+	}
+	if modPlugin == nil {
+		t.Fatal("expected FunctionCallModifierPlugin in DefaultPlugins")
+	}
+
+	// Test isCoreCodingTool predicate
+	coreTools := []string{"read", "write", "edit", "glob", "grep", "ls", "bash", "job_output", "job_kill", "fetch", "todos", "ask_user_question", "end_turn", "web_search"}
+	for _, name := range coreTools {
+		if !isCoreCodingTool(name) {
+			t.Errorf("expected %q to be recognized as core coding tool", name)
+		}
+	}
+
+	nonCore := []string{"custom_tool", "random_func", "unknown"}
+	for _, name := range nonCore {
+		if isCoreCodingTool(name) {
+			t.Errorf("expected %q not to be recognized as core coding tool", name)
+		}
+	}
 }

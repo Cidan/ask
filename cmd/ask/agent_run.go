@@ -457,7 +457,12 @@ func (s *agentSession) runTurn(turn agentTurn) {
 				if part.FunctionCall != nil {
 					inputMap := part.FunctionCall.Args
 					name := part.FunctionCall.Name
-					if name == "invoke_tool" {
+					if engine.IsConfirmationCall(part.FunctionCall) {
+						if origCall, err := engine.UnwrapConfirmationCall(part.FunctionCall); err == nil && origCall != nil {
+							name = origCall.Name
+							inputMap = origCall.Args
+						}
+					} else if name == "invoke_tool" {
 						name, inputMap = unwrapInvokeToolCall(inputMap)
 					}
 					displayNames[part.FunctionCall.Name] = name
@@ -482,6 +487,20 @@ func (s *agentSession) runTurn(turn agentTurn) {
 					isErr := false
 					if res, ok := part.FunctionResponse.Response["result"].(string); ok {
 						resStr = res
+					} else if confirmed, ok := part.FunctionResponse.Response["confirmed"].(bool); ok {
+						if confirmed {
+							resStr = "confirmed"
+						} else {
+							resStr = "rejected by user"
+							isErr = true
+						}
+					} else if guid, ok := part.FunctionResponse.Response["reflection_guidance"].(string); ok {
+						resStr = guid
+						isErr = true
+					} else if len(part.FunctionResponse.Response) > 0 {
+						if raw, rErr := json.Marshal(part.FunctionResponse.Response); rErr == nil {
+							resStr = string(raw)
+						}
 					}
 					if errFlag, ok := part.FunctionResponse.Response["is_error"].(bool); ok {
 						isErr = errFlag

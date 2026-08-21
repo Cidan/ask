@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"strings"
+
 	"google.golang.org/adk/v2/plugin"
 	"google.golang.org/adk/v2/plugin/functioncallmodifier"
 	"google.golang.org/adk/v2/plugin/retryandreflect"
@@ -18,14 +20,25 @@ func DefaultPlugins() []*plugin.Plugin {
 
 	// 2. Function call modifier plugin for parameter injection and description normalization.
 	if modPlugin, err := NewFunctionCallModifierPlugin(FunctionCallModifierOptions{
-		Predicate: func(toolName string) bool {
-			return false
+		Predicate: isCoreCodingTool,
+		OverrideDescription: func(originalDescription string) string {
+			return strings.TrimSpace(originalDescription)
 		},
 	}); err == nil && modPlugin != nil {
 		plugins = append(plugins, modPlugin)
 	}
 
 	return plugins
+}
+
+func isCoreCodingTool(toolName string) bool {
+	switch toolName {
+	case "read", "write", "edit", "glob", "grep", "ls", "bash", "job_output", "job_kill",
+		"fetch", "todos", "ask_user_question", "end_turn", "web_search":
+		return true
+	default:
+		return false
+	}
 }
 
 // NewRetryAndReflectPlugin creates an ADK retryandreflect plugin with the specified max retries.

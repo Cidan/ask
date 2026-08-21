@@ -325,38 +325,36 @@ func TestCoordinator_RunWorkflowLoopWithDecisionAndFinish(t *testing.T) {
 		case 2:
 			chunk = genaiTextChunk("completed", 10, 10)
 		case 3:
-			chunk = genaiToolCallChunk("read", map[string]any{"file_path": "hello.go", "description": "check if hello.go exists"})
-		case 4:
 			chunk = genaiToolCallChunk("write", map[string]any{"file_path": "hello.go", "content": "package main\n\nfunc main() {}\n", "description": "create hello.go with main function"})
-		case 5:
+		case 4:
 			chunk = genaiToolCallChunk("end_turn", map[string]any{"summary": "implemented changes"})
+		case 5:
+			chunk = genaiTextChunk("completed", 10, 10)
 		case 6:
-			chunk = genaiTextChunk("completed", 10, 10)
-		case 7:
 			chunk = genaiToolCallChunk("read", map[string]any{"file_path": "hello.go", "description": "verify hello.go before continuing"})
-		case 8:
+		case 7:
 			chunk = genaiToolCallChunk("end_turn", map[string]any{"summary": "validated changes", "decision": "continue"})
+		case 8:
+			chunk = genaiTextChunk("completed", 10, 10)
 		case 9:
-			chunk = genaiTextChunk("completed", 10, 10)
-		case 10:
 			chunk = genaiToolCallChunk("read", map[string]any{"file_path": "hello.go", "description": "read hello.go before editing"})
-		case 11:
+		case 10:
 			chunk = genaiToolCallChunk("edit", map[string]any{"file_path": "hello.go", "old_string": "package main\n\nfunc main() {}\n", "new_string": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n", "description": "add print to main"})
-		case 12:
+		case 11:
 			chunk = genaiToolCallChunk("end_turn", map[string]any{"summary": "implemented more changes"})
+		case 12:
+			chunk = genaiTextChunk("completed", 10, 10)
 		case 13:
-			chunk = genaiTextChunk("completed", 10, 10)
-		case 14:
 			chunk = genaiToolCallChunk("read", map[string]any{"file_path": "hello.go", "description": "verify hello.go before break"})
-		case 15:
+		case 14:
 			chunk = genaiToolCallChunk("end_turn", map[string]any{"summary": "validated and broke loop", "decision": "break"})
-		case 16:
+		case 15:
 			chunk = genaiTextChunk("completed", 10, 10)
-		case 17:
+		case 16:
 			chunk = genaiToolCallChunk("finish_workflow", map[string]any{"description": "workflow executed successfully", "artifacts": []any{"hello.go"}})
-		case 18:
+		case 17:
 			chunk = genaiToolCallChunk("end_turn", map[string]any{"summary": "finalized the workflow"})
-		case 19:
+		case 18:
 			chunk = genaiTextChunk("completed", 10, 10)
 		default:
 			chunk = genaiTextChunk("done", 10, 10)
@@ -472,6 +470,15 @@ func TestCoordinator_RunWorkflowLoopWithDecisionAndFinish(t *testing.T) {
 	if reply.outcome != "workflow executed successfully" {
 		t.Errorf("expected outcome to be 'workflow executed successfully', got %q", reply.outcome)
 	}
+
+	var foundFiles []string
+	_ = filepath.Walk(cwd, func(path string, info os.FileInfo, err error) error {
+		if !info.IsDir() {
+			foundFiles = append(foundFiles, path)
+		}
+		return nil
+	})
+	t.Logf("Found files in cwd: %v", foundFiles)
 
 	// Verify file was written, read, edited, and validated correctly on disk!
 	helloPath := filepath.Join(cwd, "hello.go")

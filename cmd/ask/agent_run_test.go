@@ -546,3 +546,68 @@ func TestAgentRun_AutoCreatesSession(t *testing.T) {
 		t.Errorf("expected non-empty events in auto-created session")
 	}
 }
+
+func TestAgentSession_ToolConfirmation_HITL(t *testing.T) {
+	isolateHome(t)
+	confirmationFC := &genai.FunctionCall{
+		Name: "adk_request_confirmation",
+		Args: map[string]any{
+			"originalFunctionCall": map[string]any{
+				"name": "ping",
+				"args": map[string]any{"v": "hitl_test", "description": "ping confirmation"},
+			},
+			"toolConfirmation": map[string]any{
+				"hint": "confirm ping execution",
+			},
+		},
+	}
+
+	mock := &mockScriptedStream{
+		turns: [][]*genai.GenerateContentResponse{
+			{
+				{
+					Candidates: []*genai.Candidate{
+						{
+							Content: &genai.Content{
+								Role: genai.RoleModel,
+								Parts: []*genai.Part{
+									{FunctionCall: confirmationFC},
+								},
+							},
+						},
+					},
+				},
+			},
+			{genaiTextChunk("done after confirmation", 50, 10)},
+		},
+	}
+
+	origStream := engine.GenerateStream
+	defer func() { engine.GenerateStream = origStream }()
+	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+		return mock.Next()
+	}
+
+	s := newTestAgentSession(t, nil)
+	if err := s.queueTurn("run hitl tool"); err != nil {
+		t.Fatal(err)
+	}
+	msgs := readSessionMsgs(t, s.ch, isTurnComplete)
+
+	var calls []toolCallMsg
+	for _, m := range msgs {
+		if c, ok := m.(toolCallMsg); ok {
+			calls = append(calls, c)
+		}
+	}
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 unwrapped toolCallMsg, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].name != "ping" {
+		t.Errorf("expected unwrapped tool name 'ping', got %q", calls[0].name)
+	}
+	if calls[0].input["v"] != "hitl_test" {
+		t.Errorf("expected unwrapped arg v='hitl_test', got %v", calls[0].input["v"])
+	}
+}
