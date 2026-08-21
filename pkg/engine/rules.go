@@ -235,6 +235,12 @@ type ContextAwareTool struct {
 	mu         *sync.Mutex
 	firedRules map[string]bool
 	seenCtx    map[string]bool
+	// seenCtxFile holds the resolved path of every instruction file
+	// already delivered to the model. It is seeded with the files
+	// BuildSystemPrompt inlined into <project_instructions>, so the JIT
+	// walk only ever adds instructions the model has not seen — reading
+	// a file next to CLAUDE.md no longer re-sends CLAUDE.md.
+	seenCtxFile map[string]bool
 }
 
 func (ct *ContextAwareTool) Name() string           { return ct.Inner.Name() }
@@ -271,18 +277,23 @@ func WrapContextAwareTools(tools []Tool, cwd string, rules []Rule) []Tool {
 	mu := &sync.Mutex{}
 	firedRules := map[string]bool{}
 	seenCtx := map[string]bool{}
+	seenCtxFile := map[string]bool{}
+	for _, d := range AgentContextFiles(cwd) {
+		seenCtxFile[ContextFileRealPath(d.Path)] = true
+	}
 	out := make([]Tool, len(tools))
 	for i, t := range tools {
 		name := t.Name()
 		if name == "read" || name == "glob" || name == "grep" || name == "ls" {
 			out[i] = &ContextAwareTool{
-				Inner:      t,
-				cwd:        cwd,
-				root:       root,
-				rules:      scoped,
-				mu:         mu,
-				firedRules: firedRules,
-				seenCtx:    seenCtx,
+				Inner:       t,
+				cwd:         cwd,
+				root:        root,
+				rules:       scoped,
+				mu:          mu,
+				firedRules:  firedRules,
+				seenCtx:     seenCtx,
+				seenCtxFile: seenCtxFile,
 			}
 		} else {
 			out[i] = t
@@ -350,32 +361,17 @@ func (ct *ContextAwareTool) Run(ctx agent.Context, args any) (map[string]any, er
 
 		var dirAdd []string
 		if !seen {
-			seenFile := map[string]bool{}
-			for _, name := range AgentContextFileNames {
-				key := strings.ToLower(name)
-				if seenFile[key] {
-					continue
+			ct.mu.Lock()
+			docs := contextFilesInDir(dir, ct.seenCtxFile)
+			ct.mu.Unlock()
+			for _, d := range docs {
+				relP, err := filepath.Rel(ct.root, d.Path)
+				if err != nil || strings.HasPrefix(relP, "..") {
+					relP = filepath.Base(d.Path)
+				} else {
+					relP = filepath.ToSlash(relP)
 				}
-				p := filepath.Join(dir, name)
-				if data, err := os.ReadFile(p); err == nil {
-					seenFile[key] = true
-					content := string(data)
-					if len(strings.TrimSpace(content)) == 0 {
-						continue
-					}
-					if len(content) > AgentContextFileCap {
-						content = content[:AgentContextFileCap] + "\n… (truncated)"
-					}
-
-					relP, err := filepath.Rel(ct.root, p)
-					if err != nil || strings.HasPrefix(relP, "..") {
-						relP = filepath.Base(p)
-					} else {
-						relP = filepath.ToSlash(relP)
-					}
-
-					dirAdd = append(dirAdd, fmt.Sprintf("## Project instructions from %s\n\n%s", relP, strings.TrimRight(content, "\n")))
-				}
+				dirAdd = append(dirAdd, fmt.Sprintf("## Project instructions from %s\n\n%s", relP, d.Body))
 			}
 		}
 
