@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/memory"
@@ -346,8 +347,60 @@ var AgentContextFileNames = []string{
 	".github/copilot-instructions.md",
 }
 
-// AgentContextFileCap bounds one context file's contribution.
-const AgentContextFileCap = 48_000
+// AgentContextFileCap bounds one instruction document's contribution to
+// the prompt — a context file, a rule, or an @-linked doc.
+//
+// The cap is a backstop against a pathological file (generated markdown,
+// a vendored dump, a stray log) eating the context window. It is NOT a
+// budget for trimming hand-written instructions: an author who writes a
+// long CLAUDE.md means all of it, so the cap sits well above any
+// realistic one. At 48_000 this repo's own 83KB CLAUDE.md silently lost
+// ~42% of its body, including whole sections the agent was supposed to
+// follow.
+const AgentContextFileCap = 128_000
+
+// TruncateInstructionDoc bounds body to limit bytes.
+//
+// Truncation is line-aligned and never splits a UTF-8 rune — the old
+// body[:limit] slice could cut mid-rune and put invalid UTF-8 on the
+// wire. What is dropped is stated rather than implied: the notice names
+// the file and the byte counts so a model that needs the tail can read
+// it, instead of a bare "… (truncated)" that reads like the document
+// simply ended.
+func TruncateInstructionDoc(path, body string, limit int) string {
+	if limit <= 0 || len(body) <= limit {
+		return body
+	}
+	head := body[:limit]
+	if i := strings.LastIndexByte(head, '\n'); i > 0 {
+		// '\n' never occurs inside a multi-byte rune, so a cut here is
+		// always rune-safe.
+		head = head[:i]
+	} else {
+		head = trimPartialRune(head)
+	}
+	name := path
+	if base := filepath.Base(path); base != "" && base != "." {
+		name = base
+	}
+	return head + fmt.Sprintf(
+		"\n\n… (truncated) — showed the first %d of %d bytes of %s. "+
+			"The remaining %d bytes are NOT in this prompt; read %s directly if you need them.",
+		len(head), len(body), name, len(body)-len(head), path)
+}
+
+// trimPartialRune drops a dangling partial UTF-8 sequence from the end
+// of s, so slicing at an arbitrary byte offset cannot emit invalid UTF-8.
+func trimPartialRune(s string) string {
+	for i := 0; i < utf8.UTFMax && len(s) > 0; i++ {
+		r, size := utf8.DecodeLastRuneInString(s)
+		if r != utf8.RuneError || size > 1 {
+			break
+		}
+		s = s[:len(s)-1]
+	}
+	return s
+}
 
 // AgentGitStatus captures a one-shot git snapshot for the env block.
 // Swappable in tests so prompt assembly stays subprocess-free there.
@@ -470,12 +523,15 @@ func contextFilesInDir(dir string, seenReal map[string]bool) []LoadedContextDoc 
 		seenName[key] = true
 		seenReal[real] = true
 		content := string(data)
-		if len(content) > AgentContextFileCap {
-			content = content[:AgentContextFileCap] + "\n… (truncated)"
-		}
+		// Links come from the FULL body: an @-link past the cap is still
+		// a real dependency of these instructions, and extracting from
+		// the truncated text would silently drop it.
+		links := ExtractContextLinks(content)
+		content = TruncateInstructionDoc(path, content, AgentContextFileCap)
 		docs = append(docs, LoadedContextDoc{
-			Path: path,
-			Body: strings.TrimRight(content, "\n"),
+			Path:  path,
+			Body:  strings.TrimRight(content, "\n"),
+			Links: links,
 		})
 	}
 	return docs
@@ -551,16 +607,19 @@ func BuildSystemPrompt(opts PromptOptions) string {
 	if repoRoot == "" {
 		repoRoot = cwd
 	}
-	var sourceBodies []string
+	// Seed from the links each document recorded off its FULL body, not
+	// from the capped Body that goes on the wire — otherwise an @-link
+	// living past the cap is never followed.
+	var sourceLinks []string
 	for _, d := range ctxDocs {
-		sourceBodies = append(sourceBodies, d.Body)
+		sourceLinks = append(sourceLinks, d.Links...)
 	}
 	for _, r := range rules {
 		if r.Eager() {
-			sourceBodies = append(sourceBodies, r.Body)
+			sourceLinks = append(sourceLinks, r.Links...)
 		}
 	}
-	if linkedDocs := LoadContextLinks(repoRoot, sourceBodies); len(linkedDocs) > 0 {
+	if linkedDocs := LoadContextLinksFrom(repoRoot, sourceLinks); len(linkedDocs) > 0 {
 		if block := ContextLinksPromptBlock(linkedDocs); block != "" {
 			b.WriteString("\n\n")
 			b.WriteString(block)

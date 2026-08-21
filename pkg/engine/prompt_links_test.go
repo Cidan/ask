@@ -219,8 +219,80 @@ func TestLoadContextLinks_Cap(t *testing.T) {
 	if !strings.Contains(docs[0].Body, "… (truncated)") {
 		t.Error("oversized doc must be truncated")
 	}
-	if len(docs[0].Body) > AgentContextFileCap+len("\n… (truncated)") {
+	// Cap plus the notice, which names the file and the byte counts.
+	if len(docs[0].Body) > AgentContextFileCap+512 {
 		t.Errorf("truncated body too long: %d", len(docs[0].Body))
+	}
+	if !strings.Contains(docs[0].Body, "big.md") {
+		t.Errorf("truncation notice must name the source file:\n%s", tail(docs[0].Body))
+	}
+}
+
+// tail returns the last n bytes of s for readable failure output.
+func tail(s string) string {
+	if len(s) <= 300 {
+		return s
+	}
+	return "…" + s[len(s)-300:]
+}
+
+// An @-link living past the cap is still a real dependency. Links must be
+// extracted from the full body, not from the text that survived truncation.
+func TestLoadContextLinks_FollowsLinksPastTheCap(t *testing.T) {
+	root := t.TempDir()
+	writeTestDoc(t, root, "deep.md", "# Deep\ndeep-marker\n")
+	writeTestDoc(t, root, "big.md",
+		strings.Repeat("filler line\n", AgentContextFileCap/12+50)+"\nSee @deep.md for details.\n")
+
+	docs := LoadContextLinks(root, []string{"@big.md"})
+	var got []string
+	for _, d := range docs {
+		got = append(got, filepath.Base(d.Path))
+	}
+	if len(docs) != 2 {
+		t.Fatalf("want big.md + deep.md, got %v", got)
+	}
+	var deep *LoadedContextDoc
+	for i := range docs {
+		if filepath.Base(docs[i].Path) == "deep.md" {
+			deep = &docs[i]
+		}
+	}
+	if deep == nil {
+		t.Fatalf("link past the cap was not followed, loaded: %v", got)
+	}
+	if !strings.Contains(deep.Body, "deep-marker") {
+		t.Errorf("linked doc body missing: %q", deep.Body)
+	}
+	// The oversized doc was still truncated — the link survived anyway.
+	for _, d := range docs {
+		if filepath.Base(d.Path) == "big.md" && !strings.Contains(d.Body, "… (truncated)") {
+			t.Error("precondition: big.md should have been truncated")
+		}
+	}
+}
+
+func TestLoadedContextDoc_LinksComeFromFullBody(t *testing.T) {
+	root := t.TempDir()
+	writeTestDoc(t, root, "target.md", "target body\n")
+	writeTestDoc(t, root, "src.md",
+		strings.Repeat("x", AgentContextFileCap+100)+"\n@target.md\n")
+
+	docs := LoadContextLinks(root, []string{"@src.md"})
+	var src *LoadedContextDoc
+	for i := range docs {
+		if filepath.Base(docs[i].Path) == "src.md" {
+			src = &docs[i]
+		}
+	}
+	if src == nil {
+		t.Fatal("src.md not loaded")
+	}
+	if len(src.Links) != 1 || src.Links[0] != "target.md" {
+		t.Errorf("Links must come from the untruncated body, got %v", src.Links)
+	}
+	if strings.Contains(src.Body, "@target.md") {
+		t.Error("precondition: the link should have been cut from Body")
 	}
 }
 

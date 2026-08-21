@@ -251,6 +251,61 @@ func TestWrapContextAwareTools_InjectsUnseenSubdirContext(t *testing.T) {
 	}
 }
 
+// A rule body is capped like any other instruction doc, but an @-link in
+// the cut tail is still a dependency and must still be resolved when the
+// rule fires.
+func TestParseRuleFile_LinksSurviveTruncation(t *testing.T) {
+	root := t.TempDir()
+	scope := RuleScope{Root: root, Dir: root}
+	path := writeTestDoc(t, root, "big.md",
+		strings.Repeat("filler line\n", ruleFileCap/12+50)+"\nSee @notes.md.\n")
+
+	rule, ok := ParseRuleFile(path, scope)
+	if !ok {
+		t.Fatal("rule failed to parse")
+	}
+	if !strings.Contains(rule.Body, "… (truncated)") {
+		t.Fatal("precondition: oversized rule body should be truncated")
+	}
+	if strings.Contains(rule.Body, "@notes.md") {
+		t.Fatal("precondition: the link should have been cut from Body")
+	}
+	if len(rule.Links) != 1 || rule.Links[0] != "notes.md" {
+		t.Errorf("Links must come from the untruncated body, got %v", rule.Links)
+	}
+}
+
+func TestWrapContextAwareTools_JITRuleLinkPastCap(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cwd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestDoc(t, cwd, "notes.md", "# Notes\nnotes-marker\n")
+	writeTestDoc(t, cwd, "src/api/handler.go", "package api\n")
+
+	rulePath := writeTestDoc(t, cwd, "rule.md",
+		"---\npaths:\n  - \"src/**/*.go\"\n---\n"+
+			strings.Repeat("filler line\n", ruleFileCap/12+50)+"\nSee @notes.md.\n")
+	rule, ok := ParseRuleFile(rulePath, RuleScope{Root: cwd, Dir: cwd})
+	if !ok {
+		t.Fatal("rule failed to parse")
+	}
+
+	wrapped := WrapContextAwareTools([]Tool{&fakeRuleTestTool{cwd: cwd}}, cwd, []Rule{rule})
+	resp, err := RunADKTool(context.Background(), wrapped[0], map[string]any{
+		"file_path":   "src/api/handler.go",
+		"description": "read handler",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := resp["result"].(string)
+	if !strings.Contains(content, "notes-marker") {
+		t.Error("a rule's @-link past the cap must still be injected when the rule fires")
+	}
+}
+
 func TestRuleAwareTool_RelPathRejectsOutsideRoot(t *testing.T) {
 	rt := &ContextAwareTool{root: "/proj", cwd: "/proj"}
 	if got := rt.RelPath("/proj/src/a.go"); got != "src/a.go" {

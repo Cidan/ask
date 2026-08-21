@@ -23,8 +23,12 @@ type Rule struct {
 	Rel string
 	// Paths is the compiled glob list from `paths` frontmatter. Empty means eager.
 	Paths []string
-	// Body is the markdown instruction text.
+	// Body is the markdown instruction text, capped by
+	// TruncateInstructionDoc.
 	Body string
+	// Links are the @-references found in the rule's FULL body, before
+	// truncation — see LoadedContextDoc.Links.
+	Links []string
 }
 
 func (r Rule) Eager() bool { return len(r.Paths) == 0 }
@@ -58,7 +62,9 @@ func RuleSearchScopes(cwd string) []RuleScope {
 	return scopes
 }
 
-const ruleFileCap = 48_000
+// ruleFileCap bounds one rule body. Rules are instruction documents like
+// context files, so they share the same backstop.
+const ruleFileCap = AgentContextFileCap
 
 func DiscoverRules(cwd string) []Rule {
 	byRel := map[string]Rule{}
@@ -121,9 +127,8 @@ func ParseRuleFile(path string, scope RuleScope) (Rule, bool) {
 	if strings.TrimSpace(body) == "" {
 		return Rule{}, false
 	}
-	if len(body) > ruleFileCap {
-		body = body[:ruleFileCap] + "\n… (truncated)"
-	}
+	links := ExtractContextLinks(body)
+	body = TruncateInstructionDoc(path, body, ruleFileCap)
 	rel := path
 	if r, err := filepath.Rel(scope.Dir, path); err == nil && !strings.HasPrefix(r, "..") {
 		rel = r
@@ -135,6 +140,7 @@ func ParseRuleFile(path string, scope RuleScope) (Rule, bool) {
 		Rel:   filepath.ToSlash(rel),
 		Paths: paths,
 		Body:  strings.TrimRight(body, "\n"),
+		Links: links,
 	}, true
 }
 
@@ -401,7 +407,8 @@ func (ct *ContextAwareTool) Run(ctx agent.Context, args any) (map[string]any, er
 				ct.mu.Unlock()
 
 				add = append(add, fmt.Sprintf("## Rule for %s (%s)\n\n%s", rel, r.Rel, r.Body))
-				if linked := RuleLinkedDocs(ct.root, r.Body); len(linked) > 0 {
+				// r.Links, not r.Body — Body is capped, Links are not.
+				if linked := LoadContextLinksFrom(ct.root, r.Links); len(linked) > 0 {
 					for _, d := range linked {
 						add = append(add, fmt.Sprintf("### Included from %s\n\n%s", d.Path, d.Body))
 					}
