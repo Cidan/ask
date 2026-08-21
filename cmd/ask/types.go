@@ -218,8 +218,6 @@ type toolResultMsg struct {
 	proc       *providerProc
 }
 
-
-
 type stderrBuf struct {
 	mu   sync.Mutex
 	data []byte
@@ -460,7 +458,7 @@ type model struct {
 	pathMatches []string
 	pathIdx     int
 
-	status   string
+	status string
 
 	// Preserved solely for backward-compatibility in tests.
 	// Unused and unreferenced in the main application code.
@@ -616,7 +614,7 @@ type model struct {
 	// next user turn relaunches with these wired in via --resume.
 	addedDirs []string
 
-	turnBuffer []string
+	turnBuffer     []string
 	responseActive bool
 
 	lastContentFP string
@@ -745,12 +743,6 @@ type workflowRunState struct {
 	// it points at the loop step and `loop` carries the inner position.
 	StepIdx int
 
-	// loop is non-nil while the runner is executing inside a loop step
-	// (Workflow.Steps[StepIdx].isLoop()). It tracks the inner cursor,
-	// iteration count, and the bounded per-iteration context. Nil for
-	// the linear portions of the chain.
-	loop *loopRunFrame
-
 	// pendingEndTurn holds what the current step registered via the
 	// end_turn MCP tool this turn: the always-required summary plus, in a
 	// loop, the optional break/continue decision. Reset to nil at every
@@ -760,51 +752,9 @@ type workflowRunState struct {
 	// re-prompted (every step must call end_turn).
 	pendingEndTurn *endTurnSignal
 
-	// linearRetry / linearText are the re-prompt bookkeeping for the
-	// non-loop portion of the chain — the mirror of loopRunFrame's
-	// retry / retryText. linearRetry counts how many times the current
-	// linear step has been re-prompted for a missing end_turn call;
-	// linearText stashes its prior output so the re-prompt can feed it
-	// back rather than make the step redo the work. Both reset when the
-	// linear step finally registers and advances.
-	linearRetry int
-	linearText  string
-
-	// stepErrorRetry tracks how many times the current step has been retried
-	// after failing with a step error. Reset to 0 when a step succeeds.
-	stepErrorRetry int
-
-	// remind records why the current dispatch is a re-prompt (a missing
-	// end_turn call, a loop tail that omitted its decision, or a plan
-	// directory that is not usable) so buildWorkflowStepPrompt can append
-	// the matching reminder. remindNone on a normal first dispatch.
-	remind remindKind
-
-	// remindDetail carries dynamic text for remindFixPlanDir so the LLM
-	// knows exactly which path is the wrong shape and what to do about it.
-	remindDetail string
-
-	// stepLog accumulates the assistant non-tool text emitted by each
-	// completed top-level step so the next step's prompt can include a
-	// `Previous step output:` block. A loop contributes only its final
-	// iteration's inner outputs here, on exit — intermediate iterations
-	// stay scoped to the loop frame so the linear log doesn't balloon.
-	stepLog []string
-
-	// currentStep accumulates assistantTextMsg payloads for the
-	// in-flight step. Rolled into the appropriate log on
-	// workflowRunStepDoneMsg.
+	// currentStep accumulates the assistant text emitted by the
+	// in-flight step, used for the step's log line.
 	currentStep strings.Builder
-
-	// currentNotesDir is the notes directory for the step currently
-	// in flight. Computed at dispatch and reused when advancing so the
-	// runner knows which directory the just-finished step wrote to.
-	currentNotesDir string
-
-	// prevNotesDir is the notes directory of the step whose output is
-	// being carried into the current dispatch. Empty for the workflow's
-	// first step.
-	prevNotesDir string
 
 	// done flips true once the final step exits cleanly. The banner
 	// shows "complete · ctrl+d to close" while the tab stays open.
@@ -846,41 +796,6 @@ type workflowTabSnapshot struct {
 	worktreeName       string
 	skipAllPermissions bool
 	screen             screenID
-}
-
-// loopRunFrame is the per-loop execution cursor, live only while the
-// runner is inside a loop step. innerIdx walks the loop's inner steps;
-// iteration is 1-based. The three text fields implement the bounded
-// context policy: an inner step sees the linear log (frozen at loop
-// entry) plus, for the head step, the previous iteration's tail output,
-// or for downstream steps, the current iteration's prior outputs.
-type loopRunFrame struct {
-	innerIdx  int
-	iteration int
-
-	// retry counts consecutive re-prompts of the current inner step
-	// within this iteration. Bumped each time the step finishes without
-	// the end_turn call the runner needs (any step that skips end_turn,
-	// or a tail that omits its decision) — the runner re-dispatches it,
-	// "hammering" until it registers. Surfaced in the banner; reset when
-	// the inner cursor advances, the iteration advances, or the loop
-	// exits.
-	retry int
-
-	// iterationLog holds the inner-step outputs produced so far in the
-	// current iteration, in order. Reset at each iteration boundary;
-	// committed to the run's stepLog when the loop exits.
-	iterationLog []string
-
-	// prevTail is the last inner step's output from the previous
-	// iteration, fed to the head step so a kick-back actually reaches
-	// the next pass. Empty on iteration 1.
-	prevTail string
-
-	// retryText is the inner step's most recent output when it finished
-	// without the end_turn call the runner needed, fed back into the
-	// re-prompt so the agent can register without redoing the work.
-	retryText string
 }
 
 // endTurnSignal is what a step registers via the end_turn MCP tool at
@@ -984,16 +899,6 @@ type WorkflowFailedMsg struct {
 type ClearWorkflowStateMsg struct {
 	TabID int
 }
-
-type remindKind int
-
-const (
-	remindNone       remindKind = iota
-	remindNoSummary             // the prior turn ended without calling end_turn
-	remindNoDecision            // a loop tail called end_turn but omitted its decision
-	remindFixPlanDir            // a workflow notes directory is missing or is a file
-	remindNoFinishTool          // the prior turn ended the workflow without calling finish_workflow
-)
 
 type AppendHistoryMsg struct {
 	TabID int

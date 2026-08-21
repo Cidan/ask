@@ -12,7 +12,7 @@ import (
 
 const SearchToolsDescription = `Search the tool registry for tools that are not listed in your tool definitions.
 
-Beyond your core tools, ask keeps a registry of additional tools — issue tracking (linear_*) and external MCP integrations (mcp__<server>__<tool>). They are real, callable tools; they are just not included in your tool definitions to keep your context small. (The ask-built-in workflow_* tools and clear_plans are core exceptions — they live on the wire, not in the registry, because the two-stage workflow guard forces the model to call them directly.)
+Beyond your core tools, ask keeps a registry of additional tools — issue tracking (linear_*) and external MCP integrations (mcp__<server>__<tool>). They are real, callable tools; they are just not included in your tool definitions to keep your context small. (The ask-built-in workflow_* tools are core exceptions — they live on the wire, not in the registry, because the two-stage workflow guard forces the model to call them directly.)
 
 Query syntax: "*" lists every registry tool; a trailing * does prefix matching (e.g. "linear_*"); anything else is a case-insensitive substring match against tool names and descriptions. Each result carries the tool's name, description, and full input_schema — everything needed to call it through invoke_tool.`
 

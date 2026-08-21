@@ -84,10 +84,6 @@ func currentWorkflowStepMeta(r *workflowRunState) (name, provider, model string)
 		return "", "", ""
 	}
 	top := r.Workflow.Steps[r.StepIdx]
-	if r.loop != nil && top.IsLoop() && r.loop.innerIdx < len(top.Steps) {
-		inner := top.Steps[r.loop.innerIdx]
-		return inner.Name, inner.Provider, inner.Model
-	}
 	return top.Name, top.Provider, top.Model
 }
 
@@ -116,20 +112,12 @@ func toPkgWorkflowStep(s workflowStep) workflow.Step {
 	}
 }
 
-func buildWorkflowStepPrompt(step workflowStep, source workflowSource, prevOutputs []string, pc *stepPromptCtx) string {
-	return workflow.BuildStepPrompt(toPkgWorkflowStep(step), source, prevOutputs, pc)
+func buildWorkflowStepInstruction(step workflowStep, source workflowSource, pc *stepPromptCtx) string {
+	return workflow.BuildStepInstruction(toPkgWorkflowStep(step), source, pc)
 }
 
 var (
-	stepNotesDir           = workflow.StepNotesDir
-	startPlanDir           = workflow.StartPlanDir
-	ensureStartPlanExists  = workflow.EnsureStartPlanExists
-	ensureStepNotesDir     = workflow.EnsureStepNotesDir
-	removeAllWorkflowPlans = workflow.RemoveAllWorkflowPlans
-	clearWorkflowPlans     = workflow.ClearWorkflowPlans
-	workflowPlansDir       = workflow.PlansDir
-	loopNoteLine           = workflow.LoopNoteLine
-	sanitizeStepName       = workflow.SanitizeStepName
+	loopNoteLine = workflow.LoopNoteLine
 )
 
 func lastOf(s []string) string {
@@ -167,7 +155,6 @@ var (
 	unwrapInvokeToolCall     = tools.UnwrapInvokeToolCall
 	runAskPassHelper         = tools.RunAskPassHelper
 	applyBashFilter          = tools.ApplyBashFilter
-	clearPlansCore           = tools.ClearPlansCore
 	agentAskUserQuestionTool = tools.AskUserQuestionTool
 	agentEndTurnTool         = tools.EndTurnTool
 	agentFinalizedPlanTool   = tools.FinalizedPlanTool
@@ -189,15 +176,6 @@ var (
 	agentWebSearchTool       = tools.WebSearchTool
 	agentLoadMemoryTool      = tools.LoadMemoryTool
 	agentPreloadMemoryTool   = tools.PreloadMemoryTool
-)
-
-const (
-	clearPlansToolDescription = tools.ClearPlansToolDescription
-)
-
-type (
-	clearPlansInput  = tools.ClearPlansInput
-	clearPlansOutput = tools.ClearPlansOutput
 )
 
 func errResult(text string) *mcp.CallToolResult {

@@ -16,6 +16,7 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/Cidan/ask/pkg/tools"
+	"github.com/Cidan/ask/pkg/workflow"
 	adkmodel "google.golang.org/adk/v2/model"
 )
 
@@ -405,4 +406,23 @@ func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+}
+
+// stubWorkflowStepModel swaps the workflow compiler's model resolution
+// for an inert LLM so a test can compile and run a graph without a real
+// provider registered in pkg/providers.
+func stubWorkflowStepModel(t *testing.T) {
+	t.Helper()
+	prev := workflowStepModel
+	workflowStepModel = func(ctx context.Context, sess *agentSession, step workflow.Step) (adkmodel.LLM, error) {
+		return &stubStepLLM{}, nil
+	}
+	t.Cleanup(func() { workflowStepModel = prev })
+}
+
+type stubStepLLM struct{}
+
+func (s *stubStepLLM) Name() string { return "stub-step-model" }
+func (s *stubStepLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {}
 }

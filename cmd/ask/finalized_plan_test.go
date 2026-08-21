@@ -338,13 +338,14 @@ func TestFinalizedPlan_WorkflowSelectionToolNoCmd(t *testing.T) {
 
 func TestFinalizedPlan_SelfLaunchWorkflowExecution(t *testing.T) {
 	isolateHome(t)
+	stubWorkflowStepModel(t)
 	cwd := t.TempDir()
 
-	var stepsExecuted int32
+	var sessionsStarted int32
 	prov := newFakeProvider()
 	prov.id = "fake-prov"
 	prov.startSessionFn = func(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
-		atomic.AddInt32(&stepsExecuted, 1)
+		atomic.AddInt32(&sessionsStarted, 1)
 		ch := make(chan tea.Msg, 8)
 		proc := &providerProc{
 			stdin: &bufferCloser{Buffer: nil},
@@ -419,8 +420,9 @@ func TestFinalizedPlan_SelfLaunchWorkflowExecution(t *testing.T) {
 		t.Fatalf("tool run failed: %s", resp.Content)
 	}
 
-	if atomic.LoadInt32(&stepsExecuted) == 0 {
-		t.Fatalf("expected workflow steps to be executed, but none were run")
+	// The graph engine runs the whole workflow on one session.
+	if atomic.LoadInt32(&sessionsStarted) != 1 {
+		t.Fatalf("expected exactly one workflow session, got %d", atomic.LoadInt32(&sessionsStarted))
 	}
 
 	if !strings.Contains(resp.Content, "completed ship workflow") {
@@ -430,6 +432,7 @@ func TestFinalizedPlan_SelfLaunchWorkflowExecution(t *testing.T) {
 
 func TestFinalizedPlan_SelfLaunchWorkflowExecution_ClearsUIWorkflowRunState(t *testing.T) {
 	isolateHome(t)
+	stubWorkflowStepModel(t)
 	cwd := t.TempDir()
 
 	prov := newFakeProvider()

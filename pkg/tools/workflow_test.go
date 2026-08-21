@@ -24,7 +24,6 @@ func TestWorkflowTools_CoversEveryWorkflowTool(t *testing.T) {
 	want := []string{
 		"workflow_list", "workflow_get", "workflow_create",
 		"workflow_edit", "workflow_delete", "workflow_copy",
-		"clear_plans",
 	}
 	got := map[string]bool{}
 	for _, tool := range WorkflowTools(env) {
@@ -79,22 +78,6 @@ func TestWorkflowCRUDRoundTrip(t *testing.T) {
 	}
 }
 
-func TestClearPlansTool(t *testing.T) {
-	env, _ := newTestToolEnv(t)
-	clearTool := workflowToolByName(t, env, "clear_plans")
-
-	writeTestFile(t, env.Cwd, "ask/plans/start/plan.md", "# Plan")
-	writeTestFile(t, env.Cwd, "ask/plans/step-1/notes.md", "Notes")
-
-	resp, err := RunToolWithJSON(context.Background(), clearTool, `{}`)
-	if err != nil || resp.IsError {
-		t.Fatalf("clear_plans failed: %+v %v", resp, err)
-	}
-
-	if !strings.Contains(resp.Content, "cleared") {
-		t.Errorf("unexpected clear response: %q", resp.Content)
-	}
-}
 
 func TestWorkflowTools_LoopWorkflowPromptAndExitConditionPreservation(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

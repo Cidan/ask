@@ -82,7 +82,7 @@ One `package main`, one file per concern.
 | `rules.go`             | Claude Code `.claude/rules/` standard: `*.md` rule files discovered recursively (symlink-following, cycle-guarded) under project `.claude/rules/` (git root) and user `~/.claude/rules/` (user loads first, project wins on same relative label). YAML `paths` frontmatter (block + inline list forms, brace patterns survive verbatim) splits rules two ways — no `paths` ⇒ EAGER (`rulesPromptBlock` → `<project_rules>` system-prompt block, byte-stable for prefix caching), with `paths` ⇒ JIT (`ruleAwareTool` decorates the read tool; reading a file whose project-root-relative path matches a glob appends the rule body to that tool result, once per rule per session, project-scope only). Globs reuse `agentGlobMatch` (doublestar + `{a,b}`). The same decorator ALSO injects project instruction files it walks past — but only ones the model has not already been given: `WrapContextAwareTools` seeds `seenCtxFile` with everything `AgentContextFiles(cwd)` already put in `<project_instructions>`, so a read next to CLAUDE.md no longer re-sends CLAUDE.md. Only genuinely unseen instructions (a `CLAUDE.md` in a subdirectory *below* cwd) arrive JIT, once each. Do not remove that seeding — without it, one `read` of a 3KB file returned 99KB. |
 | `agent_tools_ask.go`   | In-process twins of the bridge's `ask_user_question` / `end_turn` — same modal/workflow machinery, no HTTP loopback. |
 | `agent_tools_bridge.go`| Native twins of the `linear_*` bridge tools: a generic `nativeBridgeTool` adapter generates fantasy schemas via the same jsonschema machinery the MCP SDK uses (field docs survive verbatim) and wraps the shared cwd-parameterized cores in mcp_linear.go. In-process sessions never attach the loopback bridge. These tools live in the deferred registry, never on the wire. The adapter runs every schema through `flattenNullableTypes` (drops `"null"` from `type: ["null", X]` arrays) before handing it back — jsonschema-go emits nullable types for `*T` and `omitempty` slices, and fantasy's downstream `schema.Normalize` would otherwise rewrite them into an `anyOf` whose array branch carries its own `items: {}` while the parent keeps its real `items` (strict Moonshot / OpenAI validators reject the "conflicting keywords" shape). Same step applies to the workflow_* tools via the shared adapter. |
-| `agent_tools_workflow.go`| The ask-built-in workflow tools on the CORE wire toolset: `workflow_list`, `workflow_get`, `workflow_create`, `workflow_edit`, `workflow_delete`, `workflow_copy`, and `clear_plans`. Built with the same `nativeBridgeTool` adapter (so wire schemas are byte-identical to the prior registry shape) and the shared cwd-parameterized cores in mcp_workflows.go. Deliberate, documented core exception: the two-stage workflow guard (agent_tools_todos.go) forces the model to call `workflow_list` as a precondition for any multi-step work, and an extra `search_tools` round-trip on every guard interaction is pure overhead. The disarm hook (`env.markWorkflowsChecked`) lives in the `workflow_list` closure itself so the guard clears on the direct call — they are NOT in `invoke_tool` anymore. Don't bypass the bridge adapter for a new workflow tool; the adapter's `flattenNullableTypes` pass is what keeps `workflow_create` / `workflow_edit` from emitting the type-arrays Moonshot's strict validator rejects. |
+| `agent_tools_workflow.go`| The ask-built-in workflow tools on the CORE wire toolset: `workflow_list`, `workflow_get`, `workflow_create`, `workflow_edit`, `workflow_delete`, and `workflow_copy`. Built with the same `nativeBridgeTool` adapter (so wire schemas are byte-identical to the prior registry shape) and the shared cwd-parameterized cores in mcp_workflows.go. Deliberate, documented core exception: the two-stage workflow guard (agent_tools_todos.go) forces the model to call `workflow_list` as a precondition for any multi-step work, and an extra `search_tools` round-trip on every guard interaction is pure overhead. The disarm hook (`env.markWorkflowsChecked`) lives in the `workflow_list` closure itself so the guard clears on the direct call — they are NOT in `invoke_tool` anymore. Don't bypass the bridge adapter for a new workflow tool; the adapter's `flattenNullableTypes` pass is what keeps `workflow_create` / `workflow_edit` from emitting the type-arrays Moonshot's strict validator rejects. |
 | `agent_tools_registry.go`| The deferred tool registry surface: `search_tools` (query the registry — `*` / prefix-`*` / substring — returning name + description + full input_schema per match) and `invoke_tool` (dispatch a registry tool by name via its `.Run`, with replicated required-field validation, phrase injection for natives, and verbatim response pass-through). `unwrapInvokeToolCall` maps invoke calls back to the inner tool for display. See "Tool registry vs core tools" below — **new tools go here, never into the core list**, unless a deliberate, documented exception is in play (the two today are `web_search` and the workflow_* tools). |
 | `agent_memory.go`      | Memory recall injection: session-start recall appended to the system prompt (once, byte-stable), per-prompt recall appended to the wire prompt, and `memoryAwareTool` wrapping read/edit/write with a per-file recall footer. All no-op when the memory service is closed. |
 | `agent_tools_mcp.go`   | MCP client v2 (`mcpManager`/`mcpServerConn`): per-session manager over stdio/http/sse transports (official go-sdk v1.6.1), lazy ping-and-rebuild before every call + one renew-and-retry, `tools/list_changed` → live deferred-registry refresh (the wire toolset never changes mid-session), MCP elicitation → ask's question modal (form mode: enum/boolean/free-form, typed answers; URL mode + headless decline), image tool-results as real media when the model has vision. Tools are `mcp__<server>__<tool>`. |
@@ -103,7 +103,10 @@ One `package main`, one file per concern.
 | `workflow_store.go`    | Three-scope workflow persistence: user (ask.json) + repo (`<root>/.ask/workflows/*.json`, committed) + global (`~/.config/ask/workflows/*.json`, machine-local, visible from every project); merged global-first listing (personal-wins), ambiguity-strict name resolution, dir sync on save, cross-scope copy. |
 | `workflows_screen.go`  | Workflows builder screen — list/steps/step editor levels with multi-line prompt textarea. `e` on a selected workflow opens that same textarea (workflow-scoped `promptTarget=="description"`) to edit the workflow's free-text Description; it commits to `workflowDef.Description` and shows as the steps-pane subtitle. |
 | `workflows_picker.go`  | Small centred modal popped on `f` (issues) / `Ctrl+F` (chat) to pick which workflow to run. |
-| `workflows_run.go`     | Step runner: prompt assembly, advance-on-turn-complete, finalise on done/failed. |
+| `pkg/workflow/compile.go` | `CompileWorkflow` — a `Def` becomes an ADK graph: `AgentNode` per step, `loopagent`+`exitlooptool` per loop, `IncludeContentsNone` + `InstructionProvider` per step agent, per-node `RetryConfig`. Returns `Compiled` with the agent-name → step-index map the progress adapter needs. |
+| `pkg/workflow/progress.go` | `Progress` — ADK events → `RunnerListener` callbacks, driven only by events that actually arrived. |
+| `cmd/ask/workflow_graph.go` | TUI runner: one session for the whole graph, agent swapped for the compiled workflow. |
+| `pkg/engine/workflow_run.go` | Headless runner + `WorkflowGraphAgent` + `IngestWorkflowMemory`. |
 | `workflow_source.go`   | `workflowSource` tagged union (issue ref vs chat transcript) consumed by picker / runner / banner. |
 | `chat_workflow.go`     | `Ctrl+F` dispatcher — snapshots `m.history` into a chat source, gates on busy/empty, opens the picker. |
 | `keymap.go`            | Remappable global shortcuts — `Action` enum, `KeyBinding` parse/stringify, default keymap, `currentKeyMap()` cached accessor. Per-screen keys (kanban `j/k`, modal arrows, Ctrl+D close) stay inline; this only covers the global screen-switch + tab-nav surface. |
@@ -159,9 +162,9 @@ exercised by the user; code alone won't catch layout regressions.
 | `agent_tools_mcp_test.go`  | MCP manager against in-process `mcp.Server`s over httptest — attach/skip/schema/IsError, image results (placeholder vs media by vision), unreachable-server skip, `tools/list_changed` live refresh, dead-server graceful error, elicitation schema mapping + accept/cancel/headless/url flows. |
 | `mcp_servers_test.go`      | Server-config resolution — effectiveType inference, `${VAR}`/`${VAR:-default}` expansion (copy semantics), 3-layer merge (.mcp.json ← global ← project) incl. Disabled tombstones + junk drops + stable order, tool allow/deny filters. |
 | `mcp_oauth_test.go`        | OAuth plumbing — token path/0600 round-trip, persisting token source saves on change, callback listener captures code/state via swapped browser opener, stored-valid-token served without a flow, fresh handler yields nil source (transport 401s into Authorize). |
-| `agent_tools_bridge_test.go`| Native linear twins — 12-tool coverage check, jsonschema field-doc fidelity, description-phrase injection (+ payload-description non-clobber), linear gate error, malformed input, loopback never in `agentSessionMCPServers`, `clear_plans` NOT in the linear set, every linear tool's wire schema is free of `anyOf`+`items` conflicts (Normalize-shape regression check). |
-| `agent_tools_workflow_test.go`| Native workflow core tools — 8-tool coverage check, workflow CRUD round-trip against project config, workflow Description round-trip (create sets it, list/get surface it, edit replaces it, omitted leaves it unchanged across a rename), `clear_plans` idempotency, the workflow-guard disarm hooks (calling `workflow_list` sets `workflowsChecked`) so the two-stage todos guard clears on the direct path, plus the wire-schema shape tests (`flattenNullableTypes` table + Normalize-shape check) that pin `workflow_create.steps` / `workflow_edit.steps` / `workflow_edit.description` to the single-type shape strict validators accept. |
-| `agent_tools_registry_test.go`| Tool registry — search query forms (`*`/prefix/substring, schema fidelity, sorted, no-match name list, empty registry), invoke dispatch (identity + params JSON), replicated required-field check, phrase injection (natives yes, MCP no), unknown/core-name errors, response pass-through (IsError/StopTurn/image/hard error), `unwrapInvokeToolCall`, `refreshToolset` wire/registry split (decorateTools sees core only), session surface (linear_* in the registry, `workflow_*` + `clear_plans` on the wire), `web_search` backend selection (no native spec → Brave on the wire + nil `providerWebSearch`; native spec → off the wire + `providerWebSearch` set), end-to-end fakeLM unwrap (toolCallMsg/toolResultMsg/status), loadHistory replay unwrap. |
+| `agent_tools_bridge_test.go`| Native linear twins — 12-tool coverage check, jsonschema field-doc fidelity, description-phrase injection (+ payload-description non-clobber), linear gate error, malformed input, loopback never in `agentSessionMCPServers`, every linear tool's wire schema is free of `anyOf`+`items` conflicts (Normalize-shape regression check). |
+| `agent_tools_workflow_test.go`| Native workflow core tools — 6-tool coverage check, workflow CRUD round-trip against project config, workflow Description round-trip (create sets it, list/get surface it, edit replaces it, omitted leaves it unchanged across a rename), the workflow-guard disarm hooks (calling `workflow_list` sets `workflowsChecked`) so the two-stage todos guard clears on the direct path, plus the wire-schema shape tests (`flattenNullableTypes` table + Normalize-shape check) that pin `workflow_create.steps` / `workflow_edit.steps` / `workflow_edit.description` to the single-type shape strict validators accept. |
+| `agent_tools_registry_test.go`| Tool registry — search query forms (`*`/prefix/substring, schema fidelity, sorted, no-match name list, empty registry), invoke dispatch (identity + params JSON), replicated required-field check, phrase injection (natives yes, MCP no), unknown/core-name errors, response pass-through (IsError/StopTurn/image/hard error), `unwrapInvokeToolCall`, `refreshToolset` wire/registry split (decorateTools sees core only), session surface (linear_* in the registry, `workflow_*` on the wire), `web_search` backend selection (no native spec → Brave on the wire + nil `providerWebSearch`; native spec → off the wire + `providerWebSearch` set), end-to-end fakeLM unwrap (toolCallMsg/toolResultMsg/status), loadHistory replay unwrap. |
 | `skills_test.go`           | Skills — discovery validation (bad name / dir mismatch / no description skipped) + project-over-global precedence, trigger block (progressive disclosure, hidden skills), `/name args` expansion incl. user-invocable gating, frontmatter parser, ProbeInit → slash entries. |
 | `rules_test.go`            | `.claude/rules/` — `paths` frontmatter parsing (no-frontmatter/no-paths eager, block + inline list, brace verbatim, key-terminated list), eager/match split, recursive discovery + project-over-user precedence + non-md/empty-body skip, `rulesPromptBlock` (eager only, path attr), `ruleAwareTool` JIT injection + once-per-session dedup + non-match miss + eager exclusion, no-scoped-rules passthrough, `relPath` outside-root rejection. End-to-end eager block in `agent_prompt_test.go`. |
 | `agent_subagents_test.go`  | Subagents — def discovery/precedence/field parsing, tool grant sets, spec registry, claude model aliases, cross-provider model resolution (swapped LM var), task tool: named agent runs on the pinned provider w/ def prompt + report tail, background job lifecycle (bgTask signals, job_output), default researcher unchanged, `/skill` expansion reaches the wire. |
@@ -432,130 +435,107 @@ field. View consequences:
   failed before tearing down — the user closing the tab is the
   verdict, no graceful drain.
 
-### Step runner
+### Execution: the ADK workflow graph
 
-`workflows_run.go` is the chain driver. Each step is a fresh
-session (one-shot — the chain doesn't share a provider session
-across steps; that's why workflow tabs don't pin a virtualSessionID
-and why `providerDoneMsg.SessionID` is suppressed on workflow
-tabs). The runner consumes the existing `sendToProvider` machinery
-unchanged — it just sets `m.provider` / `m.providerModel` / clears
-session state before the call.
+A `workflowDef` compiles to an ADK workflow graph
+(`pkg/workflow/compile.go`, `CompileWorkflow`). There is exactly ONE
+workflow engine — the handwritten `Runner.Run` state machine, plus the
+two dead parallel implementations (`RunGraph`, `BuildWorkflowAgent`),
+were deleted. Don't add a second one.
 
-Step transitions are signalled through three existing message
-handlers, hooked at the **end** of their existing logic so the
-runner doesn't need to know about provider-specific stream shapes:
+- A top-level agent step becomes an `AgentNode` wrapping an `llmagent`;
+  nodes are chained `Start -> n0 -> n1 -> …`.
+- A `kind: "loop"` step becomes an `AgentNode` wrapping ADK's
+  `loopagent`, whose sub-agents are the inner steps, each carrying
+  `exitlooptool`. A step breaks the loop by calling `exit_loop` (it sets
+  `Actions.Escalate`, which is what `loopagent` watches for); otherwise
+  the loop runs to `MaxIterations`. There is no `decision` argument any
+  more — loop control is ADK's tool, not an `end_turn` field.
+- `NodeConfig.RetryConfig` gives per-node retry, replacing the runner's
+  hand-rolled `stepErrorRetry` loop.
 
-- `turnCompleteMsg` (clean turn end) → `workflowAdvanceCmd(tabID, nil)`
-- `providerDoneMsg` with `err != nil` or `IsError == true` →
-  `workflowAdvanceCmd(tabID, errStepError(...))`
-- `providerExitedMsg` with non-nil err on a still-running run →
-  `workflowAdvanceCmd(tabID, errStepError(stderrTail))`
+Two `llmagent` settings carry the semantics and MUST NOT be dropped:
 
-The advance handler reads the step's `end_turn` report
-(`pendingEndTurn`), appends the step's summary line to the visible
-log, rolls the captured text into the appropriate context log,
-kills the proc, mutates the cursor, and either dispatches
-`workflowRunStartStepMsg` for the next step (deferred so the next
-proc spawns at a clean Update boundary) or finalises (`done` on
-chain end, `failed` on error). The cursor is `StepIdx` (top-level)
-plus an optional `*loopRunFrame` while inside a loop — see "Loop
-steps" below. Every step must call `end_turn`; a step that ends its
-turn without it is re-prompted in place — see "Per-step `end_turn`
-reporting" below.
+- **`IncludeContents: IncludeContentsNone`** is what isolates a step.
+  Without it a step inherits the whole session, and ADK's
+  `ConvertForeignEvent` renders every prior step's events as prose —
+  every tool call and every full tool result — so step 3 would carry
+  steps 1 and 2 in full. With it, a step sees the handoff from the step
+  before it plus its own work.
+- **`InstructionProvider`, never `llmagent.Config.Instruction`.** Step
+  prompts are user-authored and routinely contain braces; ADK
+  interpolates the static `Instruction` field against session state and
+  hard-fails the invocation on the first unknown `{name}`.
+
+Agent names are sanitised and de-duplicated by the compiler
+(`agentNamer`): ADK requires them unique within a graph and rejects
+`"user"`, while step names are free text and never checked.
+
+`*workflow.Workflow` is NOT an `agent.Agent` — the interface has an
+unexported method — so `engine.WorkflowGraphAgent` wraps it via
+`agent.New(agent.Config{Run: wf.Run})`.
+
+### Running a workflow
+
+One agent session runs the whole graph, not one session per step.
+
+- TUI: `cmd/ask/workflow_graph.go` starts a single session, swaps its
+  agent for the compiled graph (`agentSession.workflowAgent`), and
+  queues one turn. Tool execution, approvals, cost accounting, and
+  cancellation therefore behave exactly as in a chat turn.
+- Headless: `engine.RunWorkflow` (`pkg/engine/workflow_run.go`) does the
+  same against its own `session.InMemoryService`.
+
+### Progress reporting
+
+`pkg/workflow/progress.go` turns the ADK event stream into
+`RunnerListener` callbacks, and `agentSession.workflowProgress` feeds it
+from inside the runner loop. Every callback is driven by something that
+actually happened: a step starts when an event authored by its agent
+arrives, and finishes when its successor starts or the run ends cleanly.
+`Compiled.StepIndexByAgent` maps an event author back to the top-level
+step, so a loop's inner agents report against the loop step the user
+wrote.
+
+**Never fabricate step events.** The deleted `RunGraph` closed out every
+step that never ran as both started AND done and hardcoded a successful
+`FinishData`, so a chain that died at step 1 of 5 rendered 5/5 green.
+`TestProgress_FailureDoesNotFabricateRemainingSteps` pins this.
 
 ### Per-step `end_turn` reporting
 
-Every step (linear or loop-inner) must call the `end_turn` MCP tool
-once per turn — it is the single source of the clean per-step output
-*and* the loop control. The tool (`mcp_workflows.go`) takes a required
-`summary` (1-3 sentences, rendered as the step's log line via
-`stepSummaryLine`) and an optional `decision` (`continue`/`break`, only
-meaningful in a loop). Like `ask_user_question` it blocks on an ack so
-the report lands on `pendingEndTurn` before the turn ends; the runner
-consumes it at `turnCompleteMsg` (see `handleEndTurnSignal`).
+Every step should call `end_turn` once with a `summary` (1-3 sentences);
+it becomes the step's line in the workflow log via `stepSummaryLine`.
+A step that ends without it is NOT re-prompted any more — the whole
+remind/re-prompt machinery is gone — its log line falls back to the first
+line of its own output. `finish_workflow` still reports the run's
+outcome; the runner reads it from `env.PendingFinishData`.
 
-A step that ends its turn **without** calling `end_turn` is re-prompted
-in place — "hammered" until it registers, Ctrl+C being the manual
-escape. The re-prompt feeds the step's own prior output back so it
-doesn't redo the work (`linearText` for a linear step,
-`loopRunFrame.retryText` inside a loop) and sets a `remindKind`
-(`remindNoSummary` / `remindNoDecision`) so the injected reminder
-explains itself. The banner shows the re-prompt count (`re-prompt #N`).
+### Step instruction assembly
 
-### Loop steps
-
-A loop step (`Kind=="loop"`) runs its inner agent steps repeatedly
-until a step registers a **break** (or `MaxIterations` is reached).
-The runtime (`workflows_run.go`):
-
-- **Cursor.** `workflowRunState.loop` (`*loopRunFrame`) is non-nil
-  while inside a loop; it tracks `innerIdx`, `iteration` (1-based),
-  `retry`, and the bounded per-iteration context (`iterationLog`,
-  `prevTail`, `retryText`). `startWorkflowStep` enters the loop
-  (creates the frame) the first time `StepIdx` lands on a loop step;
-  `exitLoop` commits the final iteration's outputs to `stepLog` and
-  clears the frame.
-- **Decision table** in `advanceWorkflowStep`, against the just-
-  finished inner step's `end_turn` report: no report → re-prompt the
-  same step; any step's `break` → exit the loop immediately (skipping
-  the rest of the iteration — an exceptional early exit); a non-tail
-  step with a summary and no break → next inner step; the **tail**
-  step's `continue` → next iteration (or soft-exit at the cap); the
-  tail with a summary but **no decision** → re-prompt the tail for one
-  (`remindNoDecision`). Only the tail is *required* to decide — non-
-  tail steps may break early but normally just summarise.
-- **Bounded context** (`contextForDispatch`): linear steps see the
-  full `stepLog` (a re-prompted linear step also sees its own prior
-  output); inside a loop the linear log is frozen and the head inner
-  step additionally sees the previous iteration's tail output
-  (`prevTail`) while downstream steps see the current iteration's
-  prior outputs. A re-prompted inner step also carries its own prior
-  output (`retryText`).
-- **Cap.** `MaxIterations==0` ⇒ `workflowLoopDefaultMaxIterations`
-  (10). Hitting the cap soft-exits (proceeds, never fails).
-- **Instructions** are auto-injected by `buildWorkflowStepPrompt` via
-  `endTurnInstructionBlock` (the `*stepPromptCtx` arg): the universal
-  "call end_turn with a summary" contract, plus inside a loop the
-  iteration/goal banner and a position-aware decision clause (tail:
-  "you MUST also pass a decision"; non-tail: "omit decision unless
-  breaking early").
-
-The `end_turn` tool is a native fantasy tool on every session
-(agent_tools_ask.go), so step agents on any provider can call it. Live loop progress (start / iteration / break /
-limit) is logged to the tab history via `loopNoteLine`, and the
-banner's running line shows `⟳ <loop> · iter N/max · <inner>`.
-
-### Step prompt assembly
-
-`buildWorkflowStepPrompt(step, source, prevOutputs, pc)` produces the
-full user turn for a step. `pc *stepPromptCtx` carries the loop framing
-(`pc.loop` nil for linear steps) and the re-prompt reason (`pc.remind`):
+`workflow.BuildStepInstruction(step, source, pc)` produces a step's
+system instruction:
 
 ```
 <step.Prompt>
 
-Reference: <owner/repo#N>
+Reference: <owner/repo#N>        (or the chat transcript block)
 
-Previous step output:        (only when log is non-empty)
-<log[0]>
----
-<log[1]>
-...
-
-<end_turn contract>          (ALWAYS; loop framing + tail decision clause inside a loop)
-
-<re-prompt reminder>         (only when pc.remind != remindNone)
+<end_turn contract>              (+ loop framing and exit_loop guidance inside a loop)
 ```
 
-Reference format is `<project>#<number>` (no provider prefix, no
-URL); the agent has the issue-tracker MCP wired in and resolves the
-rest itself. The `end_turn` contract (`endTurnInstructionBlock`) is
-appended to **every** step — that's what makes the clean per-step
-output possible, so unlike pre-`end_turn` workflows a linear step's
-prompt is no longer byte-identical to the bare user prompt.
-Whitespace is trimmed at the head and tail; the body stays as the
-user wrote it.
+Previous-step output is deliberately absent. Threading it into the prompt
+was the old runner's job; the graph passes a node's output as the next
+node's input, and `IncludeContentsNone` is what lets the step see it.
+
+### No notes directories
+
+`ask/plans/` is gone, along with `plans.go`, `clear_plans`, and the
+`RemindFixPlanDir` re-prompt. Step-to-step handoff is the graph's node
+output. Durable "what we learned" goes to `pkg/memory` — `RunWorkflow`
+calls `engine.IngestWorkflowMemory` on a clean finish, which is what the
+notes directories were badly approximating.
+
 
 ### Builder screen (`Ctrl+W` / `/workflows`)
 
@@ -739,8 +719,7 @@ agent_provider.go):
   task, the modal pair `ask_user_question`/`end_turn`
   (agent_tools_ask.go), the ask-built-in workflow tools
   (`workflow_list`/`workflow_get`/`workflow_create`/`workflow_edit`/
-  `workflow_delete`/`workflow_copy` + `clear_plans`
-  in agent_tools_workflow.go), and the registry pair
+  `workflow_delete`/`workflow_copy` in agent_tools_workflow.go), and the registry pair
   `search_tools`/`invoke_tool` (agent_tools_registry.go). The
   workflow tools are a deliberate, documented core exception — see
   "Tool registry vs core tools" below.
@@ -778,7 +757,7 @@ a core slot only by deliberate, documented exception, and the bar is
 "the agent cannot function without seeing it unprompted" — the
 registry pair itself, `end_turn` (the workflow runner's per-step
 contract), `fetch`, `web_search`, and the ask-built-in `workflow_*`
-tools (plus `clear_plans`) are the canonical examples. The
+tools are the canonical examples. The
 exceptions split into two flavours: `web_search` and the
 ask-built-in workflow tools are the *content* exceptions — an agent
 cannot function without seeing them unprompted. `web_search` has

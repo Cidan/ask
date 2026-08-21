@@ -13,7 +13,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/tools"
-	"google.golang.org/adk/v2/agent"
+	"github.com/Cidan/ask/pkg/workflow"
+	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
@@ -72,6 +73,13 @@ type agentSession struct {
 	retryMaxRetries    int
 	retryInitialDelay  time.Duration
 	retryBackoffFactor float64
+
+	// workflowAgent, when set, replaces the ask_coder agent for this
+	// session's turns: the session runs a compiled workflow graph
+	// instead of a single coder agent. workflowProgress consumes the
+	// same ADK event stream to drive the workflow tab's step log.
+	workflowAgent    adkagent.Agent
+	workflowProgress *workflow.Progress
 }
 
 func (s *agentSession) refreshToolset() {
@@ -356,14 +364,19 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		toolsets = append(toolsets, skillTS)
 	}
 
-	agentInstance, err := llmagent.New(llmagent.Config{
-		Name:                  "ask_coder",
-		Model:                 llm,
-		InstructionProvider:   instructionProvider,
-		Tools:                 adkTools,
-		Toolsets:              toolsets,
-		GenerateContentConfig: genaiConfig,
-	})
+	var agentInstance adkagent.Agent
+	if s.workflowAgent != nil {
+		agentInstance = s.workflowAgent
+	} else {
+		agentInstance, err = llmagent.New(llmagent.Config{
+			Name:                  "ask_coder",
+			Model:                 llm,
+			InstructionProvider:   instructionProvider,
+			Tools:                 adkTools,
+			Toolsets:              toolsets,
+			GenerateContentConfig: genaiConfig,
+		})
+	}
 	if err != nil {
 		s.emit(providerDoneMsg{
 			res: providerResult{SessionID: s.sessionID, IsError: true, Result: err.Error()},
@@ -404,7 +417,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	displayNames := make(map[string]string)
 	backgroundCalls := make(map[string]bool)
 
-	for event, err := range r.Run(ctx, "user", s.sessionID, adkUserMsg, agent.RunConfig{}) {
+	for event, err := range r.Run(ctx, "user", s.sessionID, adkUserMsg, adkagent.RunConfig{}) {
 		if err != nil {
 			if isAgentCancel(err) {
 				s.emit(providerDoneMsg{res: providerResult{SessionID: s.sessionID}})
@@ -421,6 +434,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		if event == nil {
 			continue
 		}
+		s.workflowProgress.Observe(event)
 
 		if event.UsageMetadata != nil {
 			usage := TokenUsage{

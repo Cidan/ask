@@ -2,7 +2,9 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"iter"
+	"strings"
 	"sync"
 	"testing"
 
@@ -103,81 +105,29 @@ func TestEngine_SessionStreamEvents(t *testing.T) {
 	}
 }
 
-func TestEngine_CoordinatorExecuteStep(t *testing.T) {
-	var mu sync.Mutex
-	callIdx := 0
-	mockModel := &mockLLM{
-		name: "mock-model",
-		generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
-			mu.Lock()
-			idx := callIdx
-			callIdx++
-			mu.Unlock()
-
-			if idx == 0 {
-				return mockLLMSequence(
-					thoughtAndFunctionCallResponse("thinking", "end_turn", map[string]any{
-						"summary":  "Verified plan and executed step",
-						"decision": "continue",
-					}, nil),
-				)
-			}
-			return mockLLMSequence(textResponse("Step done"))
-		},
-	}
-
-	coord := NewCoordinator(HeadlessInteractionHandler{AutoApproveTools: true}, nil)
-	session := NewSession(
-		SessionArgs{TabID: 2, Cwd: t.TempDir(), Model: "mock-model"},
-		mockModel,
-		"system prompt",
-		nil,
-		nil,
-		HeadlessInteractionHandler{AutoApproveTools: true},
-	)
-	defer session.Close()
-	coord.SetSession(2, session)
-
-	step := workflow.Step{
-		Name:     "Test Step",
-		Provider: "vertex",
-		Model:    "mock-model",
-	}
-
-	res, err := coord.ExecuteStep(context.Background(), t.TempDir(), 2, step, "run step", false)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if res.Summary != "Verified plan and executed step" {
-		t.Errorf("expected summary 'Verified plan and executed step', got %q", res.Summary)
-	}
-	if res.Decision != "continue" {
-		t.Errorf("expected decision 'continue', got %q", res.Decision)
-	}
-}
-
-func TestEngine_WorkflowExecution_ADK(t *testing.T) {
+// TestEngine_RunWorkflow_Graph drives a two-step workflow end to end on
+// ADK's workflow scheduler and checks that progress is reported from the
+// real event stream: both steps start, both finish, and the run closes
+// with a Done event.
+func TestEngine_RunWorkflow_Graph(t *testing.T) {
 	tmpDir := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+
 	var mu sync.Mutex
-	callIdx := 0
+	var seenInstructions []string
 	mockModel := &mockLLM{
 		name: "mock-model",
 		generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
 			mu.Lock()
-			idx := callIdx
-			callIdx++
-			mu.Unlock()
-
-			if idx%2 == 0 {
-				return mockLLMSequence(
-					thoughtAndFunctionCallResponse("thinking", "end_turn", map[string]any{
-						"summary":  "Completed step successfully",
-						"decision": "continue",
-					}, nil),
-				)
+			if req != nil && req.Config != nil && req.Config.SystemInstruction != nil {
+				for _, p := range req.Config.SystemInstruction.Parts {
+					if p != nil && p.Text != "" {
+						seenInstructions = append(seenInstructions, p.Text)
+					}
+				}
 			}
-			return mockLLMSequence(textResponse("Step complete"))
+			mu.Unlock()
+			return mockLLMSequence(textResponse("step done"))
 		},
 	}
 
@@ -188,75 +138,258 @@ func TestEngine_WorkflowExecution_ADK(t *testing.T) {
 	defer func() { ModelBuilder = origBuilder }()
 
 	var events []EngineEvent
-	listener := func(ev EngineEvent) {
-		mu.Lock()
-		defer mu.Unlock()
-		events = append(events, ev)
-	}
-
 	eng := New(Options{
 		Config:             config.Config{Provider: "vertex"},
 		InteractionHandler: HeadlessInteractionHandler{AutoApproveTools: true},
-		EventListener:      listener,
+		EventListener: func(ev EngineEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, ev)
+		},
 	})
-
-	session := NewSession(
-		SessionArgs{TabID: 10, Cwd: tmpDir, Model: "mock-model"},
-		mockModel,
-		"system prompt",
-		nil,
-		nil,
-		HeadlessInteractionHandler{AutoApproveTools: true},
-	)
-	defer session.Close()
-	eng.Coordinator().SetSession(10, session)
 
 	def := workflow.Def{
 		Name: "engine-workflow",
 		Steps: []workflow.Step{
-			{Name: "step-1", Prompt: "First step"},
-			{Name: "step-2", Prompt: "Second step"},
+			{Name: "plan", Prompt: "First step"},
+			{Name: "review", Prompt: "Second step"},
 		},
 	}
 	src := workflow.NewTextSource(1, "Engine Workflow Source")
 
-	// Verify BuildWorkflowAgent creates the ADK agent tree
-	ag, err := eng.BuildWorkflowAgent(context.Background(), tmpDir, def, src)
-	if err != nil {
-		t.Fatalf("BuildWorkflowAgent failed: %v", err)
-	}
-	if ag.Name() != "engine-workflow" {
-		t.Errorf("expected agent name 'engine-workflow', got %q", ag.Name())
-	}
-	if len(ag.SubAgents()) != 2 {
-		t.Errorf("expected 2 subagents, got %d", len(ag.SubAgents()))
-	}
-
-	// Verify RunWorkflow coordinates execution and emits events
-	err = eng.RunWorkflow(context.Background(), tmpDir, 10, def, src)
-	if err != nil {
+	if err := eng.RunWorkflow(context.Background(), tmpDir, 10, def, src); err != nil {
 		t.Fatalf("RunWorkflow failed: %v", err)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
 
-	var gotStarted, gotStepStarted, gotStepDone, gotDone bool
+	var started, done bool
+	var stepStarts, stepDones []int
 	for _, ev := range events {
-		switch ev.(type) {
+		switch e := ev.(type) {
 		case WorkflowStartedEvent:
-			gotStarted = true
+			started = true
 		case WorkflowStepStartedEvent:
-			gotStepStarted = true
+			stepStarts = append(stepStarts, e.StepIdx)
 		case WorkflowStepDoneEvent:
-			gotStepDone = true
+			stepDones = append(stepDones, e.StepIdx)
 		case WorkflowDoneEvent:
-			gotDone = true
+			done = true
 		}
 	}
+	if !started || !done {
+		t.Errorf("run must open and close: started=%v done=%v", started, done)
+	}
+	if len(stepStarts) != 2 || stepStarts[0] != 0 || stepStarts[1] != 1 {
+		t.Errorf("expected both steps to start in order, got %v", stepStarts)
+	}
+	if len(stepDones) != 2 || stepDones[0] != 0 || stepDones[1] != 1 {
+		t.Errorf("expected both steps to finish in order, got %v", stepDones)
+	}
 
-	if !gotStarted || !gotStepStarted || !gotStepDone || !gotDone {
-		t.Errorf("missing workflow events: started=%v stepStarted=%v stepDone=%v done=%v",
-			gotStarted, gotStepStarted, gotStepDone, gotDone)
+	// Each step's own prompt reaches its agent, and the end_turn contract
+	// rides along with it.
+	joined := strings.Join(seenInstructions, "\n")
+	for _, want := range []string{"First step", "Second step", "end_turn"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("step instructions missing %q", want)
+		}
+	}
+}
+
+// A step whose model fails must not be reported as completed, and the
+// steps after it must not be reported at all. The previous graph runner
+// closed out every remaining step as done and hardcoded a successful
+// finish, so a chain that died at step 1 of 3 rendered 3/3 green.
+func TestEngine_RunWorkflow_FailureLeavesLaterStepsUnreported(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+
+	origBuilder := ModelBuilder
+	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+		return nil, errors.New("model unavailable")
+	}
+	defer func() { ModelBuilder = origBuilder }()
+
+	var mu sync.Mutex
+	var events []EngineEvent
+	eng := New(Options{
+		Config:             config.Config{Provider: "vertex"},
+		InteractionHandler: HeadlessInteractionHandler{AutoApproveTools: true},
+		EventListener: func(ev EngineEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, ev)
+		},
+	})
+
+	def := workflow.Def{
+		Name: "failing-workflow",
+		Steps: []workflow.Step{
+			{Name: "one", Prompt: "a"},
+			{Name: "two", Prompt: "b"},
+			{Name: "three", Prompt: "c"},
+		},
+	}
+	src := workflow.NewTextSource(2, "Failing Source")
+
+	if err := eng.RunWorkflow(context.Background(), tmpDir, 11, def, src); err == nil {
+		t.Fatal("expected RunWorkflow to fail when the model cannot be built")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range events {
+		switch ev.(type) {
+		case WorkflowStepDoneEvent:
+			t.Error("no step may be reported done when the run never started one")
+		case WorkflowDoneEvent:
+			t.Error("a failed run must not emit WorkflowDone")
+		}
+	}
+	var failed bool
+	for _, ev := range events {
+		if _, ok := ev.(WorkflowFailedEvent); ok {
+			failed = true
+		}
+	}
+	if !failed {
+		t.Error("a failed run must emit WorkflowFailed")
+	}
+}
+
+// The reason every step agent is built with IncludeContentsNone.
+//
+// Without it a step inherits the whole session, and ADK's
+// ConvertForeignEvent renders every prior step's events as prose — each
+// tool call and each full tool result — so step 3 would carry steps 1
+// and 2 in their entirety. With it, a step sees the handoff from the
+// step immediately before it and nothing older.
+func TestEngine_RunWorkflow_StepsSeeOnlyTheHandoffNotTheWholeChain(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+
+	markers := []string{"MARKER_STEP_ONE", "MARKER_STEP_TWO", "MARKER_STEP_THREE"}
+
+	var mu sync.Mutex
+	call := 0
+	var thirdStepRequest []string
+
+	mockModel := &mockLLM{
+		name: "mock-model",
+		generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+			mu.Lock()
+			idx := call
+			call++
+			if idx == 2 {
+				for _, c := range req.Contents {
+					if c == nil {
+						continue
+					}
+					for _, p := range c.Parts {
+						if p != nil && p.Text != "" {
+							thirdStepRequest = append(thirdStepRequest, p.Text)
+						}
+					}
+				}
+			}
+			mu.Unlock()
+			if idx < len(markers) {
+				return mockLLMSequence(textResponse("done: " + markers[idx]))
+			}
+			return mockLLMSequence(textResponse("done"))
+		},
+	}
+
+	origBuilder := ModelBuilder
+	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+		return mockModel, nil
+	}
+	defer func() { ModelBuilder = origBuilder }()
+
+	eng := New(Options{
+		Config:             config.Config{Provider: "vertex"},
+		InteractionHandler: HeadlessInteractionHandler{AutoApproveTools: true},
+	})
+	def := workflow.Def{
+		Name: "isolation",
+		Steps: []workflow.Step{
+			{Name: "one", Prompt: "first"},
+			{Name: "two", Prompt: "second"},
+			{Name: "three", Prompt: "third"},
+		},
+	}
+	if err := eng.RunWorkflow(context.Background(), tmpDir, 12, def, workflow.NewTextSource(3, "src")); err != nil {
+		t.Fatalf("RunWorkflow: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(thirdStepRequest) == 0 {
+		t.Fatal("third step never issued a model request")
+	}
+	joined := strings.Join(thirdStepRequest, "\n")
+	if !strings.Contains(joined, "MARKER_STEP_TWO") {
+		t.Errorf("step three must receive the handoff from step two, got %q", joined)
+	}
+	if strings.Contains(joined, "MARKER_STEP_ONE") {
+		t.Errorf("step three inherited step one's transcript — IncludeContentsNone is not in effect: %q", joined)
+	}
+}
+
+// Step prompts are user-authored and routinely contain braces. Building
+// step agents with llmagent.Config.Instruction would run them through
+// ADK's state interpolator, which hard-fails the invocation on an
+// unknown `{name}` — so the compiler uses an InstructionProvider.
+func TestEngine_RunWorkflow_BracesInStepPromptDoNotFailTheRun(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+
+	var mu sync.Mutex
+	var seen []string
+	mockModel := &mockLLM{
+		name: "mock-model",
+		generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+			mu.Lock()
+			if req != nil && req.Config != nil && req.Config.SystemInstruction != nil {
+				for _, p := range req.Config.SystemInstruction.Parts {
+					if p != nil && p.Text != "" {
+						seen = append(seen, p.Text)
+					}
+				}
+			}
+			mu.Unlock()
+			return mockLLMSequence(textResponse("ok"))
+		},
+	}
+
+	origBuilder := ModelBuilder
+	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+		return mockModel, nil
+	}
+	defer func() { ModelBuilder = origBuilder }()
+
+	eng := New(Options{
+		Config:             config.Config{Provider: "vertex"},
+		InteractionHandler: HeadlessInteractionHandler{AutoApproveTools: true},
+	})
+	def := workflow.Def{
+		Name: "braces",
+		Steps: []workflow.Step{
+			{Name: "expand", Prompt: "Expand ${VAR} and {notes_dir?} and {Name, Steps}."},
+		},
+	}
+	if err := eng.RunWorkflow(context.Background(), tmpDir, 13, def, workflow.NewTextSource(4, "src")); err != nil {
+		t.Fatalf("braces in a step prompt must not fail the run: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	joined := strings.Join(seen, "\n")
+	for _, want := range []string{"${VAR}", "{notes_dir?}", "{Name, Steps}"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("step prompt must reach the model verbatim, missing %q in %q", want, joined)
+		}
 	}
 }

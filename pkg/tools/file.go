@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Cidan/ask/pkg/workflow"
 )
 
 const ReadToolDescription = `Read a file from the filesystem. Returns the content with 1-based line numbers (cat -n format). Use offset/limit for large files; lines longer than 2000 chars are truncated. Reading a file is required before editing or overwriting it.`
@@ -128,10 +127,8 @@ func WriteTool(env *ToolEnv) Tool {
 				return NewTextErrorResponse("file_path is required"), nil
 			}
 			path := env.AbsPath(p.FilePath)
-			if !workflow.IsPathUnderWorkflowPlans(env.Cwd, path) {
-				if notice := env.RequireTodosNotice(); notice != "" {
-					return NewTextResponse(notice), nil
-				}
+			if notice := env.RequireTodosNotice(); notice != "" {
+				return NewTextResponse(notice), nil
 			}
 			oldContent := ""
 			mode := os.FileMode(0o644)
@@ -202,10 +199,8 @@ func EditTool(env *ToolEnv) Tool {
 				return NewTextErrorResponse("old_string and new_string are identical — nothing to do"), nil
 			}
 			path := env.AbsPath(p.FilePath)
-			if !workflow.IsPathUnderWorkflowPlans(env.Cwd, path) {
-				if notice := env.RequireTodosNotice(); notice != "" {
-					return NewTextResponse(notice), nil
-				}
+			if notice := env.RequireTodosNotice(); notice != "" {
+				return NewTextResponse(notice), nil
 			}
 
 			if p.OldString == "" {

@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"strings"
 	"sync"
 
 	tea "charm.land/bubbletea/v2"
@@ -280,99 +277,8 @@ func (l tuiWorkflowListener) OnNote(tabID int, text string) {
 	})
 }
 
-// ExecuteStep implements workflow.StepExecutor for Coordinator.
-func (c *Coordinator) ExecuteStep(ctx context.Context, cwd string, tabID int, step workflow.Step, prompt string, isFinal bool) (workflow.StepResult, error) {
-	prov := providerByID(step.Provider)
-	if prov == nil {
-		return workflow.StepResult{}, fmt.Errorf("provider not registered: %s", step.Provider)
-	}
-
-	args := ProviderSessionArgs{
-		Cwd:                 cwd,
-		TabID:               tabID,
-		Model:               step.Model,
-		Effort:              "medium",
-		SkipAllPermissions:  true,
-		InWorkflow:          true,
-		IsWorkflowFinalStep: isFinal,
-	}
-
-	proc, ch, err := prov.StartSession(args)
-	if err != nil {
-		return workflow.StepResult{}, err
-	}
-
-	session, ok := proc.payload.(*agentSession)
-	if !ok {
-		return workflow.StepResult{}, errors.New("proc payload is not an agent session")
-	}
-	c.SetSession(tabID, session)
-
-	err = session.queueTurn(prompt)
-	if err != nil {
-		session.shutdown()
-		c.RemoveSession(tabID)
-		return workflow.StepResult{}, err
-	}
-
-	var stepResult string
-	var stepErr error
-stepLoop:
-	for msg := range ch {
-		switch m := msg.(type) {
-		case assistantTextMsg:
-			stepResult += m.text
-		case providerDoneMsg:
-			if m.err != nil {
-				stepErr = m.err
-			} else if m.res.IsError {
-				stepErr = fmt.Errorf("step failed: %s", m.res.Result)
-			} else {
-				stepResult = m.res.Result
-			}
-		case turnCompleteMsg:
-			break stepLoop
-		}
-	}
-
-	session.shutdown()
-	c.RemoveSession(tabID)
-
-	if stepErr != nil {
-		return workflow.StepResult{}, stepErr
-	}
-
-	summary := ""
-	decision := ""
-	if session.env.PendingEndTurn != nil {
-		summary = session.env.PendingEndTurn.Summary
-		decision = session.env.PendingEndTurn.Decision
-	}
-	if summary == "" && strings.TrimSpace(stepResult) != "" {
-		firstLine := strings.TrimSpace(strings.Split(strings.TrimSpace(stepResult), "\n")[0])
-		if len(firstLine) > 200 {
-			firstLine = firstLine[:200] + "…"
-		}
-		summary = firstLine
-	}
-
-	var finishData *workflow.FinishData
-	if session.env.PendingFinishData != nil {
-		finishData = &workflow.FinishData{
-			Description: session.env.PendingFinishData.Description,
-			Artifacts:   session.env.PendingFinishData.Artifacts,
-		}
-	}
-
-	return workflow.StepResult{
-		Output:     stepResult,
-		Summary:    summary,
-		Decision:   decision,
-		FinishData: finishData,
-	}, nil
-}
-
-// RunWorkflow executes a workflow synchronously step by step in the background.
+// RunWorkflow compiles the definition to an ADK workflow graph and drives
+// it to completion in the background.
 func (c *Coordinator) RunWorkflow(ctx context.Context, tabID int, def workflowDef, src workflowSource) (finalizedPlanReply, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -407,8 +313,7 @@ func (c *Coordinator) RunWorkflow(ctx context.Context, tabID int, def workflowDe
 	}
 
 	listener := tuiWorkflowListener{tabID: tabID}
-	runner := workflow.NewRunner(workflow.GlobalTracker(), c, listener)
-	runState, err := runner.Run(ctx, rootCwd, tabID, toPkgWorkflowDef(def), src)
+	runState, err := c.runWorkflowGraph(ctx, rootCwd, tabID, toPkgWorkflowDef(def), src, listener)
 	if err != nil {
 		return finalizedPlanReply{}, err
 	}

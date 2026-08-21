@@ -167,7 +167,7 @@ func ResolveSubagentModel(def SubagentDef, parentProviderID string, parent *gena
 var AllSubagentTools = []string{
 	"read", "glob", "grep", "ls", "write", "edit", "bash",
 	"job_output", "job_kill", "fetch", "todos", "search_tools", "invoke_tool", "web_search",
-	"workflow_list", "workflow_get", "workflow_create", "workflow_edit", "workflow_delete", "workflow_copy", "clear_plans",
+	"workflow_list", "workflow_get", "workflow_create", "workflow_edit", "workflow_delete", "workflow_copy",
 }
 
 // SubagentToolNames returns the slice of tool names allowed for the subagent.
@@ -178,7 +178,7 @@ func SubagentToolNames(def SubagentDef) []string {
 		"job_output": true, "job_kill": true, "fetch": true, "todos": true,
 		"search_tools": true, "invoke_tool": true, "web_search": true,
 		"workflow_list": true, "workflow_get": true, "workflow_create": true,
-		"workflow_edit": true, "workflow_delete": true, "workflow_copy": true, "clear_plans": true,
+		"workflow_edit": true, "workflow_delete": true, "workflow_copy": true,
 	}
 
 	switch {
