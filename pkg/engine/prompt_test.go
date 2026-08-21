@@ -155,6 +155,7 @@ func TestBuildSystemPrompt_EagerRulesBlock(t *testing.T) {
 }
 
 func TestAgentContextFiles_DedupeAndCap(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	cwd := t.TempDir()
 	if err := os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("agents body"), 0o644); err != nil {
 		t.Fatal(err)
@@ -174,6 +175,117 @@ func TestAgentContextFiles_DedupeAndCap(t *testing.T) {
 	}
 	if !strings.Contains(out, "… (truncated)") {
 		t.Error("oversized context file must be truncated")
+	}
+}
+
+// A symlinked AGENTS.md -> CLAUDE.md is one file under two names. It
+// must contribute its body once, not twice.
+func TestAgentContextFiles_SymlinkDedupe(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cwd := t.TempDir()
+	writeTestDoc(t, cwd, "CLAUDE.md", "# repo notes\nunique-marker\n")
+	if err := os.Symlink(filepath.Join(cwd, "CLAUDE.md"), filepath.Join(cwd, "AGENTS.md")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	docs := AgentContextFiles(cwd)
+	if len(docs) != 1 {
+		var paths []string
+		for _, d := range docs {
+			paths = append(paths, d.Path)
+		}
+		t.Fatalf("symlinked context file must load once, got %d: %v", len(docs), paths)
+	}
+	if got := strings.Count(docs[0].Body, "unique-marker"); got != 1 {
+		t.Errorf("body repeated %d times, want 1", got)
+	}
+}
+
+// Running ask from a subdirectory must still see the project's
+// instructions — DiscoverRules/DiscoverSkills already walk to the
+// project root, and context files were the odd one out.
+func TestAgentContextFiles_WalksToProjectRoot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestDoc(t, root, "CLAUDE.md", "root instructions")
+	writeTestDoc(t, root, "cmd/ask/CLAUDE.md", "leaf instructions")
+	sub := filepath.Join(root, "cmd", "ask")
+
+	docs := AgentContextFiles(sub)
+	if len(docs) != 2 {
+		t.Fatalf("want root + leaf context files, got %d", len(docs))
+	}
+	// Root first, deeper (more specific) last.
+	if !strings.Contains(docs[0].Body, "root instructions") {
+		t.Errorf("first doc should be the root file, got %q", docs[0].Path)
+	}
+	if !strings.Contains(docs[1].Body, "leaf instructions") {
+		t.Errorf("second doc should be the leaf file, got %q", docs[1].Path)
+	}
+
+	// An intermediate directory with no context file is simply skipped.
+	mid := AgentContextFiles(filepath.Join(root, "cmd"))
+	if len(mid) != 1 || !strings.Contains(mid[0].Body, "root instructions") {
+		t.Errorf("intermediate dir should yield only the root file, got %d", len(mid))
+	}
+}
+
+// ~/.claude/CLAUDE.md is the user-global scope that DiscoverRules and
+// DiscoverSkills already honour via ~/.claude/rules and ~/.claude/skills.
+func TestAgentContextFiles_UserGlobalScope(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeTestDoc(t, home, ".claude/CLAUDE.md", "global user instructions")
+
+	cwd := t.TempDir()
+	writeTestDoc(t, cwd, "CLAUDE.md", "project instructions")
+
+	docs := AgentContextFiles(cwd)
+	if len(docs) != 2 {
+		t.Fatalf("want global + project context files, got %d", len(docs))
+	}
+	if !strings.Contains(docs[0].Body, "global user instructions") {
+		t.Errorf("global scope must load first, got %q", docs[0].Path)
+	}
+	if !strings.Contains(docs[1].Body, "project instructions") {
+		t.Errorf("project file must follow the global one, got %q", docs[1].Path)
+	}
+}
+
+func TestAgentContextSearchDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(root, "a", "b")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got := AgentContextSearchDirs(sub)
+	want := []string{
+		filepath.Join(home, ".claude"),
+		root,
+		filepath.Join(root, "a"),
+		sub,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("search dirs = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("search dir %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	// No cwd: the user-global scope is still searched.
+	if only := AgentContextSearchDirs(""); len(only) != 1 || only[0] != filepath.Join(home, ".claude") {
+		t.Errorf("empty cwd should yield only the global scope, got %v", only)
 	}
 }
 

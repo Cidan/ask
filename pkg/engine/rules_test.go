@@ -161,6 +161,96 @@ func TestWrapContextAwareTools_JITInjectionAndDedup(t *testing.T) {
 	}
 }
 
+// The instruction files BuildSystemPrompt already inlined must never be
+// re-sent as a tool-result footer. Before this was fixed, reading a
+// 3KB file next to a CLAUDE.md returned a ~99KB result — the whole
+// CLAUDE.md, twice, because a symlinked AGENTS.md counted separately.
+func TestWrapContextAwareTools_DoesNotResendPromptContextFiles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cwd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestDoc(t, cwd, "CLAUDE.md", "# repo notes\nsystem-prompt-marker\n")
+	if err := os.Symlink(filepath.Join(cwd, "CLAUDE.md"), filepath.Join(cwd, "AGENTS.md")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	writeTestDoc(t, cwd, "go.mod", "module example.com/x\n")
+
+	// What BuildSystemPrompt inlines is what the tool must not repeat.
+	if docs := AgentContextFiles(cwd); len(docs) != 1 {
+		t.Fatalf("precondition: want 1 context file in the prompt, got %d", len(docs))
+	}
+
+	wrapped := WrapContextAwareTools([]Tool{&fakeRuleTestTool{cwd: cwd}}, cwd, nil)
+	resp, err := RunADKTool(context.Background(), wrapped[0], map[string]any{
+		"file_path":   "go.mod",
+		"description": "read go.mod",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := resp["result"].(string)
+	if !strings.Contains(content, "module example.com/x") {
+		t.Fatalf("precondition: the read itself must succeed, got %q", content)
+	}
+	if strings.Contains(content, "system-prompt-marker") {
+		t.Errorf("tool result re-sent a context file already in the system prompt:\n%s", content)
+	}
+	if strings.Contains(content, "## Project instructions from") {
+		t.Errorf("tool result must carry no project-instruction footer:\n%s", content)
+	}
+	if len(content) > 4096 {
+		t.Errorf("tool result inflated to %d bytes for a tiny file", len(content))
+	}
+}
+
+// Instructions the model has NOT seen still arrive JIT: a CLAUDE.md in a
+// subdirectory below cwd is injected the first time that subtree is
+// read, and only once.
+func TestWrapContextAwareTools_InjectsUnseenSubdirContext(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cwd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestDoc(t, cwd, "CLAUDE.md", "root-marker")
+	writeTestDoc(t, cwd, "sub/CLAUDE.md", "subdir-marker")
+	writeTestDoc(t, cwd, "sub/main.go", "package sub\n")
+
+	wrapped := WrapContextAwareTools([]Tool{&fakeRuleTestTool{cwd: cwd}}, cwd, nil)
+
+	resp, err := RunADKTool(context.Background(), wrapped[0], map[string]any{
+		"file_path":   "sub/main.go",
+		"description": "read sub/main.go",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := resp["result"].(string)
+	if !strings.Contains(content, "subdir-marker") {
+		t.Errorf("unseen subdirectory instructions must be injected:\n%s", content)
+	}
+	if strings.Contains(content, "root-marker") {
+		t.Error("root instructions are already in the system prompt; must not repeat")
+	}
+	if got := strings.Count(content, "subdir-marker"); got != 1 {
+		t.Errorf("subdir instructions injected %d times, want 1", got)
+	}
+
+	// Second read of the same subtree adds nothing further.
+	resp, err = RunADKTool(context.Background(), wrapped[0], map[string]any{
+		"file_path":   "sub/main.go",
+		"description": "read again",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(resp["result"].(string), "subdir-marker") {
+		t.Error("subdirectory instructions must inject at most once per session")
+	}
+}
+
 func TestRuleAwareTool_RelPathRejectsOutsideRoot(t *testing.T) {
 	rt := &ContextAwareTool{root: "/proj", cwd: "/proj"}
 	if got := rt.RelPath("/proj/src/a.go"); got != "src/a.go" {

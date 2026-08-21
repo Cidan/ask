@@ -331,8 +331,11 @@ I've successfully resolved the merge conflict in ` + "`" + `user.go` + "`" + ` b
 const agentCoderPrompt = AgentCoderPrompt
 
 // AgentContextFileNames are the project instruction files inlined into
-// the system prompt, in priority order. Deduped case-insensitively so
-// AGENTS.md/agents.md don't double-inject on case-insensitive mounts.
+// the system prompt, in priority order. Within one directory they are
+// deduped case-insensitively so AGENTS.md/agents.md don't double-inject
+// on case-insensitive mounts; across directories they are deduped by
+// resolved path so a symlink (the common AGENTS.md -> CLAUDE.md) loads
+// its target exactly once.
 var AgentContextFileNames = []string{
 	"CLAUDE.md",
 	"CLAUDE.local.md",
@@ -379,25 +382,93 @@ type PromptOptions struct {
 	SystemPrompt        string
 }
 
-// AgentContextFiles loads the project's instruction files
-// (CLAUDE.md, AGENTS.md) directly from cwd. @-link references within
-// these files are resolved separately by LoadContextLinks during
-// BuildSystemPrompt and placed in a dedicated <included_docs>
-// block — they are not part of this function's return.
+// ContextFileRealPath resolves path to its canonical on-disk identity so
+// two names for one file (an AGENTS.md -> CLAUDE.md symlink, a
+// case-insensitive mount) dedupe to a single entry. Falls back to the
+// cleaned path when the file cannot be resolved.
+func ContextFileRealPath(path string) string {
+	if real, err := filepath.EvalSymlinks(path); err == nil && real != "" {
+		return real
+	}
+	return filepath.Clean(path)
+}
+
+// AgentContextSearchDirs lists the directories searched for project
+// instruction files, in load order: the user-global ~/.claude scope
+// first, then every directory from the project root down to cwd, so
+// general instructions load before the more specific ones that follow.
+// Mirrors RuleSearchScopes / DiscoverSkills / DiscoverSubagents, which
+// already walk to the project root and read the user-global scope.
+func AgentContextSearchDirs(cwd string) []string {
+	var dirs []string
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		dirs = append(dirs, filepath.Join(home, ".claude"))
+	}
+	if cwd == "" {
+		return dirs
+	}
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		abs = filepath.Clean(cwd)
+	}
+	root := config.ProjectRoot(abs)
+	if root == "" {
+		root = abs
+	}
+	var chain []string
+	for dir := abs; ; dir = filepath.Dir(dir) {
+		chain = append(chain, dir)
+		if dir == root || dir == filepath.Dir(dir) {
+			break
+		}
+	}
+	for i := len(chain) - 1; i >= 0; i-- {
+		dirs = append(dirs, chain[i])
+	}
+	return dirs
+}
+
+// AgentContextFiles loads the project's instruction files (CLAUDE.md,
+// AGENTS.md, …) from every directory in AgentContextSearchDirs — the
+// user-global ~/.claude scope and the project-root-to-cwd chain — so
+// running ask from a subdirectory still sees the project's
+// instructions. Each distinct file is loaded once: a symlinked
+// AGENTS.md contributes its target's body a single time rather than
+// duplicating it. @-link references within these files are resolved
+// separately by LoadContextLinks during BuildSystemPrompt and placed in
+// a dedicated <included_docs> block — they are not part of this
+// function's return.
 func AgentContextFiles(cwd string) []LoadedContextDoc {
 	var docs []LoadedContextDoc
-	seen := map[string]bool{}
+	seenReal := map[string]bool{}
+	for _, dir := range AgentContextSearchDirs(cwd) {
+		docs = append(docs, contextFilesInDir(dir, seenReal)...)
+	}
+	return docs
+}
+
+// contextFilesInDir loads the instruction files present in one
+// directory, skipping any whose resolved path is already in seenReal
+// and recording the ones it loads.
+func contextFilesInDir(dir string, seenReal map[string]bool) []LoadedContextDoc {
+	var docs []LoadedContextDoc
+	seenName := map[string]bool{}
 	for _, name := range AgentContextFileNames {
 		key := strings.ToLower(name)
-		if seen[key] {
+		if seenName[key] {
 			continue
 		}
-		path := filepath.Join(cwd, name)
+		path := filepath.Join(dir, name)
+		real := ContextFileRealPath(path)
+		if seenReal[real] {
+			continue
+		}
 		data, err := os.ReadFile(path)
 		if err != nil || len(strings.TrimSpace(string(data))) == 0 {
 			continue
 		}
-		seen[key] = true
+		seenName[key] = true
+		seenReal[real] = true
 		content := string(data)
 		if len(content) > AgentContextFileCap {
 			content = content[:AgentContextFileCap] + "\n… (truncated)"
