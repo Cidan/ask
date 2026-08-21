@@ -105,6 +105,13 @@ type ToolFactoryArgs struct {
 	EventListener         EventListener
 	InteractionHandler    InteractionHandler
 	AttachWebSearch       bool
+	// WorkflowStep attaches the workflow-step tools (save_artifact,
+	// load_artifacts) so a step can pass data to a later one.
+	WorkflowStep bool
+	// WorkflowFinalStep also attaches finish_workflow, which reports the
+	// run's outcome and created artifacts to the user. Only meaningful
+	// with WorkflowStep.
+	WorkflowFinalStep bool
 }
 
 // ToolFactory builds a slice of Tools for an engine turn.

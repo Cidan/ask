@@ -28,7 +28,11 @@ func BuildCoreTools(args engine.ToolFactoryArgs, attachWebSearch bool) []Tool {
 	registryFunc := func() []Tool {
 		return nil
 	}
-	return CoreTools(env, registryFunc, attachWebSearch)
+	core := CoreTools(env, registryFunc, attachWebSearch)
+	if args.WorkflowStep {
+		core = append(core, WorkflowStepTools(env, args.WorkflowFinalStep)...)
+	}
+	return core
 }
 
 // BuildSubagentTools constructs the centralized toolset configured for an isolated subagent session.

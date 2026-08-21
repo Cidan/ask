@@ -29,8 +29,10 @@ type WorkflowAgentConfig struct {
 	// ModelBuilder resolves the LLM for one step. Required.
 	ModelBuilder func(ctx context.Context, step Step) (model.LLM, error)
 	// ToolsBuilder and ToolsetsBuilder supply the step's tool surface.
-	ToolsBuilder    func(ctx context.Context, step Step, inLoop bool) ([]tool.Tool, error)
-	ToolsetsBuilder func(ctx context.Context, step Step, inLoop bool) ([]tool.Toolset, error)
+	// StepRole tells them where the step sits, so the builder can attach
+	// finish_workflow to the final step only, and so on.
+	ToolsBuilder    func(ctx context.Context, step Step, role StepRole) ([]tool.Tool, error)
+	ToolsetsBuilder func(ctx context.Context, step Step, role StepRole) ([]tool.Toolset, error)
 	// InstructionBuilder renders the step's system instruction. Defaults
 	// to BuildStepInstruction.
 	InstructionBuilder func(step Step, src Source, pc *StepPromptCtx) string
@@ -43,6 +45,20 @@ type WorkflowAgentConfig struct {
 // runner's hand-rolled stepErrorRetry loop with ADK's scheduler-level
 // RetryConfig, which also handles the backoff.
 const workflowDefaultMaxRetries = 3
+
+// StepRole tells a ToolsBuilder where a step sits in the workflow, so it
+// can decide which position-dependent tools to attach.
+type StepRole struct {
+	// InLoop is true when the step runs inside a loop container.
+	InLoop bool
+	// IsTail is true when the step is the last inner step of its loop —
+	// the only step allowed to break the loop early via exit_loop.
+	IsTail bool
+	// IsFinal is true when the step is the last thing the whole workflow
+	// runs (the last top-level step, or the tail of a final loop). Only
+	// this step gets finish_workflow.
+	IsFinal bool
+}
 
 // Compiled is a Def rendered as an executable ADK graph, plus the lookup
 // the event adapter needs to attribute events back to steps.
@@ -186,16 +202,24 @@ func buildStepAgent(ctx context.Context, cfg WorkflowAgentConfig, step Step, ste
 		return nil, fmt.Errorf("workflow compile: model for step %q: %w", step.Name, err)
 	}
 
-	inLoop := loop != nil
+	role := StepRole{InLoop: loop != nil, IsFinal: isFinal}
+	if loop != nil {
+		role.IsTail = loop.IsTail
+	}
 
 	var tools []tool.Tool
 	if cfg.ToolsBuilder != nil {
-		tools, err = cfg.ToolsBuilder(ctx, step, inLoop)
+		tools, err = cfg.ToolsBuilder(ctx, step, role)
 		if err != nil {
 			return nil, fmt.Errorf("workflow compile: tools for step %q: %w", step.Name, err)
 		}
 	}
-	if inLoop {
+	// Only the tail step of a loop may break out early. exit_loop sets
+	// Actions.Escalate, which is the only way an ask tool ends a
+	// loopagent, and no other tool touches Actions — so withholding it
+	// from the non-tail steps makes an early break structurally
+	// impossible for them, rather than something caught after the fact.
+	if role.InLoop && role.IsTail {
 		tools, err = withExitLoopTool(tools)
 		if err != nil {
 			return nil, fmt.Errorf("workflow compile: step %q: %w", step.Name, err)
@@ -204,7 +228,7 @@ func buildStepAgent(ctx context.Context, cfg WorkflowAgentConfig, step Step, ste
 
 	var toolsets []tool.Toolset
 	if cfg.ToolsetsBuilder != nil {
-		toolsets, err = cfg.ToolsetsBuilder(ctx, step, inLoop)
+		toolsets, err = cfg.ToolsetsBuilder(ctx, step, role)
 		if err != nil {
 			return nil, fmt.Errorf("workflow compile: toolsets for step %q: %w", step.Name, err)
 		}

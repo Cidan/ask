@@ -99,7 +99,8 @@ One `package main`, one file per concern.
 | `workflow_store.go`    | Three-scope workflow persistence: user (ask.json) + repo (`<root>/.ask/workflows/*.json`, committed) + global (`~/.config/ask/workflows/*.json`, machine-local, visible from every project); merged global-first listing (personal-wins), ambiguity-strict name resolution, dir sync on save, cross-scope copy. |
 | `workflows_screen.go`  | Workflows builder screen — list/steps/step editor levels with multi-line prompt textarea. `e` on a selected workflow opens that same textarea (workflow-scoped `promptTarget=="description"`) to edit the workflow's free-text Description; it commits to `workflowDef.Description` and shows as the steps-pane subtitle. |
 | `workflows_picker.go`  | Small centred modal popped on `f` (issues) / `Ctrl+F` (chat) to pick which workflow to run. |
-| `pkg/workflow/compile.go` | `CompileWorkflow` — a `Def` becomes an ADK graph: `AgentNode` per step, `loopagent`+`exitlooptool` per loop, `IncludeContentsNone` + `InstructionProvider` per step agent, per-node `RetryConfig`. Returns `Compiled` with the agent-name → step-index map the progress adapter needs. |
+| `pkg/workflow/compile.go` | `CompileWorkflow` — a `Def` becomes an ADK graph: `AgentNode` per step, `loopagent`+`exitlooptool` (tail step only) per loop, `IncludeContentsNone` + `InstructionProvider` per step agent, per-node `RetryConfig`. Hands each step a `StepRole{InLoop, IsTail, IsFinal}` so the `ToolsBuilder` attaches position-dependent tools. Returns `Compiled` with the agent-name → step-index map the progress adapter needs. |
+| `pkg/tools/artifact.go` | `SaveArtifactTool` (writes through `ctx.Artifacts().Save`; ADK ships only `load_artifacts`) and `WorkflowStepTools(env, isFinal)` — save/load on every step for data handoff, `finish_workflow` on the final step for the user-facing outcome report. |
 | `pkg/workflow/progress.go` | `Progress` — ADK events → `RunnerListener` callbacks, driven only by events that actually arrived. |
 | `cmd/ask/workflow_graph.go` | TUI runner: one session for the whole graph, agent swapped for the compiled workflow. |
 | `pkg/engine/workflow_run.go` | Headless runner + `WorkflowGraphAgent` + `IngestWorkflowMemory`. |
@@ -438,13 +439,21 @@ were deleted. Don't add a second one.
 - A top-level agent step becomes an `AgentNode` wrapping an `llmagent`;
   nodes are chained `Start -> n0 -> n1 -> …`.
 - A `kind: "loop"` step becomes an `AgentNode` wrapping ADK's
-  `loopagent`, whose sub-agents are the inner steps, each carrying
-  `exitlooptool`. A step breaks the loop by calling `exit_loop` (it sets
-  `Actions.Escalate`, which is what `loopagent` watches for); otherwise
-  the loop runs to `MaxIterations`. There is no `decision` argument any
-  more — loop control is ADK's tool, not an `end_turn` field.
+  `loopagent`, whose sub-agents are the inner steps. **Only the tail
+  (last) inner step carries `exitlooptool`**, so only it can break the
+  loop early: `exit_loop` sets `Actions.Escalate` (what `loopagent`
+  watches), no other ask tool touches `Actions`, so withholding the tool
+  from the non-tail steps makes an early break structurally impossible
+  for them — this replaces the old `end_turn` decision guard, which
+  caught the violation after the fact and re-prompted. Otherwise the loop
+  runs to `MaxIterations`. There is no `decision` argument — loop control
+  is ADK's tool, not an `end_turn` field.
 - `NodeConfig.RetryConfig` gives per-node retry, replacing the runner's
   hand-rolled `stepErrorRetry` loop.
+
+`CompileWorkflow` hands each step a `StepRole{InLoop, IsTail, IsFinal}`
+via its `ToolsBuilder`, which is what decides the position-dependent
+tools: `IsTail` gates `exit_loop`, `IsFinal` gates `finish_workflow`.
 
 Two `llmagent` settings carry the semantics and MUST NOT be dropped:
 
@@ -500,8 +509,29 @@ Every step should call `end_turn` once with a `summary` (1-3 sentences);
 it becomes the step's line in the workflow log via `stepSummaryLine`.
 A step that ends without it is NOT re-prompted any more — the whole
 remind/re-prompt machinery is gone — its log line falls back to the first
-line of its own output. `finish_workflow` still reports the run's
-outcome; the runner reads it from `env.PendingFinishData`.
+line of its own output.
+
+`finish_workflow` reports the run's outcome and the artifacts it produced
+(PR links, tickets) to the user. It is attached to the **final step
+only** (`WorkflowStepTools(env, isFinal)` in pkg/tools/artifact.go);
+`Progress` captures the call straight from the event stream
+(progress.go), and the TUI also reads `env.PendingFinishData` as a
+backup. Nothing attaches it otherwise — an earlier regression left it
+attached to no step at all once the graph became one session.
+
+### Passing data between steps (artifacts)
+
+A node's text output is the implicit handoff to the next node. For
+structured data — a plan, a diff, notes — a step calls the native
+`save_artifact` tool; a later step loads it by name with ADK's
+`load_artifacts`. Both are attached to every workflow step by
+`WorkflowStepTools`. This works because the whole graph runs as ONE
+runner invocation, so the runner's `ArtifactService` (set in
+`RunnerBuilder`) spans every step — a save in step 1 is visible to a load
+in step 3. ADK ships `load_artifacts` but no save tool; `SaveArtifactTool`
+(pkg/tools/artifact.go) is the missing half, writing through
+`ctx.Artifacts().Save`. This is the ADK-native replacement for the old
+`ask/plans/` notes directories.
 
 ### Step instruction assembly
 
@@ -524,9 +554,10 @@ node's input, and `IncludeContentsNone` is what lets the step see it.
 
 `ask/plans/` is gone, along with `plans.go`, `clear_plans`, and the
 `RemindFixPlanDir` re-prompt. Step-to-step handoff is the graph's node
-output. Durable "what we learned" goes to `pkg/memory` — `RunWorkflow`
-calls `engine.IngestWorkflowMemory` on a clean finish, which is what the
-notes directories were badly approximating.
+output plus ADK artifacts (see above). Durable "what we learned" goes to
+`pkg/memory` — `RunWorkflow` calls `engine.IngestWorkflowMemory` on a
+clean finish, which is what the notes directories were badly
+approximating.
 
 
 ### Builder screen (`Ctrl+W` / `/workflows`)

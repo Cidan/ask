@@ -7,6 +7,7 @@ import (
 
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/providers"
+	"github.com/Cidan/ask/pkg/tools"
 	"github.com/Cidan/ask/pkg/workflow"
 	adkmodel "google.golang.org/adk/v2/model"
 	adktool "google.golang.org/adk/v2/tool"
@@ -127,10 +128,12 @@ func tuiWorkflowCompileConfig(sess *agentSession, def workflow.Def, src workflow
 		ModelBuilder: func(ctx context.Context, step workflow.Step) (adkmodel.LLM, error) {
 			return workflowStepModel(ctx, sess, step)
 		},
-		ToolsBuilder: func(ctx context.Context, step workflow.Step, inLoop bool) ([]adktool.Tool, error) {
-			return engine.AsADKTools(sess.currentTools())
+		ToolsBuilder: func(ctx context.Context, step workflow.Step, role workflow.StepRole) ([]adktool.Tool, error) {
+			list := append([]tools.Tool(nil), sess.currentTools()...)
+			list = append(list, tools.WorkflowStepTools(sess.env, role.IsFinal)...)
+			return engine.AsADKTools(list)
 		},
-		ToolsetsBuilder: func(ctx context.Context, step workflow.Step, inLoop bool) ([]adktool.Toolset, error) {
+		ToolsetsBuilder: func(ctx context.Context, step workflow.Step, role workflow.StepRole) ([]adktool.Toolset, error) {
 			var toolsets []adktool.Toolset
 			if sess.mcp != nil {
 				toolsets = append(toolsets, sess.mcp.Toolsets()...)

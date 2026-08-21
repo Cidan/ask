@@ -231,3 +231,104 @@ func TestBuildStepInstruction_LoopFraming(t *testing.T) {
 		t.Errorf("loop control moved to exit_loop; instruction should not mention a decision arg: %q", got)
 	}
 }
+
+// Only the tail step is told how to break, because only the tail step has
+// the exit_loop tool. A non-tail step is told it cannot end the loop.
+func TestBuildStepInstruction_NonTailLoopStepCannotBreak(t *testing.T) {
+	src := NewTextSource(1, "src")
+	step := Step{Name: "edit", Prompt: "Edit."}
+	loop := &LoopPromptCtx{Name: "fix", MaxIterations: 5, IsTail: false}
+
+	got := BuildStepInstruction(step, src, &StepPromptCtx{Loop: loop})
+	if strings.Contains(got, "exit_loop") {
+		t.Errorf("a non-tail step must not be told about exit_loop: %q", got)
+	}
+	if !strings.Contains(got, "NOT its last step") {
+		t.Errorf("a non-tail step should be told it cannot end the loop: %q", got)
+	}
+}
+
+// The final step is told to report the run's outcome with finish_workflow.
+func TestBuildStepInstruction_FinalStepReportsWithFinishWorkflow(t *testing.T) {
+	src := NewTextSource(1, "src")
+	step := Step{Name: "ship", Prompt: "Open the PR."}
+
+	final := BuildStepInstruction(step, src, &StepPromptCtx{IsWorkflowFinalStep: true})
+	if !strings.Contains(final, "finish_workflow") {
+		t.Errorf("the final step must be told to call finish_workflow: %q", final)
+	}
+
+	mid := BuildStepInstruction(step, src, &StepPromptCtx{})
+	if strings.Contains(mid, "finish_workflow") {
+		t.Errorf("a non-final step must not be told about finish_workflow: %q", mid)
+	}
+	// Every step is told it can pass data forward.
+	if !strings.Contains(mid, "save_artifact") {
+		t.Errorf("every step should learn about save_artifact: %q", mid)
+	}
+}
+
+// recordRoles compiles def with a ToolsBuilder that records the StepRole
+// handed to each step, keyed by step name.
+func recordRoles(t *testing.T, def Def) map[string]StepRole {
+	t.Helper()
+	roles := map[string]StepRole{}
+	cfg := testCompileConfig(def)
+	cfg.ToolsBuilder = func(_ context.Context, step Step, role StepRole) ([]tool.Tool, error) {
+		roles[step.Name] = role
+		return nil, nil
+	}
+	if _, err := CompileWorkflow(context.Background(), cfg); err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	return roles
+}
+
+// The role handed to each step is what decides its position-dependent
+// tools: IsTail gates exit_loop (only the tail step may break a loop),
+// IsFinal gates finish_workflow (only the last step reports the outcome).
+func TestCompileWorkflow_StepRoles(t *testing.T) {
+	def := Def{Name: "wf", Steps: []Step{
+		{Name: "a", Prompt: "a"},
+		{Name: "fix", Kind: "loop", Steps: []Step{
+			{Name: "b", Prompt: "b"},
+			{Name: "c", Prompt: "c"},
+			{Name: "d", Prompt: "d"},
+		}},
+		{Name: "e", Prompt: "e"},
+	}}
+	roles := recordRoles(t, def)
+
+	want := map[string]StepRole{
+		"a": {InLoop: false, IsTail: false, IsFinal: false},
+		"b": {InLoop: true, IsTail: false, IsFinal: false},
+		"c": {InLoop: true, IsTail: false, IsFinal: false},
+		"d": {InLoop: true, IsTail: true, IsFinal: false}, // tail, but the loop is not the final step
+		"e": {InLoop: false, IsTail: false, IsFinal: true},
+	}
+	for name, w := range want {
+		if roles[name] != w {
+			t.Errorf("role[%q] = %+v, want %+v", name, roles[name], w)
+		}
+	}
+}
+
+// When the workflow ends in a loop, the loop's tail step is BOTH the
+// break point and the final step, so it gets exit_loop and finish_workflow.
+func TestCompileWorkflow_FinalLoopTailIsFinal(t *testing.T) {
+	def := Def{Name: "wf", Steps: []Step{
+		{Name: "a", Prompt: "a"},
+		{Name: "fix", Kind: "loop", Steps: []Step{
+			{Name: "b", Prompt: "b"},
+			{Name: "c", Prompt: "c"},
+		}},
+	}}
+	roles := recordRoles(t, def)
+
+	if r := roles["b"]; r.IsTail || r.IsFinal {
+		t.Errorf("non-tail loop step b = %+v, want neither tail nor final", r)
+	}
+	if r := roles["c"]; !r.IsTail || !r.IsFinal {
+		t.Errorf("tail of the final loop c = %+v, want both tail and final", r)
+	}
+}
