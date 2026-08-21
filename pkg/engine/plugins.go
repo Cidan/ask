@@ -17,16 +17,6 @@ func DefaultPlugins() []*plugin.Plugin {
 		plugins = append(plugins, retryPlugin)
 	}
 
-	// 2. Function call modifier plugin for parameter injection when configured.
-	// Defaults to inactive so native tools using functiontool.New with ParametersJsonSchema
-	// are not corrupted by the plugin's decl.Parameters initialization.
-	if modPlugin, err := NewFunctionCallModifierPlugin(FunctionCallModifierOptions{
-		Predicate: func(toolName string) bool {
-			return false
-		},
-	}); err == nil && modPlugin != nil {
-		plugins = append(plugins, modPlugin)
-	}
 
 	return plugins
 }
@@ -53,24 +43,5 @@ func NewRetryAndReflectPlugin(maxRetries int) (*plugin.Plugin, error) {
 }
 
 // FunctionCallModifierOptions defines configuration for the functioncallmodifier plugin.
-type FunctionCallModifierOptions struct {
-	Predicate           func(toolName string) bool
-	Args                map[string]*genai.Schema
-	OverrideDescription func(originalDescription string) string
-}
 
 // NewFunctionCallModifierPlugin creates an ADK functioncallmodifier plugin with safety guards.
-func NewFunctionCallModifierPlugin(opts FunctionCallModifierOptions) (*plugin.Plugin, error) {
-	pred := opts.Predicate
-	if pred == nil {
-		pred = func(toolName string) bool {
-			return len(opts.Args) > 0 || opts.OverrideDescription != nil
-		}
-	}
-	cfg := functioncallmodifier.FunctionCallModifierConfig{
-		Predicate:           pred,
-		Args:                opts.Args,
-		OverrideDescription: opts.OverrideDescription,
-	}
-	return functioncallmodifier.NewPlugin(cfg)
-}

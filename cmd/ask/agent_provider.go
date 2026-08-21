@@ -172,6 +172,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		agentEndTurnTool(env),
 		agentSearchToolsTool(s.deferredTools),
 		agentInvokeToolTool(s.deferredTools, s.isCoreToolName, env),
+		agentLoadArtifactsTool(),
 	}
 	if !s.args.InWorkflow {
 		s.coreTools = append(s.coreTools, agentFinalizedPlanTool(env))
@@ -183,7 +184,6 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		s.coreTools = append(s.coreTools, agentWorkflowTools(env)...)
 	}
 	s.coreTools = append(s.coreTools, agentWebSearchTool(env))
-	s.coreTools = wrapFileToolsWithMemory(s.coreTools, s.args.Cwd)
 	s.coreTools = wrapContextAwareTools(s.coreTools, s.args.Cwd, discoverRules(s.args.Cwd))
 	s.deferredBase = agentLinearTools(env)
 	s.deferredBase = append(s.deferredBase, agentMemoryIndexTool(env))

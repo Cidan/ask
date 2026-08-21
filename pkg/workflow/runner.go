@@ -2,21 +2,17 @@ package workflow
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"google.golang.org/adk/v2/agent"
-	"google.golang.org/adk/v2/agent/llmagent"
-	"google.golang.org/adk/v2/agent/workflowagents/loopagent"
-	"google.golang.org/adk/v2/agent/workflowagents/sequentialagent"
+	"google.golang.org/adk/v2/artifact"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
-	"google.golang.org/adk/v2/tool/exitlooptool"
 	"google.golang.org/genai"
 )
 
@@ -95,9 +91,6 @@ type StepResult struct {
 }
 
 // StepExecutor executes a single step turn against an underlying agent engine/provider.
-type StepExecutor interface {
-	ExecuteStep(ctx context.Context, cwd string, tabID int, step Step, prompt string, isFinal bool) (StepResult, error)
-}
 
 // RunnerListener receives progress notifications during workflow execution.
 type RunnerListener interface {
@@ -121,6 +114,8 @@ func (NoopRunnerListener) OnNote(int, string)                                   
 
 // WorkflowAgentConfig configures the construction of an ADK workflow agent hierarchy.
 type WorkflowAgentConfig struct {
+	SessionService     session.Service
+	ArtifactService    artifact.Service
 	Def                Def
 	Source             Source
 	Cwd                string
@@ -131,243 +126,73 @@ type WorkflowAgentConfig struct {
 	InstructionBuilder func(step Step, isStart bool, isFinal bool, loopCtx *LoopPromptCtx, notesDir, prevNotesDir string) string
 }
 
-// BuildWorkflowAgent constructs an ADK agent hierarchy conforming to the workflow definition.
-// Top-level linear steps are chained using sequentialagent, while kind: "loop" steps are
-// encapsulated in loopagent containers with exitlooptool attached to their sub-agents.
-func BuildWorkflowAgent(ctx context.Context, cfg WorkflowAgentConfig) (agent.Agent, error) {
-	if err := cfg.Def.Validate(); err != nil {
-		return nil, err
-	}
-	if cfg.ModelBuilder == nil {
-		return nil, errors.New("model builder is required")
-	}
-
-	var topAgents []agent.Agent
-	var prevNotesDir string
-
-	for i, top := range cfg.Def.Steps {
-		isFinalStep := i == len(cfg.Def.Steps)-1
-
-		if top.Kind == "loop" {
-			if len(top.Steps) == 0 {
-				continue
-			}
-			var innerAgents []agent.Agent
-			for innerIdx, innerStep := range top.Steps {
-				isLoopStart := i == 0 && innerIdx == 0
-				var notesDir string
-				if isLoopStart {
-					notesDir = StartPlanDir(cfg.Cwd)
-				} else {
-					notesDir = StepNotesDir(cfg.Cwd, innerStep.Name, top.Name, 1)
-				}
-
-				llm, err := cfg.ModelBuilder(ctx, innerStep)
-				if err != nil {
-					return nil, fmt.Errorf("failed to build model for step %q: %w", innerStep.Name, err)
-				}
-
-				var tools []tool.Tool
-				if cfg.ToolsBuilder != nil {
-					builtTools, err := cfg.ToolsBuilder(ctx, innerStep, true)
-					if err != nil {
-						return nil, fmt.Errorf("failed to build tools for step %q: %w", innerStep.Name, err)
-					}
-					tools = append(tools, builtTools...)
-				}
-
-				// Attach ADK's native exitlooptool for clean early break out of loop containers
-				exitTool, err := exitlooptool.New()
-				if err != nil {
-					return nil, fmt.Errorf("failed to create exitloop tool: %w", err)
-				}
-				hasExitTool := false
-				for _, t := range tools {
-					if t != nil && t.Name() == exitTool.Name() {
-						hasExitTool = true
-						break
-					}
-				}
-				if !hasExitTool {
-					tools = append(tools, exitTool)
-				}
-
-				var toolsets []tool.Toolset
-				if cfg.ToolsetsBuilder != nil {
-					ts, err := cfg.ToolsetsBuilder(ctx, innerStep, true)
-					if err != nil {
-						return nil, fmt.Errorf("failed to build toolsets for step %q: %w", innerStep.Name, err)
-					}
-					toolsets = ts
-				}
-
-				instruction := innerStep.Prompt
-				if cfg.InstructionBuilder != nil {
-					loopCtx := &LoopPromptCtx{
-						Name:          top.Name,
-						Iteration:     1,
-						MaxIterations: cfg.Def.EffectiveMaxIterations(top),
-						ExitCondition: top.ExitCondition,
-						IsTail:        innerIdx == len(top.Steps)-1,
-					}
-					instruction = cfg.InstructionBuilder(innerStep, isLoopStart, isFinalStep, loopCtx, notesDir, prevNotesDir)
-				}
-
-				innerAg, err := llmagent.New(llmagent.Config{
-					Name:        innerStep.Name,
-					Description: innerStep.Prompt,
-					Model:       llm,
-					Instruction: instruction,
-					Tools:       tools,
-					Toolsets:    toolsets,
-				})
-				if err != nil {
-					return nil, fmt.Errorf("failed to create inner step agent %q: %w", innerStep.Name, err)
-				}
-				innerAgents = append(innerAgents, innerAg)
-				prevNotesDir = notesDir
-			}
-
-			loopAg, err := loopagent.New(loopagent.Config{
-				AgentConfig: agent.Config{
-					Name:        top.Name,
-					Description: top.ExitCondition,
-					SubAgents:   innerAgents,
-				},
-				MaxIterations: uint(cfg.Def.EffectiveMaxIterations(top)),
-			})
-			if err != nil {
-				return nil, fmt.Errorf("failed to create loop agent %q: %w", top.Name, err)
-			}
-			topAgents = append(topAgents, loopAg)
-			continue
-		}
-
-		// Linear step
-		isStart := i == 0
-		var notesDir string
-		if isStart {
-			notesDir = StartPlanDir(cfg.Cwd)
-		} else {
-			notesDir = StepNotesDir(cfg.Cwd, top.Name, "", 0)
-		}
-
-		llm, err := cfg.ModelBuilder(ctx, top)
-		if err != nil {
-			return nil, fmt.Errorf("failed to build model for step %q: %w", top.Name, err)
-		}
-
-		var tools []tool.Tool
-		if cfg.ToolsBuilder != nil {
-			builtTools, err := cfg.ToolsBuilder(ctx, top, false)
-			if err != nil {
-				return nil, fmt.Errorf("failed to build tools for step %q: %w", top.Name, err)
-			}
-			tools = append(tools, builtTools...)
-		}
-
-		var toolsets []tool.Toolset
-		if cfg.ToolsetsBuilder != nil {
-			ts, err := cfg.ToolsetsBuilder(ctx, top, false)
-			if err != nil {
-				return nil, fmt.Errorf("failed to build toolsets for step %q: %w", top.Name, err)
-			}
-			toolsets = ts
-		}
-
-		instruction := top.Prompt
-		if cfg.InstructionBuilder != nil {
-			instruction = cfg.InstructionBuilder(top, isStart, isFinalStep, nil, notesDir, prevNotesDir)
-		}
-
-		stepAg, err := llmagent.New(llmagent.Config{
-			Name:        top.Name,
-			Description: top.Prompt,
-			Model:       llm,
-			Instruction: instruction,
-			Tools:       tools,
-			Toolsets:    toolsets,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to create step agent %q: %w", top.Name, err)
-		}
-		topAgents = append(topAgents, stepAg)
-		prevNotesDir = notesDir
-	}
-
-	return sequentialagent.New(sequentialagent.Config{
-		AgentConfig: agent.Config{
-			Name:        cfg.Def.Name,
-			Description: cfg.Def.Description,
-			SubAgents:   topAgents,
-		},
-	})
-}
-
 // Runner executes multi-step workflow pipelines.
-type Runner struct {
-	tracker  *Tracker
-	executor StepExecutor
-	listener RunnerListener
-}
 
 // NewRunner creates a new workflow Runner.
-func NewRunner(tracker *Tracker, executor StepExecutor, listener RunnerListener) *Runner {
+
+// Run executes the workflow def synchronously to completion or until context cancellation.
+
+type Runner struct {
+	cfg     WorkflowAgentConfig
+	tracker *Tracker
+}
+
+func NewRunner(tracker *Tracker, cfg WorkflowAgentConfig) *Runner {
 	if tracker == nil {
 		tracker = GlobalTracker()
 	}
-	if listener == nil {
-		listener = NoopRunnerListener{}
-	}
 	return &Runner{
-		tracker:  tracker,
-		executor: executor,
-		listener: listener,
+		cfg:     cfg,
+		tracker: tracker,
 	}
 }
 
-// RunGraph executes a compiled ADK workflow graph, broadcasting lifecycle events to the listener.
-func (r *Runner) RunGraph(ctx context.Context, cfg WorkflowAgentConfig) (*RunState, error) {
-	if err := cfg.Def.Validate(); err != nil {
-		r.listener.OnWorkflowFailed(cfg.TabID, err.Error())
+func (r *Runner) Run(ctx context.Context, listener RunnerListener) (*RunState, error) {
+	if err := r.cfg.Def.Validate(); err != nil {
+		listener.OnWorkflowFailed(r.cfg.TabID, err.Error())
 		return nil, err
 	}
 
-	wfAgent, err := BuildWorkflowAgent(ctx, cfg)
+	wfAgent, err := CompileDefToADKWorkflow(ctx, r.cfg)
 	if err != nil {
-		r.listener.OnWorkflowFailed(cfg.TabID, err.Error())
+		listener.OnWorkflowFailed(r.cfg.TabID, err.Error())
 		return nil, err
 	}
 
-	r.listener.OnWorkflowStarted(cfg.TabID, cfg.Def, cfg.Source)
+	listener.OnWorkflowStarted(r.cfg.TabID, r.cfg.Def, r.cfg.Source)
 	if r.tracker != nil {
-		r.tracker.MarkWorking(cfg.Cwd, cfg.Source.Key(), cfg.Def.Name, cfg.TabID)
+		r.tracker.MarkWorking(r.cfg.Cwd, r.cfg.Source.Key(), r.cfg.Def.Name, r.cfg.TabID)
 	}
 
 	runState := &RunState{
-		Workflow:  cfg.Def,
-		Source:    cfg.Source,
+		Workflow:  r.cfg.Def,
+		Source:    r.cfg.Source,
 		StartedAt: time.Now().UTC(),
 		StepIdx:   0,
 	}
 
-	sessSvc := session.InMemoryService()
+	sessSvc := r.cfg.SessionService
+	if sessSvc == nil {
+		sessSvc = session.InMemoryService()
+	}
+
 	adkRunner, err := runner.New(runner.Config{
 		AppName:           "ask-workflow",
 		Agent:             wfAgent,
 		SessionService:    sessSvc,
+		ArtifactService:   r.cfg.ArtifactService,
 		AutoCreateSession: true,
 	})
 	if err != nil {
-		r.listener.OnWorkflowFailed(cfg.TabID, err.Error())
+		listener.OnWorkflowFailed(r.cfg.TabID, err.Error())
 		if r.tracker != nil {
-			r.tracker.MarkFinal(cfg.Cwd, cfg.Source.Key(), cfg.Def.Name, StatusFailed, 0)
+			r.tracker.MarkFinal(r.cfg.Cwd, r.cfg.Source.Key(), r.cfg.Def.Name, StatusFailed, 0)
 		}
 		return runState, err
 	}
 
-	userMsg := genai.NewContentFromText(cfg.Source.Display(), genai.RoleUser)
-	sessionID := "wf-" + cfg.Source.Key()
+	userMsg := genai.NewContentFromText(r.cfg.Source.Display(), genai.RoleUser)
+	sessionID := "wf-" + r.cfg.Source.Key()
 
 	startedSteps := make(map[int]bool)
 	doneSteps := make(map[int]bool)
@@ -375,9 +200,9 @@ func (r *Runner) RunGraph(ctx context.Context, cfg WorkflowAgentConfig) (*RunSta
 
 	for event, err := range adkRunner.Run(ctx, "user", sessionID, userMsg, agent.RunConfig{}) {
 		if err != nil {
-			r.listener.OnWorkflowFailed(cfg.TabID, err.Error())
+			listener.OnWorkflowFailed(r.cfg.TabID, err.Error())
 			if r.tracker != nil {
-				r.tracker.MarkFinal(cfg.Cwd, cfg.Source.Key(), cfg.Def.Name, StatusFailed, lastStepIdx)
+				r.tracker.MarkFinal(r.cfg.Cwd, r.cfg.Source.Key(), r.cfg.Def.Name, StatusFailed, lastStepIdx)
 			}
 			return runState, err
 		}
@@ -386,16 +211,16 @@ func (r *Runner) RunGraph(ctx context.Context, cfg WorkflowAgentConfig) (*RunSta
 		}
 
 		if event.Author != "" && event.Author != "user" && event.Author != "ask_coder" {
-			for i, s := range cfg.Def.Steps {
+			for i, s := range r.cfg.Def.Steps {
 				if s.Name == event.Author {
 					if lastStepIdx >= 0 && lastStepIdx != i && !doneSteps[lastStepIdx] {
 						doneSteps[lastStepIdx] = true
-						r.listener.OnWorkflowStepDone(cfg.TabID, lastStepIdx, fmt.Sprintf("completed step %s", cfg.Def.Steps[lastStepIdx].Name))
+						listener.OnWorkflowStepDone(r.cfg.TabID, lastStepIdx, fmt.Sprintf("completed step %s", r.cfg.Def.Steps[lastStepIdx].Name))
 					}
 					if !startedSteps[i] {
 						startedSteps[i] = true
 						lastStepIdx = i
-						r.listener.OnWorkflowStepStarted(cfg.TabID, i, s.Name, s.Provider, s.Model)
+						listener.OnWorkflowStepStarted(r.cfg.TabID, i, s.Name, s.Provider, s.Model)
 					}
 					break
 				}
@@ -405,315 +230,30 @@ func (r *Runner) RunGraph(ctx context.Context, cfg WorkflowAgentConfig) (*RunSta
 		if event.LLMResponse.Content != nil {
 			for _, part := range event.LLMResponse.Content.Parts {
 				if part.Text != "" {
-					r.listener.OnNote(cfg.TabID, part.Text)
+					listener.OnNote(r.cfg.TabID, part.Text)
 				}
 			}
 		}
 	}
 
-	for i := 0; i < len(cfg.Def.Steps); i++ {
+	for i := 0; i < len(r.cfg.Def.Steps); i++ {
 		if !startedSteps[i] {
 			startedSteps[i] = true
-			r.listener.OnWorkflowStepStarted(cfg.TabID, i, cfg.Def.Steps[i].Name, cfg.Def.Steps[i].Provider, cfg.Def.Steps[i].Model)
+			listener.OnWorkflowStepStarted(r.cfg.TabID, i, r.cfg.Def.Steps[i].Name, r.cfg.Def.Steps[i].Provider, r.cfg.Def.Steps[i].Model)
 		}
 		if !doneSteps[i] {
 			doneSteps[i] = true
-			r.listener.OnWorkflowStepDone(cfg.TabID, i, fmt.Sprintf("completed step %s", cfg.Def.Steps[i].Name))
+			listener.OnWorkflowStepDone(r.cfg.TabID, i, fmt.Sprintf("completed step %s", r.cfg.Def.Steps[i].Name))
 		}
 	}
 
 	runState.Done = true
-	runState.StepIdx = len(cfg.Def.Steps)
-	runState.FinishData = &FinishData{
-		Description: fmt.Sprintf("Workflow %s completed via ADK workflow runner", cfg.Def.Name),
-	}
-
-	r.listener.OnWorkflowDone(cfg.TabID, runState.FinishData.Description, runState.FinishData.Artifacts)
 	if r.tracker != nil {
-		r.tracker.MarkFinal(cfg.Cwd, cfg.Source.Key(), cfg.Def.Name, StatusDone, len(cfg.Def.Steps))
+		r.tracker.MarkFinal(r.cfg.Cwd, r.cfg.Source.Key(), r.cfg.Def.Name, StatusDone, len(r.cfg.Def.Steps)-1)
 	}
-	return runState, nil
-}
-
-// Run executes the workflow def synchronously to completion or until context cancellation.
-func (r *Runner) Run(ctx context.Context, cwd string, tabID int, def Def, src Source) (*RunState, error) {
-	if err := def.Validate(); err != nil {
-		r.listener.OnWorkflowFailed(tabID, err.Error())
-		return nil, err
-	}
-
-	r.listener.OnWorkflowStarted(tabID, def, src)
-	r.tracker.MarkWorking(cwd, src.Key(), def.Name, tabID)
-
-	runState := &RunState{
-		Workflow:  def,
-		Source:    src,
-		StartedAt: time.Now().UTC(),
-		StepIdx:   0,
-	}
-
-	var stepLog []string
-	var loopFrame *LoopRunFrame
-	var prevNotesDir string
-	var currentNotesDir string
-	var remind RemindKind
-	var remindDetail string
-	var linearRetry int
-	var linearText string
-	var stepErrorRetry int
-
-	for {
-		select {
-		case <-ctx.Done():
-			r.listener.OnWorkflowFailed(tabID, "cancelled by user")
-			r.tracker.MarkFinal(cwd, src.Key(), def.Name, StatusFailed, runState.StepIdx)
-			return runState, ctx.Err()
-		default:
-		}
-
-		if loopFrame == nil && runState.StepIdx >= len(def.Steps) {
-			break
-		}
-
-		top := def.Steps[runState.StepIdx]
-		if top.Kind == "loop" && loopFrame == nil {
-			if len(top.Steps) == 0 {
-				runState.StepIdx++
-				continue
-			}
-			loopFrame = &LoopRunFrame{InnerIdx: 0, Iteration: 1}
-			r.listener.OnNote(tabID, LoopNoteLine(top.Name, "started", fmt.Sprintf("max %d iteration(s)", def.EffectiveMaxIterations(top))))
-		}
-
-		step := top
-		if loopFrame != nil {
-			step = top.Steps[loopFrame.InnerIdx]
-		}
-
-		r.listener.OnWorkflowStepStarted(tabID, runState.StepIdx, step.Name, step.Provider, step.Model)
-
-		isStartStep := runState.StepIdx == 0 && loopFrame == nil
-		isLoopStartStep := runState.StepIdx == 0 && loopFrame != nil && loopFrame.Iteration == 1 && loopFrame.InnerIdx == 0
-
-		var notesDir string
-		switch {
-		case isStartStep, isLoopStartStep:
-			notesDir = StartPlanDir(cwd)
-		case loopFrame != nil:
-			notesDir = StepNotesDir(cwd, step.Name, top.Name, loopFrame.Iteration)
-		default:
-			notesDir = StepNotesDir(cwd, step.Name, "", 0)
-		}
-		currentNotesDir = notesDir
-
-		var prevOutputs []string
-		if loopFrame == nil {
-			if linearRetry > 0 && linearText != "" {
-				prevOutputs = append(append([]string(nil), stepLog...), linearText)
-			} else {
-				prevOutputs = stepLog
-			}
-		} else {
-			prevOutputs = append([]string(nil), stepLog...)
-			if loopFrame.InnerIdx == 0 {
-				if loopFrame.PrevTail != "" {
-					prevOutputs = append(prevOutputs, loopFrame.PrevTail)
-				}
-			} else {
-				prevOutputs = append(prevOutputs, loopFrame.IterationLog...)
-			}
-			if loopFrame.Retry > 0 && loopFrame.RetryText != "" {
-				prevOutputs = append(prevOutputs, loopFrame.RetryText)
-			}
-		}
-
-		pc := &StepPromptCtx{
-			Remind:              remind,
-			RemindDetail:        remindDetail,
-			NotesDir:            notesDir,
-			PrevNotesDir:        prevNotesDir,
-			IsStartStep:         isStartStep || isLoopStartStep,
-			IsWorkflowFinalStep: runState.StepIdx == len(def.Steps)-1,
-		}
-		if loopFrame != nil {
-			pc.Loop = &LoopPromptCtx{
-				Name:          top.Name,
-				Iteration:     loopFrame.Iteration,
-				MaxIterations: def.EffectiveMaxIterations(top),
-				ExitCondition: top.ExitCondition,
-				IsTail:        loopFrame.InnerIdx == len(top.Steps)-1,
-			}
-		}
-
-		var dirErr error
-		if pc.IsStartStep {
-			dirErr = EnsureStartPlanExists(cwd)
-		} else {
-			dirErr = EnsureStepNotesDir(notesDir)
-		}
-		if dirErr != nil {
-			remind = RemindFixPlanDir
-			remindDetail = dirErr.Error()
-			pc.Remind = remind
-			pc.RemindDetail = remindDetail
-		}
-
-		prompt := BuildStepPrompt(step, src, prevOutputs, pc)
-		isFinalStep := runState.StepIdx == len(def.Steps)-1
-
-		if r.executor == nil {
-			err := errors.New("no step executor provided")
-			r.listener.OnWorkflowFailed(tabID, err.Error())
-			r.tracker.MarkFinal(cwd, src.Key(), def.Name, StatusFailed, runState.StepIdx)
-			return runState, err
-		}
-
-		res, err := r.executor.ExecuteStep(ctx, cwd, tabID, step, prompt, isFinalStep)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
-				r.listener.OnWorkflowFailed(tabID, "cancelled by user")
-				r.tracker.MarkFinal(cwd, src.Key(), def.Name, StatusFailed, runState.StepIdx)
-				return runState, ctx.Err()
-			}
-			if stepErrorRetry < 3 {
-				stepErrorRetry++
-				wait := time.Duration(stepErrorRetry) * time.Second
-				r.listener.OnNote(tabID, WorkflowNoteLine(fmt.Sprintf("step %q failed: %v", step.Name, err), fmt.Sprintf("retrying (attempt %d of 3)", stepErrorRetry)))
-				select {
-				case <-time.After(wait):
-				case <-ctx.Done():
-					return runState, ctx.Err()
-				}
-				continue
-			}
-			r.listener.OnWorkflowFailed(tabID, err.Error())
-			r.tracker.MarkFinal(cwd, src.Key(), def.Name, StatusFailed, runState.StepIdx)
-			return runState, err
-		}
-
-		stepErrorRetry = 0
-		remind = RemindNone
-		remindDetail = ""
-
-		if loopFrame == nil {
-			if res.Summary == "" {
-				linearRetry++
-				linearText = res.Output
-				remind = RemindNoSummary
-				r.listener.OnNote(tabID, "   | Re-prompting "+step.Name+" for end_turn")
-				continue
-			}
-
-			r.listener.OnWorkflowStepDone(tabID, runState.StepIdx, res.Summary)
-
-			if isFinalStep && res.FinishData != nil {
-				runState.FinishData = res.FinishData
-			}
-
-			prevNotesDir = currentNotesDir
-			if res.Output != "" {
-				stepLog = append(stepLog, res.Output)
-			}
-			linearRetry = 0
-			linearText = ""
-			runState.StepIdx++
-			continue
-		}
-
-		isTail := loopFrame.InnerIdx == len(top.Steps)-1
-		if res.Summary == "" {
-			loopFrame.Retry++
-			loopFrame.RetryText = res.Output
-			remind = RemindNoSummary
-			r.listener.OnNote(tabID, "   | Re-prompting "+step.Name+" for end_turn")
-			continue
-		}
-
-		r.listener.OnWorkflowStepDone(tabID, runState.StepIdx, res.Summary)
-
-		// Loop termination: either explicitly via decision="break", or native exit_loop tool invocation
-		if res.Decision == LoopBreak {
-			if isFinalStep && res.FinishData != nil {
-				runState.FinishData = res.FinishData
-			}
-
-			prevNotesDir = currentNotesDir
-			if res.Output != "" {
-				loopFrame.IterationLog = append(loopFrame.IterationLog, res.Output)
-			}
-			r.listener.OnNote(tabID, LoopNoteLine(top.Name, "break", ""))
-
-			stepLog = append(stepLog, loopFrame.IterationLog...)
-			loopFrame = nil
-			runState.StepIdx++
-			continue
-		}
-
-		if !isTail {
-			prevNotesDir = currentNotesDir
-			if res.Output != "" {
-				loopFrame.IterationLog = append(loopFrame.IterationLog, res.Output)
-			}
-			loopFrame.Retry = 0
-			loopFrame.RetryText = ""
-			loopFrame.InnerIdx++
-			continue
-		}
-
-		if res.Decision != LoopContinue {
-			loopFrame.Retry++
-			loopFrame.RetryText = res.Output
-			remind = RemindNoDecision
-			r.listener.OnNote(tabID, "   | Re-prompting final step for a decision")
-			continue
-		}
-
-		prevNotesDir = currentNotesDir
-		if res.Output != "" {
-			loopFrame.IterationLog = append(loopFrame.IterationLog, res.Output)
-		}
-
-		if loopFrame.Iteration >= def.EffectiveMaxIterations(top) {
-			if isFinalStep && res.FinishData != nil {
-				runState.FinishData = res.FinishData
-			}
-			r.listener.OnNote(tabID, LoopNoteLine(top.Name, "hit iteration limit", fmt.Sprintf("%d iteration(s)", loopFrame.Iteration)))
-			stepLog = append(stepLog, loopFrame.IterationLog...)
-			loopFrame = nil
-			runState.StepIdx++
-			continue
-		}
-
-		r.listener.OnNote(tabID, LoopNoteLine(top.Name, fmt.Sprintf("iteration %d complete → continue", loopFrame.Iteration), ""))
-		loopFrame.PrevTail = lastString(loopFrame.IterationLog)
-		loopFrame.IterationLog = nil
-		loopFrame.Iteration++
-		loopFrame.InnerIdx = 0
-		loopFrame.Retry = 0
-		loopFrame.RetryText = ""
-	}
-
-	_ = RemoveAllWorkflowPlans(cwd)
-
-	desc := ""
-	var arts []string
-	if runState.FinishData != nil {
-		desc = runState.FinishData.Description
-		arts = runState.FinishData.Artifacts
-	}
-
-	runState.Done = true
-	r.listener.OnWorkflowDone(tabID, desc, arts)
-	r.tracker.MarkFinal(cwd, src.Key(), def.Name, StatusDone, runState.StepIdx)
+	listener.OnWorkflowDone(r.cfg.TabID, "workflow completed", nil)
 
 	return runState, nil
-}
-
-func lastString(s []string) string {
-	if len(s) == 0 {
-		return ""
-	}
-	return s[len(s)-1]
 }
 
 // BuildStepPrompt assembles the user-message prompt for a single workflow step.
@@ -851,3 +391,9 @@ func ProviderMeta(provider, model string) string {
 	}
 }
 
+func lastString(s []string) string {
+	if len(s) == 0 {
+		return ""
+	}
+	return s[len(s)-1]
+}

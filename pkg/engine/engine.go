@@ -54,11 +54,12 @@ func (e *Engine) SystemPrompt(cwd string, inWorkflow bool) string {
 
 // BuildWorkflowAgent constructs an ADK agent hierarchy (sequentialagent, loopagent, exitlooptool)
 // for the given workflow definition using the engine's model and tool configuration.
-func (e *Engine) BuildWorkflowAgent(ctx context.Context, cwd string, def workflow.Def, src workflow.Source) (agent.Agent, error) {
-	cfg := workflow.WorkflowAgentConfig{
+func (e *Engine) BuildWorkflowAgentConfig(ctx context.Context, cwd string, tabID int, def workflow.Def, src workflow.Source) workflow.WorkflowAgentConfig {
+	return workflow.WorkflowAgentConfig{
 		Def:    def,
 		Source: src,
 		Cwd:    cwd,
+		TabID:  tabID,
 		ModelBuilder: func(ctx context.Context, step workflow.Step) (model.LLM, error) {
 			providerID := step.Provider
 			if providerID == "" {
@@ -86,7 +87,7 @@ func (e *Engine) BuildWorkflowAgent(ctx context.Context, cwd string, def workflo
 			if tf := GetDefaultToolFactory(); tf != nil {
 				agentTools = tf(ToolFactoryArgs{
 					Cwd:                cwd,
-					TabID:              0,
+					TabID:              tabID,
 					SkipPermissions:    true,
 					EventListener:      e.opts.EventListener,
 					InteractionHandler: e.opts.InteractionHandler,
@@ -112,8 +113,13 @@ func (e *Engine) BuildWorkflowAgent(ctx context.Context, cwd string, def workflo
 			}
 			return workflow.BuildStepPrompt(step, src, nil, pc)
 		},
+		SessionService: NewFileSessionService("ask-workflow", cwd),
 	}
-	return workflow.BuildWorkflowAgent(ctx, cfg)
+}
+
+func (e *Engine) BuildWorkflowAgent(ctx context.Context, cwd string, def workflow.Def, src workflow.Source) (agent.Agent, error) {
+	cfg := e.BuildWorkflowAgentConfig(ctx, cwd, 0, def, src)
+	return workflow.CompileDefToADKWorkflow(ctx, cfg)
 }
 
 type engineWorkflowListener struct {
@@ -159,7 +165,8 @@ func (l engineWorkflowListener) OnNote(tabID int, text string) {
 
 func (e *Engine) RunWorkflow(ctx context.Context, cwd string, tabID int, def workflow.Def, src workflow.Source) error {
 	listener := engineWorkflowListener{tabID: tabID, listener: e.opts.EventListener}
-	runner := workflow.NewRunner(workflow.GlobalTracker(), e.coordinator, listener)
-	_, err := runner.Run(ctx, cwd, tabID, def, src)
+	cfg := e.BuildWorkflowAgentConfig(ctx, cwd, tabID, def, src)
+	runner := workflow.NewRunner(workflow.GlobalTracker(), cfg)
+	_, err := runner.Run(ctx, listener)
 	return err
 }

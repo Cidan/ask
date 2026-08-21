@@ -3,11 +3,14 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	pkgmemory "github.com/Cidan/ask/pkg/memory"
 	"github.com/google/jsonschema-go/jsonschema"
+	"google.golang.org/adk/v2/artifact"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/memory"
 	"google.golang.org/adk/v2/model"
@@ -16,7 +19,6 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/genai"
-	pkgmemory "github.com/Cidan/ask/pkg/memory"
 )
 
 // ToolResponse represents the result of executing a tool.
@@ -57,7 +59,9 @@ func ExtractToolInfo(t tool.Tool) ToolInfo {
 		Name:        t.Name(),
 		Description: t.Description(),
 	}
-	if declProvider, ok := t.(interface{ Declaration() *genai.FunctionDeclaration }); ok {
+	if declProvider, ok := t.(interface {
+		Declaration() *genai.FunctionDeclaration
+	}); ok {
 		if decl := declProvider.Declaration(); decl != nil {
 			if decl.ParametersJsonSchema != nil {
 				if raw, err := json.Marshal(decl.ParametersJsonSchema); err == nil {
@@ -92,30 +96,34 @@ func ExtractToolInfo(t tool.Tool) ToolInfo {
 
 type standaloneAgentContext struct {
 	context.Context
+	artifactService artifact.Service
 }
 
-func (s *standaloneAgentContext) UserContent() *genai.Content                                     { return nil }
-func (s *standaloneAgentContext) InvocationID() string                                            { return "" }
-func (s *standaloneAgentContext) AgentName() string                                               { return "" }
-func (s *standaloneAgentContext) ReadonlyState() session.ReadonlyState                            { return nil }
-func (s *standaloneAgentContext) UserID() string                                                  { return "" }
-func (s *standaloneAgentContext) AppName() string                                                 { return "ask" }
-func (s *standaloneAgentContext) SessionID() string                                               { return "" }
-func (s *standaloneAgentContext) Branch() string                                                  { return "" }
-func (s *standaloneAgentContext) Agent() agent.Agent                                              { return nil }
-func (s *standaloneAgentContext) Artifacts() agent.Artifacts                                      { return nil }
-func (s *standaloneAgentContext) Memory() agent.Memory                                            { return nil }
-func (s *standaloneAgentContext) Session() session.Session                                        { return nil }
-func (s *standaloneAgentContext) IsolationScope() string                                          { return "" }
-func (s *standaloneAgentContext) RunConfig() *agent.RunConfig                                     { return nil }
-func (s *standaloneAgentContext) EndInvocation()                                                  {}
-func (s *standaloneAgentContext) Ended() bool                                                     { return false }
-func (s *standaloneAgentContext) ResumedInput(interruptID string) (any, bool)                     { return nil, false }
-func (s *standaloneAgentContext) WithContext(ctx context.Context) agent.InvocationContext          { return &standaloneAgentContext{Context: ctx} }
-func (s *standaloneAgentContext) WithICDelta(d *agent.InvocationContextDelta) agent.InvocationContext { return s }
-func (s *standaloneAgentContext) State() session.State                                            { return nil }
-func (s *standaloneAgentContext) FunctionCallID() string                                          { return "" }
-func (s *standaloneAgentContext) Actions() *session.EventActions                                  { return &session.EventActions{} }
+func (s *standaloneAgentContext) UserContent() *genai.Content                 { return nil }
+func (s *standaloneAgentContext) InvocationID() string                        { return "" }
+func (s *standaloneAgentContext) AgentName() string                           { return "" }
+func (s *standaloneAgentContext) ReadonlyState() session.ReadonlyState        { return nil }
+func (s *standaloneAgentContext) UserID() string                              { return "" }
+func (s *standaloneAgentContext) AppName() string                             { return "ask" }
+func (s *standaloneAgentContext) SessionID() string                           { return "" }
+func (s *standaloneAgentContext) Branch() string                              { return "" }
+func (s *standaloneAgentContext) Agent() agent.Agent                          { return nil }
+func (s *standaloneAgentContext) Memory() agent.Memory                        { return nil }
+func (s *standaloneAgentContext) Session() session.Session                    { return nil }
+func (s *standaloneAgentContext) IsolationScope() string                      { return "" }
+func (s *standaloneAgentContext) RunConfig() *agent.RunConfig                 { return nil }
+func (s *standaloneAgentContext) EndInvocation()                              {}
+func (s *standaloneAgentContext) Ended() bool                                 { return false }
+func (s *standaloneAgentContext) ResumedInput(interruptID string) (any, bool) { return nil, false }
+func (s *standaloneAgentContext) WithContext(ctx context.Context) agent.InvocationContext {
+	return &standaloneAgentContext{Context: ctx}
+}
+func (s *standaloneAgentContext) WithICDelta(d *agent.InvocationContextDelta) agent.InvocationContext {
+	return s
+}
+func (s *standaloneAgentContext) State() session.State           { return nil }
+func (s *standaloneAgentContext) FunctionCallID() string         { return "" }
+func (s *standaloneAgentContext) Actions() *session.EventActions { return &session.EventActions{} }
 func (s *standaloneAgentContext) SearchMemory(ctx context.Context, query string) (*memory.SearchResponse, error) {
 	if memSvc := pkgmemory.Default(); memSvc != nil && memSvc.IsOpen() {
 		return memSvc.SearchMemory(ctx, &memory.SearchRequest{Query: query})
@@ -128,10 +136,12 @@ func (s *standaloneAgentContext) ToolConfirmation() *toolconfirmation.ToolConfir
 func (s *standaloneAgentContext) RequestConfirmation(hint string, payload any) error {
 	return nil
 }
-func (s *standaloneAgentContext) Path() string                                                    { return "" }
-func (s *standaloneAgentContext) RunID() string                                                   { return "" }
-func (s *standaloneAgentContext) SubScheduler() agent.DynamicSubScheduler                         { return nil }
-func (s *standaloneAgentContext) WithAgentContext(ctx context.Context) agent.Context              { return &standaloneAgentContext{Context: ctx} }
+func (s *standaloneAgentContext) Path() string                            { return "" }
+func (s *standaloneAgentContext) RunID() string                           { return "" }
+func (s *standaloneAgentContext) SubScheduler() agent.DynamicSubScheduler { return nil }
+func (s *standaloneAgentContext) WithAgentContext(ctx context.Context) agent.Context {
+	return &standaloneAgentContext{Context: ctx}
+}
 func (s *standaloneAgentContext) WithAgentTimeout(timeout time.Duration) (agent.Context, context.CancelFunc) {
 	ctx, cancel := context.WithTimeout(s.Context, timeout)
 	return &standaloneAgentContext{Context: ctx}, cancel
@@ -140,8 +150,8 @@ func (s *standaloneAgentContext) WithAgentCancel() (agent.Context, context.Cance
 	ctx, cancel := context.WithCancel(s.Context)
 	return &standaloneAgentContext{Context: ctx}, cancel
 }
-func (s *standaloneAgentContext) OutputForAncestors() []string                                    { return nil }
-func (s *standaloneAgentContext) WithDelta(d *agent.CommonContextDelta) agent.Context             { return s }
+func (s *standaloneAgentContext) OutputForAncestors() []string                        { return nil }
+func (s *standaloneAgentContext) WithDelta(d *agent.CommonContextDelta) agent.Context { return s }
 
 // NewStandaloneAgentContext wraps a context.Context with a compliant agent.Context implementation.
 func NewStandaloneAgentContext(ctx context.Context) agent.Context {
@@ -568,4 +578,71 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		}
 	}
 	return nil
+}
+
+type standaloneArtifacts struct {
+	service   artifact.Service
+	sessionID string
+	appID     string
+	userID    string
+}
+
+func (a *standaloneArtifacts) Save(ctx context.Context, name string, data *genai.Part) (*artifact.SaveResponse, error) {
+	if a.service == nil {
+		return nil, errors.New("no artifact service configured")
+	}
+	return a.service.Save(ctx, &artifact.SaveRequest{
+		AppName:   a.appID,
+		UserID:    a.userID,
+		SessionID: a.sessionID,
+		FileName:  name,
+		Data:      data,
+	})
+}
+
+func (a *standaloneArtifacts) Load(ctx context.Context, name string) (*artifact.LoadResponse, error) {
+	if a.service == nil {
+		return nil, errors.New("no artifact service configured")
+	}
+	return a.service.Load(ctx, &artifact.LoadRequest{
+		AppName:   a.appID,
+		UserID:    a.userID,
+		SessionID: a.sessionID,
+		FileName:  name,
+	})
+}
+
+func (a *standaloneArtifacts) LoadVersion(ctx context.Context, name string, version int) (*artifact.LoadResponse, error) {
+	if a.service == nil {
+		return nil, errors.New("no artifact service configured")
+	}
+	return a.service.Load(ctx, &artifact.LoadRequest{
+		AppName:   a.appID,
+		UserID:    a.userID,
+		SessionID: a.sessionID,
+		FileName:  name,
+	})
+}
+
+func (a *standaloneArtifacts) List(ctx context.Context) (*artifact.ListResponse, error) {
+	if a.service == nil {
+		return nil, errors.New("no artifact service configured")
+	}
+	return a.service.List(ctx, &artifact.ListRequest{
+		AppName:   a.appID,
+		UserID:    a.userID,
+		SessionID: a.sessionID,
+	})
+}
+
+func (s *standaloneAgentContext) Artifacts() agent.Artifacts {
+	if s.artifacts == nil && s.artifactService != nil {
+		s.artifacts = &standaloneArtifacts{
+			service:   s.artifactService,
+			sessionID: s.SessionID(),
+			appID:     s.AppName(),
+			userID:    s.UserID(),
+		}
+	}
+	return s.artifacts
 }

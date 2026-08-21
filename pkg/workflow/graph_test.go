@@ -134,67 +134,7 @@ func TestCompileDefToADKWorkflow_ValidationErrors(t *testing.T) {
 	}
 }
 
-type testGraphListener struct {
-	NoopRunnerListener
-	started   bool
-	stepsDone int
-	done      bool
-}
 
-func (l *testGraphListener) OnWorkflowStarted(tabID int, def Def, src Source) {
-	l.started = true
-}
 
-func (l *testGraphListener) OnWorkflowStepDone(tabID int, stepIdx int, summary string) {
-	l.stepsDone++
-}
 
-func (l *testGraphListener) OnWorkflowDone(tabID int, desc string, artifacts []string) {
-	l.done = true
-}
 
-func TestWorkflowRunner_ADKGraphExecution(t *testing.T) {
-	def := Def{
-		Name:        "adk-graph-run",
-		Description: "executing workflow via adk graph",
-		Steps: []Step{
-			{Name: "step-1", Prompt: "do step 1", Provider: "vertex", Model: "gemini"},
-			{Name: "step-2", Prompt: "do step 2", Provider: "vertex", Model: "gemini"},
-		},
-	}
-
-	listener := &testGraphListener{}
-	runner := NewRunner(NewTracker(), nil, listener)
-
-	cfg := WorkflowAgentConfig{
-		Def:   def,
-		Cwd:   t.TempDir(),
-		TabID: 42,
-		ModelBuilder: func(ctx context.Context, step Step) (model.LLM, error) {
-			return &fakeModel{}, nil
-		},
-		ToolsBuilder: func(ctx context.Context, step Step, isLoop bool) ([]tool.Tool, error) {
-			return nil, nil
-		},
-	}
-
-	state, err := runner.RunGraph(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("unexpected error running adk graph workflow: %v", err)
-	}
-	if state == nil || !state.Done {
-		t.Fatalf("expected completed run state, got %+v", state)
-	}
-	if state.StepIdx != 2 {
-		t.Errorf("expected StepIdx 2, got %d", state.StepIdx)
-	}
-	if !listener.started {
-		t.Error("expected listener OnWorkflowStarted to be called")
-	}
-	if listener.stepsDone != 2 {
-		t.Errorf("expected 2 step done calls, got %d", listener.stepsDone)
-	}
-	if !listener.done {
-		t.Error("expected listener OnWorkflowDone to be called")
-	}
-}
