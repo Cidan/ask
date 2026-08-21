@@ -2,42 +2,35 @@ package engine
 
 import (
 	"google.golang.org/adk/v2/plugin"
-	"google.golang.org/adk/v2/plugin/functioncallmodifier"
 	"google.golang.org/adk/v2/plugin/retryandreflect"
-	"google.golang.org/genai"
 )
 
 // DefaultPlugins returns the standard set of ADK plugins configured for ask.
+//
+// functioncallmodifier is deliberately absent. It exists to inject
+// synthetic arguments into tool declarations at request time; ask needed
+// that for the required `description` phrase, which is now a real field
+// on every native tool's params struct, so there is nothing left to
+// inject. It was registered here with a predicate that always returned
+// false ever since PR #132 disabled it to stop it clobbering
+// ParametersJsonSchema — a plugin that could never fire.
+//
+// Bridge tools (linear_*, workflow_*) still have `description` added to
+// their input schema in pkg/tools/bridge.go, because their input types
+// come from the MCP handler cores and do not carry the field. That is a
+// one-time schema build at construction, not per-request AST surgery.
 func DefaultPlugins() []*plugin.Plugin {
 	var plugins []*plugin.Plugin
 
-	// 1. Retry and reflect plugin for automated in-turn tool error self-healing.
+	// Retry and reflect: when a tool returns a Go error, hand the model
+	// corrective guidance and let it retry in the same turn instead of
+	// surrendering. Every ask tool reports failure as a real error, which
+	// is what OnToolErrorCallback keys on.
 	if retryPlugin, err := NewRetryAndReflectPlugin(2); err == nil && retryPlugin != nil {
 		plugins = append(plugins, retryPlugin)
 	}
 
-	// 2. Function call modifier plugin for parameter injection when configured.
-	// Defaults to inactive so native tools using functiontool.New with ParametersJsonSchema
-	// are not corrupted by the plugin's decl.Parameters initialization.
-	if modPlugin, err := NewFunctionCallModifierPlugin(FunctionCallModifierOptions{
-		Predicate: func(toolName string) bool {
-			return false
-		},
-	}); err == nil && modPlugin != nil {
-		plugins = append(plugins, modPlugin)
-	}
-
 	return plugins
-}
-
-func isCoreCodingTool(toolName string) bool {
-	switch toolName {
-	case "read", "write", "edit", "glob", "grep", "ls", "bash", "job_output", "job_kill",
-		"fetch", "todos", "ask_user_question", "end_turn", "web_search":
-		return true
-	default:
-		return false
-	}
 }
 
 // NewRetryAndReflectPlugin creates an ADK retryandreflect plugin with the specified max retries.
@@ -49,27 +42,4 @@ func NewRetryAndReflectPlugin(maxRetries int) (*plugin.Plugin, error) {
 		retryandreflect.WithMaxRetries(maxRetries),
 		retryandreflect.WithTrackingScope(retryandreflect.Invocation),
 	)
-}
-
-// FunctionCallModifierOptions defines configuration for the functioncallmodifier plugin.
-type FunctionCallModifierOptions struct {
-	Predicate           func(toolName string) bool
-	Args                map[string]*genai.Schema
-	OverrideDescription func(originalDescription string) string
-}
-
-// NewFunctionCallModifierPlugin creates an ADK functioncallmodifier plugin with safety guards.
-func NewFunctionCallModifierPlugin(opts FunctionCallModifierOptions) (*plugin.Plugin, error) {
-	pred := opts.Predicate
-	if pred == nil {
-		pred = func(toolName string) bool {
-			return len(opts.Args) > 0 || opts.OverrideDescription != nil
-		}
-	}
-	cfg := functioncallmodifier.FunctionCallModifierConfig{
-		Predicate:           pred,
-		Args:                opts.Args,
-		OverrideDescription: opts.OverrideDescription,
-	}
-	return functioncallmodifier.NewPlugin(cfg)
 }

@@ -82,3 +82,23 @@ func TestToolFailuresAreGoErrors(t *testing.T) {
 		t.Error("a no-op edit must return a Go error")
 	}
 }
+
+// The description phrase is a static field on every coding tool's params
+// struct. That is what makes ADK's functioncallmodifier plugin
+// unnecessary — it exists to inject synthetic arguments at request time,
+// and ask has nothing left to inject.
+func TestCodingToolsDeclareDescriptionStatically(t *testing.T) {
+	coding := map[string]bool{
+		"read": true, "write": true, "edit": true, "glob": true, "grep": true,
+		"ls": true, "bash": true, "fetch": true, "todos": true,
+	}
+	for _, tl := range allCoreTools(t) {
+		info := ExtractToolInfo(tl)
+		if !coding[info.Name] {
+			continue
+		}
+		if _, ok := info.Parameters["description"]; !ok {
+			t.Errorf("%s must declare a description parameter, got %v", info.Name, info.Parameters)
+		}
+	}
+}

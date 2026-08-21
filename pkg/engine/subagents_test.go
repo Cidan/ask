@@ -2,14 +2,12 @@ package engine
 
 import (
 	"context"
-	"iter"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Cidan/ask/pkg/config"
-	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
 
@@ -104,75 +102,10 @@ func TestSubagentTools_GrantSets(t *testing.T) {
 	}
 }
 
-func TestBuildResearchSubagent_ADKIntegration(t *testing.T) {
-	fakeLLM := &fakeSubagentLLM{}
-	subagent, err := BuildResearchSubagent(fakeLLM, nil, 4096)
-	if err != nil {
-		t.Fatalf("BuildResearchSubagent failed: %v", err)
-	}
-	if subagent == nil {
-		t.Fatal("expected non-nil subagent")
-	}
-	if subagent.Name() != "research_subagent" {
-		t.Errorf("expected name 'research_subagent', got %q", subagent.Name())
-	}
-
-	agentTool, err := BuildResearchAgentTool(subagent)
-	if err != nil {
-		t.Fatalf("BuildResearchAgentTool failed: %v", err)
-	}
-	if agentTool == nil {
-		t.Fatal("expected non-nil agentTool")
-	}
-}
-
-func TestBuildNamedSubagent_ADKIntegration(t *testing.T) {
-	fakeLLM := &fakeSubagentLLM{}
-	def := SubagentDef{
-		Name:        "custom_agent",
-		Description: "A custom test subagent",
-		Prompt:      "Investigate things.",
-	}
-	subagent, err := BuildNamedSubagent(def, fakeLLM, nil, 2048)
-	if err != nil {
-		t.Fatalf("BuildNamedSubagent failed: %v", err)
-	}
-	if subagent == nil {
-		t.Fatal("expected non-nil subagent")
-	}
-	if subagent.Name() != "custom_agent" {
-		t.Errorf("expected name 'custom_agent', got %q", subagent.Name())
-	}
-
-	agentTool, err := BuildNamedAgentTool(def, fakeLLM, nil, 2048)
-	if err != nil {
-		t.Fatalf("BuildNamedAgentTool failed: %v", err)
-	}
-	if agentTool == nil {
-		t.Fatal("expected non-nil agentTool")
-	}
-	if agentTool.Name() != "custom_agent" {
-		t.Errorf("expected tool name 'custom_agent', got %q", agentTool.Name())
-	}
-}
-
-type fakeSubagentLLM struct{}
-
-func (f *fakeSubagentLLM) Name() string { return "fake-llm" }
-
-func (f *fakeSubagentLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
-	return func(yield func(*adkmodel.LLMResponse, error) bool) {
-		resp := &adkmodel.LLMResponse{
-			Content: &genai.Content{
-				Role: genai.RoleModel,
-				Parts: []*genai.Part{
-					{Text: "report"},
-				},
-			},
-		}
-		yield(resp, nil)
-	}
-}
+// Subagents run through the task tool's nested engine.Run rather than
+// ADK's agenttool — see the note at the top of subagents.go. The builders
+// that wrapped them in agenttool had no production callers and are gone,
+// so the tests that exercised them are too.
 
 func TestResolveSubagentModel(t *testing.T) {
 	home := t.TempDir()

@@ -1,11 +1,8 @@
 package engine
 
 import (
+	"strings"
 	"testing"
-
-	"google.golang.org/adk/v2/model"
-	"google.golang.org/adk/v2/plugin"
-	"google.golang.org/genai"
 )
 
 func TestDefaultPlugins_Configuration(t *testing.T) {
@@ -15,25 +12,19 @@ func TestDefaultPlugins_Configuration(t *testing.T) {
 	}
 
 	hasRetry := false
-	hasModifier := false
 	for _, p := range plugins {
 		if p == nil {
 			t.Fatal("received nil plugin in DefaultPlugins()")
 		}
-		switch p.Name() {
-		case "RetryAndReflectPlugin":
+		if p.Name() == "RetryAndReflectPlugin" {
 			hasRetry = true
-		case "FunctionCallModifierPlugin":
-			hasModifier = true
 		}
 	}
 
 	if !hasRetry {
 		t.Error("expected RetryAndReflectPlugin to be present in DefaultPlugins")
 	}
-	if !hasModifier {
-		t.Error("expected FunctionCallModifierPlugin to be present in DefaultPlugins")
-	}
+
 }
 
 func TestNewRetryAndReflectPlugin(t *testing.T) {
@@ -61,118 +52,14 @@ func TestNewRetryAndReflectPlugin(t *testing.T) {
 	})
 }
 
-func TestNewFunctionCallModifierPlugin(t *testing.T) {
-	t.Run("with nil predicate and args", func(t *testing.T) {
-		p, err := NewFunctionCallModifierPlugin(FunctionCallModifierOptions{})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+// The description phrase is a static field on every native tool's params
+// struct, so nothing needs to inject it at request time. This pins that
+// the plugin list stays free of functioncallmodifier, whose only job here
+// was that injection and which shipped disabled.
+func TestDefaultPlugins_NoFunctionCallModifier(t *testing.T) {
+	for _, p := range DefaultPlugins() {
+		if p != nil && strings.Contains(p.Name(), "FunctionCallModifier") {
+			t.Error("functioncallmodifier is redundant: description is a real params field")
 		}
-		if p == nil || p.Name() != "FunctionCallModifierPlugin" {
-			t.Fatalf("expected valid FunctionCallModifierPlugin, got %v", p)
-		}
-	})
-
-	t.Run("with custom schema args and description override", func(t *testing.T) {
-		p, err := NewFunctionCallModifierPlugin(FunctionCallModifierOptions{
-			Predicate: func(toolName string) bool {
-				return toolName == "read"
-			},
-			Args: map[string]*genai.Schema{
-				"description": {
-					Type:        "STRING",
-					Description: "short phrase",
-				},
-			},
-			OverrideDescription: func(orig string) string {
-				return orig + " (modified)"
-			},
-		})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if p == nil || p.Name() != "FunctionCallModifierPlugin" {
-			t.Fatalf("expected valid FunctionCallModifierPlugin, got %v", p)
-		}
-	})
-}
-
-func TestFunctionCallModifier_ActiveParameterInjection(t *testing.T) {
-	plugins := DefaultPlugins()
-	var modPlugin *plugin.Plugin
-	for _, p := range plugins {
-		if p != nil && p.Name() == "FunctionCallModifierPlugin" {
-			modPlugin = p
-			break
-		}
-	}
-	if modPlugin == nil {
-		t.Fatal("expected FunctionCallModifierPlugin in DefaultPlugins")
-	}
-
-	// Test isCoreCodingTool predicate
-	coreTools := []string{"read", "write", "edit", "glob", "grep", "ls", "bash", "job_output", "job_kill", "fetch", "todos", "ask_user_question", "end_turn", "web_search"}
-	for _, name := range coreTools {
-		if !isCoreCodingTool(name) {
-			t.Errorf("expected %q to be recognized as core coding tool", name)
-		}
-	}
-
-	nonCore := []string{"custom_tool", "random_func", "unknown"}
-	for _, name := range nonCore {
-		if isCoreCodingTool(name) {
-			t.Errorf("expected %q not to be recognized as core coding tool", name)
-		}
-	}
-}
-
-func TestDefaultPlugins_DoesNotCorruptParametersJsonSchema(t *testing.T) {
-	plugins := DefaultPlugins()
-	var modPlugin *plugin.Plugin
-	for _, p := range plugins {
-		if p != nil && p.Name() == "FunctionCallModifierPlugin" {
-			modPlugin = p
-			break
-		}
-	}
-	if modPlugin == nil {
-		t.Fatal("expected FunctionCallModifierPlugin in DefaultPlugins")
-	}
-
-	// Create a tool with ParametersJsonSchema
-	decl := &genai.FunctionDeclaration{
-		Name:                 "read",
-		Description:          "Read file content",
-		ParametersJsonSchema: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}},
-	}
-
-	req := &model.LLMRequest{
-		Tools: map[string]any{
-			"read": struct{}{},
-		},
-		Config: &genai.GenerateContentConfig{
-			Tools: []*genai.Tool{
-				{
-					FunctionDeclarations: []*genai.FunctionDeclaration{decl},
-				},
-			},
-		},
-	}
-
-	// Run BeforeModelCallback
-	actx := NewStandaloneAgentContext(nil)
-	cb := modPlugin.BeforeModelCallback()
-	if cb != nil {
-		_, err := cb(actx, req)
-		if err != nil {
-			t.Fatalf("unexpected error from BeforeModelCallback: %v", err)
-		}
-	}
-
-	// Parameters must remain nil to prevent Vertex AI proto validation failure
-	if decl.Parameters != nil {
-		t.Errorf("decl.Parameters was mutated to non-nil: %+v; this triggers proto validation error with ParametersJsonSchema", decl.Parameters)
-	}
-	if decl.ParametersJsonSchema == nil {
-		t.Errorf("decl.ParametersJsonSchema was unexpectedly cleared")
 	}
 }

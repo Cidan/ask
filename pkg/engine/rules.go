@@ -29,6 +29,10 @@ type Rule struct {
 	// Links are the @-references found in the rule's FULL body, before
 	// truncation — see LoadedContextDoc.Links.
 	Links []string
+	// Root is the directory this rule's @-links resolve against: its own
+	// scope root, so a user-global rule links within ~/.claude rather
+	// than into whichever repository is open.
+	Root string
 }
 
 func (r Rule) Eager() bool { return len(r.Paths) == 0 }
@@ -141,6 +145,7 @@ func ParseRuleFile(path string, scope RuleScope) (Rule, bool) {
 		Paths: paths,
 		Body:  strings.TrimRight(body, "\n"),
 		Links: links,
+		Root:  scope.Root,
 	}, true
 }
 
@@ -370,7 +375,7 @@ func (ct *ContextAwareTool) Run(ctx agent.Context, args any) (map[string]any, er
 		var dirAdd []string
 		if !seen {
 			ct.mu.Lock()
-			docs := contextFilesInDir(dir, ct.seenCtxFile)
+			docs := contextFilesInDir(dir, ct.root, ct.seenCtxFile)
 			ct.mu.Unlock()
 			for _, d := range docs {
 				relP, err := filepath.Rel(ct.root, d.Path)
@@ -410,7 +415,13 @@ func (ct *ContextAwareTool) Run(ctx agent.Context, args any) (map[string]any, er
 
 				add = append(add, fmt.Sprintf("## Rule for %s (%s)\n\n%s", rel, r.Rel, r.Body))
 				// r.Links, not r.Body — Body is capped, Links are not.
-				if linked := LoadContextLinksFrom(ct.root, r.Links); len(linked) > 0 {
+				// r.Root, not ct.root — a user-global rule resolves its
+				// links inside ~/.claude.
+				linkRoot := r.Root
+				if linkRoot == "" {
+					linkRoot = ct.root
+				}
+				if linked := LoadContextLinksFrom(linkRoot, r.Links); len(linked) > 0 {
 					for _, d := range linked {
 						add = append(add, fmt.Sprintf("### Included from %s\n\n%s", d.Path, d.Body))
 					}

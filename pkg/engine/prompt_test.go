@@ -251,6 +251,53 @@ func TestAgentContextFileCap_FitsRealInstructionFiles(t *testing.T) {
 // End to end: a CLAUDE.md that overflows the cap still gets its @-linked
 // docs into <included_docs>, even when the link itself sits in the part
 // that was cut.
+// An @-link in the user-global CLAUDE.md resolves inside ~/.claude, not
+// inside whichever repository happens to be open. This is the real case:
+// ~/.claude/CLAUDE.md contains "@RTK.md", which lives next to it, and
+// resolving against the project root looked for <repo>/RTK.md and
+// silently found nothing.
+func TestBuildSystemPrompt_GlobalScopeLinksResolveInHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stubGitStatus(t, "")
+
+	writeTestDoc(t, home, ".claude/CLAUDE.md", "Global rules.\nSee @RTK.md for the CLI.\n")
+	writeTestDoc(t, home, ".claude/RTK.md", "# RTK\nrtk-marker\n")
+
+	cwd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestDoc(t, cwd, "CLAUDE.md", "Project rules.\n")
+	// A same-named file in the project must not be what gets picked up.
+	writeTestDoc(t, cwd, "RTK.md", "wrong-file-marker")
+
+	prompt := BuildSystemPrompt(PromptOptions{Cwd: cwd})
+	if !strings.Contains(prompt, "rtk-marker") {
+		t.Errorf("global @-link must resolve under ~/.claude:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "wrong-file-marker") {
+		t.Error("global @-link resolved into the project root")
+	}
+}
+
+// A project document's links still resolve against the project root.
+func TestBuildSystemPrompt_ProjectScopeLinksResolveInProject(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stubGitStatus(t, "")
+	cwd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestDoc(t, cwd, "CLAUDE.md", "See @docs/guide.md.\n")
+	writeTestDoc(t, cwd, "docs/guide.md", "project-guide-marker")
+
+	prompt := BuildSystemPrompt(PromptOptions{Cwd: cwd})
+	if !strings.Contains(prompt, "project-guide-marker") {
+		t.Errorf("project @-link must still resolve under the project root:\n%s", prompt)
+	}
+}
+
 func TestBuildSystemPrompt_FollowsContextLinkPastCap(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	stubGitStatus(t, "")
