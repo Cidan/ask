@@ -58,17 +58,13 @@ One `package main`, one file per concern.
 | `types.go`             | All type defs, model struct, style vars, slash command registry.        |
 | `update.go`            | `Init`, `Update` dispatcher, input and session-picker key handlers.     |
 | `view.go`              | `View`, layout math, viewport rendering, markdown cache, scrollbar, modal overlay. |
-| `agent_provider.go`    | `agentProviderSpec` + the generic `agentAPIProvider` — ONE Provider implementation shared by every in-process API provider (deepseek/anthropic/openai): StartSession → `agentSession`, capability-gated image attachments, shared tool assembly (`agentSessionTools`), per-spec settings accessors. See "In-process API providers" below. |
-| `deepseek.go`          | DeepSeek spec: model/effort options, `$DEEPSEEK_API_KEY` resolution, effort→wire mapping (thinking off / reasoning_effort), images rejected. |
-| `anthropic.go`         | Anthropic spec: catwalk model list, effort→`output_config.effort` with catalog clamping, manual prompt-cache breakpoints (`anthropicPrepareStep`: system + last 2 messages; `anthropicDecorateTools`: last tool) — without these the API bills uncached every turn. |
-| `openai.go`            | OpenAI spec: Responses API (prefix predicate `openaiUseResponsesAPI` so new gpt-5.x/codex ids never fall back to chat completions), reasoning summaries + encrypted reasoning content (stateless resume), effort clamping. |
-| `googleai.go`         | Google AI Studio spec: API-key auth (`google.New(google.WithGeminiAPIKey)`), effort→`google.ThinkingLevel` (catalog-clamped), catwalk-driven Gemini model list. |
+| `agent_provider.go`    | `agentProviderSpec` + the generic `agentAPIProvider` — ONE Provider implementation for the in-process API provider (Vertex AI): StartSession → `agentSession`, capability-gated image attachments, shared tool assembly (`agentSessionTools`), per-spec settings accessors. |
 | `vertex.go`           | Vertex AI spec: project + location + ADC auth (`google.New(google.WithVertex)`), filters Claude ids out of the catwalk model list, `vertexPrepareCredentials` env-mutation seam for the optional SA-key path. |
 | `config_vertex.go`    | `/config → Vertex AI...` sub-picker. Three free-text rows (Project, Location, Service Account Key path) with regex validation + `expandTilde` for the SA-key row. |
 | `catalog.go`           | catwalk embedded-catalog lookups: model ids (default first), context windows, image capability, effort-level clamping. No network — the snapshot ships with the module. |
-| `agent_run.go`         | The in-process agent runtime: session goroutine, fantasy agent loop ↔ provider-protocol msgs, per-spec PrepareStep, image file parts, interrupt, loop detection, auto-compaction, dangling-tool-call repair. `refreshToolset` splits the surface: core → wire tool definitions, bridge twins + MCP → the deferred registry; the live-emit callbacks unwrap `invoke_tool` so the transcript shows the real registry tool. |
+| `agent_run.go`         | The in-process agent runtime: session goroutine, ADK agent loop, per-spec PrepareStep, image file parts, interrupt, loop detection, auto-compaction. `refreshToolset` splits the surface: core → wire tool definitions, bridge twins + MCP → the deferred registry. |
 | `agent_prompt.go`      | Coder system prompt assembly: static head, env snapshot, CLAUDE.md/AGENTS.md inclusion, `askSteeringPrompt` tail. Byte-stable per session for DeepSeek's prefix cache. Context files are discovered by `AgentContextSearchDirs` — the user-global `~/.claude/` scope first, then every directory from the project root down to cwd (general before specific), matching what `.claude/rules`, skills, and subagents already do. Each distinct file loads **once**: dedupe is by resolved path (`ContextFileRealPath` → `EvalSymlinks`), so the common `AGENTS.md -> CLAUDE.md` symlink contributes one body, not two. |
-| `agent_session.go`     | `agentSessionStore` — fantasy-message transcripts under `~/.config/ask/agent-sessions/<provider>/`, backing /resume, LoadHistory replay, and Materialize. |
+| `agent_session.go`     | `agentSessionStore` — ADK FileSessionService transcripts under ~/.config/ask/agent-sessions/<provider>/, backing /resume, LoadHistory replay, and Materialize. |
 | `pkg/diff`             | Modular subpackage implementing pure-Go Myers unified diffing (`Unified`) and parsing (`Parse`) algorithms. |
 | `agent_tools.go`       | Shared tool infra: `agentToolEnv` (cwd, emit, approval gate), read-tracker, output caps/truncation. |
 | `agent_tools_file.go`  | read / write / edit tools (exact-match edits, read-before-mutate + stale-mtime guards, CRLF preserve, diff emission). write/edit refuse to mutate until a todos list has applied this session (`requireTodosNotice`, see `agent_tools_todos.go`) only when the opt-in `Gate Todos Before Mutate` config flag is on (default off); otherwise they proceed normally. |
@@ -78,17 +74,17 @@ One `package main`, one file per concern.
 | `agent_tools_todos.go` | todos tool — full-list replace emitting `todoUpdatedMsg` into the existing todo surface. The description carries an explicit cadence contract (one call per status transition) and every ack appends a state-keyed nudge ("call again the moment the in_progress item is done" / "no item is in_progress") so models keep the list live instead of planning once and closing everything at the end. ALSO the two-stage **workflow guard**: in a project that defines workflows (`env.workflowsAvailable`, set once at session start) the todos tool gates multi-step work in two checkpoints, each firing at most once per session, but only when the opt-in `Gate Todos Before Mutate` config flag is on (default off). STAGE 1 (`workflowGuardShouldFire`): the first todos call before the model has looked at the workflows is REJECTED without applying the list — `workflowGuardTodosNotice` steers it to call the `workflow_list` core tool directly (agent_tools_workflow.go), forces a one-line fit verdict judged against each workflow's **Description** (its stated purpose — NOT the step names, since inferring scope from step structure is how a fitting workflow gets wrongly declined), and names the exact mechanic (a fitting workflow + user approval ⇒ the next action MUST be calling `finalized_plan` with the workflow suggested as `default_workflow`). STAGE 2 (`workflowDecisionGuardShouldFire`): once the model has looked (`workflowsChecked`) but is now re-sending a list to start inline work WITHOUT ever proposing a workflow, it is rejected once more — `workflowDecisionGuardNotice` makes it reconcile that decision (run the workflow, or confirm with the user it's declining the workflow). This catches the real DeepSeek failure where the model asks, gets a yes, then proceeds inline anyway. Stage 1 disarms when `workflow_list` is invoked (`env.markWorkflowsChecked`); stage 2 disarms when inline execution or a workflow run is proposed/approved via `finalized_plan` — both hooks live in the tool closures themselves, agent_tools_workflow.go. Each stage latches after one fire so a model legitimately proceeding inline is never blocked past these two checkpoints. Inert when the project has no workflows, the gate is false, or the two-stage check lives in `env.workflowGuardNotice()` (agent_tools.go). A successful todos call sets `env.todosApplied` (`markTodosApplied`). When the gate is on, `write`/`edit` refuse to mutate until that flag is set (`requireTodosNotice` → `requireTodosBeforeMutateNotice`, agent_tools_file.go), making the todos call a mandatory chokepoint before any code change. When the gate is off (default), the workflow guard and require-todos gate are both inert. |
 | `agent_tools_task.go`  | task tool v2: default read-only researcher on the parent model, OR a named subagent definition (`agent:` param) with its own instructions/tools/model — including a DIFFERENT in-process provider (cross-provider delegation). `run_in_background` rides the bash job manager (job_output/job_kill + bgTask UI signals). |
 | `agent_subagents.go`   | Named subagent defs: `.claude/agents/*.md` + `~/.config/ask/agents` (frontmatter name/description/tools/model + ask's `provider` extension; body = system prompt), `<available_agents>` prompt block, tool grant sets (default read-only, `*` = coding core, never task/modal tools), claude model-alias mapping, cross-provider model resolution via `agentSpecByID`. |
-| `skills.go`            | Agent Skills standard (agentskills.io): SKILL.md discovery (~/.config/ask/skills, ~/.agents/skills, ~/.claude/skills + project .agents/.claude/.ask skills dirs at cwd AND git root, project wins), name/description validation, `<available_skills>` trigger block (progressive disclosure — body loads via the read tool), `/skill-name` slash expansion (`expandSkillInvocation` in runTurn), user-invocable skills surfaced through `ProbeInit`. Generic `parseMarkdownFrontmatter` shared with subagent defs. |
+| `skills.go`            | Agent Skills standard (agentskills.io) using native ADK `skilltoolset` and `skill.Source`: SKILL.md discovery, progressive disclosure (body loads dynamically), `/skill-name` slash expansion, user-invocable skills surfaced through `ProbeInit`. |
 | `rules.go`             | Claude Code `.claude/rules/` standard: `*.md` rule files discovered recursively (symlink-following, cycle-guarded) under project `.claude/rules/` (git root) and user `~/.claude/rules/` (user loads first, project wins on same relative label). YAML `paths` frontmatter (block + inline list forms, brace patterns survive verbatim) splits rules two ways — no `paths` ⇒ EAGER (`rulesPromptBlock` → `<project_rules>` system-prompt block, byte-stable for prefix caching), with `paths` ⇒ JIT (`ruleAwareTool` decorates the read tool; reading a file whose project-root-relative path matches a glob appends the rule body to that tool result, once per rule per session, project-scope only). Globs reuse `agentGlobMatch` (doublestar + `{a,b}`). The same decorator ALSO injects project instruction files it walks past — but only ones the model has not already been given: `WrapContextAwareTools` seeds `seenCtxFile` with everything `AgentContextFiles(cwd)` already put in `<project_instructions>`, so a read next to CLAUDE.md no longer re-sends CLAUDE.md. Only genuinely unseen instructions (a `CLAUDE.md` in a subdirectory *below* cwd) arrive JIT, once each. Do not remove that seeding — without it, one `read` of a 3KB file returned 99KB. |
 | `agent_tools_ask.go`   | In-process twins of the bridge's `ask_user_question` / `end_turn` — same modal/workflow machinery, no HTTP loopback. |
-| `agent_tools_bridge.go`| Native twins of the `linear_*` bridge tools: a generic `nativeBridgeTool` adapter generates fantasy schemas via the same jsonschema machinery the MCP SDK uses (field docs survive verbatim) and wraps the shared cwd-parameterized cores in mcp_linear.go. In-process sessions never attach the loopback bridge. These tools live in the deferred registry, never on the wire. The adapter runs every schema through `flattenNullableTypes` (drops `"null"` from `type: ["null", X]` arrays) before handing it back — jsonschema-go emits nullable types for `*T` and `omitempty` slices, and fantasy's downstream `schema.Normalize` would otherwise rewrite them into an `anyOf` whose array branch carries its own `items: {}` while the parent keeps its real `items` (strict Moonshot / OpenAI validators reject the "conflicting keywords" shape). Same step applies to the workflow_* tools via the shared adapter. |
+| `agent_tools_bridge.go`| Native twins of the `linear_*` bridge tools: a generic `nativeBridgeTool` adapter generates ADK schemas via jsonschema-go. In-process sessions never attach the loopback bridge. These tools live in the deferred registry, never on the wire. |
 | `agent_tools_workflow.go`| The ask-built-in workflow tools on the CORE wire toolset: `workflow_list`, `workflow_get`, `workflow_create`, `workflow_edit`, `workflow_delete`, and `workflow_copy`. Built with the same `nativeBridgeTool` adapter (so wire schemas are byte-identical to the prior registry shape) and the shared cwd-parameterized cores in mcp_workflows.go. Deliberate, documented core exception: the two-stage workflow guard (agent_tools_todos.go) forces the model to call `workflow_list` as a precondition for any multi-step work, and an extra `search_tools` round-trip on every guard interaction is pure overhead. The disarm hook (`env.markWorkflowsChecked`) lives in the `workflow_list` closure itself so the guard clears on the direct call — they are NOT in `invoke_tool` anymore. Don't bypass the bridge adapter for a new workflow tool; the adapter's `flattenNullableTypes` pass is what keeps `workflow_create` / `workflow_edit` from emitting the type-arrays Moonshot's strict validator rejects. |
 | `agent_tools_registry.go`| The deferred tool registry surface: `search_tools` (query the registry — `*` / prefix-`*` / substring — returning name + description + full input_schema per match) and `invoke_tool` (dispatch a registry tool by name via its `.Run`, with replicated required-field validation, phrase injection for natives, and verbatim response pass-through). `unwrapInvokeToolCall` maps invoke calls back to the inner tool for display. See "Tool registry vs core tools" below — **new tools go here, never into the core list**, unless a deliberate, documented exception is in play (the two today are `web_search` and the workflow_* tools). |
-| `agent_memory.go`      | Memory recall injection: session-start recall appended to the system prompt (once, byte-stable), per-prompt recall appended to the wire prompt, and `memoryAwareTool` wrapping read/edit/write with a per-file recall footer. All no-op when the memory service is closed. Backed by `sqlite-vec` workspace memory in the `pkg/memory` module for local vector-based semantic search. |
+| `agent_memory.go`      | Memory recall injection: ADK memory.Service implementation (sqlite-vec) and native loadmemorytool/preloadmemorytool. All no-op when the memory service is closed. |
 | `agent_tools_mcp.go`   | MCP client v2 (`mcpManager`/`mcpServerConn`): per-session manager over stdio/http/sse transports (official go-sdk v1.6.1), lazy ping-and-rebuild before every call + one renew-and-retry, `tools/list_changed` → live deferred-registry refresh (the wire toolset never changes mid-session), MCP elicitation → ask's question modal (form mode: enum/boolean/free-form, typed answers; URL mode + headless decline), image tool-results as real media when the model has vision. Tools are `mcp__<server>__<tool>`. |
 | `mcp_servers.go`       | User-facing MCP server config: `mcpServers` maps (user-global + per-project) merged over project-root `.mcp.json` (claude-code convention), `${VAR}`/`${VAR:-default}` expansion, per-server type inference, timeout, enabled/disabled tool filters, Disabled tombstones. |
 | `mcp_oauth.go`         | OAuth for remote MCP servers (`oauth: true`): SDK authorization-code + PKCE + dynamic client registration, browser launch via swappable `mcpOAuthOpenBrowser`, one-shot loopback callback listener, tokens persisted 0600 under `~/.config/ask/mcp-oauth/` (valid stored tokens skip the browser; expiry re-runs the flow). |
-| `model_picker.go`      | Ctrl+M unified model picker (crush-style): search input, “Recently used” group first (`cfg.RecentModels`, capped push-front), then one section per provider with human-friendly catwalk names; ↑/↓ skip headers, Enter applies the pick to the current tab and persists it as the provider default model (`applyProviderModelSwitch` + `applyVSProviderSwap`; cfg.Provider untouched). Picking a model whose provider has no key drops into an inline API-key prompt (`providerKeySpecs`) that saves to ask.json and proceeds; per-provider “Enter your own…” rows cover custom ids. Replaced the old Ctrl+B switcher AND the `/config` per-provider key sub-pickers AND the `/model` and `/provider` slash commands. |
+| `model_picker.go`      | Ctrl+M unified model picker (crush-style): search input, “Recently used” group first (`cfg.RecentModels`, capped push-front), then models with human-friendly catwalk names; ↑/↓ skip headers, Enter applies the pick to the current tab and persists it as the provider default model. Picking a model whose provider has no key drops into an inline API-key prompt (`providerKeySpecs`) that saves to ask.json and proceeds. |
 | `sidebar.go`           | Right-hand column of per-tab task cards (title / provider·model / session $ spend / live activity + ⚠✓✗● badges), ~1/5 width clamped to [30,48]. The sidebar is the only tab mode (the bottom bar has been removed). The list cursor IS `app.active` — zero view-local selection state. Focus model: `ActionSidebarFocus` (Tab) swaps input↔list when the tab has no local Tab use (`model.wantsTabKey`), Up/Down/j/k switch tabs live (no Enter), any printable rune bounces focus back into the input and types, Ctrl+Up/Down (`ActionTabPrevAlt`/`NextAlt`) switch from anywhere, click on a card switches. Activity line prefers the agent's in_progress todo over `m.status`. |
 | `tab_title.go`         | Tab titles for the sidebar cards: seeded instantly from the first user prompt (`fallbackTabTitle`), refined async by a one-shot fantasy LLM call (`generateTabTitleText`, swappable; crush session-title pattern, 30s timeout) → `tabTitleMsg`, persisted on `VirtualSession.Title` (backfilled by `recordVirtualSession` when the title lands before the VS exists) and rehydrated on /resume. Generation always runs since the sidebar is the only tab mode. |
 | `commands.go`          | `cd` / `ls` handlers and `ls` formatting.                               |
@@ -155,8 +151,7 @@ exercised by the user; code alone won't catch layout regressions.
 | `config_websearch_test.go` | `/config → Web Search` picker — Global row presence, open/edit/commit (Brave key persisted to `cfg.WebSearch.BraveAPIKey`), paste accumulation, masked summary, clear-to-empty, Esc close. |
 | `sidebar_test.go`          | Sidebar — geometry (1/5 clamp), scroll-window/card hit-testing, key routing (Tab focus + completion non-theft, Up/Down switch, type-to-return, Esc, Ctrl+Up/Down both modes), focus-steal suppression, card title/meta/cost/activity/badge derivation, view composition + `joinBodySidebar`/`clipText`, workflow supplant (snapshot, tracker, busy refusal) and Enter-restore. |
 | `tab_title_test.go`        | Tab titles — fallback/sanitize (think-tag strip, quote/period trim, clip), `maybeStartTabTitle` gating (workflow tab / blank / already titled), swapped-generator cmd round-trip incl. error swallow, `tabTitleMsg` handler (foreign tab, empty title, stale-after-/new), VS persistence + `recordVirtualSession` backfill + /resume rehydration (Title, Preview fallback). |
-| `deepseek_test.go`         | Provider metadata/registry/workflow validation, effort→wire mapping, no-key fail-fast, full session lifecycle against `fakeLM` (send, system prompt on wire, kill/exited, resume replays transcript), Materialize, `modelContextLimit`. |
-| `agent_run_test.go`        | `fakeLM` (scripted `StreamPart`s) + runtime scenarios: text turn protocol order (done before complete), tool round-trip incl. wire history threading, interrupt = clean end, error turn, shutdown, loop-detection trip, compaction (summary head + auto-continuation), dangling-call repair, task sub-agent tool. |
+| `agent_run_test.go`        | ADK runner loop tests + runtime scenarios: tool round-trip incl. wire history threading, interrupt = clean end, error turn, shutdown, loop-detection trip, compaction. |
 | `agent_tools_test.go`      | Tool behaviors on `t.TempDir()`: read windows/caps/rejections, write/edit guards (read-before-mutate, stale mtime, uniqueness, replace_all, CRLF), glob/grep/ls, bash via swapped `agentRunShell` (output, exit codes, cancel-kills-pgroup, background jobs), approval denials (`StopTurn`), fetch via httptest, Brave `web_search` (no-key notice, empty-query reject, token/query/count headers + config-beats-env via swapped `braveSearchClient`, HTML-stripped results, HTTP-error result, approval `StopTurn`), todos validation, the two-stage workflow guard (todos-only: fire/disarm-by-check/disarm-by-run/inert), the require-todos-before-mutate gate (edit + write refused until a todos list applies, then it lands; fires in workflow-less projects too), required description-phrase schema across the coding core. |
 | `agent_tools_ask_test.go`  | Native ask_user_question/end_turn — message shapes via swapped `agentSendToProgram`, cancelled/headless replies. |
 | `agent_tools_mcp_test.go`  | MCP manager against in-process `mcp.Server`s over httptest — attach/skip/schema/IsError, image results (placeholder vs media by vision), unreachable-server skip, `tools/list_changed` live refresh, dead-server graceful error, elicitation schema mapping + accept/cancel/headless/url flows. |
@@ -168,13 +163,10 @@ exercised by the user; code alone won't catch layout regressions.
 | `skills_test.go`           | Skills — discovery validation (bad name / dir mismatch / no description skipped) + project-over-global precedence, trigger block (progressive disclosure, hidden skills), `/name args` expansion incl. user-invocable gating, frontmatter parser, ProbeInit → slash entries. |
 | `rules_test.go`            | `.claude/rules/` — `paths` frontmatter parsing (no-frontmatter/no-paths eager, block + inline list, brace verbatim, key-terminated list), eager/match split, recursive discovery + project-over-user precedence + non-md/empty-body skip, `rulesPromptBlock` (eager only, path attr), `ruleAwareTool` JIT injection + once-per-session dedup + non-match miss + eager exclusion, no-scoped-rules passthrough, `relPath` outside-root rejection. End-to-end eager block in `agent_prompt_test.go`. |
 | `agent_subagents_test.go`  | Subagents — def discovery/precedence/field parsing, tool grant sets, spec registry, claude model aliases, cross-provider model resolution (swapped LM var), task tool: named agent runs on the pinned provider w/ def prompt + report tail, background job lifecycle (bgTask signals, job_output), default researcher unchanged, `/skill` expansion reaches the wire. |
-| `agent_session_test.go`    | Store round-trip (typed parts survive), CreatedAt preservation, list ordering, LoadHistory tool-output modes, Materialize. |
+| `agent_session_test.go`    | Store round-trip (typed parts survive), CreatedAt preservation, list ordering, LoadHistory tool-output modes, Materialize via ADK FileSessionService. |
 | `agent_prompt_test.go`     | Prompt assembly: env block, context-file discovery/dedupe/cap, determinism, steering tail, worktree clause. |
 | `pkg/diff/diff_test.go`    | `Unified` diff and `Parse` tests, including Myers budget fallback, interleaved edits, and EOF newline handling. |
 | `model_picker_test.go`     | Ctrl+M picker — open/seed (incl. busy gate), header-skipping nav + wrap, fuzzy filter (provider name + friendly name + id), apply semantics (cross-provider clears session, same-provider keeps, no SaveSettings, tab-local), recents (record/cap/dedupe/resurface incl. synthesized custom ids), API-key gate (prompt/save/esc/env-or-config skip), custom-id editor, paste routing, friendly-name + fuzzy helpers, `missingAPIKeyError`. |
-| `anthropic_test.go`        | Anthropic spec — metadata/registry, effort→wire incl. clamping, cache-breakpoint placement (`anthropicPrepareStep` marks system + last 2, strips stale, never mutates caller; `anthropicDecorateTools` marks last tool), native `web_search` provider tool, no-key fail-fast, lifecycle w/ image attachment → wire FilePart, persisted transcript free of cache markers, context windows. |
-| `openai_test.go`           | OpenAI spec — metadata/registry, Responses-API prefix predicate, encrypted-reasoning + summary options, effort mapping, native `web_search` provider tool, no-key fail-fast, lifecycle (images accepted), context windows. |
-| `googleai_test.go`         | Google AI Studio spec — metadata/registry, effort→`google.ThinkingLevel` incl. `catalogClampEffort` (Gemini 3.1 Pro rejects "minimal" → "low"), no-key fail-fast, full session lifecycle against `fakeLM`, Materialize, store root, max output tokens (catalog-driven), image support, `modelContextLimit`. |
 | `vertex_test.go`           | Vertex AI spec — metadata/registry (incl. Claude-filtered picker + no key-prompt), effort mapping, no-key fail-fast (no project), SA-key auth via `vertexPrepareCredentials` seam (path validation, env mutation, env fallback, ADC discovery), full session lifecycle, Materialize, store root, `vertexModelOptions_FiltersClaude`. |
 | `config_vertex_test.go`    | `/config → Vertex AI` picker — global row presence, project/location regex validation, SA-key tilde + readable-file validation, persistence, paste accumulation, invalid input keeps editor open, summary state ("off" / "<project>/global"). |
 | `catalog_test.go`          | catwalk lookups — model hit/miss, default-first id list, window/image fallbacks, effort clamping (down to nearest, up from below-range). |
@@ -651,63 +643,9 @@ and `providerExitedMsg` + channel close on shutdown.
 
 ### Wire mechanics
 
-**DeepSeek** rides fantasy's `openaicompat` (reasoning_content
-echo-back, index-keyed tool-call delta merge, retry-after backoff).
-Options keyed by provider name ("deepseek" via `openaicompat.WithName`):
-`off` → `extra_body: {thinking: {type: disabled}}` + temperature 0.0,
-`high` → `reasoning_effort: high`, `max` → `xhigh`. Models
-`deepseek-v4-pro` (default) / `deepseek-v4-flash`, 1M context; the
-deprecated `deepseek-chat`/`deepseek-reasoner` aliases (retire
-2026-07-24) are deliberately absent. Images rejected.
+**Vertex AI** rides the `google` provider via `google.New(google.WithVertex(project, location))` through ADK 2.0. Auth uses Google Cloud ADC: explicit `cfg.Vertex.ServiceAccountKey` (or `$GOOGLE_APPLICATION_CREDENTIALS` env) → `gcloud auth application-default login` creds → GCE metadata. The `vertexPrepareCredentials` helper validates the SA-key path and uses `genai.ClientConfig{Credentials: ...}` directly instead of mutating the process environment. Project is required (fail-fast at session start); Location defaults to `global`. Default model is `gemini-3.7-flash`.
 
-**Anthropic** rides fantasy's `anthropic` provider. Effort maps to
-`output_config.effort` (adaptive thinking on current models), clamped
-to the model's published levels via catwalk. **Prompt caching is
-manual on the raw API**: `anthropicPrepareStep` clones the step
-messages, strips stale markers, and marks the system message + last
-two messages; `anthropicDecorateTools` marks the last tool definition.
-That's ≤4 ephemeral breakpoints (the API max). Never set sampling
-params — thinking-enabled requests reject them.
-
-**OpenAI** rides fantasy's `openai` provider with
-`WithUseResponsesAPI()` + a prefix predicate (`openaiUseResponsesAPI`)
-so gpt-5.x/codex/o-series ids always take the Responses API even when
-fantasy's exact-id list lags. Reasoning summaries on; encrypted
-reasoning content always requested (Store defaults false → stateless
-replay needs the blobs round-tripped in persisted messages).
-
-**Google AI Studio** rides fantasy's `google` provider via
-`google.New(google.WithGeminiAPIKey(key))`. Auth is the API key
-(`$GOOGLE_API_KEY` env or `cfg.GoogleAI.APIKey`). Effort maps to
-`google.ThinkingLevel` with `catalogClampEffort` de-grading a pick
-the chosen model doesn't support (Gemini 3.1 Pro rejects "minimal"
-→ "low", Gemini 2.5 Pro rejects everything). Default model
-`gemini-3.1-pro-preview-customtools`. Brave-backed core
-`web_search` (no native Google Search grounding in fantasy yet).
-
-**Vertex AI** rides the same `google` provider via
-`google.New(google.WithVertex(project, location))`. Auth uses
-Google Cloud ADC: explicit `cfg.Vertex.ServiceAccountKey` (or
-`$GOOGLE_APPLICATION_CREDENTIALS` env) → `gcloud auth
-application-default login` creds → GCE metadata. The
-`vertexPrepareCredentials` helper validates the SA-key path and
-calls `vertexApplyEnv` (swappable) to set the env so
-`credentials.DetectDefault` finds the bytes. Project is required
-(fail-fast at session start); Location defaults to `global`. The
-catwalk model list includes five Claude ids that fantasy
-transparently routes through `anthropic.WithVertex` — those are
-filtered out of `vertexModelOptions` because their reasoning
-enum ([low/medium/high/max]) is incompatible with Gemini's
-[minimal/low/medium/high]. Users wanting Claude-on-Vertex use the
-regular Anthropic provider. Same Brave-backed `web_search` as
-Google AI Studio. Default model `gemini-3.1-pro-preview`.
-
-Model metadata (context windows, image capability, reasoning levels)
-comes from `charm.land/catwalk`'s embedded catalog (catalog.go) with
-conservative 200k fallbacks for unknown ids. The system prompt is
-built once per session and reused verbatim so prefix caching
-(automatic on DeepSeek, explicit breakpoints on Anthropic) hits;
-volatile env (git status) is a labeled session-start snapshot.
+Model metadata (context windows, image capability, reasoning levels) comes from `charm.land/catwalk`\'s embedded catalog (catalog.go). The system prompt is evaluated per-invocation using ADK\'s dynamic `InstructionProvider`.
 
 ### Tools
 
@@ -747,9 +685,7 @@ behavior.
 
 ### Tool contracts: typed structs in, typed structs out
 
-Every tool is built with `tools.NewTypedTool[T, R]`, which is
-`functiontool.New[TArgs, TResults]` over two real structs — ADK derives
-BOTH the input and the output JSON schema from them:
+Every tool is built natively with ADK's `functiontool.New[TArgs, TResults]` over two real structs — ADK derives BOTH the input and the output JSON schema from them automatically using `jsonschema-go`.
 
 ```go
 type ReadParams struct { FilePath string `json:"file_path" jsonschema:"..."` }
@@ -768,34 +704,14 @@ func ReadTool(env *ToolEnv) Tool {
 
 Rules, all pinned by `pkg/tools/contract_test.go`:
 
-- **Both sides typed.** No `map[string]any`, no `any` as TResults. Passing
-  `any` leaves the declaration with an empty output schema, which is what
-  every tool did before.
-- **`agent.Context`, never `context.Context`.** A plain context has to be
-  converted to a fake, and the fake returns nil for `Artifacts`,
-  `Session`, `State`, and `ToolConfirmation`, and hands out a throwaway
-  `Actions` — so escalation and confirmation from a tool are silently
-  dropped.
-- **Failures are Go errors.** `return ReadResult{}, fmt.Errorf(...)`, not
-  an error field. ADK's `OnToolErrorCallback` keys on a real error, which
-  is what lets the `retryandreflect` plugin give the model corrective
-  guidance and retry (`MaxRetries: 2`, `errorIfRetryExceeded: false`, so
-  the turn does not abort). Non-failures — a todos gate notice, a
-  headless ask, a no-op write, an empty search — stay as result fields.
-- **One `Run` shape.** `Run(ctx agent.Context, args any) (map[string]any, error)`,
-  ADK's own contract. `RunADKTool` is a single type assertion because of
-  it; it used to probe seven shapes to accommodate `invoke_tool` alone.
+- **Both sides typed.** No `map[string]any`, no `any` as TResults.
+- **`agent.Context`, never `context.Context`.** A plain context has to be converted to a fake, and the fake drops important ADK features (State, Actions, Escalation, Confirmation).
+- **Failures are Go errors.** `return ReadResult{}, fmt.Errorf(...)`, not an error field. ADK's `OnToolErrorCallback` keys on a real error, which lets ADK reflect and retry.
+- **One `Run` shape.** Tool handlers are seamlessly adapted to ADK without custom wrappers.
 
-`NativeBridgeTool[In, Out]` wraps its handler's output in
-`BridgeResult[Out]{Content, Data}`, so the linear_* and workflow_* tools
-carry their real output struct too.
+`NativeBridgeTool[In, Out]` wraps its handler's output in `BridgeResult[Out]{Content, Data}`, so the linear_* and workflow_* tools carry their real output struct too.
 
-**Reading a tool result.** There is no single `result` key any more.
-`engine.ToolResultText(resp)` finds the human-readable field for any tool
-(preference order in `toolResultTextFields`) and reports whether the
-result is an error; `engine.AppendToolResultText` is how a decorator adds
-to one without knowing which struct produced it. Every UI path goes
-through those two.
+**Reading a tool result.** `engine.ToolResultText(resp)` finds the human-readable field for any tool (preference order in `toolResultTextFields`) and reports whether the result is an error. Every UI path goes through it.
 
 ### Tool registry vs core tools
 
@@ -869,7 +785,7 @@ lowercase names.
 
 ### Sessions & turn hygiene
 
-Transcripts persist as fantasy message arrays (typed parts survive
+Transcripts persist as ADK message arrays (typed parts survive
 JSON round-trip) under `~/.config/ask/agent-sessions/<provider>/`,
 keyed by a claude-code-style cwd encoding for the project dirs. Resume
 replays the stored messages into the next wire call; Materialize
