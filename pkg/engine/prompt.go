@@ -496,22 +496,6 @@ func BuildSystemPrompt(opts PromptOptions) string {
 		}
 	}
 
-	if memory.IsOpen() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		if mem := memory.SystemBlock(ctx, cwd); mem != "" {
-			b.WriteString("\n\n<project_memory>\n")
-			b.WriteString(mem)
-			b.WriteString("\n</project_memory>")
-		}
-		cancel()
-	}
-
-	if !opts.DisableSkillsPrompt {
-		if block := SkillsPromptBlock(DiscoverSkills(cwd)); block != "" {
-			b.WriteString("\n\n")
-			b.WriteString(block)
-		}
-	}
 	if block := SubagentsPromptBlock(DiscoverSubagents(cwd)); block != "" {
 		b.WriteString("\n\n")
 		b.WriteString(block)

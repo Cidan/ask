@@ -7,15 +7,16 @@ import (
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
+	"google.golang.org/adk/v2/agent/workflowagent"
 	"google.golang.org/adk/v2/agent/workflowagents/loopagent"
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/exitlooptool"
 	adkworkflow "google.golang.org/adk/v2/workflow"
 )
 
-// CompileDefToADKWorkflow converts a workflow.Def into an ADK 2.0 directed acyclic graph (*adkworkflow.Workflow).
+// CompileDefToADKWorkflow converts a workflow.Def into an ADK 2.0 directed acyclic graph (agent.Agent).
 // It constructs agent nodes for each top-level step and connects them using standard workflow edges and routes.
-func CompileDefToADKWorkflow(ctx context.Context, cfg WorkflowAgentConfig) (*adkworkflow.Workflow, error) {
+func CompileDefToADKWorkflow(ctx context.Context, cfg WorkflowAgentConfig) (agent.Agent, error) {
 	if err := cfg.Def.Validate(); err != nil {
 		return nil, err
 	}
@@ -24,6 +25,7 @@ func CompileDefToADKWorkflow(ctx context.Context, cfg WorkflowAgentConfig) (*adk
 	}
 
 	var nodes []adkworkflow.Node
+	var subAgents []agent.Agent
 	var prevNotesDir string
 
 	for i, top := range cfg.Def.Steps {
@@ -125,6 +127,7 @@ func CompileDefToADKWorkflow(ctx context.Context, cfg WorkflowAgentConfig) (*adk
 				return nil, fmt.Errorf("failed to create agent node for loop %q: %w", top.Name, err)
 			}
 			nodes = append(nodes, loopNode)
+			subAgents = append(subAgents, loopAg)
 			continue
 		}
 
@@ -182,6 +185,7 @@ func CompileDefToADKWorkflow(ctx context.Context, cfg WorkflowAgentConfig) (*adk
 			return nil, fmt.Errorf("failed to create agent node for step %q: %w", top.Name, err)
 		}
 		nodes = append(nodes, stepNode)
+		subAgents = append(subAgents, stepAg)
 		prevNotesDir = notesDir
 	}
 
@@ -190,5 +194,10 @@ func CompileDefToADKWorkflow(ctx context.Context, cfg WorkflowAgentConfig) (*adk
 	}
 
 	edges := append([]adkworkflow.Edge{{From: adkworkflow.Start, To: nodes[0]}}, adkworkflow.Chain(nodes...)...)
-	return adkworkflow.New(cfg.Def.Name, edges)
+	return workflowagent.New(workflowagent.Config{
+		Name:        cfg.Def.Name,
+		Description: cfg.Def.Description,
+		SubAgents:   subAgents,
+		Edges:       edges,
+	})
 }

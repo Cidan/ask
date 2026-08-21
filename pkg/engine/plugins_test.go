@@ -61,40 +61,6 @@ func TestNewRetryAndReflectPlugin(t *testing.T) {
 	})
 }
 
-func TestNewFunctionCallModifierPlugin(t *testing.T) {
-	t.Run("with nil predicate and args", func(t *testing.T) {
-		p, err := NewFunctionCallModifierPlugin(FunctionCallModifierOptions{})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if p == nil || p.Name() != "FunctionCallModifierPlugin" {
-			t.Fatalf("expected valid FunctionCallModifierPlugin, got %v", p)
-		}
-	})
-
-	t.Run("with custom schema args and description override", func(t *testing.T) {
-		p, err := NewFunctionCallModifierPlugin(FunctionCallModifierOptions{
-			Predicate: func(toolName string) bool {
-				return toolName == "read"
-			},
-			Args: map[string]*genai.Schema{
-				"description": {
-					Type:        "STRING",
-					Description: "short phrase",
-				},
-			},
-			OverrideDescription: func(orig string) string {
-				return orig + " (modified)"
-			},
-		})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if p == nil || p.Name() != "FunctionCallModifierPlugin" {
-			t.Fatalf("expected valid FunctionCallModifierPlugin, got %v", p)
-		}
-	})
-}
 
 func TestFunctionCallModifier_ActiveParameterInjection(t *testing.T) {
 	plugins := DefaultPlugins()

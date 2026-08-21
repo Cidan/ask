@@ -189,6 +189,7 @@ var (
 	agentWebSearchTool       = tools.WebSearchTool
 	agentLoadMemoryTool      = tools.LoadMemoryTool
 	agentPreloadMemoryTool   = tools.PreloadMemoryTool
+	agentLoadArtifactsTool   = tools.LoadArtifactsTool
 )
 
 const (
@@ -236,10 +237,6 @@ func agentMemoryPromptContext(cwd, prompt string) string {
 
 func agentMemorySystemBlock(cwd string) string {
 	return memory.SystemBlock(context.Background(), cwd)
-}
-
-func wrapFileToolsWithMemory(ts []tools.Tool, cwd string) []tools.Tool {
-	return tools.WrapFileToolsWithMemory(ts, cwd)
 }
 
 func agentMemoryIndexTool(env *agentToolEnv) tools.Tool {
@@ -346,4 +343,5 @@ func buildAgentSystemPrompt(args ProviderSessionArgs) string {
 		InWorkflow:  args.InWorkflow,
 		GitStatusFn: agentGitStatus,
 	})
+}
 }

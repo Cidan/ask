@@ -104,3 +104,6 @@ func IsCoreTool(name string) bool {
 		return false
 	}
 }
+func LoadArtifactsTool() Tool {
+	return loadartifactstool.New()
+}
