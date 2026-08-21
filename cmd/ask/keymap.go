@@ -53,8 +53,9 @@ const (
 	// the active tab has no local use for the key (path/slash
 	// completion, non-chat screens) — see app.handleSidebarKey and
 	// model.wantsTabKey.
-	ActionSidebarFocus Action = "sidebar.focus"
-	ActionAppSuspend   Action = "app.suspend"
+	ActionSidebarFocus   Action = "sidebar.focus"
+	ActionTaskListToggle Action = "tasklist.toggle"
+	ActionAppSuspend     Action = "app.suspend"
 )
 
 // KeyBinding is a parsed Mod+Code pair. The zero value (Mod==0,
@@ -242,6 +243,7 @@ var defaultKeyBindings = map[Action]KeyBinding{
 	ActionScreenAsk:       {Mod: tea.ModCtrl, Code: 'o'},
 	ActionProviderSwitch:  {Mod: tea.ModCtrl, Code: 'm'},
 	ActionChatWorkflow:    {Mod: tea.ModCtrl, Code: 'f'},
+	ActionTaskListToggle:  {Mod: tea.ModCtrl, Code: 'x'},
 	// Reload ships unbound: Ctrl+R belongs to the PRs screen. Users
 	// who want a reload key bind one in /config → Keybindings.
 	ActionReload:       {},
@@ -367,6 +369,7 @@ var actionGroups = []actionMetaGroup{
 	{Heading: "Pickers & dispatch", Items: []actionMetaItem{
 		{ActionProviderSwitch, "Model picker"},
 		{ActionChatWorkflow, "Run workflow on chat"},
+		{ActionTaskListToggle, "Toggle task list"},
 		{ActionReload, "Reload issues/PRs"},
 	}},
 	{Heading: "App", Items: []actionMetaItem{

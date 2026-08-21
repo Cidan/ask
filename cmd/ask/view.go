@@ -1215,47 +1215,125 @@ func (m model) todoBlock() string {
 	if !m.busy() || (len(m.todos) == 0 && len(m.activeSubagents) == 0) {
 		return ""
 	}
-	target := 0
-	for _, t := range m.todos {
-		w := lipgloss.Width("▸ " + t.Content)
-		if t.ActiveForm != "" {
-			if aw := lipgloss.Width("▸ " + t.ActiveForm); aw > w {
-				w = aw
-			}
-		}
-		if w > target {
-			target = w
-		}
-	}
+
+	hintKey := keyHintFor(ActionTaskListToggle)
+
+	// Collect subagents in deterministic sorted order.
 	subagentIDs := make([]string, 0, len(m.activeSubagents))
 	for id := range m.activeSubagents {
 		subagentIDs = append(subagentIDs, id)
 	}
 	sort.Strings(subagentIDs)
-	for _, id := range subagentIDs {
-		desc := m.activeSubagents[id]
-		w := lipgloss.Width("▸ [agent] " + desc)
-		if w > target {
-			target = w
+
+	completedCount := 0
+	inProgressCount := 0
+	pendingCount := 0
+	var firstActive string
+
+	for _, t := range m.todos {
+		switch t.Status {
+		case "completed":
+			completedCount++
+		case "in_progress":
+			inProgressCount++
+			if firstActive == "" {
+				if t.ActiveForm != "" {
+					firstActive = t.ActiveForm
+				} else {
+					firstActive = t.Content
+				}
+			}
+		default:
+			pendingCount++
 		}
 	}
 
-	lines := make([]string, 0, len(m.todos)+len(m.activeSubagents))
-	for _, t := range m.todos {
-		line := renderTodoLine(t)
-		if pad := target - lipgloss.Width(line); pad > 0 {
-			line += strings.Repeat(" ", pad)
+	// Active subagents also count towards active tasks.
+	if firstActive == "" && len(subagentIDs) > 0 {
+		firstActive = "[agent] " + m.activeSubagents[subagentIDs[0]]
+	}
+	remainingCount := (len(m.todos) - completedCount) + len(m.activeSubagents)
+
+	// Collapsed View (Option B: Active-Task Headline)
+	if !m.taskListExpanded {
+		var line string
+		if firstActive != "" {
+			var hint string
+			otherPending := remainingCount - 1
+			if otherPending < 0 {
+				otherPending = 0
+			}
+			if otherPending > 0 {
+				if hintKey != "" {
+					hint = fmt.Sprintf("(%d pending · %s)", otherPending, hintKey)
+				} else {
+					hint = fmt.Sprintf("(%d pending)", otherPending)
+				}
+			} else if hintKey != "" {
+				hint = fmt.Sprintf("(%s)", hintKey)
+			}
+
+			activePart := todoProgressStyle.Render("◐ " + firstActive)
+			if hint != "" {
+				line = activePart + "  " + dimStyle.Render(hint)
+			} else {
+				line = activePart
+			}
+		} else if remainingCount > 0 {
+			var itemWord string
+			if remainingCount == 1 {
+				itemWord = "1 item left to complete"
+			} else {
+				itemWord = fmt.Sprintf("%d items left to complete", remainingCount)
+			}
+			headline := promptArrowStyle.Render("› ") + dimStyle.Render(itemWord)
+			if hintKey != "" {
+				line = headline + "  " + dimStyle.Render("("+hintKey+")")
+			} else {
+				line = headline
+			}
+		} else {
+			headline := todoDoneGlyphStyle.Render("● ") + dimStyle.Render("All items completed")
+			if hintKey != "" {
+				line = headline + "  " + dimStyle.Render("("+hintKey+")")
+			} else {
+				line = headline
+			}
 		}
-		lines = append(lines, line)
+		return todoBoxStyle.Render(line)
+	}
+
+	// Expanded View: Header line + 2-space indented item list
+	var headerLine string
+	if remainingCount > 0 {
+		var itemWord string
+		if remainingCount == 1 {
+			itemWord = "1 item left"
+		} else {
+			itemWord = fmt.Sprintf("%d items left", remainingCount)
+		}
+		headerLine = promptArrowStyle.Render("▾ ") + dimStyle.Render("Tasks ("+itemWord+")")
+		if hintKey != "" {
+			headerLine += "  " + dimStyle.Render("("+hintKey+")")
+		}
+	} else {
+		headerLine = promptArrowStyle.Render("▾ ") + dimStyle.Render("Tasks (all completed)")
+		if hintKey != "" {
+			headerLine += "  " + dimStyle.Render("("+hintKey+")")
+		}
+	}
+
+	lines := make([]string, 0, 1+len(m.todos)+len(m.activeSubagents))
+	lines = append(lines, headerLine)
+
+	for _, t := range m.todos {
+		lines = append(lines, "  "+renderTodoLine(t))
 	}
 	for _, id := range subagentIDs {
 		desc := m.activeSubagents[id]
-		line := todoProgressStyle.Render("▸ [agent] " + desc)
-		if pad := target - lipgloss.Width(line); pad > 0 {
-			line += strings.Repeat(" ", pad)
-		}
-		lines = append(lines, line)
+		lines = append(lines, "  "+todoProgressStyle.Render("◐ [agent] "+desc))
 	}
+
 	return todoBoxStyle.Render(strings.Join(lines, "\n"))
 }
 
@@ -1274,11 +1352,11 @@ func renderTodoLine(t todoItem) string {
 		if text == "" {
 			text = t.Content
 		}
-		return todoProgressStyle.Render("▸ " + text)
+		return todoProgressStyle.Render("◐ " + text)
 	case "completed":
-		return todoCompletedStyle.Render("✓ " + t.Content)
+		return todoDoneGlyphStyle.Render("● ") + todoCompletedStyle.Render(t.Content)
 	default:
-		return todoPendingStyle.Render("☐ " + t.Content)
+		return todoPendingStyle.Render("○ " + t.Content)
 	}
 }
 

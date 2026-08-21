@@ -458,10 +458,11 @@ var (
 	thumbBorderStyle  lipgloss.Style
 	pathBoxStyle      lipgloss.Style
 
-	todoBoxStyle       lipgloss.Style
-	todoPendingStyle   lipgloss.Style
-	todoProgressStyle  lipgloss.Style
-	todoCompletedStyle lipgloss.Style
+	todoBoxStyle           lipgloss.Style
+	todoPendingStyle       lipgloss.Style
+	todoProgressStyle      lipgloss.Style
+	todoCompletedStyle     lipgloss.Style
+	todoDoneGlyphStyle     lipgloss.Style
 
 	diffPathStyle       lipgloss.Style
 	diffHunkHeaderStyle lipgloss.Style
@@ -556,14 +557,11 @@ func applyTheme(t theme) {
 		BorderForeground(t.accent).
 		Padding(0, 1)
 
-	todoBoxStyle = lipgloss.NewStyle().
-		MarginLeft(3).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.promptDot).
-		Padding(0, 1)
+	todoBoxStyle = lipgloss.NewStyle().MarginLeft(2)
 	todoPendingStyle = lipgloss.NewStyle().Foreground(t.dim)
 	todoProgressStyle = lipgloss.NewStyle().Foreground(t.accentAlt).Bold(true)
-	todoCompletedStyle = lipgloss.NewStyle().Foreground(t.dim).Strikethrough(true)
+	todoCompletedStyle = lipgloss.NewStyle().Foreground(t.dim)
+	todoDoneGlyphStyle = lipgloss.NewStyle().Foreground(t.success)
 
 	diffPathStyle = lipgloss.NewStyle().Foreground(t.accentAlt).Bold(true)
 	diffHunkHeaderStyle = lipgloss.NewStyle().Foreground(t.dim)

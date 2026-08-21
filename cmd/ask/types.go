@@ -638,7 +638,8 @@ type model struct {
 
 	exitArmed bool
 
-	todos []todoItem
+	todos            []todoItem
+	taskListExpanded bool
 
 	// activeSubagents tracks currently running subagents in parallel (foreground and background).
 	// Keyed on subagentID; the value is the human-readable description.

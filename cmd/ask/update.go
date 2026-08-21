@@ -490,6 +490,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m.pendingWorkflow = nil
 		m.status = ""
 		m.todos = nil
+		m.taskListExpanded = false
 		m.activeSubagents = nil
 		m.bgTasks = nil
 		m.dismissCancelTurnConfirmIfIdle()
@@ -543,12 +544,14 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			m.status = ""
 			m.pendingWorkflow = nil
 			m.todos = nil
+		m.taskListExpanded = false
 			m.activeSubagents = nil
 		case msg.res.IsError:
 			m.appendHistory(outputStyle.Render(errStyle.Render("error: " + msg.res.Result)))
 			m.status = ""
 			m.pendingWorkflow = nil
 			m.todos = nil
+		m.taskListExpanded = false
 			m.activeSubagents = nil
 		}
 		m.refreshPathMatches()
@@ -597,6 +600,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m.testBusy = false
 		m.status = ""
 		m.todos = nil
+		m.taskListExpanded = false
 		m.activeSubagents = nil
 		m.dismissCancelTurnConfirmIfIdle()
 		var pendingWFCmd tea.Cmd
@@ -1342,6 +1346,12 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, pasteImageCmd()
 	}
 	km := currentKeyMap()
+	if km.Matches(ActionTaskListToggle, msg) {
+		if len(m.todos) > 0 || len(m.activeSubagents) > 0 {
+			m.taskListExpanded = !m.taskListExpanded
+			return m, nil
+		}
+	}
 	if km.Matches(ActionProviderSwitch, msg) {
 		if m.busy() {
 			// Don't allow swapping mid-turn — the stream reader is

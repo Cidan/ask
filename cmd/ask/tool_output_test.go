@@ -251,6 +251,7 @@ func TestTodoBlock_RendersActiveSubagents(t *testing.T) {
 		activeSubagents: map[string]string{
 			"sub-1": "Researching endpoints",
 		},
+		taskListExpanded: true,
 	}
 	out := m.todoBlock()
 	if !strings.Contains(out, "Implement feature") {
@@ -261,5 +262,68 @@ func TestTodoBlock_RendersActiveSubagents(t *testing.T) {
 	}
 	if h := m.todoBlockHeight(); h <= 0 {
 		t.Errorf("expected positive todo block height, got %d", h)
+	}
+}
+
+func TestTodoBlock_Collapsed_ActiveTaskHeadline(t *testing.T) {
+	m := model{
+		testBusy: true,
+		todos: []todoItem{
+			{Content: "Implementing feature", Status: "in_progress"},
+			{Content: "Task 2", Status: "pending"},
+			{Content: "Task 3", Status: "pending"},
+		},
+		taskListExpanded: false,
+	}
+	out := m.todoBlock()
+	if !strings.Contains(out, "Implementing feature") {
+		t.Errorf("expected 'Implementing feature' in collapsed view, got: %q", out)
+	}
+	if !strings.Contains(out, "pending") {
+		t.Errorf("expected pending count hint in collapsed view, got: %q", out)
+	}
+	if strings.ContainsAny(out, "┌┐└┘│─") {
+		t.Errorf("expected no border characters, got: %q", out)
+	}
+}
+
+func TestTodoBlock_Collapsed_NoActiveTask(t *testing.T) {
+	m := model{
+		testBusy: true,
+		todos: []todoItem{
+			{Content: "Task 1", Status: "pending"},
+			{Content: "Task 2", Status: "pending"},
+			{Content: "Task 3", Status: "pending"},
+		},
+		taskListExpanded: false,
+	}
+	out := m.todoBlock()
+	if !strings.Contains(out, "3 items left to complete") {
+		t.Errorf("expected '3 items left to complete' in collapsed view, got: %q", out)
+	}
+}
+
+func TestTodoBlock_Expanded_FullListWithCircleGlyphs(t *testing.T) {
+	m := model{
+		testBusy: true,
+		todos: []todoItem{
+			{Content: "Setup", Status: "completed"},
+			{Content: "Auth", Status: "in_progress"},
+			{Content: "Docs", Status: "pending"},
+		},
+		taskListExpanded: true,
+	}
+	out := m.todoBlock()
+	if !strings.Contains(out, "▾ ") || !strings.Contains(out, "Tasks (2 items left)") {
+		t.Errorf("expected header 'Tasks (2 items left)', got: %q", out)
+	}
+	if !strings.Contains(out, "● ") || !strings.Contains(out, "Setup") {
+		t.Errorf("expected '●  Setup', got: %q", out)
+	}
+	if !strings.Contains(out, "◐ ") || !strings.Contains(out, "Auth") {
+		t.Errorf("expected '◐  Auth', got: %q", out)
+	}
+	if !strings.Contains(out, "○ ") || !strings.Contains(out, "Docs") {
+		t.Errorf("expected '○  Docs', got: %q", out)
 	}
 }

@@ -1710,3 +1710,23 @@ func TestUpdate_ClearWorkflowStateMsgResetsWorkflowRun(t *testing.T) {
 		t.Errorf("expected last history entry to mention returned to chat, got %q", m2.history[len(m2.history)-1].text)
 	}
 }
+
+func TestUpdate_ToggleTaskList(t *testing.T) {
+	isolateHome(t)
+	invalidateKeyMapCache()
+	defer invalidateKeyMapCache()
+
+	m := newTestModel(t, newFakeProvider())
+	m.todos = []todoItem{{Content: "test", Status: "in_progress"}}
+	m.taskListExpanded = false
+
+	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'x'})
+	if !m2.taskListExpanded {
+		t.Error("expected Ctrl+X to expand task list")
+	}
+
+	m3, _ := runUpdate(t, m2, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'x'})
+	if m3.taskListExpanded {
+		t.Error("expected another Ctrl+X to collapse task list")
+	}
+}
