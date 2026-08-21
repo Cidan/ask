@@ -5,16 +5,52 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/memory"
 	"google.golang.org/adk/v2/agent"
-	"google.golang.org/adk/v2/tool/loadmemorytool"
+	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/tool/preloadmemorytool"
 	"google.golang.org/genai"
 )
 
-// LoadMemoryTool returns the native ADK load_memory tool for querying long-term memory.
+type loadMemoryParams struct {
+	Query string `json:"query" jsonschema:"The query to search memory for."`
+}
+
+// LoadMemoryTool returns the native tool for querying long-term memory with JSON Schema compatibility.
 func LoadMemoryTool() Tool {
-	return loadmemorytool.New()
+	return NewTool(
+		"load_memory",
+		"Loads the memory for the current user.",
+		func(ctx context.Context, p loadMemoryParams) (ToolResponse, error) {
+			query := strings.TrimSpace(p.Query)
+			if query == "" {
+				return NewTextErrorResponse("query cannot be empty"), nil
+			}
+			actx := engine.NewStandaloneAgentContext(ctx)
+			res, err := actx.SearchMemory(ctx, query)
+			if err != nil {
+				return NewTextErrorResponse("failed to search memory: " + err.Error()), nil
+			}
+			if res == nil || len(res.Memories) == 0 {
+				return NewTextResponse("no memories found"), nil
+			}
+			var lines []string
+			for _, m := range res.Memories {
+				if m.Content != nil {
+					for _, part := range m.Content.Parts {
+						if part.Text != "" {
+							lines = append(lines, part.Text)
+						}
+					}
+				}
+			}
+			if len(lines) == 0 {
+				return NewTextResponse("no memories found"), nil
+			}
+			return NewTextResponse(strings.Join(lines, "\n")), nil
+		},
+	)
 }
 
 // PreloadMemoryTool returns the native ADK preload_memory tool for automatic turn recall.
@@ -70,6 +106,15 @@ func (m *MemoryAwareTool) Info() ToolInfo      { return ExtractToolInfo(m.Inner)
 func (m *MemoryAwareTool) Declaration() *genai.FunctionDeclaration {
 	if dp, ok := m.Inner.(interface{ Declaration() *genai.FunctionDeclaration }); ok {
 		return dp.Declaration()
+	}
+	return nil
+}
+
+func (m *MemoryAwareTool) ProcessRequest(ctx agent.Context, req *model.LLMRequest) error {
+	if rp, ok := m.Inner.(interface {
+		ProcessRequest(ctx agent.Context, req *model.LLMRequest) error
+	}); ok {
+		return rp.ProcessRequest(ctx, req)
 	}
 	return nil
 }

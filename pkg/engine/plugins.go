@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"strings"
 
 	"google.golang.org/adk/v2/plugin"
 	"google.golang.org/adk/v2/plugin/functioncallmodifier"
@@ -18,11 +17,12 @@ func DefaultPlugins() []*plugin.Plugin {
 		plugins = append(plugins, retryPlugin)
 	}
 
-	// 2. Function call modifier plugin for parameter injection and description normalization.
+	// 2. Function call modifier plugin for parameter injection when configured.
+	// Defaults to inactive so native tools using functiontool.New with ParametersJsonSchema
+	// are not corrupted by the plugin's decl.Parameters initialization.
 	if modPlugin, err := NewFunctionCallModifierPlugin(FunctionCallModifierOptions{
-		Predicate: isCoreCodingTool,
-		OverrideDescription: func(originalDescription string) string {
-			return strings.TrimSpace(originalDescription)
+		Predicate: func(toolName string) bool {
+			return false
 		},
 	}); err == nil && modPlugin != nil {
 		plugins = append(plugins, modPlugin)

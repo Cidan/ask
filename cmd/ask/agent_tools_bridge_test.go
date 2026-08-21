@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/tools"
 	"google.golang.org/genai"
 )
@@ -163,5 +164,48 @@ func TestNativeBridgeTool_AllWireSchemasClean(t *testing.T) {
 		}
 		decl := declProvider.Declaration()
 		walkForItemsAnyOfConflict(t, tool.Name(), decl.ParametersJsonSchema)
+	}
+}
+
+func TestSetupAgentSessionTools_AllCoreToolsUseParametersJsonSchemaAndNoParametersConflict(t *testing.T) {
+	isolateHome(t)
+	tmpDir := t.TempDir()
+	env, _ := newTestToolEnv(t)
+	s := &agentSession{
+		args: ProviderSessionArgs{
+			Cwd:   tmpDir,
+			TabID: 1,
+		},
+		env: env,
+	}
+	cfg := askConfig{}
+	setupAgentSessionTools(s, cfg)
+
+	if len(s.coreTools) == 0 {
+		t.Fatal("expected coreTools to be populated")
+	}
+
+	adkTools, err := engine.AsADKTools(s.coreTools)
+	if err != nil {
+		t.Fatalf("AsADKTools failed: %v", err)
+	}
+
+	for _, tool := range adkTools {
+		declProvider, ok := tool.(interface{ Declaration() *genai.FunctionDeclaration })
+		if !ok {
+			// Some tools like preload_memory only inject instructions
+			continue
+		}
+		decl := declProvider.Declaration()
+		if decl == nil {
+			continue
+		}
+
+		if decl.Parameters != nil {
+			t.Errorf("tool %q has decl.Parameters set; GenAI/Vertex requires ParametersJsonSchema and forbids Parameters mixing", decl.Name)
+		}
+		if decl.ParametersJsonSchema == nil {
+			t.Errorf("tool %q has nil ParametersJsonSchema", decl.Name)
+		}
 	}
 }

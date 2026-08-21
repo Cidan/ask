@@ -3,6 +3,7 @@ package engine
 import (
 	"testing"
 
+	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/plugin"
 	"google.golang.org/genai"
 )
@@ -121,5 +122,57 @@ func TestFunctionCallModifier_ActiveParameterInjection(t *testing.T) {
 		if isCoreCodingTool(name) {
 			t.Errorf("expected %q not to be recognized as core coding tool", name)
 		}
+	}
+}
+
+func TestDefaultPlugins_DoesNotCorruptParametersJsonSchema(t *testing.T) {
+	plugins := DefaultPlugins()
+	var modPlugin *plugin.Plugin
+	for _, p := range plugins {
+		if p != nil && p.Name() == "FunctionCallModifierPlugin" {
+			modPlugin = p
+			break
+		}
+	}
+	if modPlugin == nil {
+		t.Fatal("expected FunctionCallModifierPlugin in DefaultPlugins")
+	}
+
+	// Create a tool with ParametersJsonSchema
+	decl := &genai.FunctionDeclaration{
+		Name:                 "read",
+		Description:          "Read file content",
+		ParametersJsonSchema: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}},
+	}
+
+	req := &model.LLMRequest{
+		Tools: map[string]any{
+			"read": struct{}{},
+		},
+		Config: &genai.GenerateContentConfig{
+			Tools: []*genai.Tool{
+				{
+					FunctionDeclarations: []*genai.FunctionDeclaration{decl},
+				},
+			},
+		},
+	}
+
+	// Run BeforeModelCallback
+	actx := NewStandaloneAgentContext(nil)
+	cb := modPlugin.BeforeModelCallback()
+	if cb != nil {
+		_, err := cb(actx, req)
+		if err != nil {
+			t.Fatalf("unexpected error from BeforeModelCallback: %v", err)
+		}
+	}
+
+	// Parameters must remain nil to prevent Vertex AI proto validation failure
+	if decl.Parameters != nil {
+		t.Errorf("decl.Parameters was mutated to non-nil: %+v; this triggers proto validation error with ParametersJsonSchema", decl.Parameters)
+	}
+	if decl.ParametersJsonSchema == nil {
+		t.Errorf("decl.ParametersJsonSchema was unexpectedly cleared")
 	}
 }

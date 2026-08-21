@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Cidan/ask/pkg/memory"
+	"google.golang.org/genai"
 )
 
 func TestTool_MemoryIndexTool(t *testing.T) {
@@ -130,6 +131,33 @@ func TestTool_LoadMemoryTool(t *testing.T) {
 	info := ExtractToolInfo(tool)
 	if info.Name != "load_memory" {
 		t.Errorf("expected ExtractToolInfo name load_memory, got %s", info.Name)
+	}
+	if _, ok := info.Parameters["query"]; !ok {
+		t.Errorf("expected query in parameters, got %+v", info.Parameters)
+	}
+
+	declProvider, ok := tool.(interface{ Declaration() *genai.FunctionDeclaration })
+	if !ok {
+		t.Fatal("expected LoadMemoryTool to implement Declaration()")
+	}
+	decl := declProvider.Declaration()
+	if decl == nil {
+		t.Fatal("expected non-nil Declaration()")
+	}
+	if decl.ParametersJsonSchema == nil {
+		t.Error("expected ParametersJsonSchema to be set for GenAI compatibility")
+	}
+	if decl.Parameters != nil {
+		t.Errorf("expected Parameters to be nil when ParametersJsonSchema is set, got %+v", decl.Parameters)
+	}
+
+	// Test execution with empty query
+	resp, err := RunToolWithJSON(context.Background(), tool, `{"query":""}`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.IsError {
+		t.Error("expected error response for empty query")
 	}
 }
 

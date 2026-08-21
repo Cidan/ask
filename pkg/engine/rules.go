@@ -11,6 +11,7 @@ import (
 
 	"github.com/Cidan/ask/pkg/config"
 	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
 
@@ -243,6 +244,15 @@ func (ct *ContextAwareTool) Info() ToolInfo         { return ExtractToolInfo(ct.
 func (ct *ContextAwareTool) Declaration() *genai.FunctionDeclaration {
 	if dp, ok := ct.Inner.(interface{ Declaration() *genai.FunctionDeclaration }); ok {
 		return dp.Declaration()
+	}
+	return nil
+}
+
+func (ct *ContextAwareTool) ProcessRequest(ctx agent.Context, req *model.LLMRequest) error {
+	if rp, ok := ct.Inner.(interface {
+		ProcessRequest(ctx agent.Context, req *model.LLMRequest) error
+	}); ok {
+		return rp.ProcessRequest(ctx, req)
 	}
 	return nil
 }

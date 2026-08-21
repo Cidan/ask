@@ -256,7 +256,14 @@ func AsADKTool(t Tool) (tool.Tool, error) {
 	info := ExtractToolInfo(t)
 	var inputSchema *jsonschema.Schema
 	if info.Parameters != nil {
-		if raw, err := json.Marshal(info.Parameters); err == nil {
+		schemaMap := map[string]any{
+			"type":       "object",
+			"properties": info.Parameters,
+		}
+		if len(info.Required) > 0 {
+			schemaMap["required"] = info.Required
+		}
+		if raw, err := json.Marshal(schemaMap); err == nil {
 			var s jsonschema.Schema
 			if err := json.Unmarshal(raw, &s); err == nil {
 				inputSchema = &s
