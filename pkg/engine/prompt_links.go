@@ -20,6 +20,9 @@ type LoadedContextDoc struct {
 	// Body is what goes into the prompt, capped by
 	// TruncateInstructionDoc.
 	Body string
+	// Root is the directory this document's @-links resolve against —
+	// its own scope, not necessarily the project root.
+	Root string
 	// Links are the @-references found in the document's FULL body,
 	// before any truncation. Body alone is not a safe source for them:
 	// a link past the cap is still a real dependency of the

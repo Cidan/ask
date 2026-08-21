@@ -1,8 +1,8 @@
 package engine
 
 import (
-	"errors"
 	"fmt"
+	"google.golang.org/genai"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,12 +10,6 @@ import (
 
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/providers"
-	"google.golang.org/adk/v2/agent"
-	"google.golang.org/adk/v2/agent/llmagent"
-	"google.golang.org/adk/v2/model"
-	"google.golang.org/adk/v2/tool"
-	"google.golang.org/adk/v2/tool/agenttool"
-	"google.golang.org/genai"
 )
 
 // SubagentDef is a named subagent definition.
@@ -211,69 +205,18 @@ func SubagentTools(def SubagentDef, available map[string]Tool) []Tool {
 	return out
 }
 
-// BuildResearchSubagent constructs an ADK agent for deep research and investigation.
-func BuildResearchSubagent(llm model.LLM, tools []tool.Tool, maxTokens int32) (agent.Agent, error) {
-	instruction := `You are a research sub-agent inside ask. Your role is to perform deep, thorough investigations on the codebase, read relevant files, execute commands if needed, search broadly, and return a comprehensive, self-contained final report to the calling agent.
-State the answer and findings first, followed by concrete file_path:line_number references. Be concise, precise, and honest.`
-
-	var genConfig *genai.GenerateContentConfig
-	if maxTokens > 0 {
-		genConfig = &genai.GenerateContentConfig{
-			MaxOutputTokens: maxTokens,
-		}
-	}
-
-	return llmagent.New(llmagent.Config{
-		Name:                  "research_subagent",
-		Description:           "Performs thorough code research, file reading, and investigation",
-		Model:                 llm,
-		Instruction:           instruction,
-		Tools:                 tools,
-		GenerateContentConfig: genConfig,
-	})
-}
-
-// BuildNamedSubagent constructs an ADK agent from a SubagentDef.
-func BuildNamedSubagent(def SubagentDef, llm model.LLM, tools []tool.Tool, maxTokens int32) (agent.Agent, error) {
-	prompt := def.Prompt
-	if prompt == "" {
-		prompt = fmt.Sprintf("You are subagent %s. %s", def.Name, def.Description)
-	}
-
-	var genConfig *genai.GenerateContentConfig
-	if maxTokens > 0 {
-		genConfig = &genai.GenerateContentConfig{
-			MaxOutputTokens: maxTokens,
-		}
-	}
-
-	return llmagent.New(llmagent.Config{
-		Name:                  def.Name,
-		Description:           def.Description,
-		Model:                 llm,
-		Instruction:           prompt,
-		Tools:                 tools,
-		GenerateContentConfig: genConfig,
-	})
-}
-
-// BuildResearchAgentTool wraps an ADK agent as a callable ADK tool.
-func BuildResearchAgentTool(agentInstance agent.Agent) (tool.Tool, error) {
-	if agentInstance == nil {
-		return nil, errors.New("agent instance is nil")
-	}
-	return agenttool.New(agentInstance, &agenttool.Config{
-		SkipSummarization: true,
-	}), nil
-}
-
-// BuildNamedAgentTool constructs and wraps a named subagent as a callable ADK tool.
-func BuildNamedAgentTool(def SubagentDef, llm model.LLM, tools []tool.Tool, maxTokens int32) (tool.Tool, error) {
-	ag, err := BuildNamedSubagent(def, llm, tools, maxTokens)
-	if err != nil {
-		return nil, err
-	}
-	return agenttool.New(ag, &agenttool.Config{
-		SkipSummarization: true,
-	}), nil
-}
+// Subagents deliberately do NOT use ADK's tool/agenttool.
+//
+// agenttool.New wraps an agent as a tool, but it builds its own runner
+// with a hardcoded config (agent_tool.go): no PluginConfig, so the
+// subagent loses retryandreflect, and MemoryService is
+// memory.InMemoryService(), so it loses ask's real memory. It also
+// produces one tool per agent, which would replace task(agent: "foo")
+// with a tool named foo.
+//
+// The task tool instead runs a nested engine.Run, which goes through
+// RunnerBuilder — ask's plugins, memory service, and file session
+// service — and keeps the background-job path and the subagent UI
+// events. BuildResearchSubagent / BuildNamedSubagent /
+// BuildResearchAgentTool / BuildNamedAgentTool were added for the
+// agenttool migration, never called from production, and are deleted.

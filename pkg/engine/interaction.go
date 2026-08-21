@@ -114,6 +114,19 @@ func (h HeadlessInteractionHandler) RequestSudoPassword(ctx context.Context, tab
 	return SudoPasswordResponse{Cancelled: true}, nil
 }
 
+// Approval is NOT ADK's tool/toolconfirmation flow, deliberately.
+//
+// That flow emits an adk_request_confirmation function call, pauses the
+// run, and resumes when a function response arrives. ask has no
+// suspend/resume path for a chat turn, so adopting it means building
+// one. Instead a mutating tool calls ToolEnv.ApprovalDenied, which blocks
+// on the TUI modal and returns the denial message inline.
+//
+// The two unwrap helpers below stay because an MCP server can declare
+// confirmation on its own tools; if ADK ever emits the call, the event
+// loops in run.go and agent_run.go render the inner intent rather than
+// the wrapper.
+
 // IsConfirmationCall reports whether a function call is an ADK tool confirmation request.
 func IsConfirmationCall(fc *genai.FunctionCall) bool {
 	if fc == nil {
@@ -125,11 +138,4 @@ func IsConfirmationCall(fc *genai.FunctionCall) bool {
 // UnwrapConfirmationCall extracts the underlying function call from an ADK confirmation wrapper.
 func UnwrapConfirmationCall(fc *genai.FunctionCall) (*genai.FunctionCall, error) {
 	return toolconfirmation.OriginalCallFrom(fc)
-}
-
-// FormatConfirmationResponse constructs the standard ADK confirmation response payload.
-func FormatConfirmationResponse(confirmed bool) map[string]any {
-	return map[string]any{
-		"confirmed": confirmed,
-	}
 }

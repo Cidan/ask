@@ -52,14 +52,4 @@ func TestInteraction_ConfirmationHelpers(t *testing.T) {
 		t.Errorf("expected unwrapped command 'rm -rf tmp', got %v", origCall.Args["command"])
 	}
 
-	// FormatConfirmationResponse
-	respTrue := FormatConfirmationResponse(true)
-	if confirmed, ok := respTrue["confirmed"].(bool); !ok || !confirmed {
-		t.Errorf("expected confirmed: true in response, got %v", respTrue)
-	}
-
-	respFalse := FormatConfirmationResponse(false)
-	if confirmed, ok := respFalse["confirmed"].(bool); !ok || confirmed {
-		t.Errorf("expected confirmed: false in response, got %v", respFalse)
-	}
 }

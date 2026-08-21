@@ -27,9 +27,9 @@ purpose: **a row is only "done" when a production caller reaches it.**
 | Per-node retry | `workflow.NodeConfig.RetryConfig` | **done** — replaced the hand-rolled retry loop |
 | Step context isolation | `llmagent.IncludeContentsNone` | **done** |
 | Self-healing tool errors | `plugin/retryandreflect` | **done** — tools return Go errors, so `OnToolErrorCallback` fires |
-| Parameter injection | `plugin/functioncallmodifier` | **inert** — see Gaps |
-| Subagent delegation | `tool/agenttool` | **not wired** — see Gaps |
-| Human-in-the-loop | `tool/toolconfirmation` | **not wired** — see Gaps |
+| Parameter injection | `plugin/functioncallmodifier` | **not needed** — `description` is a static params field |
+| Subagent delegation | `tool/agenttool` | **rejected** — see Deliberate departures |
+| Human-in-the-loop | `tool/toolconfirmation` | **deferred** — needs turn suspend/resume |
 | Artifacts | `artifact.Service`, `loadartifactstool` | **dropped** — see Gaps |
 | Dynamic instructions | `util/instructionutil` | **deliberately not used** — see Gaps |
 | Parallel / fan-out | `JoinNode`, `NodeConfig.ParallelWorker` | **planned** |
@@ -88,45 +88,53 @@ so a chain that died at step 1 of 5 rendered 5/5 green.
 
 ---
 
-## Gaps
+## Deliberate departures
 
-Recorded so the next reader does not mistake an import for an
-integration.
+Recorded so nobody "finishes the migration" by wiring one of these.
 
-**`plugin/functioncallmodifier`** is registered with a predicate that
-always returns `false` (`pkg/engine/plugins.go`), so it never applies.
-PR #132 disabled it to fix a proto validation error; the manual JSON
-schema surgery it was meant to replace is still in
-`pkg/tools/bridge.go`.
+**`plugin/functioncallmodifier` — removed, not needed.** It injects
+synthetic arguments into tool declarations at request time. ask needed
+that for the required `description` phrase, which is now a static field
+on every native tool's params struct, so there is nothing left to
+inject. It had shipped with a predicate that always returned `false`
+since PR #132. Bridge tools still get `description` added to their input
+schema in `pkg/tools/bridge.go`, because their input types come from the
+MCP handler cores; that is a one-time build at construction.
 
-**`tool/agenttool`** — `BuildResearchSubagent`, `BuildNamedSubagent`,
-`BuildResearchAgentTool`, and `BuildNamedAgentTool` have no production
-callers. The `task` tool still spawns a nested `engine.Run`.
+**`tool/agenttool` — rejected for the task tool.** `agent_tool.go`
+builds its own runner with a hardcoded config: no `PluginConfig`, so a
+subagent would lose `retryandreflect`, and `MemoryService:
+memory.InMemoryService()`, so it would lose ask's memory. It also
+produces one tool per agent, replacing `task(agent: "foo")` with a tool
+named `foo`. The task tool's nested `engine.Run` goes through
+`RunnerBuilder` — ask's plugins, memory, and file session service — and
+keeps the background-job path and the subagent UI events. The four
+builders added for this migration had no production callers and are
+deleted.
 
-**`tool/toolconfirmation`** — no tool declares `RequireConfirmation` or a
-`ConfirmationProvider`, so ADK never emits `adk_request_confirmation` and
-the handling in `run.go` / `agent_run.go` is unreachable. Approval is the
-in-tool blocking path in `pkg/tools/env.go`.
+**`tool/toolconfirmation` — deferred.** It emits an
+`adk_request_confirmation` function call, pauses the run, and resumes on
+a function response. ask has no suspend/resume path for a chat turn, so
+adopting it means building one. Approval is `ToolEnv.ApprovalDenied`,
+which blocks on the TUI modal and returns the denial inline.
+`IsConfirmationCall` / `UnwrapConfirmationCall` stay wired in the event
+loops because an MCP server can declare confirmation on its own tools.
 
-**Artifacts** were dropped rather than wired. ADK ships only
-`InMemoryService` and `gcsartifact`; ask's was rebuilt per turn and
-nothing ever saved to it, so `loadartifactstool` could only return empty
-while costing tokens on every request. Node outputs cover step handoff
-and `pkg/memory` covers durable state.
+**`util/instructionutil` — not used.** ask's instruction text is user
+documentation inlined verbatim, not a template. See the comment on
+`BuildInstructionProvider`.
 
-**`util/instructionutil`** is deliberately not used. ask's instruction
-text is user documentation inlined verbatim, not a template — see the
-comment on `BuildInstructionProvider`.
-
----
+**Artifacts — dropped.** ADK ships only `InMemoryService` and
+`gcsartifact`; ask's was rebuilt per turn and nothing ever saved to it.
+Node outputs cover step handoff and `pkg/memory` covers durable state.
 
 ## Planned
 
-**Parallel / fan-out.** A `parallel` step kind alongside `loop`, compiled
-to fan-out edges plus a `JoinNode`, with `NodeConfig.ParallelWorker` for
-list-typed inputs. Needs builder UI and a store schema addition.
+See [follow-ups.md](follow-ups.md). Two items:
 
-**Pause / resume and HITL.** `workflow.Persistence` plus
-`Workflow.Resume`, and `NewRequestInputEvent` routed to ask's question
-modal — replacing today's behaviour where workflow tabs auto-decline
-every prompt.
+- **Pause and resume** — non-blocking approvals and resumable workflows.
+  One project, not two: both need the ability to pause a turn and pick it
+  up later. Covers `workflow.Persistence`, `Workflow.Resume`,
+  `NewRequestInputEvent`, and `tool/toolconfirmation`.
+- **Parallel / fan-out** — a `parallel` step kind using `JoinNode` and
+  `NodeConfig.ParallelWorker`. Independent of the above.

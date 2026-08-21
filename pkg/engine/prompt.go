@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -445,6 +446,17 @@ func ContextFileRealPath(path string) string {
 	return filepath.Clean(path)
 }
 
+// ContextScope is one directory searched for instruction files, paired
+// with the root its @-links resolve against.
+//
+// The two differ for the user-global scope: ~/.claude/CLAUDE.md is not
+// inside the project, so an @-link in it must resolve under ~/.claude,
+// not under the repository that happens to be open.
+type ContextScope struct {
+	Dir  string
+	Root string
+}
+
 // AgentContextSearchDirs lists the directories searched for project
 // instruction files, in load order: the user-global ~/.claude scope
 // first, then every directory from the project root down to cwd, so
@@ -452,12 +464,24 @@ func ContextFileRealPath(path string) string {
 // Mirrors RuleSearchScopes / DiscoverSkills / DiscoverSubagents, which
 // already walk to the project root and read the user-global scope.
 func AgentContextSearchDirs(cwd string) []string {
-	var dirs []string
+	scopes := AgentContextScopes(cwd)
+	dirs := make([]string, 0, len(scopes))
+	for _, sc := range scopes {
+		dirs = append(dirs, sc.Dir)
+	}
+	return dirs
+}
+
+// AgentContextScopes is AgentContextSearchDirs with each directory's
+// @-link resolution root attached.
+func AgentContextScopes(cwd string) []ContextScope {
+	var scopes []ContextScope
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		dirs = append(dirs, filepath.Join(home, ".claude"))
+		claude := filepath.Join(home, ".claude")
+		scopes = append(scopes, ContextScope{Dir: claude, Root: claude})
 	}
 	if cwd == "" {
-		return dirs
+		return scopes
 	}
 	abs, err := filepath.Abs(cwd)
 	if err != nil {
@@ -475,9 +499,9 @@ func AgentContextSearchDirs(cwd string) []string {
 		}
 	}
 	for i := len(chain) - 1; i >= 0; i-- {
-		dirs = append(dirs, chain[i])
+		scopes = append(scopes, ContextScope{Dir: chain[i], Root: root})
 	}
-	return dirs
+	return scopes
 }
 
 // AgentContextFiles loads the project's instruction files (CLAUDE.md,
@@ -493,8 +517,8 @@ func AgentContextSearchDirs(cwd string) []string {
 func AgentContextFiles(cwd string) []LoadedContextDoc {
 	var docs []LoadedContextDoc
 	seenReal := map[string]bool{}
-	for _, dir := range AgentContextSearchDirs(cwd) {
-		docs = append(docs, contextFilesInDir(dir, seenReal)...)
+	for _, sc := range AgentContextScopes(cwd) {
+		docs = append(docs, contextFilesInDir(sc.Dir, sc.Root, seenReal)...)
 	}
 	return docs
 }
@@ -502,7 +526,7 @@ func AgentContextFiles(cwd string) []LoadedContextDoc {
 // contextFilesInDir loads the instruction files present in one
 // directory, skipping any whose resolved path is already in seenReal
 // and recording the ones it loads.
-func contextFilesInDir(dir string, seenReal map[string]bool) []LoadedContextDoc {
+func contextFilesInDir(dir, linkRoot string, seenReal map[string]bool) []LoadedContextDoc {
 	var docs []LoadedContextDoc
 	seenName := map[string]bool{}
 	for _, name := range AgentContextFileNames {
@@ -531,6 +555,7 @@ func contextFilesInDir(dir string, seenReal map[string]bool) []LoadedContextDoc 
 			Path:  path,
 			Body:  strings.TrimRight(content, "\n"),
 			Links: links,
+			Root:  linkRoot,
 		})
 	}
 	return docs
@@ -608,17 +633,38 @@ func BuildSystemPrompt(opts PromptOptions) string {
 	}
 	// Seed from the links each document recorded off its FULL body, not
 	// from the capped Body that goes on the wire — otherwise an @-link
-	// living past the cap is never followed.
-	var sourceLinks []string
+	// living past the cap is never followed. Each document resolves its
+	// links against its OWN scope root, so an @-link in
+	// ~/.claude/CLAUDE.md looks under ~/.claude rather than under
+	// whichever repository happens to be open.
+	linksByRoot := map[string][]string{}
 	for _, d := range ctxDocs {
-		sourceLinks = append(sourceLinks, d.Links...)
+		root := d.Root
+		if root == "" {
+			root = repoRoot
+		}
+		linksByRoot[root] = append(linksByRoot[root], d.Links...)
 	}
 	for _, r := range rules {
-		if r.Eager() {
-			sourceLinks = append(sourceLinks, r.Links...)
+		if !r.Eager() {
+			continue
 		}
+		root := r.Root
+		if root == "" {
+			root = repoRoot
+		}
+		linksByRoot[root] = append(linksByRoot[root], r.Links...)
 	}
-	if linkedDocs := LoadContextLinksFrom(repoRoot, sourceLinks); len(linkedDocs) > 0 {
+	var linkRoots []string
+	for root := range linksByRoot {
+		linkRoots = append(linkRoots, root)
+	}
+	sort.Strings(linkRoots)
+	var linkedDocs []LoadedContextDoc
+	for _, root := range linkRoots {
+		linkedDocs = append(linkedDocs, LoadContextLinksFrom(root, linksByRoot[root])...)
+	}
+	if len(linkedDocs) > 0 {
 		if block := ContextLinksPromptBlock(linkedDocs); block != "" {
 			b.WriteString("\n\n")
 			b.WriteString(block)
