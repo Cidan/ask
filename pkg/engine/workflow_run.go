@@ -27,7 +27,7 @@ func WorkflowCompileConfig(e *Engine, cwd string, tabID int, def workflow.Def, s
 		ModelBuilder: func(ctx context.Context, step workflow.Step) (adkmodel.LLM, error) {
 			return buildStepModel(ctx, e, step)
 		},
-		ToolsBuilder: func(ctx context.Context, step workflow.Step, inLoop bool) ([]tool.Tool, error) {
+		ToolsBuilder: func(ctx context.Context, step workflow.Step, role workflow.StepRole) ([]tool.Tool, error) {
 			var agentTools []Tool
 			if tf := GetDefaultToolFactory(); tf != nil {
 				agentTools = tf(ToolFactoryArgs{
@@ -37,11 +37,13 @@ func WorkflowCompileConfig(e *Engine, cwd string, tabID int, def workflow.Def, s
 					EventListener:      e.opts.EventListener,
 					InteractionHandler: e.opts.InteractionHandler,
 					AttachWebSearch:    true,
+					WorkflowStep:       true,
+					WorkflowFinalStep:  role.IsFinal,
 				})
 			}
 			return AsADKTools(agentTools)
 		},
-		ToolsetsBuilder: func(ctx context.Context, step workflow.Step, inLoop bool) ([]tool.Toolset, error) {
+		ToolsetsBuilder: func(ctx context.Context, step workflow.Step, role workflow.StepRole) ([]tool.Toolset, error) {
 			var toolsets []tool.Toolset
 			if skillTS, err := NewSkillToolset(ctx, cwd); err == nil && skillTS != nil {
 				toolsets = append(toolsets, skillTS)

@@ -76,8 +76,17 @@ func BuildStepInstruction(step Step, source Source, pc *StepPromptCtx) string {
 		b.WriteString(ref)
 	}
 	var loop *LoopPromptCtx
+	isFinal := false
 	if pc != nil {
 		loop = pc.Loop
+		isFinal = pc.IsWorkflowFinalStep
+	}
+	b.WriteString("\n\nTo hand structured output to a later step — a plan, a diff, notes — call save_artifact " +
+		"with a name, and the later step loads it with load_artifacts. Prefer this over restating large output in your summary.")
+	if isFinal {
+		b.WriteString(" You are the FINAL step of this workflow: before you finish, call finish_workflow with a " +
+			"description of the outcome and the list of artifacts it produced — every PR, issue, or link the user " +
+			"needs. This is how the user learns what the run created.")
 	}
 	b.WriteString("\n\n")
 	b.WriteString(EndTurnInstructionBlock(loop))
@@ -103,12 +112,16 @@ func EndTurnInstructionBlock(loop *LoopPromptCtx) string {
 		"a `summary` of 1-3 sentences describing what you did and the outcome. This records your progress in the " +
 		"workflow log; it does not cut your turn short.")
 	if loop != nil {
-		b.WriteString(" You are running inside a loop: when the loop's exit goal above is met, call the " +
-			"exit_loop tool to end the loop. If it is not met, do not call exit_loop — the loop advances to its " +
-			"next iteration on its own, and stops by itself after the iteration limit.")
-		if !loop.IsTail {
-			b.WriteString(" Later steps in this iteration still have work to do, so only call exit_loop if the " +
-				"goal is already fully met.")
+		if loop.IsTail {
+			// Only the tail step is given the exit_loop tool, so only the
+			// tail step is told how to break.
+			b.WriteString(" You are the last step of this loop iteration: when the loop's exit goal above is met, " +
+				"call the exit_loop tool to end the loop. If it is not met, do not call exit_loop — the loop advances " +
+				"to its next iteration on its own, and stops by itself after the iteration limit.")
+		} else {
+			b.WriteString(" You are running inside a loop but you are NOT its last step, so you cannot end the loop — " +
+				"only the final step of the iteration decides whether to continue or stop. Do your part and end your " +
+				"turn.")
 		}
 	}
 	return b.String()
