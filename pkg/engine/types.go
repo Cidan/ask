@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	pkgmemory "github.com/Cidan/ask/pkg/memory"
 	"github.com/google/jsonschema-go/jsonschema"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/memory"
@@ -16,14 +17,12 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/genai"
-	pkgmemory "github.com/Cidan/ask/pkg/memory"
 )
 
 // ToolResponse represents the result of executing a tool.
 type ToolResponse struct {
-	Content  string `json:"content"`
-	IsError  bool   `json:"is_error,omitempty"`
-	StopTurn bool   `json:"stop_turn,omitempty"`
+	Content string `json:"content"`
+	IsError bool   `json:"is_error,omitempty"`
 }
 
 func NewTextResponse(text string) ToolResponse {
@@ -57,7 +56,9 @@ func ExtractToolInfo(t tool.Tool) ToolInfo {
 		Name:        t.Name(),
 		Description: t.Description(),
 	}
-	if declProvider, ok := t.(interface{ Declaration() *genai.FunctionDeclaration }); ok {
+	if declProvider, ok := t.(interface {
+		Declaration() *genai.FunctionDeclaration
+	}); ok {
 		if decl := declProvider.Declaration(); decl != nil {
 			if decl.ParametersJsonSchema != nil {
 				if raw, err := json.Marshal(decl.ParametersJsonSchema); err == nil {
@@ -94,28 +95,32 @@ type standaloneAgentContext struct {
 	context.Context
 }
 
-func (s *standaloneAgentContext) UserContent() *genai.Content                                     { return nil }
-func (s *standaloneAgentContext) InvocationID() string                                            { return "" }
-func (s *standaloneAgentContext) AgentName() string                                               { return "" }
-func (s *standaloneAgentContext) ReadonlyState() session.ReadonlyState                            { return nil }
-func (s *standaloneAgentContext) UserID() string                                                  { return "" }
-func (s *standaloneAgentContext) AppName() string                                                 { return "ask" }
-func (s *standaloneAgentContext) SessionID() string                                               { return "" }
-func (s *standaloneAgentContext) Branch() string                                                  { return "" }
-func (s *standaloneAgentContext) Agent() agent.Agent                                              { return nil }
-func (s *standaloneAgentContext) Artifacts() agent.Artifacts                                      { return nil }
-func (s *standaloneAgentContext) Memory() agent.Memory                                            { return nil }
-func (s *standaloneAgentContext) Session() session.Session                                        { return nil }
-func (s *standaloneAgentContext) IsolationScope() string                                          { return "" }
-func (s *standaloneAgentContext) RunConfig() *agent.RunConfig                                     { return nil }
-func (s *standaloneAgentContext) EndInvocation()                                                  {}
-func (s *standaloneAgentContext) Ended() bool                                                     { return false }
-func (s *standaloneAgentContext) ResumedInput(interruptID string) (any, bool)                     { return nil, false }
-func (s *standaloneAgentContext) WithContext(ctx context.Context) agent.InvocationContext          { return &standaloneAgentContext{Context: ctx} }
-func (s *standaloneAgentContext) WithICDelta(d *agent.InvocationContextDelta) agent.InvocationContext { return s }
-func (s *standaloneAgentContext) State() session.State                                            { return nil }
-func (s *standaloneAgentContext) FunctionCallID() string                                          { return "" }
-func (s *standaloneAgentContext) Actions() *session.EventActions                                  { return &session.EventActions{} }
+func (s *standaloneAgentContext) UserContent() *genai.Content                 { return nil }
+func (s *standaloneAgentContext) InvocationID() string                        { return "" }
+func (s *standaloneAgentContext) AgentName() string                           { return "" }
+func (s *standaloneAgentContext) ReadonlyState() session.ReadonlyState        { return nil }
+func (s *standaloneAgentContext) UserID() string                              { return "" }
+func (s *standaloneAgentContext) AppName() string                             { return "ask" }
+func (s *standaloneAgentContext) SessionID() string                           { return "" }
+func (s *standaloneAgentContext) Branch() string                              { return "" }
+func (s *standaloneAgentContext) Agent() agent.Agent                          { return nil }
+func (s *standaloneAgentContext) Artifacts() agent.Artifacts                  { return nil }
+func (s *standaloneAgentContext) Memory() agent.Memory                        { return nil }
+func (s *standaloneAgentContext) Session() session.Session                    { return nil }
+func (s *standaloneAgentContext) IsolationScope() string                      { return "" }
+func (s *standaloneAgentContext) RunConfig() *agent.RunConfig                 { return nil }
+func (s *standaloneAgentContext) EndInvocation()                              {}
+func (s *standaloneAgentContext) Ended() bool                                 { return false }
+func (s *standaloneAgentContext) ResumedInput(interruptID string) (any, bool) { return nil, false }
+func (s *standaloneAgentContext) WithContext(ctx context.Context) agent.InvocationContext {
+	return &standaloneAgentContext{Context: ctx}
+}
+func (s *standaloneAgentContext) WithICDelta(d *agent.InvocationContextDelta) agent.InvocationContext {
+	return s
+}
+func (s *standaloneAgentContext) State() session.State           { return nil }
+func (s *standaloneAgentContext) FunctionCallID() string         { return "" }
+func (s *standaloneAgentContext) Actions() *session.EventActions { return &session.EventActions{} }
 func (s *standaloneAgentContext) SearchMemory(ctx context.Context, query string) (*memory.SearchResponse, error) {
 	if memSvc := pkgmemory.Default(); memSvc != nil && memSvc.IsOpen() {
 		return memSvc.SearchMemory(ctx, &memory.SearchRequest{Query: query})
@@ -128,10 +133,12 @@ func (s *standaloneAgentContext) ToolConfirmation() *toolconfirmation.ToolConfir
 func (s *standaloneAgentContext) RequestConfirmation(hint string, payload any) error {
 	return nil
 }
-func (s *standaloneAgentContext) Path() string                                                    { return "" }
-func (s *standaloneAgentContext) RunID() string                                                   { return "" }
-func (s *standaloneAgentContext) SubScheduler() agent.DynamicSubScheduler                         { return nil }
-func (s *standaloneAgentContext) WithAgentContext(ctx context.Context) agent.Context              { return &standaloneAgentContext{Context: ctx} }
+func (s *standaloneAgentContext) Path() string                            { return "" }
+func (s *standaloneAgentContext) RunID() string                           { return "" }
+func (s *standaloneAgentContext) SubScheduler() agent.DynamicSubScheduler { return nil }
+func (s *standaloneAgentContext) WithAgentContext(ctx context.Context) agent.Context {
+	return &standaloneAgentContext{Context: ctx}
+}
 func (s *standaloneAgentContext) WithAgentTimeout(timeout time.Duration) (agent.Context, context.CancelFunc) {
 	ctx, cancel := context.WithTimeout(s.Context, timeout)
 	return &standaloneAgentContext{Context: ctx}, cancel
@@ -140,8 +147,8 @@ func (s *standaloneAgentContext) WithAgentCancel() (agent.Context, context.Cance
 	ctx, cancel := context.WithCancel(s.Context)
 	return &standaloneAgentContext{Context: ctx}, cancel
 }
-func (s *standaloneAgentContext) OutputForAncestors() []string                                    { return nil }
-func (s *standaloneAgentContext) WithDelta(d *agent.CommonContextDelta) agent.Context             { return s }
+func (s *standaloneAgentContext) OutputForAncestors() []string                        { return nil }
+func (s *standaloneAgentContext) WithDelta(d *agent.CommonContextDelta) agent.Context { return s }
 
 // NewStandaloneAgentContext wraps a context.Context with a compliant agent.Context implementation.
 func NewStandaloneAgentContext(ctx context.Context) agent.Context {
@@ -154,93 +161,27 @@ func NewStandaloneAgentContext(ctx context.Context) agent.Context {
 	return &standaloneAgentContext{Context: ctx}
 }
 
-// RunADKTool executes an ADK tool with the provided arguments.
-func RunADKTool(ctx context.Context, t tool.Tool, args any) (map[string]any, error) {
-	if ct, ok := t.(interface {
-		Run(ctx agent.Context, args map[string]any) (map[string]any, error)
-	}); ok {
-		m, _ := args.(map[string]any)
-		if m == nil && args != nil {
-			if raw, err := json.Marshal(args); err == nil {
-				_ = json.Unmarshal(raw, &m)
-			}
-		}
-		return ct.Run(NewStandaloneAgentContext(ctx), m)
-	}
-	if ct, ok := t.(interface {
-		Run(ctx agent.Context, args map[string]any) (any, error)
-	}); ok {
-		m, _ := args.(map[string]any)
-		if m == nil && args != nil {
-			if raw, err := json.Marshal(args); err == nil {
-				_ = json.Unmarshal(raw, &m)
-			}
-		}
-		res, err := ct.Run(NewStandaloneAgentContext(ctx), m)
-		return wrapAnyResult(res), err
-	}
-	if ct, ok := t.(interface {
-		Run(ctx agent.Context, args any) (map[string]any, error)
-	}); ok {
-		return ct.Run(NewStandaloneAgentContext(ctx), args)
-	}
-	if ct, ok := t.(interface {
-		Run(ctx agent.Context, args any) (any, error)
-	}); ok {
-		res, err := ct.Run(NewStandaloneAgentContext(ctx), args)
-		return wrapAnyResult(res), err
-	}
-	if ct, ok := t.(interface {
-		Run(ctx context.Context, args map[string]any) (map[string]any, error)
-	}); ok {
-		m, _ := args.(map[string]any)
-		return ct.Run(ctx, m)
-	}
-	if ct, ok := t.(interface {
-		Run(ctx context.Context, args map[string]any) (any, error)
-	}); ok {
-		m, _ := args.(map[string]any)
-		res, err := ct.Run(ctx, m)
-		return wrapAnyResult(res), err
-	}
-	if ct, ok := t.(interface {
-		Run(ctx context.Context, args map[string]any) (ToolResponse, error)
-	}); ok {
-		m, _ := args.(map[string]any)
-		tr, err := ct.Run(ctx, m)
-		if err != nil {
-			return nil, err
-		}
-		res := map[string]any{"result": tr.Content}
-		if tr.IsError {
-			res["is_error"] = true
-		}
-		if tr.StopTurn {
-			res["stop_turn"] = true
-		}
-		return res, nil
-	}
-	return nil, fmt.Errorf("tool %s does not implement Run", t.Name())
+// ADKRunnable is ADK's executable-tool contract, mirroring the private
+// runnableTool interface in adk/v2/tool/tool.go. Every tool ask builds
+// satisfies it: functiontool.New returns one, and the decorators
+// implement it directly.
+type ADKRunnable interface {
+	Run(ctx agent.Context, args any) (map[string]any, error)
 }
 
-func wrapAnyResult(res any) map[string]any {
-	if res == nil {
-		return nil
+// RunADKTool executes an ADK tool.
+//
+// It takes an agent.Context, not a context.Context. That is the whole
+// point: a plain context has to be converted into a fake agent context,
+// and the fake returns nil for Artifacts, Session, State, and
+// ToolConfirmation, and hands out a throwaway Actions — so a tool that
+// escalates or requests confirmation through it is silently ignored.
+func RunADKTool(ctx agent.Context, t tool.Tool, args any) (map[string]any, error) {
+	rt, ok := t.(ADKRunnable)
+	if !ok {
+		return nil, fmt.Errorf("tool %s does not implement Run(agent.Context, any) (map[string]any, error)", t.Name())
 	}
-	if m, ok := res.(map[string]any); ok {
-		return m
-	}
-	if tr, ok := res.(ToolResponse); ok {
-		m := map[string]any{"result": tr.Content}
-		if tr.IsError {
-			m["is_error"] = true
-		}
-		if tr.StopTurn {
-			m["stop_turn"] = true
-		}
-		return m
-	}
-	return map[string]any{"result": res}
+	return rt.Run(ctx, args)
 }
 
 // AsADKTool passes through an ADK Tool or adapts it to ensure llmagent compatibility.
@@ -405,10 +346,10 @@ func (m Message) ToGenAIContent() *genai.Content {
 	}
 	for _, tr := range m.ToolResults {
 		respMap := map[string]any{
-			"result": tr.Content,
+			"content": tr.Content,
 		}
 		if tr.IsError {
-			respMap["is_error"] = true
+			respMap["error"] = tr.Content
 		}
 		p := genai.NewPartFromFunctionResponse(tr.Name, respMap)
 		if tr.ID != "" && p.FunctionResponse != nil {
@@ -466,14 +407,7 @@ func MessageFromGenAIContent(c *genai.Content) Message {
 			})
 		}
 		if p.FunctionResponse != nil {
-			contentStr := ""
-			isErr := false
-			if res, ok := p.FunctionResponse.Response["result"].(string); ok {
-				contentStr = res
-			}
-			if errFlag, ok := p.FunctionResponse.Response["is_error"].(bool); ok {
-				isErr = errFlag
-			}
+			contentStr, isErr := ToolResultText(p.FunctionResponse.Response)
 			id := ""
 			if p.FunctionResponse != nil {
 				id = p.FunctionResponse.ID
@@ -568,4 +502,82 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		}
 	}
 	return nil
+}
+
+// toolResultTextFields is the order in which a tool result's string
+// fields are searched for the text a UI renders. Every typed tool result
+// names its human-readable field with one of these; anything else falls
+// back to the compact JSON of the whole result.
+var toolResultTextFields = []string{
+	"content", "listing", "output", "body", "results", "memories",
+	"answers", "report", "outcome", "note", "notice", "summary",
+}
+
+// ToolResultText renders an ADK function response as the line a UI shows,
+// and reports whether it represents an error.
+//
+// Tool results are per-tool structs now, so there is no single "result"
+// key to read. A result carries its own error text in "error"; that is
+// what makes a call render as failed.
+func ToolResultText(resp map[string]any) (string, bool) {
+	if len(resp) == 0 {
+		return "", false
+	}
+	errText, _ := resp["error"].(string)
+	isErr := errText != ""
+	if legacy, ok := resp["is_error"].(bool); ok && legacy {
+		isErr = true
+	}
+
+	// ADK's own responses, which are not ask tool results.
+	if confirmed, ok := resp["confirmed"].(bool); ok {
+		if confirmed {
+			return "confirmed", isErr
+		}
+		return "rejected by user", true
+	}
+	if guidance, ok := resp["reflection_guidance"].(string); ok && guidance != "" {
+		return guidance, true
+	}
+
+	for _, field := range toolResultTextFields {
+		if s, ok := resp[field].(string); ok && s != "" {
+			if errText != "" {
+				return errText + "\n" + s, true
+			}
+			return s, isErr
+		}
+	}
+	if errText != "" {
+		return errText, true
+	}
+	if raw, err := json.Marshal(resp); err == nil {
+		return string(raw), isErr
+	}
+	return "", isErr
+}
+
+// AppendToolResultText appends extra to a tool result's human-readable
+// field, so a decorator can add context to a result without knowing which
+// per-tool struct produced it. Falls back to a dedicated "notes" field
+// when the result has no text field of its own.
+func AppendToolResultText(resp map[string]any, extra string) map[string]any {
+	if extra == "" {
+		return resp
+	}
+	if resp == nil {
+		resp = map[string]any{}
+	}
+	for _, field := range toolResultTextFields {
+		if s, ok := resp[field].(string); ok && s != "" {
+			resp[field] = s + "\n\n" + extra
+			return resp
+		}
+	}
+	if s, ok := resp["notes"].(string); ok && s != "" {
+		resp["notes"] = s + "\n\n" + extra
+	} else {
+		resp["notes"] = extra
+	}
+	return resp
 }

@@ -244,7 +244,7 @@ var defaultKeyBindings = map[Action]KeyBinding{
 	ActionChatWorkflow:    {Mod: tea.ModCtrl, Code: 'f'},
 	// Reload ships unbound: Ctrl+R belongs to the PRs screen. Users
 	// who want a reload key bind one in /config → Keybindings.
-	ActionReload:     {},
+	ActionReload:       {},
 	ActionTabNew:       {Mod: tea.ModCtrl, Code: 't'},
 	ActionTabClose:     {Mod: tea.ModCtrl, Code: 'd'},
 	ActionTabPrev:      {Mod: tea.ModCtrl, Code: tea.KeyLeft},

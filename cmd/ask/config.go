@@ -17,22 +17,22 @@ func withConfigLock(fn func() error) error {
 
 // Config type aliases pointing to canonical definitions in pkg/config.
 type (
-	askConfig        = config.Config
+	askConfig         = config.Config
 	apiProviderConfig = config.APIProviderConfig
-	vertexConfig     = config.VertexConfig
-	uiConfig         = config.UIConfig
-	retryUIConfig    = config.RetryUIConfig
-	webSearchConfig  = config.WebSearchConfig
-	recentModelRef   = config.RecentModelRef
-	projectConfig    = config.ProjectConfig
-	projectMCPConfig = config.ProjectMCPConfig
-	githubMCPConfig  = config.GitHubMCPConfig
-	linearMCPConfig  = config.LinearMCPConfig
-	workflowsConfig  = config.WorkflowsConfig
-	workflowDef      = config.WorkflowDef
-	workflowStep     = config.WorkflowStep
-	workflowSession  = config.WorkflowSession
-	issuesConfig     = config.IssuesConfig
+	vertexConfig      = config.VertexConfig
+	uiConfig          = config.UIConfig
+	retryUIConfig     = config.RetryUIConfig
+	webSearchConfig   = config.WebSearchConfig
+	recentModelRef    = config.RecentModelRef
+	projectConfig     = config.ProjectConfig
+	projectMCPConfig  = config.ProjectMCPConfig
+	githubMCPConfig   = config.GitHubMCPConfig
+	linearMCPConfig   = config.LinearMCPConfig
+	workflowsConfig   = config.WorkflowsConfig
+	workflowDef       = config.WorkflowDef
+	workflowStep      = config.WorkflowStep
+	workflowSession   = config.WorkflowSession
+	issuesConfig      = config.IssuesConfig
 )
 
 const (

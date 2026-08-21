@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/Cidan/ask/pkg/engine"
+	adkagent "google.golang.org/adk/v2/agent"
 	"iter"
 	"os"
 	"os/exec"
@@ -313,7 +315,7 @@ func runTool(t *testing.T, tool tools.Tool, input any) tools.ToolResponse {
 	if err != nil {
 		t.Fatalf("marshal input: %v", err)
 	}
-	resp, err := tools.RunToolWithJSON(context.Background(), tool, string(b))
+	resp, err := tools.RunToolWithJSON(testAgentCtx(), tool, string(b))
 	if err != nil {
 		t.Fatalf("tool.Run returned hard error: %v", err)
 	}
@@ -425,4 +427,9 @@ type stubStepLLM struct{}
 func (s *stubStepLLM) Name() string { return "stub-step-model" }
 func (s *stubStepLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {}
+}
+
+// testAgentCtx builds the fake agent.Context tests run tools under.
+func testAgentCtx() adkagent.Context {
+	return engine.NewStandaloneAgentContext(context.Background())
 }

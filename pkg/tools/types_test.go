@@ -2,9 +2,17 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/Cidan/ask/pkg/engine"
+	"google.golang.org/adk/v2/agent"
 )
+
+type sampleToolResult struct {
+	Content string `json:"content,omitempty"`
+}
 
 type sampleToolParams struct {
 	Name        string `json:"name" jsonschema:"the target resource name"`
@@ -14,15 +22,15 @@ type sampleToolParams struct {
 
 func TestNewTool_SchemaAndExecution(t *testing.T) {
 	var handled sampleToolParams
-	tool := NewTool(
+	tool := NewTypedTool(
 		"sample_tool",
 		"A sample tool for testing functiontool integration",
-		func(ctx context.Context, p sampleToolParams) (ToolResponse, error) {
+		func(ctx agent.Context, p sampleToolParams) (sampleToolResult, error) {
 			handled = p
 			if p.Name == "error_trigger" {
-				return NewTextErrorResponse("explicit error occurred"), nil
+				return sampleToolResult{}, errors.New("explicit error occurred")
 			}
-			return NewTextResponse("hello " + p.Name), nil
+			return sampleToolResult{Content: "hello " + p.Name}, nil
 		},
 	)
 
@@ -56,14 +64,14 @@ func TestNewTool_SchemaAndExecution(t *testing.T) {
 	}
 
 	// Test successful run
-	resp, err := RunToolWithJSON(context.Background(), tool, `{"name":"alice","count":3,"description":"testing"}`)
+	resp, err := RunToolWithJSON(testAgentCtx(), tool, `{"name":"alice","count":3,"description":"testing"}`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if resp.IsError {
 		t.Errorf("expected non-error response, got error: %s", resp.Content)
 	}
-	if resp.Content != "hello alice" {
+	if !strings.Contains(resp.Content, "hello alice") {
 		t.Errorf("expected content 'hello alice', got %q", resp.Content)
 	}
 	if handled.Name != "alice" || handled.Count != 3 {
@@ -71,7 +79,7 @@ func TestNewTool_SchemaAndExecution(t *testing.T) {
 	}
 
 	// Test error response
-	resp, err = RunToolWithJSON(context.Background(), tool, `{"name":"error_trigger","description":"triggering error"}`)
+	resp, err = RunToolWithJSON(testAgentCtx(), tool, `{"name":"error_trigger","description":"triggering error"}`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -83,7 +91,7 @@ func TestNewTool_SchemaAndExecution(t *testing.T) {
 	}
 
 	// Test malformed JSON
-	resp, err = RunToolWithJSON(context.Background(), tool, `{invalid json`)
+	resp, err = RunToolWithJSON(testAgentCtx(), tool, `{invalid json`)
 	if err != nil {
 		t.Fatalf("unexpected hard error: %v", err)
 	}
@@ -93,23 +101,23 @@ func TestNewTool_SchemaAndExecution(t *testing.T) {
 }
 
 func TestRunADKTool_DirectMapInvocation(t *testing.T) {
-	tool := NewTool(
+	tool := NewTypedTool(
 		"echo_tool",
 		"Echoes back text",
-		func(ctx context.Context, p sampleToolParams) (ToolResponse, error) {
-			return NewTextResponse("echo: " + p.Name), nil
+		func(ctx agent.Context, p sampleToolParams) (sampleToolResult, error) {
+			return sampleToolResult{Content: "echo: " + p.Name}, nil
 		},
 	)
 
-	res, err := RunADKTool(context.Background(), tool, map[string]any{
+	res, err := RunADKTool(testAgentCtx(), tool, map[string]any{
 		"name":        "bob",
 		"description": "echoing",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error from RunADKTool: %v", err)
 	}
-	if res["result"] != "echo: bob" {
-		t.Errorf("expected result 'echo: bob', got %v", res["result"])
+	if res["content"] != "echo: bob" {
+		t.Errorf("expected content 'echo: bob', got %v", res["content"])
 	}
 }
 
@@ -117,7 +125,7 @@ func TestRunADKTool_MemoryAwareTool(t *testing.T) {
 	env := NewToolEnv(t.TempDir(), 1, true, false, nil, nil)
 	writeTool := WriteTool(env)
 	wrapped := WrapFileToolsWithMemory([]Tool{writeTool}, env.Cwd)[0]
-	res, err := RunADKTool(context.Background(), wrapped, map[string]any{
+	res, err := RunADKTool(testAgentCtx(), wrapped, map[string]any{
 		"file_path":   "hello.txt",
 		"content":     "hello world",
 		"description": "writing",
@@ -125,7 +133,17 @@ func TestRunADKTool_MemoryAwareTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(res["result"].(string), "created") {
-		t.Errorf("expected write result, got %v", res["result"])
+	if created, _ := res["created"].(bool); !created {
+		t.Errorf("expected the write to report Created, got %v", res)
 	}
+	if path, _ := res["path"].(string); !strings.Contains(path, "hello.txt") {
+		t.Errorf("expected the written path in the result, got %v", res)
+	}
+}
+
+// testAgentCtx builds the fake agent.Context tests run tools under.
+// Production always has a real one from the ADK runner; this exists only
+// so a unit test can call a tool directly.
+func testAgentCtx() agent.Context {
+	return engine.NewStandaloneAgentContext(context.Background())
 }

@@ -88,26 +88,26 @@ func TestMCPManager_AttachListCallAndSkip(t *testing.T) {
 		t.Errorf("required fields wrong: %v", info.Required)
 	}
 
-	resp, err := RunToolWithJSON(context.Background(), tool, `{"text":"hi"}`)
+	resp, err := RunToolWithJSON(testAgentCtx(), tool, `{"text":"hi"}`)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if resp.IsError || resp.Content != "echo: hi" {
 		t.Errorf("echo result: %+v", resp)
 	}
-	resp, _ = RunToolWithJSON(context.Background(), tool, `{"text":"fail"}`)
+	resp, _ = RunToolWithJSON(testAgentCtx(), tool, `{"text":"fail"}`)
 	if !resp.IsError || resp.Content != "boom" {
 		t.Errorf("fail result: %+v", resp)
 	}
 
 	// Vision gating
 	shot := toolByName(tools, "mcp__test__shot")
-	resp, _ = RunToolWithJSON(context.Background(), shot, `{"text":"x"}`)
+	resp, _ = RunToolWithJSON(testAgentCtx(), shot, `{"text":"x"}`)
 	if !strings.Contains(resp.Content, "no vision") {
 		t.Errorf("without vision should return placeholder: %+v", resp)
 	}
 	imagesOK = true
-	resp, _ = RunToolWithJSON(context.Background(), shot, `{"text":"x"}`)
+	resp, _ = RunToolWithJSON(testAgentCtx(), shot, `{"text":"x"}`)
 	if resp.IsError {
 		t.Errorf("with vision should return image payload: %+v", resp)
 	}

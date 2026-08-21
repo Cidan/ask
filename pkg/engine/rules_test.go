@@ -1,8 +1,8 @@
 package engine
 
 import (
-	"context"
 	"fmt"
+	"google.golang.org/adk/v2/agent"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,9 +81,9 @@ type fakeRuleTestTool struct {
 	cwd string
 }
 
-func (f *fakeRuleTestTool) Name() string           { return "read" }
-func (f *fakeRuleTestTool) Description() string    { return "read file" }
-func (f *fakeRuleTestTool) IsLongRunning() bool    { return false }
+func (f *fakeRuleTestTool) Name() string        { return "read" }
+func (f *fakeRuleTestTool) Description() string { return "read file" }
+func (f *fakeRuleTestTool) IsLongRunning() bool { return false }
 func (f *fakeRuleTestTool) Info() ToolInfo {
 	return ToolInfo{
 		Name:        "read",
@@ -94,14 +94,15 @@ func (f *fakeRuleTestTool) Info() ToolInfo {
 func (f *fakeRuleTestTool) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{Name: "read", Description: "read file"}
 }
-func (f *fakeRuleTestTool) Run(ctx context.Context, args map[string]any) (ToolResponse, error) {
-	fp, _ := args["file_path"].(string)
+func (f *fakeRuleTestTool) Run(ctx agent.Context, args any) (map[string]any, error) {
+	argsMap, _ := args.(map[string]any)
+	fp, _ := argsMap["file_path"].(string)
 	path := filepath.Join(f.cwd, fp)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return NewTextErrorResponse(err.Error()), nil
+		return nil, err
 	}
-	return NewTextResponse(fmt.Sprintf("%d\t%s", 1, string(data))), nil
+	return map[string]any{"content": fmt.Sprintf("%d\t%s", 1, string(data))}, nil
 }
 
 func TestWrapContextAwareTools_JITInjectionAndDedup(t *testing.T) {
@@ -119,14 +120,14 @@ func TestWrapContextAwareTools_JITInjectionAndDedup(t *testing.T) {
 	read := wrapped[0]
 
 	// Read matching file
-	resp, err := RunADKTool(context.Background(), read, map[string]any{
+	resp, err := RunADKTool(testAgentCtx(), read, map[string]any{
 		"file_path":   "src/api/handler.go",
 		"description": "read handler",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := resp["result"].(string)
+	content := mustToolText(resp)
 	if !strings.Contains(content, "API rule body.") {
 		t.Errorf("matching read should inject the rule:\n%s", content)
 	}
@@ -135,27 +136,27 @@ func TestWrapContextAwareTools_JITInjectionAndDedup(t *testing.T) {
 	}
 
 	// Read again -> dedup
-	resp, err = RunADKTool(context.Background(), read, map[string]any{
+	resp, err = RunADKTool(testAgentCtx(), read, map[string]any{
 		"file_path":   "src/api/handler.go",
 		"description": "read handler again",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	content = resp["result"].(string)
+	content = mustToolText(resp)
 	if strings.Contains(content, "API rule body.") {
 		t.Error("rule must inject at most once per session")
 	}
 
 	// Read non-matching
-	resp, err = RunADKTool(context.Background(), read, map[string]any{
+	resp, err = RunADKTool(testAgentCtx(), read, map[string]any{
 		"file_path":   "README.md",
 		"description": "read readme",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	content = resp["result"].(string)
+	content = mustToolText(resp)
 	if strings.Contains(content, "API rule body.") || strings.Contains(content, "Eager body.") {
 		t.Error("non-matching read must not inject rules")
 	}
@@ -183,14 +184,14 @@ func TestWrapContextAwareTools_DoesNotResendPromptContextFiles(t *testing.T) {
 	}
 
 	wrapped := WrapContextAwareTools([]Tool{&fakeRuleTestTool{cwd: cwd}}, cwd, nil)
-	resp, err := RunADKTool(context.Background(), wrapped[0], map[string]any{
+	resp, err := RunADKTool(testAgentCtx(), wrapped[0], map[string]any{
 		"file_path":   "go.mod",
 		"description": "read go.mod",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := resp["result"].(string)
+	content := mustToolText(resp)
 	if !strings.Contains(content, "module example.com/x") {
 		t.Fatalf("precondition: the read itself must succeed, got %q", content)
 	}
@@ -220,14 +221,14 @@ func TestWrapContextAwareTools_InjectsUnseenSubdirContext(t *testing.T) {
 
 	wrapped := WrapContextAwareTools([]Tool{&fakeRuleTestTool{cwd: cwd}}, cwd, nil)
 
-	resp, err := RunADKTool(context.Background(), wrapped[0], map[string]any{
+	resp, err := RunADKTool(testAgentCtx(), wrapped[0], map[string]any{
 		"file_path":   "sub/main.go",
 		"description": "read sub/main.go",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := resp["result"].(string)
+	content := mustToolText(resp)
 	if !strings.Contains(content, "subdir-marker") {
 		t.Errorf("unseen subdirectory instructions must be injected:\n%s", content)
 	}
@@ -239,14 +240,14 @@ func TestWrapContextAwareTools_InjectsUnseenSubdirContext(t *testing.T) {
 	}
 
 	// Second read of the same subtree adds nothing further.
-	resp, err = RunADKTool(context.Background(), wrapped[0], map[string]any{
+	resp, err = RunADKTool(testAgentCtx(), wrapped[0], map[string]any{
 		"file_path":   "sub/main.go",
 		"description": "read again",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(resp["result"].(string), "subdir-marker") {
+	if strings.Contains(mustToolText(resp), "subdir-marker") {
 		t.Error("subdirectory instructions must inject at most once per session")
 	}
 }
@@ -293,14 +294,14 @@ func TestWrapContextAwareTools_JITRuleLinkPastCap(t *testing.T) {
 	}
 
 	wrapped := WrapContextAwareTools([]Tool{&fakeRuleTestTool{cwd: cwd}}, cwd, []Rule{rule})
-	resp, err := RunADKTool(context.Background(), wrapped[0], map[string]any{
+	resp, err := RunADKTool(testAgentCtx(), wrapped[0], map[string]any{
 		"file_path":   "src/api/handler.go",
 		"description": "read handler",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := resp["result"].(string)
+	content := mustToolText(resp)
 	if !strings.Contains(content, "notes-marker") {
 		t.Error("a rule's @-link past the cap must still be injected when the rule fires")
 	}

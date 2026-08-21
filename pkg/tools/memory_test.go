@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"google.golang.org/adk/v2/agent"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -24,9 +25,9 @@ func TestTool_MemoryIndexTool(t *testing.T) {
 
 	cwd := filepath.Join(tmpDir, "proj")
 	var approved bool
-	approvalHandler := func(ctx context.Context, name string, params map[string]any) *ToolResponse {
+	approvalHandler := func(ctx context.Context, name string, params map[string]any) string {
 		approved = true
-		return nil
+		return ""
 	}
 
 	tool := MemoryIndexTool(cwd, approvalHandler)
@@ -35,7 +36,7 @@ func TestTool_MemoryIndexTool(t *testing.T) {
 	}
 
 	// Empty text should return error
-	resp, err := RunToolWithJSON(context.Background(), tool, `{"text":"","description":"indexing empty"}`)
+	resp, err := RunToolWithJSON(testAgentCtx(), tool, `{"text":"","description":"indexing empty"}`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -44,7 +45,7 @@ func TestTool_MemoryIndexTool(t *testing.T) {
 	}
 
 	// Valid indexing
-	resp, err = RunToolWithJSON(context.Background(), tool, `{"text":"important note","description":"indexing note"}`)
+	resp, err = RunToolWithJSON(testAgentCtx(), tool, `{"text":"important note","description":"indexing note"}`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -82,11 +83,11 @@ func TestTool_MemoryAwareTool(t *testing.T) {
 	_ = memory.Index(context.Background(), cwd, "main.go contains the entrypoint")
 
 	fileTools := []Tool{
-		NewTool("read", "read file", func(ctx context.Context, p map[string]any) (ToolResponse, error) {
-			return NewTextResponse("package main\nfunc main() {}"), nil
+		NewTypedTool("read", "read file", func(ctx agent.Context, p map[string]any) (map[string]any, error) {
+			return map[string]any{"content": "package main\nfunc main() {}"}, nil
 		}),
-		NewTool("glob", "glob pattern", func(ctx context.Context, p map[string]any) (ToolResponse, error) {
-			return NewTextResponse("main.go"), nil
+		NewTypedTool("glob", "glob pattern", func(ctx agent.Context, p map[string]any) (map[string]any, error) {
+			return map[string]any{"content": "main.go"}, nil
 		}),
 	}
 
@@ -97,7 +98,7 @@ func TestTool_MemoryAwareTool(t *testing.T) {
 
 	// "read" should be wrapped by MemoryAwareTool
 	readTool := wrapped[0]
-	resp, err := RunToolWithJSON(context.Background(), readTool, `{"file_path":"`+targetFile+`"}`)
+	resp, err := RunToolWithJSON(testAgentCtx(), readTool, `{"file_path":"`+targetFile+`"}`)
 	if err != nil {
 		t.Fatalf("readTool.Run failed: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestTool_MemoryAwareTool(t *testing.T) {
 
 	// "glob" should NOT be wrapped
 	globTool := wrapped[1]
-	resp, err = RunToolWithJSON(context.Background(), globTool, `{"pattern":"*.go"}`)
+	resp, err = RunToolWithJSON(testAgentCtx(), globTool, `{"pattern":"*.go"}`)
 	if err != nil {
 		t.Fatalf("globTool.Run failed: %v", err)
 	}
@@ -136,7 +137,9 @@ func TestTool_LoadMemoryTool(t *testing.T) {
 		t.Errorf("expected query in parameters, got %+v", info.Parameters)
 	}
 
-	declProvider, ok := tool.(interface{ Declaration() *genai.FunctionDeclaration })
+	declProvider, ok := tool.(interface {
+		Declaration() *genai.FunctionDeclaration
+	})
 	if !ok {
 		t.Fatal("expected LoadMemoryTool to implement Declaration()")
 	}
@@ -152,7 +155,7 @@ func TestTool_LoadMemoryTool(t *testing.T) {
 	}
 
 	// Test execution with empty query
-	resp, err := RunToolWithJSON(context.Background(), tool, `{"query":""}`)
+	resp, err := RunToolWithJSON(testAgentCtx(), tool, `{"query":""}`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

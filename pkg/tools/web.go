@@ -3,7 +3,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"google.golang.org/adk/v2/agent"
 	"io"
 	"net/http"
 	"net/url"
@@ -40,21 +42,30 @@ type FetchParams struct {
 var FetchClient = &http.Client{}
 
 // FetchTool returns the native fetch tool.
+// FetchResult is the fetch tool's response.
+type FetchResult struct {
+	URL         string `json:"url,omitempty"`
+	Status      int    `json:"status,omitempty" jsonschema:"HTTP status code"`
+	ContentType string `json:"content_type,omitempty"`
+	Body        string `json:"body,omitempty" jsonschema:"extracted text of the page"`
+	Truncated   bool   `json:"truncated,omitempty" jsonschema:"true when the body exceeded the fetch cap"`
+}
+
 func FetchTool(env *ToolEnv) Tool {
-	return NewTool(
+	return NewTypedTool(
 		"fetch",
 		FetchToolDescription,
-		func(ctx context.Context, p FetchParams) (ToolResponse, error) {
+		func(ctx agent.Context, p FetchParams) (FetchResult, error) {
 			raw := strings.TrimSpace(p.URL)
 			if raw == "" {
-				return NewTextErrorResponse("url is required"), nil
+				return FetchResult{}, errors.New("url is required")
 			}
 			u, err := url.Parse(raw)
 			if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-				return NewTextErrorResponse("only http and https URLs are supported: " + raw), nil
+				return FetchResult{}, errors.New("only http and https URLs are supported: " + raw)
 			}
-			if denied := env.RequestApproval(ctx, "fetch", map[string]any{"url": raw, "description": p.Description}); denied != nil {
-				return *denied, nil
+			if denied := env.ApprovalDenied(ctx, "fetch", map[string]any{"url": raw, "description": p.Description}); denied != "" {
+				return FetchResult{}, errors.New(denied)
 			}
 
 			timeout := FetchDefaultTimeout
@@ -65,18 +76,18 @@ func FetchTool(env *ToolEnv) Tool {
 			defer cancel()
 			req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, raw, nil)
 			if err != nil {
-				return NewTextErrorResponse("bad request: " + err.Error()), nil
+				return FetchResult{}, errors.New("bad request: " + err.Error())
 			}
 			req.Header.Set("User-Agent", "ask-agent/1.0")
 			resp, err := FetchClient.Do(req)
 			if err != nil {
-				return NewTextErrorResponse("fetch failed: " + err.Error()), nil
+				return FetchResult{}, errors.New("fetch failed: " + err.Error())
 			}
 			defer resp.Body.Close()
 
 			body, err := io.ReadAll(io.LimitReader(resp.Body, FetchMaxBytes+1))
 			if err != nil {
-				return NewTextErrorResponse("read body: " + err.Error()), nil
+				return FetchResult{}, errors.New("read body: " + err.Error())
 			}
 			truncated := len(body) > FetchMaxBytes
 			if truncated {
@@ -89,20 +100,21 @@ func FetchTool(env *ToolEnv) Tool {
 				text = HTMLToText(text)
 			}
 			if LooksBinary([]byte(text[:min(len(text), 8192)])) {
-				return NewTextErrorResponse(fmt.Sprintf(
-					"%s returned binary content (%s) — not useful as text", raw, contentType)), nil
+				return FetchResult{}, fmt.Errorf(
+					"%s returned binary content (%s) — not useful as text", raw, contentType)
 			}
 
-			var out strings.Builder
-			fmt.Fprintf(&out, "[%s — HTTP %d, %s]\n", raw, resp.StatusCode, contentType)
-			out.WriteString(TruncateMiddle(text))
-			if truncated {
-				fmt.Fprintf(&out, "\n(body capped at %d bytes)", FetchMaxBytes)
+			res := FetchResult{
+				URL:         raw,
+				Status:      resp.StatusCode,
+				ContentType: contentType,
+				Body:        TruncateMiddle(text),
+				Truncated:   truncated,
 			}
 			if resp.StatusCode >= 400 {
-				return NewTextErrorResponse(out.String()), nil
+				return res, fmt.Errorf("%s returned HTTP %d", raw, resp.StatusCode)
 			}
-			return NewTextResponse(out.String()), nil
+			return res, nil
 		},
 	)
 }
@@ -228,22 +240,30 @@ func BraveSearch(ctx context.Context, apiKey, query string, count int) ([]BraveR
 }
 
 // WebSearchTool returns the Brave-backed web_search tool.
+// WebSearchResult is the web_search tool's response.
+type WebSearchResult struct {
+	Query   string `json:"query,omitempty"`
+	Results string `json:"results,omitempty" jsonschema:"formatted search results"`
+	Count   int    `json:"count,omitempty" jsonschema:"number of results returned"`
+	Notice  string `json:"notice,omitempty" jsonschema:"set when search is not configured"`
+}
+
 func WebSearchTool(env *ToolEnv) Tool {
-	return NewTool(
+	return NewTypedTool(
 		"web_search",
 		WebSearchToolDescription,
-		func(ctx context.Context, p WebSearchParams) (ToolResponse, error) {
+		func(ctx agent.Context, p WebSearchParams) (WebSearchResult, error) {
 			query := strings.TrimSpace(p.Query)
 			if query == "" {
-				return NewTextErrorResponse("query is required"), nil
+				return WebSearchResult{}, errors.New("query is required")
 			}
 			cfg, _ := config.Load()
 			apiKey := config.ResolveBraveAPIKey(cfg.WebSearch)
 			if apiKey == "" {
-				return NewTextResponse(WebSearchNoKeyNotice), nil
+				return WebSearchResult{Notice: WebSearchNoKeyNotice}, nil
 			}
-			if denied := env.RequestApproval(ctx, "WebSearch", map[string]any{"query": query, "description": p.Description}); denied != nil {
-				return *denied, nil
+			if denied := env.ApprovalDenied(ctx, "WebSearch", map[string]any{"query": query, "description": p.Description}); denied != "" {
+				return WebSearchResult{}, errors.New(denied)
 			}
 
 			count := BraveSearchDefaultN
@@ -254,10 +274,10 @@ func WebSearchTool(env *ToolEnv) Tool {
 			defer cancel()
 			results, err := BraveSearch(reqCtx, apiKey, query, count)
 			if err != nil {
-				return NewTextErrorResponse("web search failed: " + err.Error()), nil
+				return WebSearchResult{}, errors.New("web search failed: " + err.Error())
 			}
 			if len(results) == 0 {
-				return NewTextResponse(fmt.Sprintf("no results found for %q", query)), nil
+				return WebSearchResult{Query: query, Count: 0}, nil
 			}
 
 			var out strings.Builder
@@ -267,7 +287,7 @@ func WebSearchTool(env *ToolEnv) Tool {
 				}
 				fmt.Fprintf(&out, "%d. %s\n   %s\n   %s", i+1, r.Title, r.URL, r.Description)
 			}
-			return NewTextResponse(out.String()), nil
+			return WebSearchResult{Query: query, Results: out.String(), Count: len(results)}, nil
 		},
 	)
 }

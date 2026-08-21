@@ -144,10 +144,10 @@ func TestSendApproval_DenySendsAllowFalse(t *testing.T) {
 // expects (choice, reply) on the channel after one keystroke.
 func TestUpdateApproval_PressKeys(t *testing.T) {
 	cases := []struct {
-		name     string
-		keys     []tea.KeyPressMsg
-		wantPick int
-		wantAllow bool
+		name         string
+		keys         []tea.KeyPressMsg
+		wantPick     int
+		wantAllow    bool
 		wantHasReply bool
 	}{
 		{"y allow", []tea.KeyPressMsg{{Code: 'y'}}, approvalChoiceAllow, true, true},

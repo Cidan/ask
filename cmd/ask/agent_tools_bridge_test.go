@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -111,7 +110,7 @@ func TestNativeBridgeTool_LinearGateErrors(t *testing.T) {
 	isolateHome(t)
 	env, _ := newTestToolEnv(t)
 	tool := bridgeToolByName(t, env, "linear_list_issues")
-	resp, err := tools.RunToolWithJSON(context.Background(), tool, `{}`)
+	resp, err := tools.RunToolWithJSON(testAgentCtx(), tool, `{}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +122,7 @@ func TestNativeBridgeTool_LinearGateErrors(t *testing.T) {
 func TestNativeBridgeTool_InvalidInputErrors(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 	tool := bridgeToolByName(t, env, "linear_get_issue")
-	resp, err := tools.RunToolWithJSON(context.Background(), tool, `{not json`)
+	resp, err := tools.RunToolWithJSON(testAgentCtx(), tool, `{not json`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +157,9 @@ func TestClearPlans_NotInLinearTools(t *testing.T) {
 func TestNativeBridgeTool_AllWireSchemasClean(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 	for _, tool := range agentLinearTools(env) {
-		declProvider, ok := tool.(interface{ Declaration() *genai.FunctionDeclaration })
+		declProvider, ok := tool.(interface {
+			Declaration() *genai.FunctionDeclaration
+		})
 		if !ok || declProvider.Declaration() == nil {
 			t.Fatalf("tool %s missing declaration", tool.Name())
 		}
@@ -191,7 +192,9 @@ func TestSetupAgentSessionTools_AllCoreToolsUseParametersJsonSchemaAndNoParamete
 	}
 
 	for _, tool := range adkTools {
-		declProvider, ok := tool.(interface{ Declaration() *genai.FunctionDeclaration })
+		declProvider, ok := tool.(interface {
+			Declaration() *genai.FunctionDeclaration
+		})
 		if !ok {
 			// Some tools like preload_memory only inject instructions
 			continue

@@ -62,11 +62,13 @@ type fakeSubagentTool struct {
 	name string
 }
 
-func (f *fakeSubagentTool) Name() string                             { return f.name }
-func (f *fakeSubagentTool) Description() string                      { return "desc" }
-func (f *fakeSubagentTool) IsLongRunning() bool                      { return false }
-func (f *fakeSubagentTool) Info() ToolInfo                           { return ToolInfo{Name: f.name} }
-func (f *fakeSubagentTool) Declaration() *genai.FunctionDeclaration { return &genai.FunctionDeclaration{Name: f.name} }
+func (f *fakeSubagentTool) Name() string        { return f.name }
+func (f *fakeSubagentTool) Description() string { return "desc" }
+func (f *fakeSubagentTool) IsLongRunning() bool { return false }
+func (f *fakeSubagentTool) Info() ToolInfo      { return ToolInfo{Name: f.name} }
+func (f *fakeSubagentTool) Declaration() *genai.FunctionDeclaration {
+	return &genai.FunctionDeclaration{Name: f.name}
+}
 func (f *fakeSubagentTool) Run(ctx context.Context, args map[string]any) (ToolResponse, error) {
 	return NewTextResponse("ok"), nil
 }

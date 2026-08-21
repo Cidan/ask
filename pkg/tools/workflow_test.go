@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -44,13 +43,13 @@ func TestWorkflowCRUDRoundTrip(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 
 	list := workflowToolByName(t, env, "workflow_list")
-	resp, err := RunToolWithJSON(context.Background(), list, `{}`)
+	resp, err := RunToolWithJSON(testAgentCtx(), list, `{}`)
 	if err != nil || resp.IsError {
 		t.Fatalf("list: %+v %v", resp, err)
 	}
 
 	create := workflowToolByName(t, env, "workflow_create")
-	resp, err = RunToolWithJSON(context.Background(), create, `{"name":"review","steps":[{"name":"step1","provider":"deepseek","prompt":"review the issue"}]}`)
+	resp, err = RunToolWithJSON(testAgentCtx(), create, `{"name":"review","steps":[{"name":"step1","provider":"deepseek","prompt":"review the issue"}]}`)
 	if err != nil || resp.IsError {
 		t.Fatalf("create: %+v %v", resp, err)
 	}
@@ -61,14 +60,14 @@ func TestWorkflowCRUDRoundTrip(t *testing.T) {
 	}
 
 	// Duplicate create gates
-	resp, _ = RunToolWithJSON(context.Background(), create, `{"name":"review","steps":[{"name":"s","provider":"deepseek","prompt":"p"}]}`)
+	resp, _ = RunToolWithJSON(testAgentCtx(), create, `{"name":"review","steps":[{"name":"s","provider":"deepseek","prompt":"p"}]}`)
 	if !resp.IsError || !strings.Contains(resp.Content, "already exists") {
 		t.Errorf("duplicate create must error: %+v", resp)
 	}
 
 	// Delete
 	del := workflowToolByName(t, env, "workflow_delete")
-	resp, err = RunToolWithJSON(context.Background(), del, `{"name":"review"}`)
+	resp, err = RunToolWithJSON(testAgentCtx(), del, `{"name":"review"}`)
 	if err != nil || resp.IsError {
 		t.Fatalf("delete: %+v %v", resp, err)
 	}
@@ -77,7 +76,6 @@ func TestWorkflowCRUDRoundTrip(t *testing.T) {
 		t.Fatalf("delete should leave 0 workflows: %+v", items)
 	}
 }
-
 
 func TestWorkflowTools_LoopWorkflowPromptAndExitConditionPreservation(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -123,17 +121,17 @@ func TestWorkflowTools_LoopWorkflowPromptAndExitConditionPreservation(t *testing
 		]
 	}`
 
-	resp, err := RunToolWithJSON(context.Background(), create, createJSON)
+	resp, err := RunToolWithJSON(testAgentCtx(), create, createJSON)
 	if err != nil || resp.IsError {
 		t.Fatalf("create failed: %+v %v", resp, err)
 	}
 
 	// 2. Get the workflow and verify ExitCondition, Prompt, and inner Steps
-	resp, err = RunToolWithJSON(context.Background(), get, `{"name":"ship-test"}`)
+	resp, err = RunToolWithJSON(testAgentCtx(), get, `{"name":"ship-test"}`)
 	if err != nil || resp.IsError {
 		t.Fatalf("get failed: %+v %v", resp, err)
 	}
-	listOutput, err := RunToolWithJSON(context.Background(), get, `{"name":"ship-test","scope":"global"}`)
+	listOutput, err := RunToolWithJSON(testAgentCtx(), get, `{"name":"ship-test","scope":"global"}`)
 	if err != nil || listOutput.IsError {
 		t.Fatalf("scoped get failed: %+v %v", listOutput, err)
 	}
@@ -177,7 +175,7 @@ func TestWorkflowTools_LoopWorkflowPromptAndExitConditionPreservation(t *testing
 			}
 		]
 	}`
-	resp, err = RunToolWithJSON(context.Background(), edit, editJSON)
+	resp, err = RunToolWithJSON(testAgentCtx(), edit, editJSON)
 	if err != nil || resp.IsError {
 		t.Fatalf("edit failed: %+v %v", resp, err)
 	}
@@ -199,7 +197,7 @@ func TestWorkflowTools_LoopWorkflowPromptAndExitConditionPreservation(t *testing
 
 	// 4. Copy to user scope
 	copyJSON := `{"name":"ship-test","scope":"global","to":"user","new_name":"ship-user"}`
-	resp, err = RunToolWithJSON(context.Background(), copyTool, copyJSON)
+	resp, err = RunToolWithJSON(testAgentCtx(), copyTool, copyJSON)
 	if err != nil || resp.IsError {
 		t.Fatalf("copy failed: %+v %v", resp, err)
 	}

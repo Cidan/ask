@@ -255,12 +255,12 @@ func TestCloseTab_QuittingVIDUsesSupplantedVS(t *testing.T) {
 	a := testAppWithTwoTabs(t)
 	a.tabs = a.tabs[:1]
 	a.active = 0
-	
+
 	a.tabs[0].virtualSessionID = "vs-workflow"
 	a.tabs[0].workflowRun = &workflowRunState{
 		supplanted: &workflowTabSnapshot{virtualSessionID: "vs-parent"},
 	}
-	
+
 	newA, cmd := a.closeTab(a.tabs[0].id)
 	if cmd == nil || cmd() != (tea.QuitMsg{}) {
 		t.Fatal("expected QuitMsg")
@@ -275,9 +275,9 @@ func TestCloseTab_QuittingVIDFallsBackToTabVS(t *testing.T) {
 	a := testAppWithTwoTabs(t)
 	a.tabs = a.tabs[:1]
 	a.active = 0
-	
+
 	a.tabs[0].virtualSessionID = "vs-tab"
-	
+
 	newA, cmd := a.closeTab(a.tabs[0].id)
 	if cmd == nil || cmd() != (tea.QuitMsg{}) {
 		t.Fatal("expected QuitMsg")

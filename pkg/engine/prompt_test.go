@@ -9,6 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
@@ -572,4 +573,17 @@ func TestBuildInstructionProvider_BracesAreNotTemplates(t *testing.T) {
 	if !strings.Contains(res, "<system_reminder>\nRun the tests.\n</system_reminder>") {
 		t.Errorf("dynamic state must arrive as a tagged block:\n%s", res)
 	}
+}
+
+// testAgentCtx builds the fake agent.Context tests run tools under.
+// Production always has a real one from the ADK runner.
+func testAgentCtx() agent.Context {
+	return NewStandaloneAgentContext(context.Background())
+}
+
+// mustToolText reads the human-readable text out of a tool result,
+// whichever per-tool field carries it.
+func mustToolText(resp map[string]any) string {
+	text, _ := ToolResultText(resp)
+	return text
 }

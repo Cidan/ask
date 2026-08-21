@@ -1,9 +1,9 @@
 package tools
 
 import (
-	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"google.golang.org/adk/v2/agent"
 	"strings"
 
 	"github.com/Cidan/ask/pkg/engine"
@@ -87,13 +87,21 @@ type AskOutput struct {
 }
 
 // AskUserQuestionTool returns the interactive ask_user_question tool.
+// AskResult is the ask_user_question tool's response.
+type AskResult struct {
+	Answers   []engine.QuestionAnswer `json:"answers,omitempty" jsonschema:"one entry per question asked"`
+	Notice    string                  `json:"notice,omitempty" jsonschema:"why no answers were collected"`
+	Cancelled bool                    `json:"cancelled,omitempty"`
+	Headless  bool                    `json:"headless,omitempty" jsonschema:"true when no human was available to answer"`
+}
+
 func AskUserQuestionTool(env *ToolEnv) Tool {
-	return NewTool(
+	return NewTypedTool(
 		"ask_user_question",
 		AskToolDescription,
-		func(ctx context.Context, p AskParams) (ToolResponse, error) {
+		func(ctx agent.Context, p AskParams) (AskResult, error) {
 			if len(p.Questions) == 0 {
-				return NewTextErrorResponse("at least one question is required"), nil
+				return AskResult{}, errors.New("at least one question is required")
 			}
 			engineQs := make([]engine.Question, 0, len(p.Questions))
 			for _, q := range p.Questions {
@@ -112,23 +120,19 @@ func AskUserQuestionTool(env *ToolEnv) Tool {
 			if env.Interaction != nil {
 				resp, err := env.Interaction.AskQuestion(ctx, env.TabID, engineQs)
 				if err != nil {
-					return NewTextErrorResponse(err.Error()), nil
+					return AskResult{}, errors.New(err.Error())
 				}
 				if resp.Headless {
-					return NewTextErrorResponse(WorkflowHeadlessAskNotice), nil
+					return AskResult{Headless: true, Notice: WorkflowHeadlessAskNotice}, nil
 				}
 				if resp.Cancelled {
-					return NewTextErrorResponse("user cancelled the dialog"), nil
+					return AskResult{Cancelled: true, Notice: "user cancelled the dialog"}, nil
 				}
-				out := AskOutput{Answers: resp.Answers}
-				body, err := json.Marshal(out)
-				if err != nil {
-					return NewTextErrorResponse("encode answers: " + err.Error()), nil
-				}
-				return NewTextResponse(string(body)), nil
+
+				return AskResult{Answers: resp.Answers}, nil
 			}
 
-			return NewTextErrorResponse("ask UI not ready"), nil
+			return AskResult{}, errors.New("ask UI not ready")
 		},
 	)
 }
@@ -139,14 +143,20 @@ type FinishWorkflowParams struct {
 }
 
 // FinishWorkflowTool records final workflow artifacts and outcome description.
+// FinishWorkflowResult is the finish_workflow tool's response.
+type FinishWorkflowResult struct {
+	Recorded bool   `json:"recorded,omitempty"`
+	Next     string `json:"next,omitempty" jsonschema:"what the caller must do next"`
+}
+
 func FinishWorkflowTool(env *ToolEnv) Tool {
-	return NewTool(
+	return NewTypedTool(
 		"finish_workflow",
 		"Report the final outcome and artifacts of the workflow. REQUIRED on the final step.",
-		func(ctx context.Context, p FinishWorkflowParams) (ToolResponse, error) {
+		func(ctx agent.Context, p FinishWorkflowParams) (FinishWorkflowResult, error) {
 			desc := strings.TrimSpace(p.Description)
 			if desc == "" {
-				return NewTextErrorResponse("description is required: provide a summary of the workflow outcome"), nil
+				return FinishWorkflowResult{}, errors.New("description is required: provide a summary of the workflow outcome")
 			}
 
 			env.PendingFinishData = &FinishWorkflowData{
@@ -154,7 +164,7 @@ func FinishWorkflowTool(env *ToolEnv) Tool {
 				Artifacts:   p.Artifacts,
 			}
 
-			return NewTextResponse("finish_workflow recorded. Now call end_turn to complete the step."), nil
+			return FinishWorkflowResult{Recorded: true, Next: "Now call end_turn to complete the step."}, nil
 		},
 	)
 }
@@ -165,19 +175,25 @@ type EndTurnParams struct {
 }
 
 // EndTurnTool registers the workflow step summary and loop decision.
+// EndTurnResult is the end_turn tool's response.
+type EndTurnResult struct {
+	Recorded bool   `json:"recorded,omitempty"`
+	Note     string `json:"note,omitempty" jsonschema:"guidance about what happens next"`
+}
+
 func EndTurnTool(env *ToolEnv) Tool {
-	return NewTool(
+	return NewTypedTool(
 		"end_turn",
 		EndTurnToolDescription,
-		func(ctx context.Context, p EndTurnParams) (ToolResponse, error) {
+		func(ctx agent.Context, p EndTurnParams) (EndTurnResult, error) {
 			summary := strings.TrimSpace(p.Summary)
 			if summary == "" {
-				return NewTextErrorResponse("summary is required: describe in 1-3 sentences what you did this step"), nil
+				return EndTurnResult{}, errors.New("summary is required: describe in 1-3 sentences what you did this step")
 			}
 			decision := strings.TrimSpace(p.Decision)
 			if decision != "" && decision != "break" && decision != "continue" {
-				return NewTextErrorResponse(fmt.Sprintf(
-					"decision, when provided, must be %q or %q", "continue", "break")), nil
+				return EndTurnResult{}, fmt.Errorf(
+					"decision, when provided, must be %q or %q", "continue", "break")
 			}
 			env.PendingEndTurn = &EndTurnSignal{Decision: decision, Summary: summary}
 			note := "end_turn recorded"
@@ -185,7 +201,7 @@ func EndTurnTool(env *ToolEnv) Tool {
 				note += " (decision: " + decision + ")"
 			}
 			note += ". Finish your turn normally; the workflow acts on it when your turn ends."
-			return NewTextResponse(note), nil
+			return EndTurnResult{Recorded: true, Note: note}, nil
 		},
 	)
 }
@@ -197,18 +213,25 @@ type FinalizedPlanParams struct {
 }
 
 // FinalizedPlanTool presents a finalized plan for confirmation or workflow dispatch.
+// FinalizedPlanResult is the finalized_plan tool's response.
+type FinalizedPlanResult struct {
+	Outcome  string `json:"outcome,omitempty" jsonschema:"what the user decided and what to do next"`
+	Approved bool   `json:"approved,omitempty"`
+	Workflow string `json:"workflow,omitempty" jsonschema:"name of the workflow that ran, when one did"`
+}
+
 func FinalizedPlanTool(env *ToolEnv) Tool {
-	return NewTool(
+	return NewTypedTool(
 		"finalized_plan",
 		"Present a finalized implementation plan to the user for confirmation and execution choice. Invoking this tool MUST be your absolute final action in the turn. Once called, do not generate any further text or perform any more planning, as the user will be presented with a modal to launch a workflow or execute the plan directly. The workflow runs in a separate, isolated subagent context without access to this chat's history, so the plan must be completely self-contained.",
-		func(ctx context.Context, p FinalizedPlanParams) (ToolResponse, error) {
+		func(ctx agent.Context, p FinalizedPlanParams) (FinalizedPlanResult, error) {
 			plan := strings.TrimSpace(p.Plan)
 			explanation := strings.TrimSpace(p.Explanation)
 			if plan == "" {
-				return NewTextErrorResponse("plan is required"), nil
+				return FinalizedPlanResult{}, errors.New("plan is required")
 			}
 			if explanation == "" {
-				return NewTextErrorResponse("explanation is required"), nil
+				return FinalizedPlanResult{}, errors.New("explanation is required")
 			}
 
 			if env.Interaction != nil {
@@ -218,21 +241,21 @@ func FinalizedPlanTool(env *ToolEnv) Tool {
 					DefaultWorkflow: strings.TrimSpace(p.DefaultWorkflow),
 				})
 				if err != nil {
-					return NewTextErrorResponse("plan confirmation failed: " + err.Error()), nil
+					return FinalizedPlanResult{}, errors.New("plan confirmation failed: " + err.Error())
 				}
 				if resp.Headless {
-					return NewTextResponse("This step is running headless as part of an automated workflow. Continuing directly."), nil
+					return FinalizedPlanResult{Approved: true, Outcome: "This step is running headless as part of an automated workflow. Continuing directly."}, nil
 				}
 				if resp.Cancelled {
-					return NewTextErrorResponse("user cancelled or closed the finalized plan dialog"), nil
+					return FinalizedPlanResult{}, errors.New("user cancelled or closed the finalized plan dialog")
 				}
 				if resp.TalkMore {
-					return NewTextResponse("The user declined the plan and wants to continue discussing. Re-evaluate your approach based on the user's feedback."), nil
+					return FinalizedPlanResult{Outcome: "The user declined the plan and wants to continue discussing. Re-evaluate your approach based on the user's feedback."}, nil
 				}
 				if resp.ExecuteInline {
 					env.MarkWorkflowsChecked()
 					env.MarkWorkflowRunDispatched()
-					return NewTextResponse("Plan approved for inline execution. Planning mode has been turned OFF and todos guards have been disarmed. You can now execute your plan directly using write/edit/bash/etc."), nil
+					return FinalizedPlanResult{Approved: true, Outcome: "Plan approved for inline execution. Planning mode has been turned OFF and todos guards have been disarmed. You can now execute your plan directly using write/edit/bash/etc."}, nil
 				}
 				if resp.WorkflowName != "" {
 					env.MarkWorkflowsChecked()
@@ -241,20 +264,20 @@ func FinalizedPlanTool(env *ToolEnv) Tool {
 					if env.WorkflowRunner != nil {
 						def, err := workflow.ResolveByName(env.Cwd, resp.WorkflowName, "")
 						if err != nil {
-							return NewTextErrorResponse("could not resolve workflow: " + err.Error()), nil
+							return FinalizedPlanResult{}, errors.New("could not resolve workflow: " + err.Error())
 						}
 						out, err := env.WorkflowRunner(ctx, env.TabID, def, resp.Source)
 						if err != nil {
-							return NewTextErrorResponse("workflow execution failed: " + err.Error()), nil
+							return FinalizedPlanResult{}, errors.New("workflow execution failed: " + err.Error())
 						}
-						return NewTextResponse(out), nil
+						return FinalizedPlanResult{Approved: true, Workflow: resp.WorkflowName, Outcome: out}, nil
 					}
-					return NewTextResponse(fmt.Sprintf("Workflow %q dispatched.", resp.WorkflowName)), nil
+					return FinalizedPlanResult{Approved: true, Workflow: resp.WorkflowName, Outcome: "Workflow dispatched."}, nil
 				}
-				return NewTextResponse("Plan approved."), nil
+				return FinalizedPlanResult{Approved: true, Outcome: "Plan approved."}, nil
 			}
 
-			return NewTextErrorResponse("plan confirmation UI not ready"), nil
+			return FinalizedPlanResult{}, errors.New("plan confirmation UI not ready")
 		},
 	)
 }

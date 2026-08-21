@@ -50,7 +50,7 @@ func TestNativeBridgeTool_CreationAndExecution(t *testing.T) {
 	}
 
 	// Run successful invocation
-	resp, err := RunToolWithJSON(context.Background(), tool, `{"query":"test","limit":10,"description":"searching"}`)
+	resp, err := RunToolWithJSON(testAgentCtx(), tool, `{"query":"test","limit":10,"description":"searching"}`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestNativeBridgeTool_CreationAndExecution(t *testing.T) {
 	}
 
 	// Run error invocation
-	resp, err = RunToolWithJSON(context.Background(), tool, `{"query":"fail","description":"failing"}`)
+	resp, err = RunToolWithJSON(testAgentCtx(), tool, `{"query":"fail","description":"failing"}`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

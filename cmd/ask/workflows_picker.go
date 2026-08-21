@@ -64,11 +64,11 @@ func (m model) updateWorkflowPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// and let app.Update create the tab and dispatch step 0.
 		return m, func() tea.Msg {
 			return spawnWorkflowTabMsg{
-				OriginTabID: originTab,
-				Cwd:         cwd,
-					WorktreeName: m.worktreeName,
-				Workflow:    picked,
-				Source:      source,
+				OriginTabID:  originTab,
+				Cwd:          cwd,
+				WorktreeName: m.worktreeName,
+				Workflow:     picked,
+				Source:       source,
 			}
 		}
 	}

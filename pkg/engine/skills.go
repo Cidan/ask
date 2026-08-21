@@ -20,19 +20,19 @@ import (
 
 // Skill is one discovered SKILL.md package.
 type Skill struct {
-	Name                   string
-	Description            string
+	Name        string
+	Description string
 	// Dir is the skill package directory; Path is its SKILL.md.
-	Dir                    string
-	Path                   string
+	Dir  string
+	Path string
 	// UserInvocable surfaces the skill as a /name slash command
 	// (default true; `user-invocable: false` hides it).
-	UserInvocable          bool
+	UserInvocable bool
 	// DisableModelInvocation removes the skill from the system-prompt
 	// trigger list — the user can still invoke it explicitly.
 	DisableModelInvocation bool
 	// Frontmatter holds the parsed ADK frontmatter when available.
-	Frontmatter            *skill.Frontmatter
+	Frontmatter *skill.Frontmatter
 }
 
 // skillNameRe is the standard's name constraint: lowercase-friendly

@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -168,33 +167,10 @@ func IngestWorkflowMemory(ctx context.Context, sessSvc session.Service, sessionI
 	_ = mem.AddSessionToMemory(ctx, resp.Session)
 }
 
-// toolResponseText renders an ADK function response payload as the text
-// a UI shows, and reports whether it represents an error.
+// toolResponseText is ToolResultText, kept as a package-local alias for
+// the workflow event adapter.
 func toolResponseText(resp map[string]any) (string, bool) {
-	if len(resp) == 0 {
-		return "", false
-	}
-	isErr, _ := resp["is_error"].(bool)
-	switch {
-	case resp["result"] != nil:
-		if s, ok := resp["result"].(string); ok {
-			return s, isErr
-		}
-	case resp["confirmed"] != nil:
-		if confirmed, _ := resp["confirmed"].(bool); confirmed {
-			return "confirmed", isErr
-		}
-		return "rejected by user", true
-	case resp["reflection_guidance"] != nil:
-		if s, ok := resp["reflection_guidance"].(string); ok {
-			return s, true
-		}
-	}
-	raw, err := json.Marshal(resp)
-	if err != nil {
-		return "", isErr
-	}
-	return string(raw), isErr
+	return ToolResultText(resp)
 }
 
 // emitAgentEvent translates one ADK event into the agent-level events a

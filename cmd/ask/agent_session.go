@@ -96,14 +96,7 @@ func LoadHistoryEntriesFromEvents(events []*session.Event, opts HistoryOpts) ([]
 						continue
 					}
 					if p.FunctionResponse != nil {
-						resStr := ""
-						isErr := false
-						if res, ok := p.FunctionResponse.Response["result"].(string); ok {
-							resStr = res
-						}
-						if errFlag, ok := p.FunctionResponse.Response["is_error"].(bool); ok {
-							isErr = errFlag
-						}
+						resStr, isErr := engine.ToolResultText(p.FunctionResponse.Response)
 						entries = append(entries, historyEntry{
 							kind: histPrerendered,
 							text: renderToolResultBlock(resStr, isErr),
@@ -167,14 +160,7 @@ func LoadHistoryEntriesFromEvents(events []*session.Event, opts HistoryOpts) ([]
 						continue
 					}
 					if p.FunctionResponse != nil {
-						resStr := ""
-						isErr := false
-						if res, ok := p.FunctionResponse.Response["result"].(string); ok {
-							resStr = res
-						}
-						if errFlag, ok := p.FunctionResponse.Response["is_error"].(bool); ok {
-							isErr = errFlag
-						}
+						resStr, isErr := engine.ToolResultText(p.FunctionResponse.Response)
 						entries = append(entries, historyEntry{
 							kind: histPrerendered,
 							text: renderToolResultBlock(resStr, isErr),

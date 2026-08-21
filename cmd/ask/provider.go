@@ -217,17 +217,17 @@ type ProviderPicker struct {
 // session (claude: --session-id) so the worktree+VS pairing exists
 // before the first turn lands. Setting both is a programmer error.
 type ProviderSessionArgs struct {
-	Cwd                string
-	MCPPort            int
-	TabID              int
-	Model              string
-	Effort             string
-	SkipAllPermissions bool
-	Worktree           bool
-	SessionID          string
-	NewSessionID       string
-	ResumeCwd          string
-	InWorkflow         bool
+	Cwd                 string
+	MCPPort             int
+	TabID               int
+	Model               string
+	Effort              string
+	SkipAllPermissions  bool
+	Worktree            bool
+	SessionID           string
+	NewSessionID        string
+	ResumeCwd           string
+	InWorkflow          bool
 	IsWorkflowFinalStep bool
 	// AddedDirs are absolute paths the user has registered with /add-dir.
 	// Providers translate these into their native equivalents (claude:

@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
@@ -15,8 +14,8 @@ import (
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/google/uuid"
 	"google.golang.org/adk/v2/agent"
-	"google.golang.org/adk/v2/artifact"
 	"google.golang.org/adk/v2/agent/llmagent"
+	"google.golang.org/adk/v2/artifact"
 	adkmemory "google.golang.org/adk/v2/memory"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/runner"
@@ -408,28 +407,7 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 					}
 				}
 				if part.FunctionResponse != nil {
-					resStr := ""
-					isErr := false
-					if res, ok := part.FunctionResponse.Response["result"].(string); ok {
-						resStr = res
-					} else if confirmed, ok := part.FunctionResponse.Response["confirmed"].(bool); ok {
-						if confirmed {
-							resStr = "confirmed"
-						} else {
-							resStr = "rejected by user"
-							isErr = true
-						}
-					} else if guid, ok := part.FunctionResponse.Response["reflection_guidance"].(string); ok {
-						resStr = guid
-						isErr = true
-					} else if len(part.FunctionResponse.Response) > 0 {
-						if raw, rErr := json.Marshal(part.FunctionResponse.Response); rErr == nil {
-							resStr = string(raw)
-						}
-					}
-					if errFlag, ok := part.FunctionResponse.Response["is_error"].(bool); ok {
-						isErr = errFlag
-					}
+					resStr, isErr := ToolResultText(part.FunctionResponse.Response)
 					if rt, ok := part.FunctionResponse.Response["response_type"].(string); ok && rt == "ERROR_HANDLED_BY_REFLECT_AND_RETRY_PLUGIN" {
 						isErr = true
 					}

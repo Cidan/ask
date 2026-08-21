@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	adkagent "google.golang.org/adk/v2/agent"
 	"iter"
 	"strings"
 	"sync"
@@ -56,12 +57,16 @@ func newTestAgentSession(t *testing.T, store *agentSessionStore) *agentSession {
 	}
 	s.env = newAgentToolEnv(s.args.Cwd, 1, true, true, s.emit)
 	s.tools = []tools.Tool{
-		tools.NewTool("ping", "test echo tool",
-			func(_ context.Context, in struct {
+		tools.NewTypedTool("ping", "test echo tool",
+			func(_ adkagent.Context, in struct {
 				V           string `json:"v"`
 				Description string `json:"description,omitempty"`
-			}) (tools.ToolResponse, error) {
-				return tools.NewTextResponse("pong:" + in.V), nil
+			}) (struct {
+				Content string `json:"content"`
+			}, error) {
+				return struct {
+					Content string `json:"content"`
+				}{Content: "pong:" + in.V}, nil
 			}),
 	}
 	s.proc = &providerProc{stdin: agentStdin{s: s}, stderr: &stderrBuf{}, payload: s}

@@ -233,7 +233,6 @@ func TestSidebarCtrlUpDownSwitchWithoutFocus(t *testing.T) {
 	}
 }
 
-
 func TestWantsTabKeyBranches(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	if m.wantsTabKey() {
@@ -413,7 +412,6 @@ func TestClipText(t *testing.T) {
 	}
 }
 
-
 // --- workflow supplant --------------------------------------------------
 
 func supplantTestMsg(a app) spawnWorkflowTabMsg {
@@ -497,7 +495,6 @@ func TestWorkflowSupplantDefersWhenBusy(t *testing.T) {
 	}
 }
 
-
 func TestPendingWorkflowFiresOnTurnComplete(t *testing.T) {
 	isolateHome(t)
 	resetWorkflowTrackerForTest()
@@ -557,7 +554,6 @@ func TestPendingWorkflowDiscardedOnProviderExited(t *testing.T) {
 		t.Fatal("pendingWorkflow should be discarded on provider exit")
 	}
 }
-
 
 func TestRestoreSupplantedTabOnEnter(t *testing.T) {
 	prov := newFakeProvider()

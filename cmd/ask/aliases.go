@@ -221,7 +221,7 @@ func wrapFileToolsWithMemory(ts []tools.Tool, cwd string) []tools.Tool {
 }
 
 func agentMemoryIndexTool(env *agentToolEnv) tools.Tool {
-	return tools.MemoryIndexTool(env.Cwd, env.RequestApproval)
+	return tools.MemoryIndexTool(env.Cwd, env.ApprovalDenied)
 }
 
 // Provider aliases

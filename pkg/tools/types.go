@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
 	"strings"
 
@@ -22,29 +21,20 @@ var (
 	RunADKTool           = engine.RunADKTool
 )
 
-// NewTool creates a native ADK Tool backed by functiontool.New.
-func NewTool[T any](name, description string, handler func(ctx context.Context, params T) (ToolResponse, error)) Tool {
-	adkTool, err := functiontool.New[T, any](
+// NewTypedTool creates a native ADK tool from typed request and response
+// structs. ADK infers BOTH schemas from T and R — functiontool.New calls
+// resolvedSchema[TArgs] and resolvedSchema[TResults] — so the tool
+// declaration carries a real output schema instead of an empty one.
+//
+// Handlers report failure by returning a Go error, not by setting a flag
+// on the result. That is also what ADK's OnToolErrorCallback keys on.
+func NewTypedTool[T, R any](name, description string, handler func(ctx agent.Context, params T) (R, error)) Tool {
+	adkTool, err := functiontool.New[T, R](
 		functiontool.Config{
 			Name:        name,
 			Description: description,
 		},
-		func(actx agent.Context, params T) (any, error) {
-			resp, err := handler(actx, params)
-			if err != nil {
-				return nil, err
-			}
-			res := map[string]any{
-				"result": resp.Content,
-			}
-			if resp.IsError {
-				res["is_error"] = true
-			}
-			if resp.StopTurn {
-				res["stop_turn"] = true
-			}
-			return res, nil
-		},
+		handler,
 	)
 	if err != nil {
 		panic("failed to create tool " + name + ": " + err.Error())
@@ -53,7 +43,7 @@ func NewTool[T any](name, description string, handler func(ctx context.Context, 
 }
 
 // RunToolWithJSON executes a Tool by parsing a JSON arguments string.
-func RunToolWithJSON(ctx context.Context, t Tool, inputJSON string) (ToolResponse, error) {
+func RunToolWithJSON(ctx agent.Context, t Tool, inputJSON string) (ToolResponse, error) {
 	args := make(map[string]any)
 	if strings.TrimSpace(inputJSON) != "" {
 		if err := json.Unmarshal([]byte(inputJSON), &args); err != nil {
@@ -77,14 +67,12 @@ func RunToolWithJSON(ctx context.Context, t Tool, inputJSON string) (ToolRespons
 	}
 	content, _ := res["result"].(string)
 	isErr, _ := res["is_error"].(bool)
-	stopTurn, _ := res["stop_turn"].(bool)
 	if content == "" && len(res) > 0 {
 		raw, _ := json.Marshal(res)
 		content = string(raw)
 	}
 	return ToolResponse{
-		Content:  content,
-		IsError:  isErr,
-		StopTurn: stopTurn,
+		Content: content,
+		IsError: isErr,
 	}, nil
 }

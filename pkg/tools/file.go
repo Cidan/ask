@@ -2,12 +2,12 @@ package tools
 
 import (
 	"bufio"
-	"context"
+	"errors"
 	"fmt"
+	"google.golang.org/adk/v2/agent"
 	"os"
 	"path/filepath"
 	"strings"
-
 )
 
 const ReadToolDescription = `Read a file from the filesystem. Returns the content with 1-based line numbers (cat -n format). Use offset/limit for large files; lines longer than 2000 chars are truncated. Reading a file is required before editing or overwriting it.`
@@ -19,40 +19,48 @@ type ReadParams struct {
 	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
+// ReadResult is the read tool's response.
+type ReadResult struct {
+	Content    string `json:"content,omitempty" jsonschema:"file content, each line prefixed with its 1-based line number"`
+	Lines      int    `json:"lines,omitempty" jsonschema:"number of lines returned"`
+	NextOffset int    `json:"next_offset,omitempty" jsonschema:"offset to pass on the next call when the file was cut short"`
+	Truncated  bool   `json:"truncated,omitempty" jsonschema:"true when the file has more content than was returned"`
+}
+
 // ReadTool returns the native read tool.
 func ReadTool(env *ToolEnv) Tool {
-	return NewTool(
+	return NewTypedTool(
 		"read",
 		ReadToolDescription,
-		func(ctx context.Context, p ReadParams) (ToolResponse, error) {
+		func(ctx agent.Context, p ReadParams) (ReadResult, error) {
 			path := env.AbsPath(p.FilePath)
 			info, err := os.Stat(path)
 			if err != nil {
 				if os.IsNotExist(err) {
-					return NewTextErrorResponse("file not found: " + path), nil
+					return ReadResult{}, fmt.Errorf("file not found: %s", path)
 				}
-				return NewTextErrorResponse("stat " + path + ": " + err.Error()), nil
+				return ReadResult{}, fmt.Errorf("stat %s: %v", path, err)
 			}
 			if info.IsDir() {
-				return NewTextErrorResponse(path + " is a directory; use the ls tool instead"), nil
+				return ReadResult{}, fmt.Errorf("%s is a directory; use the ls tool instead", path)
 			}
 			if ImageExts[strings.ToLower(filepath.Ext(path))] {
-				return NewTextErrorResponse("image files are not supported for raw text reading"), nil
+				return ReadResult{}, errors.New("image files are not supported for raw text reading")
 			}
 
 			f, err := os.Open(path)
 			if err != nil {
-				return NewTextErrorResponse("open " + path + ": " + err.Error()), nil
+				return ReadResult{}, fmt.Errorf("open %s: %v", path, err)
 			}
 			defer f.Close()
 
 			head := make([]byte, 8192)
 			n, _ := f.Read(head)
 			if LooksBinary(head[:n]) {
-				return NewTextErrorResponse(path + " looks like a binary file; reading it would not be useful"), nil
+				return ReadResult{}, fmt.Errorf("%s looks like a binary file; reading it would not be useful", path)
 			}
 			if _, err := f.Seek(0, 0); err != nil {
-				return NewTextErrorResponse("seek " + path + ": " + err.Error()), nil
+				return ReadResult{}, fmt.Errorf("seek %s: %v", path, err)
 			}
 
 			offset := max(p.Offset, 1)
@@ -85,7 +93,7 @@ func ReadTool(env *ToolEnv) Tool {
 				}
 			}
 			if err := sc.Err(); err != nil {
-				return NewTextErrorResponse("read " + path + ": " + err.Error()), nil
+				return ReadResult{}, fmt.Errorf("read %s: %v", path, err)
 			}
 
 			if env.Files != nil {
@@ -93,18 +101,17 @@ func ReadTool(env *ToolEnv) Tool {
 			}
 			if emitted == 0 {
 				if offset > 1 {
-					return NewTextResponse(fmt.Sprintf("(no lines at offset %d; file has %d lines)", offset, lineNo)), nil
+					return ReadResult{Content: fmt.Sprintf("(no lines at offset %d; file has %d lines)", offset, lineNo)}, nil
 				}
-				return NewTextResponse("(empty file)"), nil
+				return ReadResult{Content: "(empty file)"}, nil
 			}
-			body := out.String()
-			switch {
-			case truncatedBytes:
-				body += fmt.Sprintf("(output capped at %d bytes; continue with offset %d)\n", MaxReadBytes, offset+emitted)
-			case moreLines:
-				body += fmt.Sprintf("(file has more lines; continue with offset %d)\n", offset+emitted)
+
+			res := ReadResult{Content: out.String(), Lines: emitted}
+			if truncatedBytes || moreLines {
+				res.Truncated = true
+				res.NextOffset = offset + emitted
 			}
-			return NewTextResponse(body), nil
+			return res, nil
 		},
 	)
 }
@@ -117,61 +124,67 @@ type WriteParams struct {
 	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
+// WriteResult is the write tool's response.
+type WriteResult struct {
+	Path     string `json:"path,omitempty" jsonschema:"absolute path written"`
+	Created  bool   `json:"created,omitempty" jsonschema:"true when the file did not exist before"`
+	Bytes    int    `json:"bytes,omitempty" jsonschema:"size of the file after the write"`
+	NoChange bool   `json:"no_change,omitempty" jsonschema:"true when the file already had exactly this content"`
+	Notice   string `json:"notice,omitempty" jsonschema:"guidance the caller must act on before retrying"`
+}
+
 // WriteTool returns the native write tool.
 func WriteTool(env *ToolEnv) Tool {
-	return NewTool(
+	return NewTypedTool(
 		"write",
 		WriteToolDescription,
-		func(ctx context.Context, p WriteParams) (ToolResponse, error) {
+		func(ctx agent.Context, p WriteParams) (WriteResult, error) {
 			if strings.TrimSpace(p.FilePath) == "" {
-				return NewTextErrorResponse("file_path is required"), nil
+				return WriteResult{}, errors.New("file_path is required")
 			}
 			path := env.AbsPath(p.FilePath)
 			if notice := env.RequireTodosNotice(); notice != "" {
-				return NewTextResponse(notice), nil
+				return WriteResult{Notice: notice}, nil
 			}
 			oldContent := ""
 			mode := os.FileMode(0o644)
 			if info, err := os.Stat(path); err == nil {
 				if info.IsDir() {
-					return NewTextErrorResponse(path + " is a directory"), nil
+					return WriteResult{}, errors.New(path + " is a directory")
 				}
 				if guard := env.CheckReadBeforeMutate(path, info.ModTime()); guard != "" {
-					return NewTextErrorResponse(guard), nil
+					return WriteResult{}, errors.New(guard)
 				}
 				mode = info.Mode().Perm()
 				data, err := os.ReadFile(path)
 				if err != nil {
-					return NewTextErrorResponse("read " + path + ": " + err.Error()), nil
+					return WriteResult{}, errors.New("read " + path + ": " + err.Error())
 				}
 				oldContent = string(data)
 				if oldContent == p.Content {
-					return NewTextResponse("no change: " + path + " already has that exact content"), nil
+					return WriteResult{Path: path, NoChange: true}, nil
 				}
 			}
 
-			if denied := env.RequestApproval(ctx, "write", map[string]any{
+			if denied := env.ApprovalDenied(ctx, "write", map[string]any{
 				"file_path":   path,
 				"content":     p.Content,
 				"description": p.Description,
-			}); denied != nil {
-				return *denied, nil
+			}); denied != "" {
+				return WriteResult{}, errors.New(denied)
 			}
 
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				return NewTextErrorResponse("mkdir " + filepath.Dir(path) + ": " + err.Error()), nil
+				return WriteResult{}, errors.New("mkdir " + filepath.Dir(path) + ": " + err.Error())
 			}
 			if err := os.WriteFile(path, []byte(p.Content), mode); err != nil {
-				return NewTextErrorResponse("write " + path + ": " + err.Error()), nil
+				return WriteResult{}, errors.New("write " + path + ": " + err.Error())
 			}
 			if env.Files != nil {
 				env.Files.RecordRead(path)
 			}
 			env.EmitFileDiff(path, oldContent, p.Content)
-			if oldContent == "" {
-				return NewTextResponse("created " + path), nil
-			}
-			return NewTextResponse("updated " + path), nil
+			return WriteResult{Path: path, Created: oldContent == "", Bytes: len(p.Content)}, nil
 		},
 	)
 }
@@ -186,65 +199,73 @@ type EditParams struct {
 	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
+// EditResult is the edit tool's response.
+type EditResult struct {
+	Path         string `json:"path,omitempty" jsonschema:"absolute path edited"`
+	Created      bool   `json:"created,omitempty" jsonschema:"true when the edit created the file"`
+	Replacements int    `json:"replacements,omitempty" jsonschema:"number of occurrences replaced"`
+	Notice       string `json:"notice,omitempty" jsonschema:"guidance the caller must act on before retrying"`
+}
+
 // EditTool returns the native edit tool.
 func EditTool(env *ToolEnv) Tool {
-	return NewTool(
+	return NewTypedTool(
 		"edit",
 		EditToolDescription,
-		func(ctx context.Context, p EditParams) (ToolResponse, error) {
+		func(ctx agent.Context, p EditParams) (EditResult, error) {
 			if strings.TrimSpace(p.FilePath) == "" {
-				return NewTextErrorResponse("file_path is required"), nil
+				return EditResult{}, errors.New("file_path is required")
 			}
 			if p.OldString == p.NewString {
-				return NewTextErrorResponse("old_string and new_string are identical — nothing to do"), nil
+				return EditResult{}, errors.New("old_string and new_string are identical — nothing to do")
 			}
 			path := env.AbsPath(p.FilePath)
 			if notice := env.RequireTodosNotice(); notice != "" {
-				return NewTextResponse(notice), nil
+				return EditResult{Notice: notice}, nil
 			}
 
 			if p.OldString == "" {
 				if _, err := os.Stat(path); err == nil {
-					return NewTextErrorResponse(path + " already exists; read it and edit with a non-empty old_string, or use write to overwrite"), nil
+					return EditResult{}, errors.New(path + " already exists; read it and edit with a non-empty old_string, or use write to overwrite")
 				}
-				if denied := env.RequestApproval(ctx, "edit", map[string]any{
+				if denied := env.ApprovalDenied(ctx, "edit", map[string]any{
 					"file_path":   path,
 					"old_string":  "",
 					"new_string":  p.NewString,
 					"description": p.Description,
-				}); denied != nil {
-					return *denied, nil
+				}); denied != "" {
+					return EditResult{}, errors.New(denied)
 				}
 				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-					return NewTextErrorResponse("mkdir " + filepath.Dir(path) + ": " + err.Error()), nil
+					return EditResult{}, errors.New("mkdir " + filepath.Dir(path) + ": " + err.Error())
 				}
 				if err := os.WriteFile(path, []byte(p.NewString), 0o644); err != nil {
-					return NewTextErrorResponse("write " + path + ": " + err.Error()), nil
+					return EditResult{}, errors.New("write " + path + ": " + err.Error())
 				}
 				if env.Files != nil {
 					env.Files.RecordRead(path)
 				}
 				env.EmitFileDiff(path, "", p.NewString)
-				return NewTextResponse("created " + path), nil
+				return EditResult{Path: path, Created: true, Replacements: 1}, nil
 			}
 
 			info, err := os.Stat(path)
 			if err != nil {
 				if os.IsNotExist(err) {
-					return NewTextErrorResponse("file not found: " + path), nil
+					return EditResult{}, errors.New("file not found: " + path)
 				}
-				return NewTextErrorResponse("stat " + path + ": " + err.Error()), nil
+				return EditResult{}, errors.New("stat " + path + ": " + err.Error())
 			}
 			if info.IsDir() {
-				return NewTextErrorResponse(path + " is a directory"), nil
+				return EditResult{}, errors.New(path + " is a directory")
 			}
 			if guard := env.CheckReadBeforeMutate(path, info.ModTime()); guard != "" {
-				return NewTextErrorResponse(guard), nil
+				return EditResult{}, errors.New(guard)
 			}
 
 			data, err := os.ReadFile(path)
 			if err != nil {
-				return NewTextErrorResponse("read " + path + ": " + err.Error()), nil
+				return EditResult{}, errors.New("read " + path + ": " + err.Error())
 			}
 			content := string(data)
 
@@ -260,19 +281,19 @@ func EditTool(env *ToolEnv) Tool {
 			count := strings.Count(work, oldStr)
 			switch {
 			case count == 0:
-				return NewTextErrorResponse("old_string not found in " + path + ". Make sure it matches the file content exactly, including whitespace and indentation. Re-read the file if it may have changed."), nil
+				return EditResult{}, errors.New("old_string not found in " + path + ". Make sure it matches the file content exactly, including whitespace and indentation. Re-read the file if it may have changed.")
 			case count > 1 && !p.ReplaceAll:
-				return NewTextErrorResponse(fmt.Sprintf("old_string appears %d times in %s. Provide more surrounding context to make it unique, or set replace_all to true.", count, path)), nil
+				return EditResult{}, fmt.Errorf("old_string appears %d times in %s. Provide more surrounding context to make it unique, or set replace_all to true.", count, path)
 			}
 
-			if denied := env.RequestApproval(ctx, "edit", map[string]any{
+			if denied := env.ApprovalDenied(ctx, "edit", map[string]any{
 				"file_path":   path,
 				"old_string":  p.OldString,
 				"new_string":  p.NewString,
 				"replace_all": p.ReplaceAll,
 				"description": p.Description,
-			}); denied != nil {
-				return *denied, nil
+			}); denied != "" {
+				return EditResult{}, errors.New(denied)
 			}
 
 			replaced := count
@@ -286,16 +307,13 @@ func EditTool(env *ToolEnv) Tool {
 				work = strings.ReplaceAll(work, "\n", "\r\n")
 			}
 			if err := os.WriteFile(path, []byte(work), info.Mode().Perm()); err != nil {
-				return NewTextErrorResponse("write " + path + ": " + err.Error()), nil
+				return EditResult{}, errors.New("write " + path + ": " + err.Error())
 			}
 			if env.Files != nil {
 				env.Files.RecordRead(path)
 			}
 			env.EmitFileDiff(path, content, work)
-			if replaced == 1 {
-				return NewTextResponse("edited " + path), nil
-			}
-			return NewTextResponse(fmt.Sprintf("edited %s: %d replacements", path, replaced)), nil
+			return EditResult{Path: path, Replacements: replaced}, nil
 		},
 	)
 }

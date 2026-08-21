@@ -63,8 +63,8 @@ func TestIsKitty(t *testing.T) {
 // thumbMaxRows] bounding box, and floored to a minimum of 2x1.
 func TestThumbnailGrid(t *testing.T) {
 	cases := []struct {
-		name             string
-		w, h             int
+		name               string
+		w, h               int
 		wantCols, wantRows int
 	}{
 		{"zero dims use 4x2 default", 0, 0, 4, 2},

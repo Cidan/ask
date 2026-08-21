@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/Cidan/ask/pkg/engine"
@@ -18,22 +19,28 @@ type loadMemoryParams struct {
 }
 
 // LoadMemoryTool returns the native tool for querying long-term memory with JSON Schema compatibility.
+// LoadMemoryResult is the load_memory tool's response.
+type LoadMemoryResult struct {
+	Memories string `json:"memories,omitempty" jsonschema:"matching memories, one per line"`
+	Count    int    `json:"count,omitempty"`
+}
+
 func LoadMemoryTool() Tool {
-	return NewTool(
+	return NewTypedTool(
 		"load_memory",
 		"Loads the memory for the current user.",
-		func(ctx context.Context, p loadMemoryParams) (ToolResponse, error) {
+		func(ctx agent.Context, p loadMemoryParams) (LoadMemoryResult, error) {
 			query := strings.TrimSpace(p.Query)
 			if query == "" {
-				return NewTextErrorResponse("query cannot be empty"), nil
+				return LoadMemoryResult{}, errors.New("query cannot be empty")
 			}
 			actx := engine.NewStandaloneAgentContext(ctx)
 			res, err := actx.SearchMemory(ctx, query)
 			if err != nil {
-				return NewTextErrorResponse("failed to search memory: " + err.Error()), nil
+				return LoadMemoryResult{}, errors.New("failed to search memory: " + err.Error())
 			}
 			if res == nil || len(res.Memories) == 0 {
-				return NewTextResponse("no memories found"), nil
+				return LoadMemoryResult{Count: 0}, nil
 			}
 			var lines []string
 			for _, m := range res.Memories {
@@ -46,9 +53,9 @@ func LoadMemoryTool() Tool {
 				}
 			}
 			if len(lines) == 0 {
-				return NewTextResponse("no memories found"), nil
+				return LoadMemoryResult{Count: 0}, nil
 			}
-			return NewTextResponse(strings.Join(lines, "\n")), nil
+			return LoadMemoryResult{Memories: strings.Join(lines, "\n"), Count: len(lines)}, nil
 		},
 	)
 }
@@ -64,30 +71,35 @@ type memoryIndexParams struct {
 }
 
 // MemoryIndexTool returns the Tool for storing text in vector memory.
-func MemoryIndexTool(cwd string, requestApproval func(ctx context.Context, name string, params map[string]any) *ToolResponse) Tool {
-	return NewTool(
+// MemoryIndexResult is the memory_index tool's response.
+type MemoryIndexResult struct {
+	Indexed bool `json:"indexed,omitempty"`
+}
+
+func MemoryIndexTool(cwd string, approvalDenied func(ctx context.Context, name string, params map[string]any) string) Tool {
+	return NewTypedTool(
 		"memory_index",
 		"Store text in the project's long-term vector memory. Use this to record architectural decisions, solved bugs, learned facts, and important project conventions so they automatically surface in future sessions when relevant. Do NOT use this for code snippets or entire files (those are searched via grep/glob); use it for conceptual knowledge.",
-		func(ctx context.Context, p memoryIndexParams) (ToolResponse, error) {
+		func(ctx agent.Context, p memoryIndexParams) (MemoryIndexResult, error) {
 			text := strings.TrimSpace(p.Text)
 			if text == "" {
-				return NewTextErrorResponse("text cannot be empty"), nil
+				return MemoryIndexResult{}, errors.New("text cannot be empty")
 			}
 
-			if requestApproval != nil {
-				if denied := requestApproval(ctx, "memory_index", map[string]any{
+			if approvalDenied != nil {
+				if denied := approvalDenied(ctx, "memory_index", map[string]any{
 					"text":        p.Text,
 					"description": p.Description,
-				}); denied != nil {
-					return *denied, nil
+				}); denied != "" {
+					return MemoryIndexResult{}, errors.New(denied)
 				}
 			}
 
 			if err := memory.Index(ctx, cwd, text); err != nil {
-				return NewTextErrorResponse("error: " + err.Error()), nil
+				return MemoryIndexResult{}, errors.New("error: " + err.Error())
 			}
 
-			return NewTextResponse("successfully indexed memory"), nil
+			return MemoryIndexResult{Indexed: true}, nil
 		},
 	)
 }
@@ -104,7 +116,9 @@ func (m *MemoryAwareTool) Description() string { return m.Inner.Description() }
 func (m *MemoryAwareTool) IsLongRunning() bool { return m.Inner.IsLongRunning() }
 func (m *MemoryAwareTool) Info() ToolInfo      { return ExtractToolInfo(m.Inner) }
 func (m *MemoryAwareTool) Declaration() *genai.FunctionDeclaration {
-	if dp, ok := m.Inner.(interface{ Declaration() *genai.FunctionDeclaration }); ok {
+	if dp, ok := m.Inner.(interface {
+		Declaration() *genai.FunctionDeclaration
+	}); ok {
 		return dp.Declaration()
 	}
 	return nil
@@ -166,13 +180,5 @@ func (m *MemoryAwareTool) Run(ctx agent.Context, args any) (map[string]any, erro
 		return resp, err
 	}
 
-	if resp == nil {
-		resp = make(map[string]any)
-	}
-	if s, ok := resp["result"].(string); ok && s != "" {
-		resp["result"] = s + "\n\n" + block
-	} else {
-		resp["result"] = block
-	}
-	return resp, err
+	return engine.AppendToolResultText(resp, block), err
 }

@@ -19,14 +19,14 @@ purpose: **a row is only "done" when a production caller reaches it.**
 | Agent loop | `runner.Runner` + `llmagent` | **done** — `cmd/ask/agent_run.go`, `pkg/engine/run.go` |
 | Session lifecycle | `runner.Config{AutoCreateSession}` | **done** — `pkg/engine/run.go` |
 | Sessions on disk | `session.Service` (`NewFileSessionService`) | **done** |
-| Tools | `functiontool.New`, `tool.Toolset` | **done** |
+| Tools | `functiontool.New[TArgs, TResults]`, `tool.Toolset` | **done** — typed structs both sides, one `Run` contract |
 | Skills / MCP | `skilltoolset`, `mcptoolset` | **done** |
 | Memory | `memory.Service` (`pkg/memory`) | **done** — including workflow-run ingestion |
 | Workflow engine | `workflow.Workflow` graph + `AgentNode` | **done** — see below |
 | Loops | `loopagent` + `exitlooptool` | **done** — compiled into the graph |
 | Per-node retry | `workflow.NodeConfig.RetryConfig` | **done** — replaced the hand-rolled retry loop |
 | Step context isolation | `llmagent.IncludeContentsNone` | **done** |
-| Self-healing tool errors | `plugin/retryandreflect` | **registered, never fires** — see Gaps |
+| Self-healing tool errors | `plugin/retryandreflect` | **done** — tools return Go errors, so `OnToolErrorCallback` fires |
 | Parameter injection | `plugin/functioncallmodifier` | **inert** — see Gaps |
 | Subagent delegation | `tool/agenttool` | **not wired** — see Gaps |
 | Human-in-the-loop | `tool/toolconfirmation` | **not wired** — see Gaps |
@@ -92,13 +92,6 @@ so a chain that died at step 1 of 5 rendered 5/5 green.
 
 Recorded so the next reader does not mistake an import for an
 integration.
-
-**`plugin/retryandreflect`** is in `DefaultPlugins()` but cannot fire.
-ADK triggers it from `OnToolErrorCallback`, i.e. a non-nil Go `error`
-from the tool. Every ask tool returns `(NewTextErrorResponse(...), nil)`,
-and `tools.NewTool` turns that into a *successful* return carrying
-`is_error: true` in the result map. Wiring it means bridging
-`ToolResponse.IsError` to ADK's error channel.
 
 **`plugin/functioncallmodifier`** is registered with a predicate that
 always returns `false` (`pkg/engine/plugins.go`), so it never applies.
