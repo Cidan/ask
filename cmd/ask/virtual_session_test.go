@@ -1849,6 +1849,9 @@ func TestRecordVirtualSession_WorkflowRunAppendsStepsToSameRun(t *testing.T) {
 	}
 }
 
+// A loop step records against its top-level index. Loop iteration state
+// now lives inside ADK's loopagent node, so the tab no longer tracks an
+// inner cursor of its own.
 func TestRecordVirtualSession_WorkflowRunLoopStep(t *testing.T) {
 	isolateHome(t)
 	m := newTestModel(t, newFakeProvider())
@@ -1860,7 +1863,6 @@ func TestRecordVirtualSession_WorkflowRunLoopStep(t *testing.T) {
 		startedAt: time.Now().UTC(),
 		StepIdx:   0,
 		Source:    workflowSource{Kind: workflowSourceChat},
-		loop:      &loopRunFrame{iteration: 2, innerIdx: 0},
 	}
 
 	store := &virtualSessionStore{Version: 2}
@@ -1871,8 +1873,11 @@ func TestRecordVirtualSession_WorkflowRunLoopStep(t *testing.T) {
 	got, _ := loadVirtualSessions()
 	vs := got.findByID("vs-1")
 	step := vs.WorkflowRuns[0].Steps[0]
-	if step.LoopIteration != 2 || step.LoopInnerIdx != 0 {
-		t.Errorf("Loop info wrong: %d %d", step.LoopIteration, step.LoopInnerIdx)
+	if step.StepIdx != 0 {
+		t.Errorf("loop step should record top-level index 0, got %d", step.StepIdx)
+	}
+	if step.StepName != "loop" {
+		t.Errorf("loop step name = %q, want the top-level loop step", step.StepName)
 	}
 }
 

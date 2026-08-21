@@ -1,276 +1,139 @@
-# Comprehensive Architectural Plan: ADK 2.0 Native Modernization
+# ADK 2.0 adoption status
 
-## 1. Executive Summary
+`ask` runs on Google's **Agent Development Kit 2.0** (`google.golang.org/adk/v2`)
+and the GenAI SDK against Vertex AI Gemini.
 
-`ask` is a modern terminal coding agent built in Go that utilizes Google's **Agent Development Kit 2.0 (`google.golang.org/adk/v2`)** and the **Google GenAI SDK (`google.golang.org/genai`)** against Vertex AI Gemini.
-
-While previous modernization efforts migrated individual components (such as `functiontool.New`, `skilltoolset`, `mcptoolset`, `memory.Service`, and `FileSessionService`), several subsystems in `ask` still hand-build functionality where native, idiomatic ADK 2.0 primitives exist.
-
-This document outlines the detailed architectural blueprint and implementation plan for adopting all remaining ADK 2.0 features (excluding Google Search grounding, which is intentionally replaced by Ask's first-class developer tooling).
-
-Each section is designed as an independent, reviewable pull request (PR) milestone.
-
----
-
-## 2. Target Architecture Overview
-
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│ PR 1: Runner Session Lifecycle (AutoCreateSession)                    │
-│ • Eliminate manual session check/create boilerplate                   │
-└──────────────────────────────────┬─────────────────────────────────────┘
-                                   │
-┌──────────────────────────────────▼─────────────────────────────────────┐
-│ PR 2: Self-Healing Tool Recovery (plugin/retryandreflect)             │
-│ • Attach retry & reflection plugin for automatic error correction     │
-└──────────────────────────────────┬─────────────────────────────────────┘
-                                   │
-┌──────────────────────────────────▼─────────────────────────────────────┐
-│ PR 3: Dynamic Tool Augmentation (plugin/functioncallmodifier)         │
-│ • Migrate synthetic parameter injection to ADK modifier plugin        │
-└──────────────────────────────────┬─────────────────────────────────────┘
-                                   │
-┌──────────────────────────────────▼─────────────────────────────────────┐
-│ PR 4: Native Subagent Delegation (tool/agenttool)                     │
-│ • Wrap research and named subagents directly via agenttool.New        │
-└──────────────────────────────────┬─────────────────────────────────────┘
-                                   │
-┌──────────────────────────────────▼─────────────────────────────────────┐
-│ PR 5: Standard Human-In-The-Loop Confirmation (tool/toolconfirmation) │
-│ • Adopt adk_request_confirmation and ConfirmationProvider             │
-└──────────────────────────────────┬─────────────────────────────────────┘
-                                   │
-┌──────────────────────────────────▼─────────────────────────────────────┐
-│ PR 6: Dynamic Instruction Interpolation (util/instructionutil)        │
-│ • Dynamic session state & artifact interpolation in prompts           │
-└──────────────────────────────────┬─────────────────────────────────────┘
-                                   │
-┌──────────────────────────────────▼─────────────────────────────────────┐
-│ PR 7: Session Artifact Management (artifact.Service & loadartifacts) │
-│ • Native artifact storage and retrieval across turns and subagents    │
-└──────────────────────────────────┬─────────────────────────────────────┘
-                                   │
-┌──────────────────────────────────▼─────────────────────────────────────┐
-│ PR 8: Graph-Based Workflow Engine (google.golang.org/adk/v2/workflow) │
-│ • Compile workflow definitions to ADK DAG Workflow Graphs            │
-└────────────────────────────────────────────────────────────────────────┘
-```
+This document tracks what is actually wired. An earlier revision listed
+eight PRs as `[x] COMPLETED & MERGED`; an audit found that five of them
+had merged as unreachable code — the ADK symbol was imported, a builder
+was written, a test was written against the builder, and nothing in the
+production path ever called it. The table below is kept honest on
+purpose: **a row is only "done" when a production caller reaches it.**
 
 ---
 
-## 3. Detailed PR Milestones
+## Status
+
+| Capability | ADK surface | Status |
+|---|---|---|
+| Agent loop | `runner.Runner` + `llmagent` | **done** — `cmd/ask/agent_run.go`, `pkg/engine/run.go` |
+| Session lifecycle | `runner.Config{AutoCreateSession}` | **done** — `pkg/engine/run.go` |
+| Sessions on disk | `session.Service` (`NewFileSessionService`) | **done** |
+| Tools | `functiontool.New`, `tool.Toolset` | **done** |
+| Skills / MCP | `skilltoolset`, `mcptoolset` | **done** |
+| Memory | `memory.Service` (`pkg/memory`) | **done** — including workflow-run ingestion |
+| Workflow engine | `workflow.Workflow` graph + `AgentNode` | **done** — see below |
+| Loops | `loopagent` + `exitlooptool` | **done** — compiled into the graph |
+| Per-node retry | `workflow.NodeConfig.RetryConfig` | **done** — replaced the hand-rolled retry loop |
+| Step context isolation | `llmagent.IncludeContentsNone` | **done** |
+| Self-healing tool errors | `plugin/retryandreflect` | **registered, never fires** — see Gaps |
+| Parameter injection | `plugin/functioncallmodifier` | **inert** — see Gaps |
+| Subagent delegation | `tool/agenttool` | **not wired** — see Gaps |
+| Human-in-the-loop | `tool/toolconfirmation` | **not wired** — see Gaps |
+| Artifacts | `artifact.Service`, `loadartifactstool` | **dropped** — see Gaps |
+| Dynamic instructions | `util/instructionutil` | **deliberately not used** — see Gaps |
+| Parallel / fan-out | `JoinNode`, `NodeConfig.ParallelWorker` | **planned** |
+| Pause / resume, HITL | `workflow.Persistence`, `Workflow.Resume`, `NewRequestInputEvent` | **planned** |
 
 ---
 
-### PR 1: Runner Session Lifecycle & Auto-Creation (`AutoCreateSession: true`) (COMPLETED & MERGED - PR #128)
+## Workflow engine
 
-#### Problem Statement
-Currently, `pkg/engine/run.go` (lines 240-256) and `cmd/ask/agent_run.go` (lines 375-390) manually query `sessSvc.Get(...)` and, upon a not-found error, issue a manual `sessSvc.Create(...)` before instantiating `runner.New(...)`. This creates boilerplate and redundant session lookups on every single user turn.
+A `workflow.Def` compiles to an ADK graph (`pkg/workflow/compile.go`):
 
-#### Target Implementation
-ADK 2.0 provides `runner.Config{AutoCreateSession: true}`. When set, `runner.Run` automatically initializes the session in the provided `session.Service` if it does not already exist.
+- Each top-level agent step becomes an `AgentNode` wrapping an
+  `llmagent`, chained `Start -> n0 -> n1 -> …`.
+- A `kind: "loop"` step becomes an `AgentNode` wrapping a `loopagent`
+  whose sub-agents are the inner steps, each carrying `exit_loop`. A step
+  calls `exit_loop` to break (it sets `Actions.Escalate`, which is what
+  `loopagent` watches); otherwise the loop runs to `MaxIterations`.
+- Per-node `RetryConfig` replaces the runner's `stepErrorRetry` loop.
 
-#### File Changes
-- **`pkg/engine/run.go`**:
-  - Remove manual `sessSvc.Get` / `sessSvc.Create` block.
-  - Configure `runner.New(runner.Config{AppName: "ask", Agent: agentInstance, SessionService: sessSvc, MemoryService: memSvc, AutoCreateSession: true})`.
-- **`cmd/ask/agent_run.go`**:
-  - Remove manual `s.sessSvc.Get` / `s.sessSvc.Create` block in `runTurn`.
-  - Pass `AutoCreateSession: true` to `engine.RunnerBuilder`.
-- **`pkg/engine/session.go`**:
-  - Ensure headless sessions leverage `AutoCreateSession: true`.
+Two `llmagent` settings carry the workflow's semantics and must not be
+dropped:
 
-#### Verification & Tests
-- `pkg/engine/run_test.go`: Add test verifying that calling `engine.Run` with a non-existent `SessionID` successfully auto-creates the session and persists events in `FileSessionService`.
-- `cmd/ask/agent_run_test.go`: Verify multi-turn conversational resumption and fresh session initialization.
+- **`IncludeContents: IncludeContentsNone`.** Without it a step inherits
+  the whole session, and ADK's `ConvertForeignEvent` renders every prior
+  step's events as prose — each tool call and each full tool result — so
+  step 3 would carry steps 1 and 2 in their entirety. With it, a step
+  sees the handoff from the step before it and its own work.
+- **`InstructionProvider`, never `Config.Instruction`.** Step prompts are
+  user-authored and routinely contain braces. ADK interpolates the static
+  `Instruction` field against session state and fails the invocation on
+  the first unknown `{name}`.
 
----
+`*workflow.Workflow` is not an `agent.Agent` (the interface has an
+unexported method), so `engine.WorkflowGraphAgent` wraps it via
+`agent.New(agent.Config{Run: wf.Run})` and hands that to the runner.
 
-### PR 2: Self-Healing Tool Recovery via `plugin/retryandreflect` (COMPLETED & MERGED - PR #129)
+Progress reporting lives in `pkg/workflow/progress.go`. Every callback is
+driven by a real event: a step starts when an event authored by its agent
+arrives and finishes when its successor starts or the run ends cleanly.
+Steps that never ran are never reported. The previous graph runner closed
+out every remaining step as completed and hardcoded a successful finish,
+so a chain that died at step 1 of 5 rendered 5/5 green.
 
-#### Problem Statement
-When a tool call fails (e.g., regex error in grep, invalid path in read, or syntax error in edit), the current behavior either returns a raw error string in the tool result or relies on the next turn prompt to instruct the model to recover. LLMs often surrender, apologize, or stop early rather than correcting their arguments.
+### What the migration removed
 
-#### Target Implementation
-ADK 2.0 provides `google.golang.org/adk/v2/plugin/retryandreflect`. When a tool execution returns an error, the plugin intercepts the failure, executes a structured reflection loop (`reflection.md`), and prompts the model to correct its arguments in the same turn without crashing or terminating the turn prematurely.
-
-#### File Changes
-- **`pkg/engine/run.go`**:
-  - Import `google.golang.org/adk/v2/plugin/retryandreflect`.
-  - Configure `PluginConfig` on `runner.Config`:
-    ```go
-    retryPlugin, err := retryandreflect.NewPlugin(retryandreflect.Config{
-        MaxRetries: 2,
-    })
-    ```
-- **`cmd/ask/agent_run.go`**:
-  - Attach the `retryandreflect` plugin to the TUI runner configuration.
-- **`pkg/engine/types.go`**:
-  - Align `ToolResponse.IsError` with ADK's reflection handler so tool error events trigger reflection seamlessly.
-
-#### Verification & Tests
-- `pkg/engine/run_test.go`: Add `TestEngineRun_ToolRetryAndReflect` where a tool fails on the first invocation and succeeds on the second after reflection.
-- `cmd/ask/agent_run_test.go`: Verify UI event stream correctly surfaces reflection attempts to the user without duplicating transcript entries.
-
----
-
-### PR 3: Tool Parameter Augmentation via `plugin/functioncallmodifier` (COMPLETED & MERGED - PR #129)
-
-#### Problem Statement
-Ask currently mutates tool declarations and wraps handler functions in `pkg/tools/types.go` and `pkg/tools/bridge.go` to inject required metadata fields (such as the mandatory `description` phrase for UI headlines). Hand-rolling AST schema modifications risks normalization incompatibilities with GenAI schema converters.
-
-#### Target Implementation
-ADK 2.0 provides `google.golang.org/adk/v2/plugin/functioncallmodifier`. This plugin intercepts model requests before they hit the wire (`BeforeModelCallback`) and after model generation (`AfterModelCallback`), dynamically injecting synthetic argument schemas (`description`) and stripping them before tool execution.
-
-#### File Changes
-- **`pkg/tools/types.go` & `pkg/tools/bridge.go`**:
-  - Remove manual JSON schema AST manipulation for `description` field injection.
-  - Keep `functiontool.New[TArgs, TResults]` purely focused on the tool's typed parameters.
-- **`pkg/engine/run.go` & `cmd/ask/agent_run.go`**:
-  - Register `functioncallmodifier.NewPlugin(cfg)` with:
-    ```go
-    functioncallmodifier.NewPlugin(functioncallmodifier.FunctionCallModifierConfig{
-        Predicate: func(toolName string) bool { return isNativeAskTool(toolName) },
-        Args: map[string]*genai.Schema{
-            "description": {
-                Type:        "STRING",
-                Description: "one short human-readable phrase (under 10 words) telling the user what this call is doing",
-            },
-        },
-    })
-    ```
-
-#### Verification & Tests
-- `pkg/tools/types_test.go` & `pkg/tools/bridge_test.go`: Verify tool declarations generate clean, strict schemas without conflicting `anyOf` or type arrays.
-- `cmd/ask/tool_output_test.go`: Ensure headline phrase extraction remains 100% backward compatible.
+- The handwritten `Runner.Run` state machine, `LoopRunFrame`, and the
+  re-prompt machinery (`RemindNoSummary` / `RemindNoDecision` /
+  `RemindFixPlanDir`).
+- `RunGraph` and `BuildWorkflowAgent` — two dead parallel engines. Note
+  `RunGraph` never used the graph; it called `BuildWorkflowAgent`.
+- `StepExecutor` / `ExecuteStep`. A run is now one agent session for the
+  whole graph, not one provider session per step.
+- The `ask/plans/` notes directories (`pkg/workflow/plans.go`) and the
+  `clear_plans` tool. Step handoff is the graph's node output; durable
+  reasoning goes to `pkg/memory` via `IngestWorkflowMemory`.
 
 ---
 
-### PR 4: Native Subagent Delegation via `tool/agenttool` (COMPLETED & MERGED - PR #129)
+## Gaps
 
-#### Problem Statement
-In `cmd/ask/agent_tools_task.go` and `pkg/engine/subagents.go`, synchronous subagents (such as the default researcher or named subagents) are launched through custom execution runners that manually construct sub-sessions, extract results, and format outputs.
+Recorded so the next reader does not mistake an import for an
+integration.
 
-#### Target Implementation
-ADK 2.0 provides `google.golang.org/adk/v2/tool/agenttool`. `agenttool.New(agent, &agenttool.Config{SkipSummarization: ...})` wraps any `agent.Agent` directly into an ADK `tool.Tool`, handling sub-session isolation, parameter validation against the agent's input schema, and response extraction.
+**`plugin/retryandreflect`** is in `DefaultPlugins()` but cannot fire.
+ADK triggers it from `OnToolErrorCallback`, i.e. a non-nil Go `error`
+from the tool. Every ask tool returns `(NewTextErrorResponse(...), nil)`,
+and `tools.NewTool` turns that into a *successful* return carrying
+`is_error: true` in the result map. Wiring it means bridging
+`ToolResponse.IsError` to ADK's error channel.
 
-#### File Changes
-- **`pkg/engine/subagents.go`**:
-  - Convert `BuildResearchSubagent` and `BuildNamedSubagent` into native ADK tools via `agenttool.New(agentInstance, nil)`.
-- **`cmd/ask/agent_tools_task.go`**:
-  - For synchronous task delegation, delegate directly through `agenttool`.
-  - Retain background job manager integration (`run_in_background: true`) for asynchronous jobs while using `agenttool` under the hood.
+**`plugin/functioncallmodifier`** is registered with a predicate that
+always returns `false` (`pkg/engine/plugins.go`), so it never applies.
+PR #132 disabled it to fix a proto validation error; the manual JSON
+schema surgery it was meant to replace is still in
+`pkg/tools/bridge.go`.
 
-#### Verification & Tests
-- `pkg/engine/subagents_test.go`: Add tests verifying synchronous subagents execute with isolated sessions and report results through `agenttool`.
-- `cmd/ask/agent_tools_test.go`: Verify `task` tool handles both synchronous and background tasks without regressions.
+**`tool/agenttool`** — `BuildResearchSubagent`, `BuildNamedSubagent`,
+`BuildResearchAgentTool`, and `BuildNamedAgentTool` have no production
+callers. The `task` tool still spawns a nested `engine.Run`.
 
----
+**`tool/toolconfirmation`** — no tool declares `RequireConfirmation` or a
+`ConfirmationProvider`, so ADK never emits `adk_request_confirmation` and
+the handling in `run.go` / `agent_run.go` is unreachable. Approval is the
+in-tool blocking path in `pkg/tools/env.go`.
 
-### PR 5: Standard Human-In-The-Loop Confirmation via `tool/toolconfirmation` (COMPLETED & MERGED - PR #130)
+**Artifacts** were dropped rather than wired. ADK ships only
+`InMemoryService` and `gcsartifact`; ask's was rebuilt per turn and
+nothing ever saved to it, so `loadartifactstool` could only return empty
+while costing tokens on every request. Node outputs cover step handoff
+and `pkg/memory` covers durable state.
 
-#### Problem Statement
-Ask currently handles tool approval and permission rules through custom wrapper functions in `pkg/tools/env.go`, `pkg/engine/interaction.go`, and `cmd/ask/approval.go`. This decouples tool approval from the runner's native event stream.
-
-#### Target Implementation
-ADK 2.0 provides native Human-In-The-Loop confirmation:
-- Tools and Toolsets declare confirmation requirements via `tool.ConfirmationProvider` or `RequireConfirmation: true`.
-- When a tool requires approval, ADK emits an `adk_request_confirmation` event (`toolconfirmation.FunctionCallName`).
-- The frontend extracts the inner intent using `toolconfirmation.OriginalCallFrom(fc)` and yields the prompt to the user.
-- The user's response is returned as a standard function response (`{"confirmed": bool}`), and ADK resumes execution automatically.
-
-#### File Changes
-- **`pkg/engine/interaction.go`**:
-  - Update `ApprovalRequest` to integrate with `toolconfirmation.ToolConfirmation`.
-- **`pkg/tools/env.go` & `pkg/tools/types.go`**:
-  - Use `tool.ConfirmationProvider` on tools that perform mutating operations (e.g. `write`, `edit`, `bash`).
-- **`cmd/ask/event_adapter.go` & `cmd/ask/agent_run.go`**:
-  - Handle `toolconfirmation.FunctionCallName` in the runner event loop, pop the approval modal, and feed the confirmation response back to the runner.
-
-#### Verification & Tests
-- `pkg/engine/run_test.go`: Add `TestEngineRun_ToolConfirmation_Approve` and `TestEngineRun_ToolConfirmation_Deny`.
-- `cmd/ask/approval_test.go`: Verify that approving/denying tools correctly unblocks or terminates the agent step.
+**`util/instructionutil`** is deliberately not used. ask's instruction
+text is user documentation inlined verbatim, not a template — see the
+comment on `BuildInstructionProvider`.
 
 ---
 
-### PR 6: Dynamic Instruction Interpolation via `util/instructionutil` (COMPLETED & MERGED - PR #130)
+## Planned
 
-#### Problem Statement
-System prompts and step instructions in `pkg/engine/prompt.go` and `pkg/workflow/plans.go` currently use manual Go string interpolation and ad-hoc concatenation to inject environment variables, reminders, and notes directories.
+**Parallel / fan-out.** A `parallel` step kind alongside `loop`, compiled
+to fan-out edges plus a `JoinNode`, with `NodeConfig.ParallelWorker` for
+list-typed inputs. Needs builder UI and a store schema addition.
 
-#### Target Implementation
-ADK 2.0 provides `google.golang.org/adk/v2/util/instructionutil.InjectSessionState(ctx, template)`. This resolves `{key_name}` placeholders dynamically from `session.State` and `{artifact.key_name}` from session artifacts at runtime.
-
-#### File Changes
-- **`pkg/engine/prompt.go`**:
-  - Integrate `instructionutil.InjectSessionState` into `BuildInstructionProvider`.
-  - Store runtime reminders, active git branch, and worktree info in `session.State` and reference them via standard template variables (`{git_branch}`, `{worktree_status}`).
-- **`pkg/workflow/plans.go`**:
-  - Standardize workflow step instruction templates using `{notes_dir}` and `{prev_notes_dir}` placeholders.
-
-#### Verification & Tests
-- `pkg/engine/prompt_test.go`: Add unit tests for `InjectSessionState` verifying variable substitution and missing variable error handling.
-- `pkg/engine/run_test.go`: Test that state mutations during a multi-turn run dynamically update the agent instructions.
-
----
-
-### PR 7: Session Artifact Management via `artifact.Service` & `loadartifactstool` (COMPLETED & MERGED - PR #130)
-
-#### Problem Statement
-Workflows and coding agents currently write plans, diffs, and intermediate notes directly to disk under `.ask/plans/<notesDir>`. Downstream steps must know exact filesystem paths to read previous outputs, and artifacts are not tracked in session history.
-
-#### Target Implementation
-ADK 2.0 provides `google.golang.org/adk/v2/artifact.Service` (`artifact.InMemoryService`, `gcsartifact`) and `google.golang.org/adk/v2/tool/loadartifactstool`.
-- The runner is configured with `runner.Config{ArtifactService: artifact.InMemoryService()}`.
-- Agents and workflow steps save named artifacts (e.g. `plan.md`, `implementation_diff.patch`, `review_notes.md`) to `ctx.Artifacts().Save(...)`.
-- Downstream steps use `loadartifactstool.New()` to autonomously list and load artifacts into their context.
-
-#### File Changes
-- **`pkg/engine/run.go` & `cmd/ask/agent_run.go`**:
-  - Configure `ArtifactService: artifact.InMemoryService()` on `runner.Config`.
-  - Attach `loadartifactstool.New()` to the default toolset.
-- **`pkg/workflow/runner.go`**:
-  - Update workflow steps to save step summaries and notes into `ctx.Artifacts()`.
-
-#### Verification & Tests
-- `pkg/engine/run_test.go`: Test artifact creation by one turn and retrieval via `load_artifacts` by the next.
-- `pkg/workflow/runner_test.go`: Test inter-step artifact passing in a multi-step workflow.
-
----
-
-### PR 8: Graph-Based Workflow Engine via `google.golang.org/adk/v2/workflow` (COMPLETED & MERGED - PR #130)
-
-#### Problem Statement
-Ask's `pkg/workflow/runner.go` maintains a custom handwritten step execution loop for running workflows, tracking loop iterations, and handling step transitions. This duplicates the execution graph logic provided by ADK 2.0.
-
-#### Target Implementation
-ADK 2.0 includes a comprehensive DAG workflow engine in `google.golang.org/adk/v2/workflow`:
-- **Nodes**: `AgentNode` (wraps LLM agent), `ToolNode` (executes tools directly), `FunctionNode` (executes Go logic), `JoinNode` (synchronizes concurrent branches).
-- **Routing**: `StringRoute`, `IntRoute`, `BoolRoute`, `MultiRoute`, `Default`.
-- **State Persistence**: `workflow.Persistence` automatically tracks node execution and state in `session.State`, enabling seamless workflow pause and resumption (`workflow.Resume`).
-
-#### File Changes
-- **`pkg/workflow/graph.go`**:
-  - Implement `CompileDefToADKWorkflow(def Def, cfg WorkflowAgentConfig) (*workflow.Workflow, error)`.
-  - Map linear steps to sequential `AgentNode` edges.
-  - Map loop steps to cyclic edges controlled by `exitlooptool` and route conditions.
-- **`pkg/workflow/runner.go`**:
-  - Replace the custom `Runner.Run` state machine with `Workflow.Run(ctx)`.
-  - Map workflow graph events to `RunnerListener` callbacks (`OnWorkflowStarted`, `OnWorkflowStepStarted`, `OnWorkflowStepDone`, `OnWorkflowDone`).
-
-#### Verification & Tests
-- `pkg/workflow/runner_test.go`: Migrate existing workflow test suite to execute against the ADK workflow graph engine.
-- Verify 100% behavioral parity with existing `.ask/workflows/*.json` pipelines.
-
----
-
-## 4. Execution Checklist
-
-- [x] **PR 1**: Runner Session Lifecycle & Auto-Creation (`AutoCreateSession: true`) ([#128](https://github.com/Cidan/ask/pull/128))
-- [x] **PR 2**: Self-Healing Tool Recovery via `plugin/retryandreflect` ([#129](https://github.com/Cidan/ask/pull/129))
-- [x] **PR 3**: Tool Parameter Augmentation via `plugin/functioncallmodifier` ([#129](https://github.com/Cidan/ask/pull/129))
-- [x] **PR 4**: Native Subagent Delegation via `tool/agenttool` ([#129](https://github.com/Cidan/ask/pull/129))
-- [x] **PR 5**: Standard Human-In-The-Loop Confirmation via `tool/toolconfirmation` ([#130](https://github.com/Cidan/ask/pull/130))
-- [x] **PR 6**: Dynamic Instruction Interpolation via `util/instructionutil` ([#130](https://github.com/Cidan/ask/pull/130))
-- [x] **PR 7**: Session Artifact Management via `artifact.Service` & `loadartifactstool` ([#130](https://github.com/Cidan/ask/pull/130))
-- [x] **PR 8**: Graph-Based Workflow Engine via `google.golang.org/adk/v2/workflow` ([#130](https://github.com/Cidan/ask/pull/130))
+**Pause / resume and HITL.** `workflow.Persistence` plus
+`Workflow.Resume`, and `NewRequestInputEvent` routed to ask's question
+modal — replacing today's behaviour where workflow tabs auto-decline
+every prompt.

@@ -37,8 +37,6 @@ When the name exists in multiple scopes you must pass scope to pick which copy t
 	WorkflowCopyToolDescription = `Copy a workflow between scopes (or duplicate it within one).
 
 'to' is the destination scope: 'repo' makes a workflow repo-local (a committed JSON file under <project root>/.ask/workflows/ that the whole team can use), 'user' copies it into the machine-local ask.json, 'global' copies it into ~/.config/ask/workflows/ (machine-local, visible from every project).`
-
-	ClearPlansToolDescription = `Clear the workflow plans directory (ask/plans/). Removes all files and subdirectories under ask/plans/ but leaves the directory itself. Call this before starting a new workflow run to ensure no stale plan data from a previous run interferes with the next workflow.`
 )
 
 type WorkflowListInput struct{}
@@ -146,13 +144,7 @@ type WorkflowCopyOutput struct {
 	Workflow WorkflowDefView `json:"workflow"`
 }
 
-type ClearPlansInput struct{}
-
-type ClearPlansOutput struct {
-	Cleared bool `json:"cleared"`
-}
-
-// WorkflowTools returns all 7 workflow core tools.
+// WorkflowTools returns the workflow core tools.
 func WorkflowTools(env *ToolEnv) []Tool {
 	cwd := func() string { return env.Cwd }
 	return []Tool{
@@ -180,10 +172,6 @@ func WorkflowTools(env *ToolEnv) []Tool {
 		NativeBridgeTool("workflow_copy", WorkflowCopyToolDescription,
 			func(_ context.Context, in WorkflowCopyInput) (*mcp.CallToolResult, WorkflowCopyOutput, error) {
 				return WorkflowCopyCore(cwd(), in)
-			}),
-		NativeBridgeTool("clear_plans", ClearPlansToolDescription,
-			func(_ context.Context, in ClearPlansInput) (*mcp.CallToolResult, ClearPlansOutput, error) {
-				return ClearPlansCore(cwd(), in)
 			}),
 	}
 }
@@ -433,11 +421,4 @@ func WorkflowCopyCore(cwd string, in WorkflowCopyInput) (*mcp.CallToolResult, Wo
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}, IsError: true}, WorkflowCopyOutput{}, nil
 	}
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("copied workflow %s to %s scope as %s", in.Name, dstScope, dstName)}}}, WorkflowCopyOutput{Workflow: defToDefView(copied)}, nil
-}
-
-func ClearPlansCore(cwd string, in ClearPlansInput) (*mcp.CallToolResult, ClearPlansOutput, error) {
-	if err := workflow.ClearWorkflowPlans(cwd); err != nil {
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}, IsError: true}, ClearPlansOutput{}, nil
-	}
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ask/plans/ cleared"}}}, ClearPlansOutput{Cleared: true}, nil
 }

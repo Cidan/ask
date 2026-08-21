@@ -129,7 +129,7 @@ func TestWorkflowSource_RefBlock_ChatFormat(t *testing.T) {
 
 // TestWorkflowSource_RefBlock_EmptyChatReturnsEmpty guards the
 // "skip the section entirely" path — an empty transcript must
-// not emit a dangling header. buildWorkflowStepPrompt relies on
+// not emit a dangling header. buildWorkflowStepInstruction relies on
 // this to drop the reference block when there's nothing to
 // reference.
 func TestWorkflowSource_RefBlock_EmptyChatReturnsEmpty(t *testing.T) {
@@ -151,11 +151,10 @@ func TestWorkflowSource_RefBlock_IssueFormat(t *testing.T) {
 	}
 }
 
-// TestBuildWorkflowStepPrompt_ChatSource verifies the prompt
-// assembly for a chat-sourced workflow. Step 0 should carry the
-// transcript reference; a later step should layer the previous-step
-// output block under the same reference.
-func TestBuildWorkflowStepPrompt_ChatSource(t *testing.T) {
+// TestBuildWorkflowStepInstruction_ChatSource verifies instruction
+// assembly for a chat-sourced workflow: the transcript reference rides
+// along with the author's prompt and the end_turn contract.
+func TestBuildWorkflowStepInstruction_ChatSource(t *testing.T) {
 	step := workflowStep{Prompt: "Summarise."}
 	source := workflowSource{
 		Kind: workflowSourceChat,
@@ -165,36 +164,22 @@ func TestBuildWorkflowStepPrompt_ChatSource(t *testing.T) {
 		},
 	}
 
-	step0 := buildWorkflowStepPrompt(step, source, nil, nil)
-	if !strings.Contains(step0, "Summarise.") {
-		t.Errorf("step 0 must include user prompt; got %q", step0)
+	got := buildWorkflowStepInstruction(step, source, nil)
+	for _, want := range []string{
+		"Summarise.",
+		"Reference (chat transcript):",
+		"user: what's a goroutine?",
+		"assistant: a green-thread primitive.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("instruction missing %q; got %q", want, got)
+		}
 	}
-	if !strings.Contains(step0, "Reference (chat transcript):") {
-		t.Errorf("step 0 must include chat transcript header; got %q", step0)
+	if strings.Contains(got, "Previous step output:") {
+		t.Errorf("previous-step threading is the graph's job now; got %q", got)
 	}
-	if !strings.Contains(step0, "user: what's a goroutine?") {
-		t.Errorf("step 0 must include user turn; got %q", step0)
-	}
-	if !strings.Contains(step0, "assistant: a green-thread primitive.") {
-		t.Errorf("step 0 must include assistant turn; got %q", step0)
-	}
-	if strings.Contains(step0, "Previous step output:") {
-		t.Errorf("step 0 must NOT include previous-step block; got %q", step0)
-	}
-	if strings.Contains(step0, "Reference: ") {
-		// Make sure we didn't accidentally emit the issue-style line.
-		t.Errorf("chat source must NOT emit issue-style Reference line; got %q", step0)
-	}
-
-	stepN := buildWorkflowStepPrompt(step, source, []string{"prior step output text"}, nil)
-	if !strings.Contains(stepN, "Previous step output:") {
-		t.Errorf("step N must include previous-step block; got %q", stepN)
-	}
-	if !strings.Contains(stepN, "prior step output text") {
-		t.Errorf("step N must include the log entry; got %q", stepN)
-	}
-	if !strings.Contains(stepN, "Reference (chat transcript):") {
-		t.Errorf("step N must still include chat transcript; got %q", stepN)
+	if strings.Contains(got, "Reference: ") {
+		t.Errorf("chat source must not emit the issue-style Reference line; got %q", got)
 	}
 }
 

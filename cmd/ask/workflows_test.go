@@ -281,45 +281,29 @@ func TestIssueRef_KeyAndDisplay(t *testing.T) {
 	}
 }
 
-// TestBuildWorkflowStepPrompt covers the prompt assembly for both
-// step 0 (no previous output) and step N>0 (previous output forwarded
-// under a "Previous step output:" header). Whitespace at the head
-// and tail is trimmed; the body is left as the user wrote it.
-func TestBuildWorkflowStepPrompt(t *testing.T) {
+// TestBuildWorkflowStepInstruction covers a step's instruction: the
+// author's prompt, the run's reference block, and the end_turn contract.
+//
+// Previous-step output is deliberately absent. Threading it into the
+// prompt was the hand-rolled runner's job; the graph now passes a node's
+// output as the next node's input, and each step agent runs with
+// IncludeContentsNone so it sees that rather than the whole transcript.
+func TestBuildWorkflowStepInstruction(t *testing.T) {
 	step := workflowStep{Prompt: "Implement the fix."}
 	issue := issueWorkflowSource(issueRef{Provider: "github", Project: "ow/r", Number: 1})
 
-	step0 := buildWorkflowStepPrompt(step, issue, nil, nil)
-	if !strings.Contains(step0, "Implement the fix.") {
-		t.Errorf("step 0 must include user prompt; got %q", step0)
+	got := buildWorkflowStepInstruction(step, issue, nil)
+	if !strings.Contains(got, "Implement the fix.") {
+		t.Errorf("instruction must include the user prompt; got %q", got)
 	}
-	if !strings.Contains(step0, "Reference: ow/r#1") {
-		t.Errorf("step 0 must include issue reference; got %q", step0)
+	if !strings.Contains(got, "Reference: ow/r#1") {
+		t.Errorf("instruction must include the issue reference; got %q", got)
 	}
-	if strings.Contains(step0, "Previous step output:") {
-		t.Errorf("step 0 must NOT include previous-step block; got %q", step0)
+	if !strings.Contains(got, "end_turn") {
+		t.Errorf("instruction must carry the end_turn contract; got %q", got)
 	}
-
-	stepN := buildWorkflowStepPrompt(
-		workflowStep{Prompt: "Review."},
-		issue,
-		[]string{"first step said hello", "ignored second"},
-		nil,
-	)
-	if !strings.Contains(stepN, "Review.") {
-		t.Errorf("step N must include user prompt; got %q", stepN)
-	}
-	if !strings.Contains(stepN, "Previous step output:") {
-		t.Errorf("step N must include previous-step block; got %q", stepN)
-	}
-	if !strings.Contains(stepN, "first step said hello") {
-		t.Errorf("step N must include first log entry; got %q", stepN)
-	}
-	if !strings.Contains(stepN, "ignored second") {
-		t.Errorf("step N must include second log entry; got %q", stepN)
-	}
-	if !strings.Contains(stepN, "---") {
-		t.Errorf("step N must separate log entries with ---; got %q", stepN)
+	if strings.Contains(got, "Previous step output:") {
+		t.Errorf("previous-step threading is the graph's job now; got %q", got)
 	}
 }
 

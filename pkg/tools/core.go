@@ -2,7 +2,6 @@ package tools
 
 import (
 	"github.com/Cidan/ask/pkg/engine"
-	"google.golang.org/adk/v2/tool/loadartifactstool"
 )
 
 func init() {
@@ -68,7 +67,6 @@ func CoreTools(env *ToolEnv, registry func() []Tool, attachWebSearch bool) []Too
 		AskUserQuestionTool(env),
 		EndTurnTool(env),
 		SearchToolsTool(registry),
-		loadartifactstool.New(),
 	}
 
 	// Add workflow tools
@@ -98,7 +96,7 @@ func IsCoreTool(name string) bool {
 	case "read", "write", "edit", "glob", "grep", "ls", "bash", "job_output", "job_kill",
 		"fetch", "todos", "task", "ask_user_question", "end_turn", "search_tools", "invoke_tool",
 		"web_search", "workflow_list", "workflow_get", "workflow_create", "workflow_edit",
-		"workflow_delete", "workflow_copy", "clear_plans", "load_memory", "preload_memory", "load_artifacts":
+		"workflow_delete", "workflow_copy", "load_memory", "preload_memory":
 		return true
 	default:
 		return false

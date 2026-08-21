@@ -355,18 +355,14 @@ func (m *model) recordVirtualSession(nativeID string) {
 			return
 		}
 		stepName, stepProvider, _ := currentWorkflowStepMeta(m.workflowRun)
-		var loopIteration, loopInnerIdx int
-		if m.workflowRun.loop != nil {
-			loopIteration = m.workflowRun.loop.iteration
-			loopInnerIdx = m.workflowRun.loop.innerIdx
-		}
+		// Loop position is no longer tracked here: ADK's loopagent owns
+		// iteration state inside the graph node, so the tab records the
+		// top-level step only.
 		step := VirtualSessionWorkflowStep{
-			StepIdx:       m.workflowRun.StepIdx,
-			StepName:      stepName,
-			ProviderID:    stepProvider,
-			LoopIteration: loopIteration,
-			LoopInnerIdx:  loopInnerIdx,
-			Session:       ProviderSessionRef{SessionID: nativeID, Cwd: nativeCwd},
+			StepIdx:    m.workflowRun.StepIdx,
+			StepName:   stepName,
+			ProviderID: stepProvider,
+			Session:    ProviderSessionRef{SessionID: nativeID, Cwd: nativeCwd},
 		}
 
 		err := mutateVirtualSessions(func(store *virtualSessionStore) error {
