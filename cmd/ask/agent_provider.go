@@ -29,9 +29,9 @@ func (p agentAPIProvider) DisplayName() string { return p.spec.DisplayName }
 
 func (p agentAPIProvider) Capabilities() ProviderCapabilities {
 	return ProviderCapabilities{
-		Resume:       true,
-		ModelPicker:  true,
-		EffortPicker: true,
+		Resume:              true,
+		ModelPicker:         true,
+		EffortPicker:        true,
 		AskUserQuestionMCP:  false,
 		PermissionPromptMCP: false,
 	}

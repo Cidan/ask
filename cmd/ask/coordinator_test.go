@@ -1,11 +1,11 @@
 package main
 
 import (
-	"sync/atomic"
 	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 

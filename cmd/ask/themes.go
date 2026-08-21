@@ -441,22 +441,22 @@ func themeByName(name string) theme {
 // All themable style vars live here. applyTheme() populates them; every other
 // file references them read-only.
 var (
-	selectedStyle    lipgloss.Style
-	dimStyle         lipgloss.Style
-	promptStyle      lipgloss.Style
-	promptArrowStyle lipgloss.Style
-	promptDotStyle   lipgloss.Style
-	cwdStyle         lipgloss.Style
-	errStyle         lipgloss.Style
-	userBarStyle     lipgloss.Style
-	outputStyle      lipgloss.Style
-	thinkingStyle    lipgloss.Style
-	chipStyle        lipgloss.Style
+	selectedStyle     lipgloss.Style
+	dimStyle          lipgloss.Style
+	promptStyle       lipgloss.Style
+	promptArrowStyle  lipgloss.Style
+	promptDotStyle    lipgloss.Style
+	cwdStyle          lipgloss.Style
+	errStyle          lipgloss.Style
+	userBarStyle      lipgloss.Style
+	outputStyle       lipgloss.Style
+	thinkingStyle     lipgloss.Style
+	chipStyle         lipgloss.Style
 	planningChipStyle lipgloss.Style
-	scrollThumbStyle lipgloss.Style
-	scrollTrackStyle lipgloss.Style
-	thumbBorderStyle lipgloss.Style
-	pathBoxStyle     lipgloss.Style
+	scrollThumbStyle  lipgloss.Style
+	scrollTrackStyle  lipgloss.Style
+	thumbBorderStyle  lipgloss.Style
+	pathBoxStyle      lipgloss.Style
 
 	todoBoxStyle       lipgloss.Style
 	todoPendingStyle   lipgloss.Style

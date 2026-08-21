@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"google.golang.org/adk/v2/agent"
 	"iter"
 	"os"
 	"path/filepath"
@@ -321,9 +322,9 @@ func (m *mockCustomTool) Declaration() *genai.FunctionDeclaration {
 		Description: "a custom calculation tool",
 	}
 }
-func (m *mockCustomTool) Run(ctx context.Context, args map[string]any) (ToolResponse, error) {
+func (m *mockCustomTool) Run(ctx agent.Context, args any) (map[string]any, error) {
 	m.ran = true
-	return NewTextResponse("result is 42"), nil
+	return map[string]any{"content": "result is 42"}, nil
 }
 
 func TestEngineRun_ToolExecution(t *testing.T) {
@@ -772,12 +773,13 @@ func (m *mockSelfHealingTool) Declaration() *genai.FunctionDeclaration {
 		Description: "a flaky tool for testing reflection",
 	}
 }
-func (m *mockSelfHealingTool) Run(ctx context.Context, args map[string]any) (ToolResponse, error) {
+func (m *mockSelfHealingTool) Run(ctx agent.Context, args any) (map[string]any, error) {
 	m.calls++
-	if shouldFail, _ := args["should_fail"].(bool); shouldFail {
-		return NewTextErrorResponse("simulated failure: invalid argument value"), errors.New("simulated tool failure")
+	argsMap, _ := args.(map[string]any)
+	if shouldFail, _ := argsMap["should_fail"].(bool); shouldFail {
+		return nil, errors.New("simulated tool failure")
 	}
-	return NewTextResponse("tool executed successfully"), nil
+	return map[string]any{"content": "tool executed successfully"}, nil
 }
 
 func TestEngineRun_RetryAndReflect_SelfHealing(t *testing.T) {

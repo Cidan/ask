@@ -231,7 +231,7 @@ func (m model) commitConfigVertexField() (tea.Model, tea.Cmd) {
 	draft := strings.TrimSpace(m.configVertexFieldDraft)
 	if spec.validate != nil {
 		if err := spec.validate(draft); err != nil {
-			return m, m.toast.show("vertex: "+spec.title+": "+err.Error())
+			return m, m.toast.show("vertex: " + spec.title + ": " + err.Error())
 		}
 	}
 	if err := withConfigLock(func() error {
@@ -241,7 +241,7 @@ func (m model) commitConfigVertexField() (tea.Model, tea.Cmd) {
 	}); err != nil {
 		debugLog("vertex %s saveConfig: %v", id, err)
 		m = m.closeConfigVertexFieldEditor()
-		return m, m.toast.show("vertex: save: "+err.Error())
+		return m, m.toast.show("vertex: save: " + err.Error())
 	}
 	m = m.closeConfigVertexFieldEditor()
 	if draft == "" {

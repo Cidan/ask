@@ -556,4 +556,3 @@ func (a app) shutdown() {
 		t.killShellProc()
 	}
 }
-

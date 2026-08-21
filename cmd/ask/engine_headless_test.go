@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	adkagent "google.golang.org/adk/v2/agent"
 	"iter"
 	"strings"
 	"sync"
@@ -235,14 +237,19 @@ func TestHeadlessToolApproval_CustomHandlerAllowsAndDenies(t *testing.T) {
 		return true, nil
 	}
 	sAllow.tools = []tools.Tool{
-		tools.NewTool("mutating_ping", "test mutating tool",
-			func(ctx context.Context, in struct {
+		tools.NewTypedTool("mutating_ping", "test mutating tool",
+			func(ctx adkagent.Context, in struct {
 				V string `json:"v"`
-			}) (tools.ToolResponse, error) {
-				if resp := sAllow.env.RequestApproval(ctx, "mutating_ping", map[string]any{"v": in.V}); resp != nil {
-					return *resp, nil
+			}) (struct {
+				Content string `json:"content"`
+			}, error) {
+				type out = struct {
+					Content string `json:"content"`
 				}
-				return tools.NewTextResponse("pong:" + in.V), nil
+				if denied := sAllow.env.ApprovalDenied(ctx, "mutating_ping", map[string]any{"v": in.V}); denied != "" {
+					return out{}, errors.New(denied)
+				}
+				return out{Content: "pong:" + in.V}, nil
 			}),
 	}
 
@@ -282,14 +289,19 @@ func TestHeadlessToolApproval_CustomHandlerAllowsAndDenies(t *testing.T) {
 		return false, nil // Deny
 	}
 	sDeny.tools = []tools.Tool{
-		tools.NewTool("mutating_ping", "test mutating tool",
-			func(ctx context.Context, in struct {
+		tools.NewTypedTool("mutating_ping", "test mutating tool",
+			func(ctx adkagent.Context, in struct {
 				V string `json:"v"`
-			}) (tools.ToolResponse, error) {
-				if resp := sDeny.env.RequestApproval(ctx, "mutating_ping", map[string]any{"v": in.V}); resp != nil {
-					return *resp, nil
+			}) (struct {
+				Content string `json:"content"`
+			}, error) {
+				type out = struct {
+					Content string `json:"content"`
 				}
-				return tools.NewTextResponse("pong:" + in.V), nil
+				if denied := sDeny.env.ApprovalDenied(ctx, "mutating_ping", map[string]any{"v": in.V}); denied != "" {
+					return out{}, errors.New(denied)
+				}
+				return out{Content: "pong:" + in.V}, nil
 			}),
 	}
 

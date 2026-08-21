@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -37,37 +36,41 @@ func TestAskUserQuestionTool(t *testing.T) {
 	env.Interaction = mock
 	tool := AskUserQuestionTool(env)
 
-	resp := runTool(t, tool, AskParams{Questions: []AskQuestion{{
+	ask := AskParams{Questions: []AskQuestion{{
 		Kind:    "pick_one",
 		Prompt:  "Which one?",
 		Options: []AskOption{{Label: "Option A"}, {Label: "Option B"}},
-	}}})
-	if resp.IsError {
-		t.Fatalf("ask: %s", resp.Content)
+	}}}
+
+	res, err := runTypedTool[AskResult](t, tool, ask)
+	if err != nil {
+		t.Fatalf("ask: %v", err)
 	}
-	var out AskOutput
-	if err := json.Unmarshal([]byte(resp.Content), &out); err != nil {
-		t.Fatalf("result not AskOutput JSON: %v (%q)", err, resp.Content)
-	}
-	if len(out.Answers) != 1 || len(out.Answers[0].Picks) != 1 || out.Answers[0].Picks[0] != "Option B" {
-		t.Errorf("answers wrong: %+v", out.Answers)
+	if len(res.Answers) != 1 || len(res.Answers[0].Picks) != 1 || res.Answers[0].Picks[0] != "Option B" {
+		t.Errorf("answers wrong: %+v", res.Answers)
 	}
 
-	// Cancelled reply surfaces as error
+	// Cancelling is not a tool failure: the model is told and carries on.
 	mock.askQuestionResp = engine.QuestionResponse{Cancelled: true}
-	resp = runTool(t, tool, AskParams{Questions: []AskQuestion{{Kind: "pick_one", Prompt: "q", Options: []AskOption{{Label: "a"}}}}})
-	if !resp.IsError || !strings.Contains(resp.Content, "cancelled") {
-		t.Errorf("cancel reply: %+v", resp)
+	res, err = runTypedTool[AskResult](t, tool, ask)
+	if err != nil {
+		t.Fatalf("cancel must not be a tool error: %v", err)
+	}
+	if !res.Cancelled || !strings.Contains(res.Notice, "cancelled") {
+		t.Errorf("cancel reply: %+v", res)
 	}
 
-	// Headless reply surfaces as error notice
+	// Same for a headless run.
 	mock.askQuestionResp = engine.QuestionResponse{Headless: true}
-	resp = runTool(t, tool, AskParams{Questions: []AskQuestion{{Kind: "pick_one", Prompt: "q", Options: []AskOption{{Label: "a"}}}}})
-	if !resp.IsError || !strings.Contains(resp.Content, "headless") {
-		t.Errorf("headless reply: %+v", resp)
+	res, err = runTypedTool[AskResult](t, tool, ask)
+	if err != nil {
+		t.Fatalf("headless must not be a tool error: %v", err)
+	}
+	if !res.Headless || !strings.Contains(res.Notice, "headless") {
+		t.Errorf("headless reply: %+v", res)
 	}
 
-	if resp = runTool(t, tool, AskParams{}); !resp.IsError {
+	if _, err := runTypedTool[AskResult](t, tool, AskParams{}); err == nil {
 		t.Error("zero questions must error")
 	}
 }
@@ -107,7 +110,7 @@ func TestFinishWorkflowTool(t *testing.T) {
 	if resp.IsError {
 		t.Fatalf("finish_workflow error: %s", resp.Content)
 	}
-	if !strings.Contains(resp.Content, "finish_workflow recorded. Now call end_turn to complete the step.") {
+	if !strings.Contains(resp.Content, "Now call end_turn to complete the step.") {
 		t.Errorf("unexpected success reply: %q", resp.Content)
 	}
 

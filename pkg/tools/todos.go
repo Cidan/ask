@@ -1,8 +1,10 @@
 package tools
 
 import (
-	"context"
+	"errors"
 	"fmt"
+	"google.golang.org/adk/v2/agent"
+	"strings"
 
 	"github.com/Cidan/ask/pkg/engine"
 )
@@ -55,17 +57,26 @@ type TodosParams struct {
 	Description string      `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
+// TodosResult is the todos tool's response.
+type TodosResult struct {
+	Applied   bool   `json:"applied,omitempty" jsonschema:"true when the list was accepted"`
+	Total     int    `json:"total,omitempty" jsonschema:"number of todos in the list"`
+	Completed int    `json:"completed,omitempty" jsonschema:"number of completed todos"`
+	Nudge     string `json:"nudge,omitempty" jsonschema:"reminder about when to call todos again"`
+	Notice    string `json:"notice,omitempty" jsonschema:"guidance the caller must act on before retrying"`
+}
+
 // TodosTool returns the native task list management tool.
 func TodosTool(env *ToolEnv) Tool {
-	return NewTool(
+	return NewTypedTool(
 		"todos",
 		TodosToolDescription,
-		func(ctx context.Context, p TodosParams) (ToolResponse, error) {
+		func(ctx agent.Context, p TodosParams) (TodosResult, error) {
 			if env != nil && env.IsSubagent {
-				return NewTextResponse("(subagent task list ignored - isolated from parent session)"), nil
+				return TodosResult{Applied: true, Nudge: "subagent task list ignored - isolated from parent session"}, nil
 			}
 			if notice := env.WorkflowGuardNotice(); notice != "" {
-				return NewTextResponse(notice), nil
+				return TodosResult{Notice: notice}, nil
 			}
 			inProgress := 0
 			completed := 0
@@ -78,11 +89,11 @@ func TodosTool(env *ToolEnv) Tool {
 				case "completed":
 					completed++
 				default:
-					return NewTextErrorResponse(fmt.Sprintf(
-						"todos[%d] has invalid status %q (want pending, in_progress, or completed)", i, td.Status)), nil
+					return TodosResult{}, fmt.Errorf(
+						"todos[%d] has invalid status %q (want pending, in_progress, or completed)", i, td.Status)
 				}
 				if td.Content == "" {
-					return NewTextErrorResponse(fmt.Sprintf("todos[%d] has empty content", i)), nil
+					return TodosResult{}, fmt.Errorf("todos[%d] has empty content", i)
 				}
 				items = append(items, engine.TodoItem{
 					Content:    td.Content,
@@ -91,7 +102,7 @@ func TodosTool(env *ToolEnv) Tool {
 				})
 			}
 			if inProgress > 1 {
-				return NewTextErrorResponse("keep at most one todo in_progress at a time"), nil
+				return TodosResult{}, errors.New("keep at most one todo in_progress at a time")
 			}
 			env.MarkTodosApplied()
 			if env.Emit != nil {
@@ -107,8 +118,7 @@ func TodosTool(env *ToolEnv) Tool {
 			case inProgress == 0 && completed < len(items):
 				note = " — no item is in_progress; mark the one you are about to work on before continuing"
 			}
-			return NewTextResponse(fmt.Sprintf(
-				"(todo list updated: %d items, %d completed)%s", len(items), completed, note)), nil
+			return TodosResult{Applied: true, Total: len(items), Completed: completed, Nudge: strings.TrimPrefix(note, " — ")}, nil
 		},
 	)
 }

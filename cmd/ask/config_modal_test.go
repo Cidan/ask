@@ -28,8 +28,8 @@ func TestThemeIndexByName(t *testing.T) {
 func TestCloseThemePicker(t *testing.T) {
 	m := model{
 		configThemePickerActive: true,
-		configThemeBackup:        "saved-theme",
-		configThemeCursor:        3,
+		configThemeBackup:       "saved-theme",
+		configThemeCursor:       3,
 	}
 	got := m.closeThemePicker()
 	if got.configThemePickerActive {

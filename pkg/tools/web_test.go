@@ -60,8 +60,11 @@ func TestFetchTool(t *testing.T) {
 
 	env.SkipPermissions = false
 	env.Approve = func(context.Context, string, map[string]any) (bool, error) { return false, nil }
-	if resp = runTool(t, tool, FetchParams{URL: srv.URL + "/plain"}); !resp.IsError || !resp.StopTurn {
-		t.Errorf("denied fetch should stop turn: %+v", resp)
+	// A denied call is a tool error. stop_turn is gone: nothing ever read
+	// it, and the denial message is what tells the model to stop.
+	if _, err := runTypedTool[FetchResult](t, tool, FetchParams{URL: srv.URL + "/plain"}); err == nil ||
+		!strings.Contains(err.Error(), "denied permission") {
+		t.Errorf("denied fetch should return the denial as an error, got %v", err)
 	}
 }
 
@@ -72,7 +75,7 @@ func TestWebSearchToolNoKey(t *testing.T) {
 	tool := WebSearchTool(env)
 
 	resp := runTool(t, tool, WebSearchParams{Query: "golang generics"})
-	if resp.IsError || resp.StopTurn {
+	if resp.IsError {
 		t.Fatalf("no-key result must be a plain notice, got %+v", resp)
 	}
 	if !strings.Contains(resp.Content, "not configured") || !strings.Contains(resp.Content, "/config") {

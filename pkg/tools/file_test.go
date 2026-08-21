@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -32,11 +31,40 @@ func runTool(t *testing.T, tool Tool, input any) ToolResponse {
 	if err != nil {
 		t.Fatalf("marshal input: %v", err)
 	}
-	resp, err := RunToolWithJSON(context.Background(), tool, string(b))
+	resp, err := RunToolWithJSON(testAgentCtx(), tool, string(b))
 	if err != nil {
 		t.Fatalf("tool.Run returned hard error: %v", err)
 	}
 	return resp
+}
+
+// runTypedTool runs a tool and decodes its result into R. Tool results
+// are per-tool structs now, so assertions read fields rather than
+// substring-matching one blob of text. The second return is the tool's
+// error, which is how a tool reports a genuine failure.
+func runTypedTool[R any](t *testing.T, tool Tool, input any) (R, error) {
+	t.Helper()
+	var out R
+	args := map[string]any{}
+	b, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshal input: %v", err)
+	}
+	if err := json.Unmarshal(b, &args); err != nil {
+		t.Fatalf("unmarshal input: %v", err)
+	}
+	res, runErr := RunADKTool(testAgentCtx(), tool, args)
+	if runErr != nil {
+		return out, runErr
+	}
+	raw, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode result into %T: %v (raw %s)", out, err, raw)
+	}
+	return out, nil
 }
 
 func writeTestFile(t *testing.T, dir, name, content string) string {
@@ -55,41 +83,50 @@ func TestReadTool(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 	tool := ReadTool(env)
 
-	if resp := runTool(t, tool, ReadParams{FilePath: "missing.txt"}); !resp.IsError {
-		t.Errorf("missing file should error, got %q", resp.Content)
+	if _, err := runTypedTool[ReadResult](t, tool, ReadParams{FilePath: "missing.txt"}); err == nil {
+		t.Error("missing file must return an error so retryandreflect can guide a retry")
 	}
-	if resp := runTool(t, tool, ReadParams{FilePath: "."}); !resp.IsError || !strings.Contains(resp.Content, "directory") {
-		t.Errorf("directory read should point at ls, got %q", resp.Content)
+	if _, err := runTypedTool[ReadResult](t, tool, ReadParams{FilePath: "."}); err == nil || !strings.Contains(err.Error(), "directory") {
+		t.Errorf("directory read should point at ls, got %v", err)
 	}
 
 	writeTestFile(t, env.Cwd, "f.txt", "alpha\nbeta\ngamma\n")
-	resp := runTool(t, tool, ReadParams{FilePath: "f.txt"})
-	if resp.IsError {
-		t.Fatalf("read failed: %s", resp.Content)
+	res, err := runTypedTool[ReadResult](t, tool, ReadParams{FilePath: "f.txt"})
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
 	}
-	if !strings.Contains(resp.Content, "1\talpha") || !strings.Contains(resp.Content, "3\tgamma") {
-		t.Errorf("expected numbered lines, got:\n%s", resp.Content)
+	if !strings.Contains(res.Content, "1\talpha") || !strings.Contains(res.Content, "3\tgamma") {
+		t.Errorf("expected numbered lines, got:\n%s", res.Content)
+	}
+	if res.Lines != 3 {
+		t.Errorf("Lines = %d, want 3", res.Lines)
+	}
+	if res.Truncated {
+		t.Error("a fully-read file must not be marked truncated")
 	}
 	if env.Files.LastRead(filepath.Join(env.Cwd, "f.txt")).IsZero() {
 		t.Error("read should record the file in the tracker")
 	}
 
-	resp = runTool(t, tool, ReadParams{FilePath: "f.txt", Offset: 2, Limit: 1})
-	if strings.Contains(resp.Content, "alpha") || !strings.Contains(resp.Content, "2\tbeta") {
-		t.Errorf("offset/limit window wrong:\n%s", resp.Content)
+	res, err = runTypedTool[ReadResult](t, tool, ReadParams{FilePath: "f.txt", Offset: 2, Limit: 1})
+	if err != nil {
+		t.Fatalf("windowed read failed: %v", err)
 	}
-	if !strings.Contains(resp.Content, "continue with offset 3") {
-		t.Errorf("expected more-lines footer:\n%s", resp.Content)
+	if strings.Contains(res.Content, "alpha") || !strings.Contains(res.Content, "2\tbeta") {
+		t.Errorf("offset/limit window wrong:\n%s", res.Content)
+	}
+	if !res.Truncated || res.NextOffset != 3 {
+		t.Errorf("a cut-short read must report Truncated and NextOffset, got %+v", res)
 	}
 
 	writeTestFile(t, env.Cwd, "empty.txt", "")
-	if resp := runTool(t, tool, ReadParams{FilePath: "empty.txt"}); resp.Content != "(empty file)" {
-		t.Errorf("empty file: %q", resp.Content)
+	if res, err := runTypedTool[ReadResult](t, tool, ReadParams{FilePath: "empty.txt"}); err != nil || res.Content != "(empty file)" {
+		t.Errorf("empty file: %+v %v", res, err)
 	}
 
 	writeTestFile(t, env.Cwd, "pic.png", "x")
-	if resp := runTool(t, tool, ReadParams{FilePath: "pic.png"}); !resp.IsError || !strings.Contains(resp.Content, "image") {
-		t.Errorf("image should be rejected: %q", resp.Content)
+	if _, err := runTypedTool[ReadResult](t, tool, ReadParams{FilePath: "pic.png"}); err == nil || !strings.Contains(err.Error(), "image") {
+		t.Errorf("image should be rejected, got %v", err)
 	}
 }
 

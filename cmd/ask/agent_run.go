@@ -36,18 +36,18 @@ type agentTurn struct {
 
 // agentSession owns a GenAI agent session and the conversation history.
 type agentSession struct {
-	args          ProviderSessionArgs
-	spec          *agentProviderSpec
-	client        *genai.Client
-	model         adkmodel.LLM
-	env           *agentToolEnv
-	sysMu         sync.RWMutex
-	system        string
-	callOpts      *genai.GenerateContentConfig
-	temperature   *float64
-	contextWindow int64
+	args            ProviderSessionArgs
+	spec            *agentProviderSpec
+	client          *genai.Client
+	model           adkmodel.LLM
+	env             *agentToolEnv
+	sysMu           sync.RWMutex
+	system          string
+	callOpts        *genai.GenerateContentConfig
+	temperature     *float64
+	contextWindow   int64
 	maxOutputTokens int64
-	modelID       string
+	modelID         string
 
 	coreTools    []tools.Tool
 	deferredBase []tools.Tool
@@ -497,28 +497,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 					s.emit(streamStatusMsg{status: status})
 				}
 				if part.FunctionResponse != nil {
-					resStr := ""
-					isErr := false
-					if res, ok := part.FunctionResponse.Response["result"].(string); ok {
-						resStr = res
-					} else if confirmed, ok := part.FunctionResponse.Response["confirmed"].(bool); ok {
-						if confirmed {
-							resStr = "confirmed"
-						} else {
-							resStr = "rejected by user"
-							isErr = true
-						}
-					} else if guid, ok := part.FunctionResponse.Response["reflection_guidance"].(string); ok {
-						resStr = guid
-						isErr = true
-					} else if len(part.FunctionResponse.Response) > 0 {
-						if raw, rErr := json.Marshal(part.FunctionResponse.Response); rErr == nil {
-							resStr = string(raw)
-						}
-					}
-					if errFlag, ok := part.FunctionResponse.Response["is_error"].(bool); ok {
-						isErr = errFlag
-					}
+					resStr, isErr := engine.ToolResultText(part.FunctionResponse.Response)
 					dispName := part.FunctionResponse.Name
 					if dn, ok := displayNames[part.FunctionResponse.Name]; ok {
 						dispName = dn

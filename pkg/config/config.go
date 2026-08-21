@@ -343,13 +343,27 @@ func MigrateLegacyProviderEffort(cfg *Config, data []byte) {
 		return
 	}
 	var legacy struct {
-		Anthropic struct{ Effort string `json:"effort,omitempty"` } `json:"anthropic,omitempty"`
-		OpenAI    struct{ Effort string `json:"effort,omitempty"` } `json:"openai,omitempty"`
-		DeepSeek  struct{ Effort string `json:"effort,omitempty"` } `json:"deepseek,omitempty"`
-		GoogleAI  struct{ Effort string `json:"effort,omitempty"` } `json:"googleai,omitempty"`
-		Vertex    struct{ Effort string `json:"effort,omitempty"` } `json:"vertex,omitempty"`
-		Kimi      struct{ Effort string `json:"effort,omitempty"` } `json:"kimi,omitempty"`
-		MiniMax   struct{ Effort string `json:"effort,omitempty"` } `json:"minimax,omitempty"`
+		Anthropic struct {
+			Effort string `json:"effort,omitempty"`
+		} `json:"anthropic,omitempty"`
+		OpenAI struct {
+			Effort string `json:"effort,omitempty"`
+		} `json:"openai,omitempty"`
+		DeepSeek struct {
+			Effort string `json:"effort,omitempty"`
+		} `json:"deepseek,omitempty"`
+		GoogleAI struct {
+			Effort string `json:"effort,omitempty"`
+		} `json:"googleai,omitempty"`
+		Vertex struct {
+			Effort string `json:"effort,omitempty"`
+		} `json:"vertex,omitempty"`
+		Kimi struct {
+			Effort string `json:"effort,omitempty"`
+		} `json:"kimi,omitempty"`
+		MiniMax struct {
+			Effort string `json:"effort,omitempty"`
+		} `json:"minimax,omitempty"`
 	}
 	if err := json.Unmarshal(data, &legacy); err != nil {
 		return

@@ -519,7 +519,7 @@ func TestRenderAskHistorySummary_Markdown(t *testing.T) {
 		{picks: map[int]bool{0: true}, note: "Yellow\nNo wait!"},
 	}
 	got := renderAskHistorySummary(qs, ans)
-	
+
 	// Assert no ANSI escapes
 	if strings.Contains(got, "\x1b[") {
 		t.Errorf("history summary contains ANSI escapes: %q", got)

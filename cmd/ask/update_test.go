@@ -1,9 +1,9 @@
 package main
 
 import (
+	"github.com/Cidan/ask/pkg/diff"
 	"os"
 	"path/filepath"
-	"github.com/Cidan/ask/pkg/diff"
 	"strings"
 	"testing"
 	"time"
@@ -1489,7 +1489,6 @@ func TestUpdate_PasteMsgInNonInputModesIsAbsorbed(t *testing.T) {
 	}
 }
 
-
 func TestUpdate_PasteMsgInConfigProjectFieldEditorRoutes(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.mode = modeConfig
@@ -1711,5 +1710,3 @@ func TestUpdate_ClearWorkflowStateMsgResetsWorkflowRun(t *testing.T) {
 		t.Errorf("expected last history entry to mention returned to chat, got %q", m2.history[len(m2.history)-1].text)
 	}
 }
-
-

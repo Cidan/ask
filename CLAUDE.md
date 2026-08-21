@@ -745,6 +745,58 @@ ends its turn instead of retrying. Registry tools carry no approval
 gate of their own — `invoke_tool` adds none, matching direct-call
 behavior.
 
+### Tool contracts: typed structs in, typed structs out
+
+Every tool is built with `tools.NewTypedTool[T, R]`, which is
+`functiontool.New[TArgs, TResults]` over two real structs — ADK derives
+BOTH the input and the output JSON schema from them:
+
+```go
+type ReadParams struct { FilePath string `json:"file_path" jsonschema:"..."` }
+type ReadResult struct {
+	Content    string `json:"content,omitempty" jsonschema:"..."`
+	Lines      int    `json:"lines,omitempty"`
+	NextOffset int    `json:"next_offset,omitempty"`
+	Truncated  bool   `json:"truncated,omitempty"`
+}
+
+func ReadTool(env *ToolEnv) Tool {
+	return NewTypedTool("read", ReadToolDescription,
+		func(ctx agent.Context, p ReadParams) (ReadResult, error) { … })
+}
+```
+
+Rules, all pinned by `pkg/tools/contract_test.go`:
+
+- **Both sides typed.** No `map[string]any`, no `any` as TResults. Passing
+  `any` leaves the declaration with an empty output schema, which is what
+  every tool did before.
+- **`agent.Context`, never `context.Context`.** A plain context has to be
+  converted to a fake, and the fake returns nil for `Artifacts`,
+  `Session`, `State`, and `ToolConfirmation`, and hands out a throwaway
+  `Actions` — so escalation and confirmation from a tool are silently
+  dropped.
+- **Failures are Go errors.** `return ReadResult{}, fmt.Errorf(...)`, not
+  an error field. ADK's `OnToolErrorCallback` keys on a real error, which
+  is what lets the `retryandreflect` plugin give the model corrective
+  guidance and retry (`MaxRetries: 2`, `errorIfRetryExceeded: false`, so
+  the turn does not abort). Non-failures — a todos gate notice, a
+  headless ask, a no-op write, an empty search — stay as result fields.
+- **One `Run` shape.** `Run(ctx agent.Context, args any) (map[string]any, error)`,
+  ADK's own contract. `RunADKTool` is a single type assertion because of
+  it; it used to probe seven shapes to accommodate `invoke_tool` alone.
+
+`NativeBridgeTool[In, Out]` wraps its handler's output in
+`BridgeResult[Out]{Content, Data}`, so the linear_* and workflow_* tools
+carry their real output struct too.
+
+**Reading a tool result.** There is no single `result` key any more.
+`engine.ToolResultText(resp)` finds the human-readable field for any tool
+(preference order in `toolResultTextFields`) and reports whether the
+result is an error; `engine.AppendToolResultText` is how a decorator adds
+to one without knowing which struct produced it. Every UI path goes
+through those two.
+
 ### Tool registry vs core tools
 
 **New tools go into the deferred registry, NEVER into the core list

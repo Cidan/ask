@@ -659,7 +659,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 				Description: msg.Description,
 				Artifacts:   msg.Artifacts,
 			}
-			
+
 			var out strings.Builder
 			out.WriteString(promptStyle.Render("✓ workflow complete: " + m.workflowRun.Workflow.Name))
 			if msg.Description != "" {

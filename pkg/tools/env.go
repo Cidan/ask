@@ -138,27 +138,25 @@ func (env *ToolEnv) approveViaInteraction(ctx context.Context, toolName string, 
 	return false, fmt.Errorf("approval required for %s but no interaction handler is configured", toolName)
 }
 
-// RequestApproval checks permission before executing a mutating tool.
-func (env *ToolEnv) RequestApproval(ctx context.Context, toolName string, input map[string]any) *ToolResponse {
+// ApprovalDenied checks permission before a mutating tool runs. It
+// returns the message to put in the tool result's Error field, or "" when
+// the call is allowed.
+func (env *ToolEnv) ApprovalDenied(ctx context.Context, toolName string, input map[string]any) string {
 	if env == nil || env.SkipPermissions {
-		return nil
+		return ""
 	}
 	approveFn := env.Approve
 	if approveFn == nil {
 		approveFn = env.approveViaInteraction
 	}
 	ok, err := approveFn(ctx, toolName, input)
-	if err != nil {
-		resp := NewTextErrorResponse("permission check failed: " + err.Error())
-		resp.StopTurn = true
-		return &resp
+	switch {
+	case err != nil:
+		return "permission check failed: " + err.Error()
+	case !ok:
+		return "The user denied permission for this tool call. Do not retry it; either proceed without it or end your turn and explain what you need."
 	}
-	if !ok {
-		resp := NewTextErrorResponse("The user denied permission for this tool call. Do not retry it; either proceed without it or end your turn and explain what you need.")
-		resp.StopTurn = true
-		return &resp
-	}
-	return nil
+	return ""
 }
 
 // AbsPath resolves a relative or absolute path against the session Cwd.

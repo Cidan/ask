@@ -46,7 +46,7 @@ func TestUserShell_UsesShellEnv(t *testing.T) {
 }
 
 // TestShellSingleQuote covers the POSIX single-quote escaping rule:
-// wrap the string in `'…'`, replace every `'` with `'\''` so the
+// wrap the string in `'…'`, replace every `'` with `'\”` so the
 // surrounding shell sees a literal-quote, close, literal-quote-
 // escape-quote, re-open pattern.
 func TestShellSingleQuote(t *testing.T) {

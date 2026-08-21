@@ -36,7 +36,7 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 		Provider: "anthropic",
 		Effort:   "high",
 		Anthropic: apiProviderConfig{
-			Model:  "claude-fable-5",
+			Model: "claude-fable-5",
 			SlashCommands: []providerSlashEntry{
 				{Name: "extra", Description: "demo"},
 			},

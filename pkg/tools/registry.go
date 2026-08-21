@@ -1,9 +1,8 @@
 package tools
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
+	"google.golang.org/adk/v2/agent"
 	"sort"
 	"strings"
 
@@ -32,11 +31,18 @@ type SearchToolsEntry struct {
 }
 
 // SearchToolsTool builds the search_tools core tool.
+// SearchToolsResult is the search_tools tool's response.
+type SearchToolsResult struct {
+	Matches   []SearchToolsEntry `json:"matches,omitempty" jsonschema:"registry tools matching the query, with their full input schema"`
+	Available []string           `json:"available,omitempty" jsonschema:"every registry tool name, returned when nothing matched"`
+	Notice    string             `json:"notice,omitempty"`
+}
+
 func SearchToolsTool(registry func() []Tool) Tool {
-	return NewTool(
+	return NewTypedTool(
 		"search_tools",
 		SearchToolsDescription,
-		func(_ context.Context, p SearchToolsParams) (ToolResponse, error) {
+		func(_ agent.Context, p SearchToolsParams) (SearchToolsResult, error) {
 			tools := registry()
 			matches := make([]SearchToolsEntry, 0, len(tools))
 			var allNames []string
@@ -64,17 +70,14 @@ func SearchToolsTool(registry func() []Tool) Tool {
 			if len(matches) == 0 {
 				sort.Strings(allNames)
 				if len(allNames) == 0 {
-					return NewTextResponse("the tool registry is empty — no additional tools are configured"), nil
+					return SearchToolsResult{Notice: "the tool registry is empty — no additional tools are configured"}, nil
 				}
-				return NewTextResponse(fmt.Sprintf(
-					"no registry tools matched %q; available tools: %s",
-					p.Query, strings.Join(allNames, ", "))), nil
+				return SearchToolsResult{
+					Available: allNames,
+					Notice:    fmt.Sprintf("no registry tools matched %q", p.Query),
+				}, nil
 			}
-			body, err := json.Marshal(matches)
-			if err != nil {
-				return NewTextErrorResponse("search_tools: " + err.Error()), nil
-			}
-			return NewTextResponse(TruncateMiddle(string(body))), nil
+			return SearchToolsResult{Matches: matches}, nil
 		},
 	)
 }
@@ -109,9 +112,9 @@ func InvokeToolTool(registry func() []Tool, isCore func(string) bool, env *ToolE
 	return &invokeToolImpl{registry: registry, isCore: isCore, env: env}
 }
 
-func (t *invokeToolImpl) Name() string           { return "invoke_tool" }
-func (t *invokeToolImpl) Description() string    { return InvokeToolDescription }
-func (t *invokeToolImpl) IsLongRunning() bool    { return false }
+func (t *invokeToolImpl) Name() string        { return "invoke_tool" }
+func (t *invokeToolImpl) Description() string { return InvokeToolDescription }
+func (t *invokeToolImpl) IsLongRunning() bool { return false }
 
 func (t *invokeToolImpl) Info() ToolInfo {
 	return ToolInfo{
@@ -150,8 +153,12 @@ func (t *invokeToolImpl) Declaration() *genai.FunctionDeclaration {
 	}
 }
 
-func (t *invokeToolImpl) Run(ctx context.Context, args map[string]any) (any, error) {
-	name, _ := args["tool_name"].(string)
+// Run implements ADK's executable-tool contract. It must use exactly this
+// signature — Run(agent.Context, any) (map[string]any, error) — or the
+// dispatcher has to guess at the shape.
+func (t *invokeToolImpl) Run(ctx agent.Context, args any) (map[string]any, error) {
+	argsMap, _ := args.(map[string]any)
+	name, _ := argsMap["tool_name"].(string)
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return map[string]any{"result": "tool_name is required", "is_error": true}, nil
@@ -170,12 +177,12 @@ func (t *invokeToolImpl) Run(ctx context.Context, args map[string]any) (any, err
 		return map[string]any{"result": "unknown tool " + name + " — use search_tools to discover what the registry offers", "is_error": true}, nil
 	}
 
-	params, _ := args["params"].(map[string]any)
+	params, _ := argsMap["params"].(map[string]any)
 	if params == nil {
 		params = map[string]any{}
 	}
 	info := ExtractToolInfo(inner)
-	desc, _ := args["description"].(string)
+	desc, _ := argsMap["description"].(string)
 	if _, has := params["description"]; !has && desc != "" && requiresField(info, "description") {
 		params["description"] = desc
 	}

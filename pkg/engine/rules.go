@@ -249,12 +249,14 @@ type ContextAwareTool struct {
 	seenCtxFile map[string]bool
 }
 
-func (ct *ContextAwareTool) Name() string           { return ct.Inner.Name() }
-func (ct *ContextAwareTool) Description() string    { return ct.Inner.Description() }
-func (ct *ContextAwareTool) IsLongRunning() bool    { return ct.Inner.IsLongRunning() }
-func (ct *ContextAwareTool) Info() ToolInfo         { return ExtractToolInfo(ct.Inner) }
+func (ct *ContextAwareTool) Name() string        { return ct.Inner.Name() }
+func (ct *ContextAwareTool) Description() string { return ct.Inner.Description() }
+func (ct *ContextAwareTool) IsLongRunning() bool { return ct.Inner.IsLongRunning() }
+func (ct *ContextAwareTool) Info() ToolInfo      { return ExtractToolInfo(ct.Inner) }
 func (ct *ContextAwareTool) Declaration() *genai.FunctionDeclaration {
-	if dp, ok := ct.Inner.(interface{ Declaration() *genai.FunctionDeclaration }); ok {
+	if dp, ok := ct.Inner.(interface {
+		Declaration() *genai.FunctionDeclaration
+	}); ok {
 		return dp.Declaration()
 	}
 	return nil
@@ -418,15 +420,7 @@ func (ct *ContextAwareTool) Run(ctx agent.Context, args any) (map[string]any, er
 	}
 
 	if len(add) > 0 {
-		block := strings.Join(add, "\n\n")
-		if resp == nil {
-			resp = make(map[string]any)
-		}
-		if s, ok := resp["result"].(string); ok && s != "" {
-			resp["result"] = s + "\n\n" + block
-		} else {
-			resp["result"] = block
-		}
+		resp = AppendToolResultText(resp, strings.Join(add, "\n\n"))
 	}
 
 	return resp, err

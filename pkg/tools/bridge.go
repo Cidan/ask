@@ -2,7 +2,8 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -10,6 +11,13 @@ import (
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool/functiontool"
 )
+
+// BridgeResult is the typed response of a bridge tool: the handler's own
+// output struct, plus the text form of the MCP result it wraps.
+type BridgeResult[Out any] struct {
+	Content string `json:"content,omitempty" jsonschema:"text form of the tool result"`
+	Data    Out    `json:"data,omitempty" jsonschema:"the tool's structured output"`
+}
 
 // NativeBridgeTool adapts an MCP handler core to an ADK Tool.
 func NativeBridgeTool[In, Out any](name, description string,
@@ -30,46 +38,25 @@ func NativeBridgeTool[In, Out any](name, description string,
 		}
 	}
 
-	adkTool, err := functiontool.New[In, any](
+	adkTool, err := functiontool.New[In, BridgeResult[Out]](
 		functiontool.Config{
 			Name:        name,
 			Description: description,
 			InputSchema: inputSchema,
 		},
-		func(actx agent.Context, in In) (any, error) {
+		func(actx agent.Context, in In) (BridgeResult[Out], error) {
 			res, out, err := run(actx, in)
 			if err != nil {
-				return map[string]any{
-					"result":   name + ": " + err.Error(),
-					"is_error": true,
-				}, nil
+				return BridgeResult[Out]{}, fmt.Errorf("%s: %w", name, err)
 			}
 			body := MCPResultText(res)
 			if res != nil && res.IsError {
 				if strings.TrimSpace(body) == "" {
 					body = "(empty error result)"
 				}
-				return map[string]any{
-					"result":   body,
-					"is_error": true,
-				}, nil
+				return BridgeResult[Out]{}, errors.New(body)
 			}
-			if j, err := json.Marshal(out); err == nil {
-				js := string(j)
-				switch {
-				case js == "{}" || js == "null":
-				case strings.TrimSpace(body) == "" || body == js:
-					body = js
-				default:
-					body = body + "\n" + js
-				}
-			}
-			if strings.TrimSpace(body) == "" {
-				body = "(empty result)"
-			}
-			return map[string]any{
-				"result": TruncateMiddle(body),
-			}, nil
+			return BridgeResult[Out]{Content: TruncateMiddle(body), Data: out}, nil
 		},
 	)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"google.golang.org/adk/v2/agent"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -25,13 +26,20 @@ type GlobParams struct {
 }
 
 // GlobTool returns the native glob tool.
+// GlobResult is the glob tool's response.
+type GlobResult struct {
+	Listing   string `json:"listing,omitempty" jsonschema:"matching file paths, one per line"`
+	Matches   int    `json:"matches,omitempty" jsonschema:"number of files matched"`
+	Truncated bool   `json:"truncated,omitempty" jsonschema:"true when more files matched than were listed"`
+}
+
 func GlobTool(env *ToolEnv) Tool {
-	return NewTool(
+	return NewTypedTool(
 		"glob",
 		GlobToolDescription,
-		func(ctx context.Context, p GlobParams) (ToolResponse, error) {
+		func(ctx agent.Context, p GlobParams) (GlobResult, error) {
 			if strings.TrimSpace(p.Pattern) == "" {
-				return NewTextErrorResponse("pattern is required"), nil
+				return GlobResult{}, errors.New("pattern is required")
 			}
 			root := env.AbsPath(p.Path)
 			type hit struct {
@@ -70,10 +78,10 @@ func GlobTool(env *ToolEnv) Tool {
 				return ctx.Err()
 			})
 			if err != nil && err != filepath.SkipAll {
-				return NewTextErrorResponse("glob walk: " + err.Error()), nil
+				return GlobResult{}, errors.New("glob walk: " + err.Error())
 			}
 			if len(hits) == 0 {
-				return NewTextResponse("no files match " + p.Pattern + " under " + root), nil
+				return GlobResult{Listing: "no files match " + p.Pattern + " under " + root}, nil
 			}
 			sort.Slice(hits, func(i, j int) bool { return hits[i].mod > hits[j].mod })
 			if len(hits) > MaxSearchHits {
@@ -88,7 +96,7 @@ func GlobTool(env *ToolEnv) Tool {
 			if truncated {
 				fmt.Fprintf(&out, "(capped at %d results — narrow the pattern for more)\n", MaxSearchHits)
 			}
-			return NewTextResponse(out.String()), nil
+			return GlobResult{Listing: out.String(), Matches: len(hits), Truncated: truncated}, nil
 		},
 	)
 }
@@ -180,19 +188,24 @@ type GrepParams struct {
 var RgPath, _ = exec.LookPath("rg")
 
 // GrepTool returns the native grep tool.
+// GrepResult is the grep tool's response.
+type GrepResult struct {
+	Listing string `json:"listing,omitempty" jsonschema:"matching lines, prefixed with file and line number"`
+}
+
 func GrepTool(env *ToolEnv) Tool {
-	return NewTool(
+	return NewTypedTool(
 		"grep",
 		GrepToolDescription,
-		func(ctx context.Context, p GrepParams) (ToolResponse, error) {
+		func(ctx agent.Context, p GrepParams) (GrepResult, error) {
 			if p.Pattern == "" {
-				return NewTextErrorResponse("pattern is required"), nil
+				return GrepResult{}, errors.New("pattern is required")
 			}
 			out, errText := GrepRun(ctx, RgPath, p, env.AbsPath(p.Path))
 			if errText != "" {
-				return NewTextErrorResponse(errText), nil
+				return GrepResult{}, errors.New(errText)
 			}
-			return NewTextResponse(out), nil
+			return GrepResult{Listing: out}, nil
 		},
 	)
 }
@@ -388,18 +401,23 @@ type LsParams struct {
 }
 
 // LsTool returns the native ls tool.
+// LsResult is the ls tool's response.
+type LsResult struct {
+	Listing string `json:"listing,omitempty" jsonschema:"directory tree"`
+}
+
 func LsTool(env *ToolEnv) Tool {
-	return NewTool(
+	return NewTypedTool(
 		"ls",
 		LsToolDescription,
-		func(ctx context.Context, p LsParams) (ToolResponse, error) {
+		func(ctx agent.Context, p LsParams) (LsResult, error) {
 			root := env.AbsPath(p.Path)
 			info, err := os.Stat(root)
 			if err != nil {
-				return NewTextErrorResponse("stat " + root + ": " + err.Error()), nil
+				return LsResult{}, errors.New("stat " + root + ": " + err.Error())
 			}
 			if !info.IsDir() {
-				return NewTextErrorResponse(root + " is not a directory"), nil
+				return LsResult{}, errors.New(root + " is not a directory")
 			}
 			var out strings.Builder
 			out.WriteString(root + "/\n")
@@ -441,12 +459,12 @@ func LsTool(env *ToolEnv) Tool {
 				return ctx.Err()
 			})
 			if err != nil && err != filepath.SkipAll {
-				return NewTextErrorResponse("ls walk: " + err.Error()), nil
+				return LsResult{}, errors.New("ls walk: " + err.Error())
 			}
 			if truncated {
 				fmt.Fprintf(&out, "(capped at %d entries — use depth or a narrower path)\n", MaxListEntries)
 			}
-			return NewTextResponse(out.String()), nil
+			return LsResult{Listing: out.String()}, nil
 		},
 	)
 }

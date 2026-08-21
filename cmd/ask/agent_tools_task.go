@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	adkagent "google.golang.org/adk/v2/agent"
 	"strings"
 
 	"github.com/Cidan/ask/pkg/engine"
@@ -30,14 +32,21 @@ type agentTaskParams struct {
 	Description     string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this sub-agent is doing"`
 }
 
+// agentTaskResult is the task tool's response.
+type agentTaskResult struct {
+	Report string `json:"report,omitempty" jsonschema:"the sub-agent's self-contained final report"`
+	JobID  string `json:"job_id,omitempty" jsonschema:"set when the sub-agent runs in the background"`
+	Agent  string `json:"agent,omitempty" jsonschema:"which agent definition ran"`
+}
+
 func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Tool {
-	return tools.NewTool(
+	return tools.NewTypedTool(
 		"task",
 		agentTaskToolDescription,
-		func(ctx context.Context, p agentTaskParams) (tools.ToolResponse, error) {
+		func(ctx adkagent.Context, p agentTaskParams) (agentTaskResult, error) {
 			prompt := strings.TrimSpace(p.Prompt)
 			if prompt == "" {
-				return tools.NewTextErrorResponse("prompt is required"), nil
+				return agentTaskResult{}, errors.New("prompt is required")
 			}
 
 			subagentID := uuid.New().String()[:8]
@@ -75,7 +84,7 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 					}
 				}
 				if def == nil {
-					return tools.NewTextErrorResponse("unknown agent " + name + " — see <available_agents> for what is defined"), nil
+					return agentTaskResult{}, errors.New("unknown agent " + name + " — see <available_agents> for what is defined")
 				}
 				if def.Model != "" {
 					modelID = def.Model
@@ -154,9 +163,12 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 						Description: p.Description,
 					})
 				}
-				return tools.NewTextResponse(
-					"started background " + label + " as " + job.ID +
-						"; poll the report with job_output and stop it with job_kill"), nil
+				return agentTaskResult{
+					JobID: job.ID,
+					Agent: agentType,
+					Report: "started background " + label + " as " + job.ID +
+						"; poll the report with job_output and stop it with job_kill",
+				}, nil
 			}
 
 			if env.Emit != nil {
@@ -178,12 +190,12 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 				})
 			}
 			if err != nil {
-				return tools.NewTextErrorResponse("sub-agent failed: " + err.Error()), nil
+				return agentTaskResult{}, errors.New("sub-agent failed: " + err.Error())
 			}
 			if report == "" {
-				return tools.NewTextErrorResponse("sub-agent returned no report"), nil
+				return agentTaskResult{}, errors.New("sub-agent returned no report")
 			}
-			return tools.NewTextResponse(report), nil
+			return agentTaskResult{Report: report, Agent: agentType}, nil
 		},
 	)
 }

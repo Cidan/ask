@@ -245,4 +245,3 @@ type finalizedPlanRequestMsg struct {
 	explanation     string
 	reply           chan finalizedPlanReply
 }
-

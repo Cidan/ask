@@ -15,10 +15,10 @@ type testRegistryTool struct {
 	fn   func(ctx context.Context, args map[string]any) (ToolResponse, error)
 }
 
-func (t *testRegistryTool) Name() string           { return t.info.Name }
-func (t *testRegistryTool) Description() string    { return t.info.Description }
-func (t *testRegistryTool) IsLongRunning() bool    { return false }
-func (t *testRegistryTool) Info() ToolInfo         { return t.info }
+func (t *testRegistryTool) Name() string        { return t.info.Name }
+func (t *testRegistryTool) Description() string { return t.info.Description }
+func (t *testRegistryTool) IsLongRunning() bool { return false }
+func (t *testRegistryTool) Info() ToolInfo      { return t.info }
 func (t *testRegistryTool) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{
 		Name:                 t.info.Name,
@@ -79,11 +79,11 @@ func TestSearchTools_QueryForms(t *testing.T) {
 		if resp.IsError {
 			t.Fatalf("unexpected error response: %s", resp.Content)
 		}
-		var entries []SearchToolsEntry
-		if err := json.Unmarshal([]byte(resp.Content), &entries); err != nil {
-			t.Fatalf("result is not a JSON entry list: %v\n%s", err, resp.Content)
+		var out SearchToolsResult
+		if err := json.Unmarshal([]byte(resp.Content), &out); err != nil {
+			t.Fatalf("result is not a SearchToolsResult: %v\n%s", err, resp.Content)
 		}
-		return entries
+		return out.Matches
 	}
 
 	if got := parse(runTool(t, tool, SearchToolsParams{Query: "*", Description: "list all"})); len(got) != 4 {

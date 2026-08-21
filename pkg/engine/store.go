@@ -502,11 +502,15 @@ func newFileSession(appName, userID, sessionID, cwd string, updatedAt time.Time,
 	return fs
 }
 
-func (s *fileSession) ID() string                { return s.sessionID }
-func (s *fileSession) AppName() string           { return s.appName }
-func (s *fileSession) UserID() string            { return s.userID }
-func (s *fileSession) State() session.State      { return s.state }
-func (s *fileSession) LastUpdateTime() time.Time { s.mu.RLock(); defer s.mu.RUnlock(); return s.updatedAt }
+func (s *fileSession) ID() string           { return s.sessionID }
+func (s *fileSession) AppName() string      { return s.appName }
+func (s *fileSession) UserID() string       { return s.userID }
+func (s *fileSession) State() session.State { return s.state }
+func (s *fileSession) LastUpdateTime() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.updatedAt
+}
 func (s *fileSession) Events() session.Events {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

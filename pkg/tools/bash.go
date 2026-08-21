@@ -2,8 +2,9 @@ package tools
 
 import (
 	"bufio"
-	"context"
+	"errors"
 	"fmt"
+	"google.golang.org/adk/v2/agent"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -199,25 +200,50 @@ type BashParams struct {
 	DisableTokenSavings bool   `json:"disable_token_savings,omitempty" jsonschema:"set to true to disable standard output filtering for this command if raw uncompressed output is strictly needed"`
 }
 
+// BashResult is the bash tool's response.
+type BashResult struct {
+	Output    string `json:"output,omitempty" jsonschema:"combined stdout and stderr"`
+	ExitCode  int    `json:"exit_code" jsonschema:"process exit code"`
+	JobID     string `json:"job_id,omitempty" jsonschema:"set when the command was started in the background"`
+	TimedOut  bool   `json:"timed_out,omitempty" jsonschema:"true when the command was killed for exceeding its timeout"`
+	Cancelled bool   `json:"cancelled,omitempty" jsonschema:"true when the command was cancelled"`
+	Truncated bool   `json:"truncated,omitempty" jsonschema:"true when output exceeded the in-memory cap"`
+}
+
+// JobOutputResult is the job_output tool's response.
+type JobOutputResult struct {
+	JobID   string `json:"job_id,omitempty"`
+	Command string `json:"command,omitempty"`
+	Status  string `json:"status,omitempty" jsonschema:"running or exited"`
+	Output  string `json:"output,omitempty"`
+}
+
+// JobKillResult is the job_kill tool's response.
+type JobKillResult struct {
+	JobID    string `json:"job_id,omitempty"`
+	Killed   bool   `json:"killed,omitempty"`
+	ExitCode int    `json:"exit_code,omitempty"`
+}
+
 // BashTool returns the native bash tool.
 func BashTool(env *ToolEnv) Tool {
-	return NewTool(
+	return NewTypedTool(
 		"bash",
 		BashToolDescription,
-		func(ctx context.Context, p BashParams) (ToolResponse, error) {
+		func(ctx agent.Context, p BashParams) (BashResult, error) {
 			command := strings.TrimSpace(p.Command)
 			if command == "" {
-				return NewTextErrorResponse("command is required"), nil
+				return BashResult{}, errors.New("command is required")
 			}
 			if err := ValidateSudoCommand(command); err != nil {
-				return NewTextErrorResponse(err.Error()), nil
+				return BashResult{}, errors.New(err.Error())
 			}
 			if !SafeShellCommand(command) {
-				if denied := env.RequestApproval(ctx, "bash", map[string]any{
+				if denied := env.ApprovalDenied(ctx, "bash", map[string]any{
 					"command":     command,
 					"description": p.Description,
-				}); denied != nil {
-					return *denied, nil
+				}); denied != "" {
+					return BashResult{}, errors.New(denied)
 				}
 			}
 
@@ -237,7 +263,7 @@ func BashTool(env *ToolEnv) Tool {
 
 			handle, err := RunShell(env.Cwd, command, extraEnv...)
 			if err != nil {
-				return NewTextErrorResponse("could not start shell: " + err.Error()), nil
+				return BashResult{}, errors.New("could not start shell: " + err.Error())
 			}
 
 			if p.RunInBackground {
@@ -261,8 +287,7 @@ func BashTool(env *ToolEnv) Tool {
 						Description: p.Description,
 					})
 				}
-				return NewTextResponse(fmt.Sprintf(
-					"started background job %s; poll it with job_output and stop it with job_kill", job.ID)), nil
+				return BashResult{JobID: job.ID, Output: "started background job " + job.ID + "; poll it with job_output and stop it with job_kill"}, nil
 			}
 
 			timeout := BashDefaultTimeout
@@ -302,13 +327,12 @@ func BashTool(env *ToolEnv) Tool {
 				case <-timer.C:
 					handle.Kill()
 					drainShellOutput(handle.Output, collect)
-					return NewTextErrorResponse(fmt.Sprintf(
-						"command timed out after %s and was killed\n%s",
-						timeout, TruncateMiddle(handleFinalOutput(buf.String())))), nil
+					return BashResult{TimedOut: true, Output: TruncateMiddle(handleFinalOutput(buf.String()))},
+						fmt.Errorf("command timed out after %s and was killed", timeout)
 				case <-ctx.Done():
 					handle.Kill()
 					drainShellOutput(handle.Output, collect)
-					return NewTextErrorResponse("command cancelled\n" + TruncateMiddle(handleFinalOutput(buf.String()))), nil
+					return BashResult{Cancelled: true, Output: TruncateMiddle(handleFinalOutput(buf.String()))}, nil
 				}
 			}
 		},
@@ -321,24 +345,15 @@ func drainShellOutput(ch <-chan string, collect func(string)) {
 	}
 }
 
-func bashResponse(output string, rawTruncated bool, res ShellResult) ToolResponse {
+func bashResponse(output string, rawTruncated bool, res ShellResult) BashResult {
 	body := TruncateMiddle(output)
 	if rawTruncated {
 		body += "\n(output exceeded the in-memory cap; middle portions were dropped)"
 	}
 	if res.Err != nil {
-		return NewTextErrorResponse(body + "\nshell error: " + res.Err.Error())
+		return BashResult{Output: body, ExitCode: res.ExitCode, Truncated: rawTruncated}
 	}
-	if res.ExitCode != 0 {
-		if body != "" && !strings.HasSuffix(body, "\n") {
-			body += "\n"
-		}
-		return NewTextErrorResponse(fmt.Sprintf("%sExit code %d", body, res.ExitCode))
-	}
-	if strings.TrimSpace(body) == "" {
-		return NewTextResponse("(no output)")
-	}
-	return NewTextResponse(body)
+	return BashResult{Output: body, ExitCode: res.ExitCode, Truncated: rawTruncated}
 }
 
 const JobOutputToolDescription = `Read the accumulated output of a background job started with bash run_in_background. Set wait to block until the job exits (up to 30s).`
@@ -351,20 +366,20 @@ type JobOutputParams struct {
 
 // JobOutputTool returns the native job_output tool.
 func JobOutputTool(env *ToolEnv) Tool {
-	return NewTool(
+	return NewTypedTool(
 		"job_output",
 		JobOutputToolDescription,
-		func(ctx context.Context, p JobOutputParams) (ToolResponse, error) {
+		func(ctx agent.Context, p JobOutputParams) (JobOutputResult, error) {
 			job := env.Jobs.Get(p.JobID)
 			if job == nil {
-				return NewTextErrorResponse("no such job: " + p.JobID), nil
+				return JobOutputResult{}, errors.New("no such job: " + p.JobID)
 			}
 			if p.Wait {
 				select {
 				case <-job.DoneCh:
 				case <-time.After(30 * time.Second):
 				case <-ctx.Done():
-					return NewTextErrorResponse("cancelled while waiting for " + p.JobID), nil
+					return JobOutputResult{}, errors.New("cancelled while waiting for " + p.JobID)
 				}
 			}
 			output, truncated, done, res := job.Snapshot()
@@ -398,7 +413,7 @@ func JobOutputTool(env *ToolEnv) Tool {
 			if strings.TrimSpace(body) == "" {
 				body = "(no output yet)"
 			}
-			return NewTextResponse(fmt.Sprintf("[%s %s — %s]\n%s", p.JobID, job.Command, status, body)), nil
+			return JobOutputResult{JobID: p.JobID, Command: job.Command, Status: status, Output: body}, nil
 		},
 	)
 }
@@ -412,17 +427,17 @@ type JobKillParams struct {
 
 // JobKillTool returns the native job_kill tool.
 func JobKillTool(env *ToolEnv) Tool {
-	return NewTool(
+	return NewTypedTool(
 		"job_kill",
 		JobKillToolDescription,
-		func(ctx context.Context, p JobKillParams) (ToolResponse, error) {
+		func(ctx agent.Context, p JobKillParams) (JobKillResult, error) {
 			job := env.Jobs.Get(p.JobID)
 			if job == nil {
-				return NewTextErrorResponse("no such job: " + p.JobID), nil
+				return JobKillResult{}, errors.New("no such job: " + p.JobID)
 			}
 			_, _, done, res := job.Snapshot()
 			if done {
-				return NewTextResponse(fmt.Sprintf("%s already exited with code %d", p.JobID, res.ExitCode)), nil
+				return JobKillResult{JobID: p.JobID, ExitCode: res.ExitCode}, nil
 			}
 			if job.Kill != nil {
 				job.Kill()
@@ -430,11 +445,11 @@ func JobKillTool(env *ToolEnv) Tool {
 			select {
 			case <-job.DoneCh:
 			case <-time.After(5 * time.Second):
-				return NewTextErrorResponse(p.JobID + " did not exit within 5s of SIGKILL"), nil
+				return JobKillResult{}, errors.New(p.JobID + " did not exit within 5s of SIGKILL")
 			case <-ctx.Done():
-				return NewTextErrorResponse("cancelled while waiting for " + p.JobID + " to die"), nil
+				return JobKillResult{}, errors.New("cancelled while waiting for " + p.JobID + " to die")
 			}
-			return NewTextResponse("killed " + p.JobID), nil
+			return JobKillResult{JobID: p.JobID, Killed: true}, nil
 		},
 	)
 }

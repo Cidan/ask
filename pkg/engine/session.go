@@ -334,14 +334,7 @@ func (s *Session) runTurn(turn Turn) {
 					})
 				}
 				if part.FunctionResponse != nil {
-					resStr := ""
-					isErr := false
-					if res, ok := part.FunctionResponse.Response["result"].(string); ok {
-						resStr = res
-					}
-					if errFlag, ok := part.FunctionResponse.Response["is_error"].(bool); ok {
-						isErr = errFlag
-					}
+					resStr, isErr := ToolResultText(part.FunctionResponse.Response)
 					s.Emit(ToolResultEvent{
 						BaseEvent: BaseEvent{TabID: s.args.TabID},
 						ToolName:  part.FunctionResponse.Name,
