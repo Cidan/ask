@@ -531,26 +531,45 @@ func TestBuildInstructionProvider_DynamicState(t *testing.T) {
 	}
 }
 
-func TestBuildInstructionProvider_InstructionutilInterpolation_Fallback(t *testing.T) {
-	opts := PromptOptions{
-		SystemPrompt: "You are working on branch {current_branch}. Notes are at {notes_dir?}.",
-	}
-	provider := BuildInstructionProvider(opts)
+// ask's instruction text is user-authored documentation, not a template.
+// Braces in it must reach the model exactly as written — including a name
+// that collides with a state key ask sets, and the `{var?}` optional form
+// that ADK resolves to the empty string.
+func TestBuildInstructionProvider_BracesAreNotTemplates(t *testing.T) {
+	base := "Expand ${VAR} or ${VAR:-default} in server config.\n" +
+		"The runtime injects {system_reminder} blocks.\n" +
+		"Optional placeholders look like {notes_dir?} in ADK.\n" +
+		"Workflow shape: {Name, Description, Steps, Scope}."
+	provider := BuildInstructionProvider(PromptOptions{SystemPrompt: base})
 
-	state := &mockReadonlyState{
-		data: map[string]any{
-			"current_branch": "feature/adk-upgrade",
-		},
+	// State deliberately holds a key that collides with prose in the body.
+	ctx := &mockReadonlyContext{
+		Context: context.Background(),
+		state: &mockReadonlyState{data: map[string]any{
+			"system_reminder": "Run the tests.",
+			"notes_dir":       "/tmp/notes",
+		}},
 	}
-	ctx := &mockReadonlyContext{Context: context.Background(), state: state}
 
-	// Custom mockReadonlyContext returns basePrompt safely via error fallback
 	res, err := provider(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(res, "You are working on branch {current_branch}.") {
-		t.Errorf("expected fallback prompt to contain template when non-ADK context is passed, got %q", res)
+	if !strings.HasPrefix(res, base) {
+		t.Errorf("instruction body must survive verbatim, got:\n%s", res)
+	}
+	for _, want := range []string{"${VAR}", "${VAR:-default}", "{notes_dir?}", "{Name, Description, Steps, Scope}"} {
+		if !strings.Contains(res, want) {
+			t.Errorf("brace text %q was rewritten out of the prompt:\n%s", want, res)
+		}
+	}
+	// The collision case: the literal prose survives, and the state value
+	// is delivered as its own tagged block rather than substituted inline.
+	if strings.Contains(res, "The runtime injects Run the tests. blocks.") {
+		t.Error("state value was interpolated into user documentation")
+	}
+	if !strings.Contains(res, "<system_reminder>\nRun the tests.\n</system_reminder>") {
+		t.Errorf("dynamic state must arrive as a tagged block:\n%s", res)
 	}
 }

@@ -15,7 +15,6 @@ import (
 	"github.com/Cidan/ask/pkg/memory"
 	"github.com/Cidan/ask/pkg/providers"
 	"google.golang.org/adk/v2/agent"
-	"google.golang.org/adk/v2/util/instructionutil"
 )
 
 // AgentCoderPrompt is the static head of the harness system prompt.
@@ -658,6 +657,29 @@ func BuildSystemPrompt(opts PromptOptions) string {
 
 // BuildInstructionProvider creates an ADK agent.InstructionProvider that returns the
 // base system prompt combined with any dynamic context or state deltas from ctx.ReadonlyState().
+//
+// The returned text is deliberately NOT run through
+// instructionutil.InjectSessionState. ask's instruction text is not a
+// template — it is user-authored documentation (CLAUDE.md, .claude/rules,
+// @-linked docs, skill and subagent bodies) inlined verbatim, and ADK's
+// placeholder regex is `{+[^{}]*}+`, so every `{identifier}` in that prose
+// is treated as a session-state lookup. Two ways that goes wrong:
+//
+//   - `{name}` that happens to match a state key ask sets (system_reminder,
+//     step_incomplete, extra_instructions) is silently replaced inside the
+//     user's own documentation.
+//   - `{name?}` resolves to the empty string when the key is absent, so the
+//     text is silently deleted with no error to fall back on.
+//
+// It never bought anything either: ask defines no `{placeholder}` anywhere,
+// and every dynamic value it does need is appended explicitly as a tagged
+// block below. ADK's own llmagent.Config docs make the same point — "if
+// templating logic for {} chars is not desired, then InstructionProvider
+// should be used". Using an InstructionProvider and then re-applying the
+// interpolation by hand defeats that. Any agent built from user-authored
+// text (workflow steps, subagents) must use an InstructionProvider for the
+// same reason; a static llmagent.Config.Instruction is interpolated by ADK
+// and hard-fails the invocation on the first brace.
 func BuildInstructionProvider(opts PromptOptions) func(ctx agent.ReadonlyContext) (string, error) {
 	basePrompt := opts.SystemPrompt
 	if basePrompt == "" {
@@ -689,15 +711,9 @@ func BuildInstructionProvider(opts PromptOptions) func(ctx agent.ReadonlyContext
 			}
 		}
 
-		fullPrompt := basePrompt
 		if dynamicSuffix.Len() > 0 {
-			fullPrompt = basePrompt + dynamicSuffix.String()
+			return basePrompt + dynamicSuffix.String(), nil
 		}
-
-		// Dynamically interpolate session state variables ({key_name}, {var?}, {artifact.key}) using ADK instructionutil
-		if interpolated, err := instructionutil.InjectSessionState(ctx, fullPrompt); err == nil {
-			return interpolated, nil
-		}
-		return fullPrompt, nil
+		return basePrompt, nil
 	}
 }
