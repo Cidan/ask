@@ -191,7 +191,7 @@ func EndTurnTool(env *ToolEnv) Tool {
 }
 
 type FinalizedPlanParams struct {
-	Plan            string `json:"plan" jsonschema:"required: the full markdown plan covering the necessary file changes, tests, and verification steps. MUST include detailed rationale explaining what will be changed and why, not just a list of steps. Note that workflow execution runs as a separate subagent context that CANNOT read the current chat history; your plan MUST be completely self-contained, including all necessary context, code locations, reasoning, and intent."`
+	Plan            string `json:"plan" jsonschema:"required: the full markdown plan covering the necessary file changes, tests, and verification steps. MUST be an exhaustive, code-complete specification with exact before/after code blocks, function signatures, wire/caller verification matrix, anti-stub rules, and specific test assertions. Note that workflow execution runs as a separate subagent context that CANNOT read the current chat history; your plan MUST be completely self-contained, including all necessary context, code locations, reasoning, and intent."`
 	Explanation     string `json:"explanation" jsonschema:"required: one or two sentences explaining why this plan is optimal"`
 	DefaultWorkflow string `json:"default_workflow,omitempty" jsonschema:"optional: the matched/suggested workflow name (e.g. 'ship') if any matches the plan"`
 }
