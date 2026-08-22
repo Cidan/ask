@@ -37,23 +37,28 @@ func (p agentAPIProvider) Capabilities() ProviderCapabilities {
 	}
 }
 
+// ModelPicker is synchronous and never touches the network: it serves the
+// provider's live listing once a catalog load (model_catalog.go) has cached
+// one, and the static catalog ids until then.
 func (p agentAPIProvider) ModelPicker() ProviderPicker {
-	cfg, _ := loadConfig()
 	options := p.spec.ModelOptions
-	if p.spec.ID == "vertex" {
-		if dynamicModels, err := providers.ListVertexModels(context.Background(), cfg.Vertex); err == nil && len(dynamicModels) > 0 {
-			options = dynamicModels
-		}
-	} else if p.spec.ID == "openrouter" {
-		if dynamicModels, err := providers.ListOpenRouterModels(context.Background(), cfg.OpenRouter); err == nil && len(dynamicModels) > 0 {
-			options = dynamicModels
-		}
+	if live, ok := cachedModelOptions(p.spec.ID); ok && len(live) > 0 {
+		options = live
 	}
 	return ProviderPicker{
 		Prompt:      "Select " + p.spec.DisplayName + " model",
 		Options:     options,
 		AllowCustom: true,
 	}
+}
+
+// ListModels is the network path behind the catalog load.
+func (p agentAPIProvider) ListModels(ctx context.Context) ([]string, error) {
+	if p.spec.ListModels == nil {
+		return nil, nil
+	}
+	cfg, _ := loadConfig()
+	return p.spec.ListModels(ctx, toPkgConfig(cfg))
 }
 
 func (p agentAPIProvider) EffortOptions() []string { return p.spec.EffortOptions }

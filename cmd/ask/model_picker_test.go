@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -8,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 // pressKey builds a minimal KeyPressMsg — bubbletea's zero-value ModMask
@@ -43,6 +45,8 @@ func modelPickerFixture(t *testing.T) (model, *fakeProvider, *fakeProvider) {
 	isolateHome(t)
 	setKeyMapForTesting(DefaultKeyMap())
 	t.Cleanup(invalidateKeyMapCache)
+	resetModelCatalog()
+	t.Cleanup(resetModelCatalog)
 	p1 := newFakeProvider()
 	p1.id = "vertex"
 	p1.displayName = "Vertex AI"
@@ -252,39 +256,295 @@ func TestMissingAPIKeyError_NamesPickerAndEnv(t *testing.T) {
 	}
 }
 
-func TestModelPicker_ViewIsWiderThanTall(t *testing.T) {
+// The overlay is the terminal minus a fixed margin, square-cornered, and
+// keeps the same footprint whichever sub-editor (key prompt, custom id) is
+// up — the right column swaps content, the box never changes shape.
+func TestModelPicker_OverlayGeometry(t *testing.T) {
 	m, _, _ := modelPickerFixture(t)
-	m.width, m.height = 120, 40
 	m = m.openModelPicker()
 
-	v := m.viewModelPicker()
-	w, h := lipgloss.Width(v), lipgloss.Height(v)
-	if w < modelPickerMinWidth {
-		t.Errorf("picker width=%d want >= %d", w, modelPickerMinWidth)
+	cases := []struct{ w, h, boxW, boxH int }{
+		{120, 40, 112, 36}, // 4-col / 2-row margins
+		{80, 24, 78, 22},   // small terminal: margins collapse to 1
 	}
-	if w <= h {
-		t.Errorf("picker should be wider than tall, got %dx%d", w, h)
+	for _, c := range cases {
+		boxW, boxH, listW, detailW, innerH := modelPickerGeometry(c.w, c.h)
+		if boxW != c.boxW || boxH != c.boxH {
+			t.Errorf("%dx%d: box=%dx%d want %dx%d", c.w, c.h, boxW, boxH, c.boxW, c.boxH)
+		}
+		if listW+3+detailW != boxW-4 || innerH != boxH-2 {
+			t.Errorf("%dx%d: columns %d+3+%d and innerH %d must fill the box %dx%d", c.w, c.h, listW, detailW, innerH, boxW, boxH)
+		}
+		if listW < modelPickerMinListW || detailW < modelPickerMinDetailW {
+			t.Errorf("%dx%d: columns too narrow: list=%d detail=%d", c.w, c.h, listW, detailW)
+		}
+
+		ov := m.modelPickerOverlay(c.w, c.h)
+		if gw, gh := lipgloss.Width(ov), lipgloss.Height(ov); gw != boxW || gh != boxH {
+			t.Errorf("%dx%d: overlay renders %dx%d want %dx%d", c.w, c.h, gw, gh, boxW, boxH)
+		}
+		plain := xansi.Strip(ov)
+		if !strings.HasPrefix(plain, "┌") || !strings.HasSuffix(plain, "┘") {
+			t.Errorf("%dx%d: overlay must have square corners, got %q…%q", c.w, c.h, plain[:3], plain[len(plain)-3:])
+		}
+		if !strings.Contains(plain, "│") {
+			t.Errorf("%dx%d: overlay must carry the column divider", c.w, c.h)
+		}
 	}
 
 	m.modelPicker.keyEntry = &modelPickerKeyEntry{
 		pending: modelPickerEntry{display: "X"},
-		spec:    providerKeySpec{id: "test", title: "Test"},
+		spec:    providerKeySpec{id: "test", title: "Test", envKey: "TEST_KEY"},
 	}
-	kv := m.viewModelPicker()
-	kw, kh := lipgloss.Width(kv), lipgloss.Height(kv)
-	if kw < modelPickerMinWidth || kw <= kh {
-		t.Errorf("key prompt should stay wide, got %dx%d", kw, kh)
+	if kv := m.modelPickerOverlay(120, 40); lipgloss.Width(kv) != 112 || lipgloss.Height(kv) != 36 {
+		t.Errorf("key prompt must keep the box footprint, got %dx%d", lipgloss.Width(kv), lipgloss.Height(kv))
+	}
+	m.modelPicker.keyEntry = nil
+	m.modelPicker.customEntry = &modelPickerCustomEntry{providerID: "custom", providerName: "Custom"}
+	if cv := m.modelPickerOverlay(120, 40); lipgloss.Width(cv) != 112 || lipgloss.Height(cv) != 36 {
+		t.Errorf("custom editor must keep the box footprint, got %dx%d", lipgloss.Width(cv), lipgloss.Height(cv))
+	}
+
+	m = m.closeModelPicker()
+	if ov := m.modelPickerOverlay(120, 40); ov != "" {
+		t.Error("a closed picker renders no overlay")
 	}
 }
 
-func TestModelPicker_VisibleRowsCapped(t *testing.T) {
+func TestModelPickerWindow(t *testing.T) {
+	cases := []struct{ n, cursor, size, start, end int }{
+		{5, 0, 10, 0, 5},
+		{30, 0, 10, 0, 10},
+		{30, 9, 10, 0, 10},
+		{30, 10, 10, 1, 11},
+		{30, 29, 10, 20, 30},
+		{0, 0, 10, 0, 0},
+	}
+	for _, c := range cases {
+		if s, e := modelPickerWindow(c.n, c.cursor, c.size); s != c.start || e != c.end {
+			t.Errorf("window(n=%d,cursor=%d,size=%d)=[%d,%d) want [%d,%d)", c.n, c.cursor, c.size, s, e, c.start, c.end)
+		}
+	}
+}
+
+// The picker is drawn by the app over the joined body+sidebar frame, so its
+// right border lands inside the sidebar column, not just the tab body.
+func TestApp_ModelPickerOverlayCoversSidebar(t *testing.T) {
 	m, _, _ := modelPickerFixture(t)
-	m.width, m.height = 120, 60
 	m = m.openModelPicker()
-	v := m.viewModelPicker()
-	maxH := modelPickerMaxRows + 12
-	if h := lipgloss.Height(v); h > maxH {
-		t.Errorf("picker height=%d should stay flat (<= %d)", h, maxH)
+	a := app{tabs: []*model{&m}, active: 0, nextID: 2, width: 120, height: 40}
+	if !a.sidebarVisible() {
+		t.Fatal("fixture must have a visible sidebar")
+	}
+	mx, my := modelPickerMargins(a.width, a.height)
+	lines := strings.Split(a.View().Content, "\n")
+	if len(lines) <= my {
+		t.Fatalf("frame has %d lines", len(lines))
+	}
+	row := []rune(xansi.Strip(lines[my]))
+	rightX := a.width - mx - 1
+	if len(row) <= rightX {
+		t.Fatalf("row %d is %d cells wide, want >= %d", my, len(row), rightX+1)
+	}
+	if row[mx] != '┌' || row[rightX] != '┐' {
+		t.Errorf("overlay corners not at columns %d/%d: %q", mx, rightX, string(row))
+	}
+	if rightX < a.bodyWidth() {
+		t.Errorf("right corner at %d must sit inside the sidebar column (body width %d)", rightX, a.bodyWidth())
+	}
+	if a.View().Cursor != nil {
+		t.Error("the frame cursor must be hidden while the picker is up")
+	}
+}
+
+func TestModelPicker_NaturalSortWithinProvider(t *testing.T) {
+	m, p1, _ := modelPickerFixture(t)
+	p1.modelPicker = ProviderPicker{Options: []string{"gemini-3-pro", "gemini-10-x", "gemini-2.5-flash", "gemini-3.1-pro"}}
+	m = m.openModelPicker()
+	var ids []string
+	for _, r := range m.modelPicker.rows() {
+		if r.kind == modelPickerRowEntry && r.entry.providerID == "vertex" {
+			ids = append(ids, r.entry.modelID)
+		}
+	}
+	want := []string{"gemini-2.5-flash", "gemini-3-pro", "gemini-3.1-pro", "gemini-10-x"}
+	if strings.Join(ids, ",") != strings.Join(want, ",") {
+		t.Errorf("provider entries must be natural-sorted: got %v want %v", ids, want)
+	}
+}
+
+func TestModelPicker_RecentlyUsedFirstInRecencyOrder(t *testing.T) {
+	m, _, _ := modelPickerFixture(t)
+	recordRecentModel("vertex", "gemini-2.5-flash")
+	recordRecentModel("vertex", "gemini-2.5-pro")
+	m = m.openModelPicker()
+	rows := m.modelPicker.rows()
+	if len(rows) < 3 || rows[0].kind != modelPickerRowHeader || rows[0].title != "Recently used" {
+		t.Fatalf("first section must be Recently used, got %+v", rows[:min(len(rows), 3)])
+	}
+	if rows[1].entry.modelID != "gemini-2.5-pro" || rows[2].entry.modelID != "gemini-2.5-flash" || !rows[1].recent {
+		t.Errorf("recents keep recency order (newest first), got %q then %q", rows[1].entry.modelID, rows[2].entry.modelID)
+	}
+}
+
+func TestModelPicker_CatalogLoadRebuildsRowsAndKeepsCursor(t *testing.T) {
+	m := newProviderRegistryFixture(t)
+	resetModelCatalog()
+	t.Cleanup(resetModelCatalog)
+	m = m.openModelPicker()
+	m.modelPicker.seedCursor(vertexProviderID, "gemini-2.5-flash")
+	m.modelPicker.loading = true
+
+	hasID := func(id string) bool {
+		for _, r := range m.modelPicker.rows() {
+			if r.kind == modelPickerRowEntry && r.entry.modelID == id {
+				return true
+			}
+		}
+		return false
+	}
+	if hasID("gemini-9-new") {
+		t.Fatal("setup: live-only id must be absent before the load")
+	}
+
+	cacheModelOptions(map[string][]string{vertexProviderID: {"gemini-2.5-pro", "gemini-2.5-flash", "gemini-9-new"}})
+	mi, _ := m.Update(modelCatalogLoadedMsg{})
+	m = mi.(model)
+
+	if !hasID("gemini-9-new") {
+		t.Error("rows must rebuild from the live listing after the load lands")
+	}
+	if row := selectedRow(t, m); row.entry.modelID != "gemini-2.5-flash" {
+		t.Errorf("cursor must stay on the selected model across a rebuild, got %+v", row)
+	}
+	if m.modelPicker.loading {
+		t.Error("loading must clear when the catalog message lands")
+	}
+}
+
+func TestModelPicker_OpenDispatchesCatalogLoadOnce(t *testing.T) {
+	m, _, _ := modelPickerFixture(t)
+	prev := loadModelsDev
+	loadModelsDev = func(context.Context) error { return nil }
+	t.Cleanup(func() { loadModelsDev = prev })
+
+	mi, cmd := m.Update(pressKey('m', tea.ModCtrl))
+	m = mi.(model)
+	if cmd == nil {
+		t.Fatal("first Ctrl+M must dispatch the catalog load")
+	}
+	if !m.modelPicker.loading {
+		t.Error("picker must show loading while the load is in flight")
+	}
+	msg, ok := cmd().(modelCatalogLoadedMsg)
+	if !ok {
+		t.Fatalf("load cmd must yield modelCatalogLoadedMsg, got %T", msg)
+	}
+	mi, _ = m.Update(msg)
+	m = mi.(model)
+	if m.modelPicker.loading {
+		t.Error("loading must clear once the load lands")
+	}
+
+	m = m.closeModelPicker()
+	mi, cmd = m.Update(pressKey('m', tea.ModCtrl))
+	m = mi.(model)
+	if cmd != nil {
+		t.Error("a loaded catalog must not be refetched on the next open")
+	}
+	if _, cmd := m.Update(pressKey('r', tea.ModCtrl)); cmd == nil {
+		t.Error("Ctrl+R must force a refresh")
+	}
+}
+
+func TestModelPicker_DetailPane(t *testing.T) {
+	m, _, _ := modelPickerFixture(t)
+	m = m.openModelPicker()
+	s := m.modelPicker
+
+	known := xansi.Strip(strings.Join(s.modelDetailLines(modelPickerEntry{
+		providerID: vertexProviderID, providerName: "Vertex AI", modelID: "gemini-2.5-pro", display: "Gemini 2.5 Pro",
+	}, 60), "\n"))
+	for _, want := range []string{"Gemini 2.5 Pro", "Vertex AI · gemini-2.5-pro", "Context", "1,048,576 tokens", "Max output"} {
+		if !strings.Contains(known, want) {
+			t.Errorf("catalog model detail must mention %q:\n%s", want, known)
+		}
+	}
+	if strings.Contains(known, "no information available") {
+		t.Error("a catalog hit must not claim no information")
+	}
+
+	unknown := xansi.Strip(strings.Join(s.modelDetailLines(modelPickerEntry{
+		providerID: "custom", providerName: "Custom", modelID: "my-model", display: "My Model",
+	}, 60), "\n"))
+	if !strings.Contains(unknown, "no information available") || !strings.Contains(unknown, "Custom · my-model") {
+		t.Errorf("unknown model must show its identity plus the no-information line:\n%s", unknown)
+	}
+
+	// Scrolling clamps: PgDn past the end never loses the hint row.
+	s.detailScroll = 1000
+	lines := m.renderModelPickerDetail(s, 60, 10)
+	if len(lines) != 10 {
+		t.Errorf("detail pane must fill its height exactly, got %d lines", len(lines))
+	}
+	if !strings.Contains(xansi.Strip(lines[len(lines)-1]), "refresh") {
+		t.Errorf("last detail line must be the hint row, got %q", xansi.Strip(lines[len(lines)-1]))
+	}
+}
+
+func TestModelDetailFacts(t *testing.T) {
+	full := providers.ModelMeta{
+		ContextWindow:   1_048_576,
+		MaxOutputTokens: 65_536,
+		Pricing:         &providers.ModelPricing{InputPer1M: 0.75, OutputPer1M: 3.75, CachedInputPer1M: 0.075},
+		InputModalities: []string{"text", "image"},
+		ReasoningLevels: []string{"low", "high"},
+		KnowledgeCutoff: "2026-03",
+		ReleaseDate:     "2026-08-13",
+		Status:          "beta",
+	}
+	got := modelDetailFacts(full)
+	want := []modelFact{
+		{"Context", "1,048,576 tokens"},
+		{"Max output", "65,536 tokens"},
+		{"Input", "$0.75 / 1M"},
+		{"Output", "$3.75 / 1M"},
+		{"Cached input", "$0.075 / 1M"},
+		{"Modalities", "text · image"},
+		{"Reasoning", "low · high"},
+		{"Knowledge", "2026-03"},
+		{"Released", "2026-08-13"},
+		{"Status", "beta"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("facts: got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("fact %d: got %v want %v", i, got[i], want[i])
+		}
+	}
+
+	free := modelDetailFacts(providers.ModelMeta{Pricing: &providers.ModelPricing{}, Reasoning: true})
+	if len(free) != 2 || free[0] != (modelFact{"Pricing", "free"}) || free[1] != (modelFact{"Reasoning", "yes"}) {
+		t.Errorf("free pricing + bare reasoning flag: got %v", free)
+	}
+	if facts := modelDetailFacts(providers.ModelMeta{}); len(facts) != 0 {
+		t.Errorf("empty meta yields no facts, got %v", facts)
+	}
+}
+
+func TestFormatUSDPer1M(t *testing.T) {
+	cases := []struct {
+		in   float64
+		want string
+	}{
+		{0.75, "$0.75 / 1M"}, {3.75, "$3.75 / 1M"}, {0.075, "$0.075 / 1M"}, {15, "$15.00 / 1M"}, {0.3, "$0.30 / 1M"}, {0.0000833, "$0.0001 / 1M"},
+	}
+	for _, c := range cases {
+		if got := formatUSDPer1M(c.in); got != c.want {
+			t.Errorf("formatUSDPer1M(%v)=%q want %q", c.in, got, c.want)
+		}
 	}
 }
 

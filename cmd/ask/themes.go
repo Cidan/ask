@@ -522,6 +522,12 @@ var (
 	themePickerHelpStyle  lipgloss.Style
 	themePickerRowStyle   lipgloss.Style
 
+	// The model picker is the first surface on the square-cornered look
+	// every overlay is moving to — keep it on NormalBorder.
+	modelPickerBoxStyle     lipgloss.Style
+	modelPickerDividerStyle lipgloss.Style
+	modelPickerStatusStyle  lipgloss.Style
+
 	workflowMarginStyle lipgloss.Style
 	workflowStepStyle   lipgloss.Style
 
@@ -646,6 +652,13 @@ func applyTheme(t theme) {
 	themePickerTitleStyle = lipgloss.NewStyle().Foreground(t.accent).Bold(true)
 	themePickerHelpStyle = lipgloss.NewStyle().Foreground(t.dim)
 	themePickerRowStyle = lipgloss.NewStyle().Foreground(t.darkFG).Background(t.accent).Bold(true)
+
+	modelPickerBoxStyle = lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(t.accent).
+		Padding(0, 1)
+	modelPickerDividerStyle = lipgloss.NewStyle().Foreground(t.dim)
+	modelPickerStatusStyle = lipgloss.NewStyle().Foreground(t.warn)
 
 	workflowMarginStyle = lipgloss.NewStyle().Foreground(t.accentAlt).Bold(true)
 	workflowStepStyle = lipgloss.NewStyle().MarginLeft(5)

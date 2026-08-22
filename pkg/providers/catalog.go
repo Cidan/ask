@@ -13,6 +13,9 @@ type ModelInfo struct {
 	DefaultMaxTokens int64
 	SupportsImages   bool
 	ReasoningLevels  []string
+	// Pricing is the published list price (USD per 1M tokens) so the cost
+	// meter and the picker work offline; nil when unknown.
+	Pricing *ModelPricing
 }
 
 // MaxOutputTokensGemini is the maximum output token limit for Gemini 3.7 Flash and Gemini models.
@@ -26,6 +29,7 @@ var defaultVertexModels = []ModelInfo{
 		DefaultMaxTokens: MaxOutputTokensGemini,
 		SupportsImages:   true,
 		ReasoningLevels:  []string{"low", "medium", "high"},
+		Pricing:          &ModelPricing{InputPer1M: 0.75, OutputPer1M: 3.75, CachedInputPer1M: 0.075},
 	},
 	{
 		ID:               "gemini-3.1-pro-preview",
@@ -34,6 +38,7 @@ var defaultVertexModels = []ModelInfo{
 		DefaultMaxTokens: MaxOutputTokensGemini,
 		SupportsImages:   true,
 		ReasoningLevels:  []string{"low", "medium", "high"},
+		Pricing:          &ModelPricing{InputPer1M: 2, OutputPer1M: 12, CachedInputPer1M: 0.2},
 	},
 	{
 		ID:               "gemini-3.1-pro-preview-customtools",
@@ -42,6 +47,7 @@ var defaultVertexModels = []ModelInfo{
 		DefaultMaxTokens: MaxOutputTokensGemini,
 		SupportsImages:   true,
 		ReasoningLevels:  []string{"low", "medium", "high"},
+		Pricing:          &ModelPricing{InputPer1M: 2, OutputPer1M: 12, CachedInputPer1M: 0.2},
 	},
 	{
 		ID:               "gemini-3-pro-preview",
@@ -58,6 +64,7 @@ var defaultVertexModels = []ModelInfo{
 		DefaultMaxTokens: MaxOutputTokensGemini,
 		SupportsImages:   true,
 		ReasoningLevels:  []string{"minimal", "low", "medium", "high"},
+		Pricing:          &ModelPricing{InputPer1M: 0.5, OutputPer1M: 3, CachedInputPer1M: 0.05},
 	},
 	{
 		ID:               "gemini-2.5-pro",
@@ -65,6 +72,7 @@ var defaultVertexModels = []ModelInfo{
 		ContextWindow:    1_048_576,
 		DefaultMaxTokens: MaxOutputTokensGemini,
 		SupportsImages:   true,
+		Pricing:          &ModelPricing{InputPer1M: 1.25, OutputPer1M: 10, CachedInputPer1M: 0.125},
 	},
 	{
 		ID:               "gemini-2.5-flash",
@@ -72,6 +80,7 @@ var defaultVertexModels = []ModelInfo{
 		ContextWindow:    1_048_576,
 		DefaultMaxTokens: MaxOutputTokensGemini,
 		SupportsImages:   true,
+		Pricing:          &ModelPricing{InputPer1M: 0.3, OutputPer1M: 2.5, CachedInputPer1M: 0.03},
 	},
 }
 
@@ -179,18 +188,20 @@ func CanonicalOpenRouterModelID(modelID string, fallback ...string) string {
 	return norm
 }
 
-// CatalogModel looks up one model's metadata.
+// CatalogModel looks up one model's metadata. Only providers with a static
+// catalog resolve; any other provider id misses rather than borrowing Vertex's.
 func CatalogModel(provider string, modelID string) (ModelInfo, bool) {
 	norm := NormalizeModelID(modelID)
-	if provider == "openrouter" {
-		for _, m := range defaultOpenRouterModels {
-			if m.ID == norm {
-				return m, true
-			}
-		}
+	var models []ModelInfo
+	switch provider {
+	case OpenRouterProviderID:
+		models = defaultOpenRouterModels
+	case VertexProviderID:
+		models = defaultVertexModels
+	default:
 		return ModelInfo{}, false
 	}
-	for _, m := range defaultVertexModels {
+	for _, m := range models {
 		if m.ID == norm {
 			return m, true
 		}

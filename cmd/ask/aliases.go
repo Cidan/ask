@@ -236,6 +236,8 @@ func vertexAgentProvider() agentAPIProvider {
 }
 
 var (
+	loadModelsDev            = providers.LoadModelsDev
+	modelMetaFor             = providers.ModelMetaFor
 	catalogModel             = providers.CatalogModel
 	catalogContextWindow     = providers.CatalogContextWindow
 	catalogDefaultMaxTokens  = providers.CatalogDefaultMaxTokens

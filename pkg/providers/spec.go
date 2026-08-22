@@ -31,8 +31,11 @@ type AgentProviderSpec struct {
 	SupportsImages   func(modelID string) bool
 	ContextWindow    func(modelID string) int64
 	MaxOutputTokens  func(modelID string) int64
-	LoadSettings     func(config.Config) ProviderSettings
-	SaveSettings     func(*config.Config, ProviderSettings)
+	// ListModels queries the provider for the ids it currently serves. nil
+	// means the provider has no listing and the static catalog is all there is.
+	ListModels   func(ctx context.Context, cfg config.Config) ([]string, error)
+	LoadSettings func(config.Config) ProviderSettings
+	SaveSettings func(*config.Config, ProviderSettings)
 }
 
 // MissingAPIKeyError returns a descriptive error when an API key is missing.

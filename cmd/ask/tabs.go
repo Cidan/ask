@@ -220,6 +220,12 @@ func (a app) View() tea.View {
 	v := a.activeTab().View()
 	body := bodyContentAtHeight(v.Content, a.height)
 	v.Content = joinBodySidebar(body, a.renderSidebar(), a.bodyWidth())
+	if overlay := a.activeTab().modelPickerOverlay(a.width, a.height); overlay != "" {
+		// The picker is the one overlay that covers the whole frame,
+		// sidebar included, so it is drawn here rather than in the tab.
+		v.Content = drawOverlayCentered(v.Content, overlay, a.width, a.height)
+		v.Cursor = nil
+	}
 	if a.sidebarFocus {
 		// The list owns the keyboard; a blinking caret in the
 		// input would claim otherwise.

@@ -670,13 +670,14 @@ func (m model) View() tea.View {
 	needApproval := m.mode == modeApproval
 	needSudoPassword := m.mode == modeSudoPassword
 	needConfig := m.mode == modeConfig
-	needSwitch := m.mode == modeModelPicker
+	// The model picker is composited at the app layer (tabs.go) so it can
+	// cover the sidebar; the tab body draws nothing for it.
 	needCancelConfirm := m.cancelTurnConfirming && m.mode == modeInput
 	needCloseTabConfirm := m.closeTabConfirming && m.mode == modeInput
 	needMergeConfirm := m.mergePRConfirming && m.mode == modeInput
 	needFinalizedPlan := m.mode == modeFinalizedPlan
 
-	if (needBox || needModal || needApproval || needSudoPassword || needConfig || needSwitch || needCancelConfirm || needCloseTabConfirm || needMergeConfirm || needFinalizedPlan) && m.width > 0 && m.height > 0 {
+	if (needBox || needModal || needApproval || needSudoPassword || needConfig || needCancelConfirm || needCloseTabConfirm || needMergeConfirm || needFinalizedPlan) && m.width > 0 && m.height > 0 {
 		cbStart := time.Now()
 		canvas := uv.NewScreenBuffer(m.width, m.height)
 		uv.NewStyledString(body).Draw(canvas, image.Rectangle{
@@ -935,23 +936,6 @@ func (m model) View() tea.View {
 					Max: image.Pt(pX+pW, pY+pH),
 				})
 			}
-		}
-		if needSwitch {
-			picker := m.viewModelPicker()
-			pW := lipgloss.Width(picker)
-			pH := lipgloss.Height(picker)
-			pX := (m.width - pW) / 2
-			pY := (m.height - pH) / 2
-			if pX < 0 {
-				pX = 0
-			}
-			if pY < 0 {
-				pY = 0
-			}
-			uv.NewStyledString(picker).Draw(canvas, image.Rectangle{
-				Min: image.Pt(pX, pY),
-				Max: image.Pt(pX+pW, pY+pH),
-			})
 		}
 		if needCancelConfirm {
 			confirm := m.viewCancelTurnConfirm()

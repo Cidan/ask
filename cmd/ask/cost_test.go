@@ -20,22 +20,31 @@ import (
 )
 
 func TestStepCostUSD_KnownModel(t *testing.T) {
-	// Test vertex pricing if catalog model exists
+	// Gemini 2.5 Pro list price: $1.25 in, $10 out, $0.125 cached input per 1M.
 	got, ok := stepCostUSD("vertex", "gemini-2.5-pro", TokenUsage{
 		InputTokens:         1_000_000,
 		OutputTokens:        1_000_000,
 		CacheCreationTokens: 1_000_000,
 		CacheReadTokens:     1_000_000,
 	})
-	if ok {
-		if got <= 0 {
-			t.Errorf("cost should be positive: %v", got)
-		}
+	if !ok {
+		t.Fatal("catalog model must be priceable")
+	}
+	if want := 1.25 + 10 + 0.125; got < want-1e-9 || got > want+1e-9 {
+		t.Errorf("cost = %v, want %v (per-model list price, not a flat rate)", got, want)
+	}
+
+	// A different model carries a different price — the old meter charged
+	// every Vertex model the Flash rate.
+	flash, _ := stepCostUSD("vertex", "gemini-2.5-flash", TokenUsage{InputTokens: 1_000_000})
+	pro, _ := stepCostUSD("vertex", "gemini-2.5-pro", TokenUsage{InputTokens: 1_000_000})
+	if flash >= pro {
+		t.Errorf("flash (%v) must be cheaper than pro (%v)", flash, pro)
 	}
 
 	// Zero usage on a known model is a known $0.
 	got, ok = stepCostUSD("vertex", "gemini-2.5-pro", TokenUsage{})
-	if ok && got != 0 {
+	if !ok || got != 0 {
 		t.Errorf("zero usage = %v ok=%v, want 0 true", got, ok)
 	}
 }
@@ -45,10 +54,39 @@ func TestStepCostUSD_Unpriceable(t *testing.T) {
 		t.Error("custom model id must be unpriceable")
 	}
 	if _, ok := stepCostUSD("fake", "gemini-2.5-pro", TokenUsage{InputTokens: 5}); ok {
-		t.Error("provider without a catwalk catalog must be unpriceable")
+		t.Error("provider without a catalog must be unpriceable")
 	}
 	if modelPricingKnown("fake", "whatever") {
 		t.Error("fake provider should have unknown pricing")
+	}
+	// A catalog hit without a published price stays unpriceable rather than
+	// being billed at some other model's rate.
+	if _, ok := stepCostUSD("vertex", "gemini-3-pro-preview", TokenUsage{InputTokens: 5}); ok {
+		t.Error("model without a list price must be unpriceable")
+	}
+}
+
+// The meter reads the same layered metadata as the picker, so a price that
+// arrives from models.dev or a live listing is billed without any meter
+// changes. Swap the lookup to stand in for those layers.
+func TestStepCostUSD_UsesLayeredMetadata(t *testing.T) {
+	prev := providers.ModelMetaLookup
+	providers.ModelMetaLookup = func(providerID, modelID string) (providers.ModelMeta, bool) {
+		if providerID == "openrouter" && modelID == "vendor/live" {
+			return providers.ModelMeta{Pricing: &providers.ModelPricing{InputPer1M: 2, OutputPer1M: 8, CachedInputPer1M: 0.5, CacheWritePer1M: 2.5}}, true
+		}
+		return prev(providerID, modelID)
+	}
+	t.Cleanup(func() { providers.ModelMetaLookup = prev })
+
+	got, ok := stepCostUSD("openrouter", "vendor/live", TokenUsage{
+		InputTokens: 500_000, OutputTokens: 250_000, CacheCreationTokens: 100_000, CacheReadTokens: 1_000_000,
+	})
+	if !ok {
+		t.Fatal("live pricing must be billable")
+	}
+	if want := 1 + 2 + 0.25 + 0.5; got < want-1e-9 || got > want+1e-9 {
+		t.Errorf("cost = %v want %v", got, want)
 	}
 }
 

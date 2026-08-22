@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"strings"
+
+	"github.com/Cidan/ask/pkg/providers"
 )
 
 // TokenUsage models token consumption for a generation step.
@@ -40,16 +42,11 @@ func contextPercent(used, limit int) int {
 	return p
 }
 
-// stepCostUSD prices one API call's token usage in dollars.
+// stepCostUSD prices one API call's token usage in dollars using the same
+// layered metadata the model picker shows (static catalog, models.dev, the
+// provider's live listing), so the meter and the picker never disagree.
 func stepCostUSD(providerID, modelID string, u TokenUsage) (float64, bool) {
-	if providerID != "vertex" {
-		return 0, false
-	}
-	if _, ok := catalogModel("vertex", modelID); !ok {
-		return 0, false
-	}
-	cost := (0.3/1e6)*float64(u.InputTokens) + (2.5/1e6)*float64(u.OutputTokens)
-	return cost, true
+	return providers.StepCostUSD(providerID, modelID, u.InputTokens, u.OutputTokens, u.CacheCreationTokens, u.CacheReadTokens)
 }
 
 // modelPricingKnown reports whether stepCostUSD can price calls for this provider/model pair.

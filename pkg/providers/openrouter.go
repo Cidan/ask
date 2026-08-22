@@ -48,11 +48,35 @@ func openRouterHeaders() map[string]string {
 // about. It is the authoritative source of a model's capabilities — the static
 // catalog only seeds a handful of well-known ids for the picker.
 type openRouterModelMeta struct {
-	ID                string
-	SupportsReasoning bool
-	SupportedEfforts  []string
-	SupportsImages    bool
-	ContextLength     int64
+	ID   string
+	Name string
+	// Description is OpenRouter's server-truncated text (most end in
+	// "..."); ModelMetaFor uses it only when models.dev has none.
+	Description         string
+	Created             int64
+	KnowledgeCutoff     string
+	SupportsReasoning   bool
+	SupportedEfforts    []string
+	SupportsImages      bool
+	InputModalities     []string
+	ContextLength       int64
+	MaxCompletionTokens int64
+	Pricing             *ModelPricing
+}
+
+func (m openRouterModelMeta) modelMeta() ModelMeta {
+	return ModelMeta{
+		ID:              m.ID,
+		Name:            m.Name,
+		Description:     m.Description,
+		ContextWindow:   m.ContextLength,
+		MaxOutputTokens: m.MaxCompletionTokens,
+		Pricing:         m.Pricing,
+		InputModalities: m.InputModalities,
+		Reasoning:       m.SupportsReasoning,
+		ReasoningLevels: m.SupportedEfforts,
+		KnowledgeCutoff: m.KnowledgeCutoff,
+	}
 }
 
 var openRouterMeta = struct {
@@ -79,11 +103,24 @@ func fetchOpenRouterModels(ctx context.Context, baseURL string) ([]openRouterMod
 
 	var result struct {
 		Data []struct {
-			ID            string `json:"id"`
-			ContextLength int64  `json:"context_length"`
-			Architecture  struct {
+			ID              string `json:"id"`
+			Name            string `json:"name"`
+			Description     string `json:"description"`
+			Created         int64  `json:"created"`
+			KnowledgeCutoff string `json:"knowledge_cutoff"`
+			ContextLength   int64  `json:"context_length"`
+			Architecture    struct {
 				InputModalities []string `json:"input_modalities"`
 			} `json:"architecture"`
+			Pricing struct {
+				Prompt          string `json:"prompt"`
+				Completion      string `json:"completion"`
+				InputCacheRead  string `json:"input_cache_read"`
+				InputCacheWrite string `json:"input_cache_write"`
+			} `json:"pricing"`
+			TopProvider struct {
+				MaxCompletionTokens int64 `json:"max_completion_tokens"`
+			} `json:"top_provider"`
 			SupportedParameters []string `json:"supported_parameters"`
 			Reasoning           *struct {
 				SupportedEfforts []string `json:"supported_efforts"`
@@ -99,7 +136,27 @@ func fetchOpenRouterModels(ctx context.Context, baseURL string) ([]openRouterMod
 		if m.ID == "" {
 			continue
 		}
-		meta := openRouterModelMeta{ID: m.ID, ContextLength: m.ContextLength}
+		meta := openRouterModelMeta{
+			ID:                  m.ID,
+			Name:                m.Name,
+			Description:         m.Description,
+			Created:             m.Created,
+			KnowledgeCutoff:     m.KnowledgeCutoff,
+			ContextLength:       m.ContextLength,
+			MaxCompletionTokens: m.TopProvider.MaxCompletionTokens,
+			InputModalities:     m.Architecture.InputModalities,
+		}
+		if in, okIn := perTokenToPer1M(m.Pricing.Prompt); okIn {
+			out, _ := perTokenToPer1M(m.Pricing.Completion)
+			cached, _ := perTokenToPer1M(m.Pricing.InputCacheRead)
+			write, _ := perTokenToPer1M(m.Pricing.InputCacheWrite)
+			meta.Pricing = &ModelPricing{
+				InputPer1M:       in,
+				OutputPer1M:      out,
+				CachedInputPer1M: cached,
+				CacheWritePer1M:  write,
+			}
+		}
 		if m.Reasoning != nil {
 			meta.SupportsReasoning = true
 			meta.SupportedEfforts = m.Reasoning.SupportedEfforts
@@ -126,6 +183,15 @@ func cacheOpenRouterMeta(metas []openRouterModelMeta) {
 		openRouterMeta.byID[m.ID] = m
 	}
 	openRouterMeta.fetched = true
+}
+
+// cachedOpenRouterMeta is the in-memory-only lookup for callers that must not
+// block on the network (the model picker); ok=false until a listing has landed.
+func cachedOpenRouterMeta(modelID string) (openRouterModelMeta, bool) {
+	openRouterMeta.mu.RLock()
+	defer openRouterMeta.mu.RUnlock()
+	m, ok := openRouterMeta.byID[modelID]
+	return m, ok
 }
 
 // lookupOpenRouterMeta returns cached metadata for a model, fetching the full
@@ -268,6 +334,9 @@ var OpenRouterSpec = AgentProviderSpec{
 	ContextWindow:  openRouterContextWindow,
 	MaxOutputTokens: func(modelID string) int64 {
 		return CatalogDefaultMaxTokens(OpenRouterProviderID, modelID, 64_000)
+	},
+	ListModels: func(ctx context.Context, cfg config.Config) ([]string, error) {
+		return ListOpenRouterModels(ctx, cfg.OpenRouter)
 	},
 	LoadSettings: func(cfg config.Config) ProviderSettings {
 		return ProviderSettings{

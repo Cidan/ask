@@ -8,13 +8,14 @@ import (
 	"unicode"
 
 	tea "charm.land/bubbletea/v2"
-	lipgloss "charm.land/lipgloss/v2"
 	"github.com/Cidan/ask/pkg/providers"
 )
 
-// Ctrl+M opens the unified model picker (crush-style): a search input
-// on top, a "Recently used" group first, then one section per
-// registered provider listing its models dynamically queried from the API.
+// Ctrl+M opens the model picker: a centered overlay drawn over the whole
+// terminal (sidebar included, see app.View) — one square-cornered box with
+// the searchable provider/model list on the left, a thin divider, and the
+// selected model's details on the right. The list is seeded from whatever
+// the catalog cache already holds and refreshed when the async load lands.
 
 type providerKeySpec struct {
 	id     string
@@ -68,8 +69,8 @@ func providerNeedsAPIKey(cfg askConfig, providerID string) bool {
 }
 
 func friendlyModelName(providerID, modelID string) string {
-	if mdl, ok := catalogModel(providerID, modelID); ok && mdl.Name != "" {
-		return strings.ReplaceAll(mdl.Name, "-", " ")
+	if meta, ok := modelMetaFor(providerID, modelID); ok && meta.Name != "" {
+		return meta.Name
 	}
 	return humanizeModelID(modelID)
 }
@@ -101,6 +102,7 @@ type modelPickerGroup struct {
 	entries     []modelPickerEntry
 	allowCustom bool
 	needsKey    bool
+	note        string
 }
 
 type modelPickerRowKind int
@@ -133,15 +135,23 @@ type modelPickerCustomEntry struct {
 }
 
 type modelPickerState struct {
-	query       string
-	cursor      int
-	groups      []modelPickerGroup
-	keyEntry    *modelPickerKeyEntry
-	customEntry *modelPickerCustomEntry
+	query        string
+	cursor       int
+	groups       []modelPickerGroup
+	keyEntry     *modelPickerKeyEntry
+	customEntry  *modelPickerCustomEntry
+	detailScroll int
+	// loading is true while a catalog load dispatched for this picker is in
+	// flight; the list shows whatever is cached meanwhile.
+	loading bool
+	// descCache holds rendered descriptions keyed by provider, model, and
+	// pane width — glamour runs once per model, not once per keystroke.
+	descCache map[string]string
 }
 
 func buildModelPickerState(cfg askConfig) *modelPickerState {
 	s := &modelPickerState{}
+	notes := modelCatalogNotes()
 
 	providerGroups := make([]modelPickerGroup, 0, len(providerRegistry))
 	for _, p := range providerRegistry {
@@ -151,6 +161,7 @@ func buildModelPickerState(cfg askConfig) *modelPickerState {
 			name:        p.DisplayName(),
 			allowCustom: picker.AllowCustom,
 			needsKey:    providerNeedsAPIKey(cfg, p.ID()),
+			note:        notes[p.ID()],
 		}
 		for _, id := range picker.Options {
 			g.entries = append(g.entries, modelPickerEntry{
@@ -160,6 +171,7 @@ func buildModelPickerState(cfg askConfig) *modelPickerState {
 				display:      friendlyModelName(p.ID(), id),
 			})
 		}
+		sortModelPickerEntries(g.entries)
 		providerGroups = append(providerGroups, g)
 	}
 
@@ -176,19 +188,48 @@ func buildModelPickerState(cfg askConfig) *modelPickerState {
 		if prov == nil || ref.Model == "" {
 			continue
 		}
-		entry := modelPickerEntry{
+		recent.entries = append(recent.entries, modelPickerEntry{
 			providerID:   prov.id,
 			providerName: prov.name,
 			modelID:      ref.Model,
 			display:      friendlyModelName(prov.id, ref.Model),
-		}
-		recent.entries = append(recent.entries, entry)
+		})
 	}
 	if len(recent.entries) > 0 {
 		s.groups = append(s.groups, recent)
 	}
 	s.groups = append(s.groups, providerGroups...)
 	return s
+}
+
+// sortModelPickerEntries orders a provider's models naturally by display
+// name (so "Gemini 2.5" < "Gemini 3" < "Gemini 3.1" < "Gemini 10"), ids
+// breaking ties. Recents keep recency order and are never sorted.
+func sortModelPickerEntries(entries []modelPickerEntry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		a, b := strings.ToLower(entries[i].display), strings.ToLower(entries[j].display)
+		if a != b {
+			return naturalLess(a, b)
+		}
+		return naturalLess(strings.ToLower(entries[i].modelID), strings.ToLower(entries[j].modelID))
+	})
+}
+
+// rebuild re-reads the registry and cache (after a catalog load) while
+// keeping the query and the cursor on the entry the user was on.
+func (s *modelPickerState) rebuild(cfg askConfig) {
+	var cur *modelPickerEntry
+	if rows := s.rows(); s.cursor >= 0 && s.cursor < len(rows) && rows[s.cursor].kind == modelPickerRowEntry {
+		e := rows[s.cursor].entry
+		cur = &e
+	}
+	fresh := buildModelPickerState(cfg)
+	s.groups = fresh.groups
+	if cur != nil {
+		s.seedCursor(cur.providerID, cur.modelID)
+		return
+	}
+	s.resetCursorToFirst()
 }
 
 func modelPickerFuzzyMatch(query, target string) bool {
@@ -227,8 +268,11 @@ func (s *modelPickerState) rows() []modelPickerRow {
 			continue
 		}
 		note := ""
-		if g.id != "" && g.needsKey {
+		switch {
+		case g.id != "" && g.needsKey:
 			note = "no API key"
+		case g.note != "":
+			note = g.note
 		}
 		if len(rows) > 0 {
 			rows = append(rows, modelPickerRow{kind: modelPickerRowBlank})
@@ -271,6 +315,7 @@ func (s *modelPickerState) moveCursor(rows []modelPickerRow, delta int) {
 			idxs = append(idxs, i)
 		}
 	}
+	s.detailScroll = 0
 	if len(idxs) == 0 {
 		s.cursor = 0
 		return
@@ -301,6 +346,16 @@ func (s *modelPickerState) seedCursor(providerID, modelID string) {
 		matchIdx = 0
 	}
 	s.cursor = matchIdx
+	s.detailScroll = 0
+}
+
+func (s *modelPickerState) resetCursorToFirst() {
+	if idx := firstSelectableRow(s.rows()); idx >= 0 {
+		s.cursor = idx
+	} else {
+		s.cursor = 0
+	}
+	s.detailScroll = 0
 }
 
 func (m model) openModelPicker() model {
@@ -315,6 +370,16 @@ func (m model) openModelPicker() model {
 	m.modelPicker = s
 	m.mode = modeModelPicker
 	return m
+}
+
+// modelPickerLoadCmd kicks off a catalog load for the open picker unless one
+// is already running or (without force) already succeeded.
+func (m *model) modelPickerLoadCmd(force bool) tea.Cmd {
+	cmd := modelCatalogRefreshCmd(force)
+	if cmd != nil && m.modelPicker != nil {
+		m.modelPicker.loading = true
+	}
+	return cmd
 }
 
 func (m model) closeModelPicker() model {
@@ -341,11 +406,22 @@ func (m model) updateModelPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
 		return m.closeModelPicker(), nil
+	case msg.Mod == tea.ModCtrl && msg.Code == 'r':
+		return m, m.modelPickerLoadCmd(true)
 	case listNavPrev(msg):
 		s.moveCursor(rows, -1)
 		return m, nil
 	case listNavNext(msg):
 		s.moveCursor(rows, +1)
+		return m, nil
+	case msg.Code == tea.KeyPgUp:
+		s.detailScroll -= modelPickerScrollStep
+		if s.detailScroll < 0 {
+			s.detailScroll = 0
+		}
+		return m, nil
+	case msg.Code == tea.KeyPgDown:
+		s.detailScroll += modelPickerScrollStep
 		return m, nil
 	case msg.Code == tea.KeyEnter:
 		if s.cursor < 0 || s.cursor >= len(rows) {
@@ -377,14 +453,6 @@ func (m model) updateModelPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
-}
-
-func (s *modelPickerState) resetCursorToFirst() {
-	if idx := firstSelectableRow(s.rows()); idx >= 0 {
-		s.cursor = idx
-	} else {
-		s.cursor = 0
-	}
 }
 
 func (m model) dispatchModelPick(entry modelPickerEntry) (tea.Model, tea.Cmd) {
@@ -639,185 +707,4 @@ func worktreeNameFromVS(vs *VirtualSession, preferredProviderID string) string {
 		}
 	}
 	return ""
-}
-
-const (
-	modelPickerMinWidth = 60
-	modelPickerMaxWidth = 84
-	modelPickerMaxRows  = 12
-)
-
-func (m model) viewModelPicker() string {
-	s := m.modelPicker
-	if s == nil {
-		return ""
-	}
-	if s.keyEntry != nil {
-		return m.viewModelPickerKeyEntry(s.keyEntry)
-	}
-	if s.customEntry != nil {
-		return m.viewModelPickerCustomEntry(s.customEntry)
-	}
-
-	innerW := modelPickerMinWidth
-	rows := s.rows()
-	for _, r := range rows {
-		if w := lipgloss.Width(modelPickerRowPlain(r, m)); w+2 > innerW {
-			innerW = w + 2
-		}
-	}
-	if innerW > modelPickerMaxWidth {
-		innerW = modelPickerMaxWidth
-	}
-	if m.width > 0 && innerW > m.width-8 {
-		innerW = m.width - 8
-	}
-	if innerW < 24 {
-		innerW = 24
-	}
-
-	title := themePickerTitleStyle.Render("Switch Model")
-	searchLine := configPromptStyle.Render("> ") + filterPromptLine(s.query, "Type to filter")
-
-	maxList := modelPickerMaxRows
-	if m.height > 0 && m.height-10 < maxList {
-		maxList = m.height - 10
-	}
-	if maxList < 4 {
-		maxList = 4
-	}
-	start := 0
-	if len(rows) > maxList && s.cursor >= maxList {
-		start = s.cursor - maxList + 1
-		if start > len(rows)-maxList {
-			start = len(rows) - maxList
-		}
-	}
-	end := start + maxList
-	if end > len(rows) {
-		end = len(rows)
-	}
-
-	lines := make([]string, 0, maxList+1)
-	if len(rows) == 0 {
-		lines = append(lines, dimStyle.Render("  (no matches)"))
-	}
-	for i := start; i < end; i++ {
-		lines = append(lines, m.renderModelPickerRow(rows[i], innerW, i == s.cursor))
-	}
-
-	help := themePickerHelpStyle.Render("↑↓ choose · enter select · esc cancel")
-	body := strings.Join([]string{
-		title,
-		"",
-		searchLine,
-		"",
-		strings.Join(lines, "\n"),
-		"",
-		help,
-	}, "\n")
-	return themePickerBoxStyle.Width(m.modelPickerBoxWidth(innerW)).Render(body)
-}
-
-func (m model) modelPickerBoxWidth(rowW int) int {
-	w := rowW + themePickerBoxStyle.GetHorizontalPadding()
-	if m.width > 0 && w > m.width-6 {
-		w = m.width - 6
-	}
-	if w < 20 {
-		w = 20
-	}
-	return w
-}
-
-func modelPickerRowPlain(r modelPickerRow, m model) string {
-	switch r.kind {
-	case modelPickerRowHeader:
-		t := r.title
-		if r.note != "" {
-			t += "  (" + r.note + ")"
-		}
-		return t
-	case modelPickerRowEntry:
-		line := "  " + r.entry.display
-		if r.recent {
-			line += " · " + r.entry.providerName
-		}
-		if m.modelPickerEntryIsCurrent(r.entry) {
-			line += " ✓"
-		}
-		return line
-	case modelPickerRowCustom:
-		return "  " + modelPickerCustomRowLabel
-	}
-	return ""
-}
-
-func (m model) modelPickerEntryIsCurrent(e modelPickerEntry) bool {
-	if m.provider == nil || m.provider.ID() != e.providerID {
-		return false
-	}
-	if m.providerModel != "" {
-		return strings.EqualFold(m.providerModel, e.modelID)
-	}
-	opts := m.provider.ModelPicker().Options
-	return len(opts) > 0 && strings.EqualFold(opts[0], e.modelID)
-}
-
-func (m model) renderModelPickerRow(r modelPickerRow, width int, selected bool) string {
-	switch r.kind {
-	case modelPickerRowBlank:
-		return ""
-	case modelPickerRowHeader:
-		line := configKeyDimStyle.Bold(true).Render(r.title)
-		if r.note != "" {
-			line += "  " + errStyle.Render("("+r.note+")")
-		}
-		return line
-	}
-
-	plain := modelPickerRowPlain(r, m)
-	if selected {
-		line := "▸ " + strings.TrimPrefix(plain, "  ")
-		if pad := width - lipgloss.Width(line); pad > 0 {
-			line += strings.Repeat(" ", pad)
-		}
-		return themePickerRowStyle.Render(line)
-	}
-	if r.kind == modelPickerRowCustom {
-		return dimStyle.Render(plain)
-	}
-	if r.recent {
-		return "  " + r.entry.display + dimStyle.Render(" · "+r.entry.providerName) +
-			modelPickerCurrentMark(m, r.entry)
-	}
-	return "  " + r.entry.display + modelPickerCurrentMark(m, r.entry)
-}
-
-func modelPickerCurrentMark(m model, e modelPickerEntry) string {
-	if m.modelPickerEntryIsCurrent(e) {
-		return promptStyle.Render(" ✓")
-	}
-	return ""
-}
-
-func (m model) viewModelPickerKeyEntry(ke *modelPickerKeyEntry) string {
-	title := themePickerTitleStyle.Render(ke.spec.title + " API key")
-	sub := configHelpStyle.Render(
-		ke.spec.title + " has no API key configured. Paste or type one to continue —\n" +
-			"it is stored in ~/.config/ask/ask.json (0600). $" + ke.spec.envKey + " also works.")
-	pick := dimStyle.Render("model: " + ke.pending.display)
-	input := configPromptStyle.Render("> ") + ke.draft + configCaretStyle.Render("▏")
-	help := themePickerHelpStyle.Render("enter save & switch · esc back")
-	body := strings.Join([]string{title, "", sub, "", pick, input, "", help}, "\n")
-	return themePickerBoxStyle.Width(m.modelPickerBoxWidth(modelPickerMinWidth)).Render(body)
-}
-
-func (m model) viewModelPickerCustomEntry(ce *modelPickerCustomEntry) string {
-	title := themePickerTitleStyle.Render("Custom " + ce.providerName + " model")
-	sub := configHelpStyle.Render("Type the exact model id to use with " + ce.providerName + ".")
-	input := configPromptStyle.Render("> ") + ce.draft + configCaretStyle.Render("▏")
-	help := themePickerHelpStyle.Render("enter select · esc back")
-	body := strings.Join([]string{title, "", sub, "", input, "", help}, "\n")
-	return themePickerBoxStyle.Width(m.modelPickerBoxWidth(modelPickerMinWidth)).Render(body)
 }

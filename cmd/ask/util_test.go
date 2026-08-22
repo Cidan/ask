@@ -6,6 +6,47 @@ import (
 	"time"
 )
 
+func TestNaturalLess(t *testing.T) {
+	ordered := []string{
+		"gemini-2.5-flash",
+		"gemini-2.5-flash-lite",
+		"gemini-2.5-pro",
+		"gemini-3-pro",
+		"gemini-3.1-pro",
+		"gemini-10-x",
+		"o1",
+		"o3-mini",
+	}
+	for i := range ordered {
+		for j := range ordered {
+			got := naturalLess(ordered[i], ordered[j])
+			if want := i < j; got != want {
+				t.Errorf("naturalLess(%q,%q)=%v want %v", ordered[i], ordered[j], got, want)
+			}
+		}
+	}
+	if !naturalLess("v007", "v8") || naturalLess("v8", "v007") {
+		t.Error("leading zeros must not defeat numeric comparison")
+	}
+	if naturalLess("abc", "abc") {
+		t.Error("equal strings are not less")
+	}
+}
+
+func TestGroupDigits(t *testing.T) {
+	cases := []struct {
+		in   int64
+		want string
+	}{
+		{0, "0"}, {999, "999"}, {1000, "1,000"}, {65536, "65,536"}, {1048576, "1,048,576"}, {-1234567, "-1,234,567"},
+	}
+	for _, c := range cases {
+		if got := groupDigits(c.in); got != c.want {
+			t.Errorf("groupDigits(%d)=%q want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestShort(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"", ""},

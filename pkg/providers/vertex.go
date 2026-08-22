@@ -201,6 +201,9 @@ var VertexSpec = AgentProviderSpec{
 	MaxOutputTokens: func(modelID string) int64 {
 		return CatalogDefaultMaxTokens("vertex", modelID, VertexFallbackMaxOutputTokens)
 	},
+	ListModels: func(ctx context.Context, cfg config.Config) ([]string, error) {
+		return ListVertexModels(ctx, cfg.Vertex)
+	},
 	LoadSettings: func(cfg config.Config) ProviderSettings {
 		return ProviderSettings{
 			Model:         cfg.Vertex.Model,

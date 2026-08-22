@@ -938,6 +938,14 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m = m.startSudoPassword(msg)
 		return m, nil
 
+	case modelCatalogLoadedMsg:
+		if m.modelPicker != nil {
+			m.modelPicker.loading = false
+			cfg, _ := loadConfig()
+			m.modelPicker.rebuild(cfg)
+		}
+		return m, nil
+
 	case workflowStatusChangedMsg:
 		// Status changed somewhere — invalidate cached frame so the
 		// kanban (if visible) repaints with the new icon. The
@@ -1322,7 +1330,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			} else {
 				m.workflowsBuilder.refreshItems()
 			}
-			return m, nil
+			// The builder's step model picker reads the same catalog cache.
+			return m, modelCatalogRefreshCmd(false)
 		}
 		if km.Matches(ActionScreenAsk, msg) && !m.modalOpen() && !deferToPopover {
 			// Leaving issues: drop cache + cancel in-flight so re-entry
@@ -1425,7 +1434,8 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.appendHistory(outputStyle.Render(errStyle.Render(invalid.Msg)))
 			return m, nil
 		}
-		return m.openModelPicker(), nil
+		m = m.openModelPicker()
+		return m, m.modelPickerLoadCmd(false)
 	}
 	if km.Matches(ActionChatWorkflow, msg) {
 		// Path-picker / slash popover are mid-edit affordances; let
@@ -2132,7 +2142,7 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		} else {
 			m.workflowsBuilder.refreshItems()
 		}
-		return m, nil
+		return m, modelCatalogRefreshCmd(false)
 	}
 	bare := strings.TrimPrefix(cmd, "/")
 	for _, e := range m.providerSlashCmds {

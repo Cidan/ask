@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,6 +73,61 @@ func wordWrap(s string, width int) []string {
 		curW += 1 + ww
 	}
 	return append(lines, cur)
+}
+
+// naturalLess orders strings the way a person reads version-like names:
+// digit runs compare numerically ("gemini-3-pro" < "gemini-3.1-pro" <
+// "gemini-10"), everything else byte-wise. Callers fold case themselves.
+func naturalLess(a, b string) bool {
+	for a != "" && b != "" {
+		if isASCIIDigit(a[0]) && isASCIIDigit(b[0]) {
+			an, bn := digitRunLen(a), digitRunLen(b)
+			ai, bi := strings.TrimLeft(a[:an], "0"), strings.TrimLeft(b[:bn], "0")
+			if ai != bi {
+				if len(ai) != len(bi) {
+					return len(ai) < len(bi)
+				}
+				return ai < bi
+			}
+			a, b = a[an:], b[bn:]
+			continue
+		}
+		if a[0] != b[0] {
+			return a[0] < b[0]
+		}
+		a, b = a[1:], b[1:]
+	}
+	return len(a) < len(b)
+}
+
+func isASCIIDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+func digitRunLen(s string) int {
+	n := 0
+	for n < len(s) && isASCIIDigit(s[n]) {
+		n++
+	}
+	return n
+}
+
+// groupDigits renders 1048576 as "1,048,576".
+func groupDigits(n int64) string {
+	s := strconv.FormatInt(n, 10)
+	neg := strings.HasPrefix(s, "-")
+	if neg {
+		s = s[1:]
+	}
+	var b strings.Builder
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(c)
+	}
+	if neg {
+		return "-" + b.String()
+	}
+	return b.String()
 }
 
 func padRight(s string, w int) string {
