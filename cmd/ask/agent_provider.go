@@ -277,9 +277,11 @@ func (p agentAPIProvider) SaveSettings(s ProviderSettings) error {
 		cfg, _ := loadConfig()
 		pkgCfg := toPkgConfig(cfg)
 		p.spec.SaveSettings(&pkgCfg, s)
-		cfg.Vertex = pkgCfg.Vertex
-		cfg.Effort = pkgCfg.Effort
-		return saveConfig(cfg)
+		// pkgCfg is the full config the spec just mutated (askConfig is an
+		// alias of config.Config); persist all of it. Copying back only Vertex
+		// silently dropped every other provider's model — the OpenRouter model
+		// picked via Ctrl+M never reached disk.
+		return saveConfig(pkgCfg)
 	})
 }
 

@@ -393,3 +393,57 @@ func TestModelPicker_VertexNoKeyPrompt(t *testing.T) {
 		t.Errorf("Vertex pick should apply directly; mode=%v", m.mode)
 	}
 }
+
+// A Ctrl+M pick of another provider's model must survive a restart: the picked
+// provider becomes the default for new tabs (cfg.Provider) AND its model is
+// persisted. Regression for "picked OpenRouter, relaunched, back on Vertex".
+func TestModelPicker_OpenRouterPickPersistsProviderAndModel(t *testing.T) {
+	m := newProviderRegistryFixture(t)
+	withRegisteredProviders(t, vertexAgentProvider(), agentAPIProvider{spec: &providers.OpenRouterSpec})
+
+	// Pre-seed the key so the pick applies directly instead of prompting.
+	if err := withConfigLock(func() error {
+		cfg, _ := loadConfig()
+		cfg.OpenRouter.APIKey = "k"
+		return saveConfig(cfg)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	m = m.openModelPicker()
+	mi, _ := m.dispatchModelPick(modelPickerEntry{
+		providerID:   providers.OpenRouterProviderID,
+		providerName: "OpenRouter",
+		modelID:      "anthropic/claude-3.7-sonnet",
+	})
+	if _, ok := mi.(model); !ok {
+		t.Fatalf("dispatchModelPick returned %T, want model", mi)
+	}
+
+	cfg, _ := loadConfig()
+	if cfg.Provider != providers.OpenRouterProviderID {
+		t.Errorf("cfg.Provider = %q, want %q (Ctrl+M must set the default for new tabs)",
+			cfg.Provider, providers.OpenRouterProviderID)
+	}
+	if cfg.OpenRouter.Model != "anthropic/claude-3.7-sonnet" {
+		t.Errorf("cfg.OpenRouter.Model = %q, want it persisted", cfg.OpenRouter.Model)
+	}
+}
+
+// SaveSettings must persist every provider's block, not just Vertex — the
+// original code copied back only cfg.Vertex, silently dropping the OpenRouter
+// model so it never reached disk.
+func TestAgentProvider_SaveSettingsPersistsNonVertexModel(t *testing.T) {
+	isolateHome(t)
+	p := agentAPIProvider{spec: &providers.OpenRouterSpec}
+	if err := p.SaveSettings(ProviderSettings{Model: "openai/o3-mini", Effort: "high"}); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+	cfg, _ := loadConfig()
+	if cfg.OpenRouter.Model != "openai/o3-mini" {
+		t.Errorf("cfg.OpenRouter.Model = %q, want openai/o3-mini", cfg.OpenRouter.Model)
+	}
+	if cfg.Effort != "high" {
+		t.Errorf("cfg.Effort = %q, want high", cfg.Effort)
+	}
+}

@@ -525,6 +525,17 @@ func (m model) applyProviderModelSwitch(newProv Provider, model string) (tea.Mod
 		}
 	}
 
+	// A Ctrl+M pick becomes the default provider for all new tabs and the next
+	// launch — the picked provider's model was just persisted above, and the
+	// startup path reads cfg.Provider + that provider's saved model.
+	if err := withConfigLock(func() error {
+		cfg, _ := loadConfig()
+		cfg.Provider = newProv.ID()
+		return saveConfig(cfg)
+	}); err != nil {
+		debugLog("persist default provider err: %v", err)
+	}
+
 	m.lastUsageTokens = 0
 	m.modelForContext = ""
 	var historyCmd tea.Cmd
