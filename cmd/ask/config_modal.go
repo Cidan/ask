@@ -84,6 +84,7 @@ func (m model) globalConfigItems() []configItem {
 		{"Default Provider", provName, "provider"},
 		{"Web Search...", webSearch, "webSearch"},
 		{"Vertex AI...", vertexSummary(), "vertex"},
+		{"OpenRouter...", openRouterSummary(), "openrouter"},
 		{"Keybindings...", "", "keybindings"},
 	}
 	return items
@@ -115,6 +116,14 @@ func vertexSummary() string {
 		return cfg.Vertex.Project + "/global"
 	}
 	return cfg.Vertex.Project + "/" + loc
+}
+
+func openRouterSummary() string {
+	cfg, _ := loadConfig()
+	if cfg.OpenRouter.APIKey == "" {
+		return "off"
+	}
+	return "on"
 }
 
 func (m model) startConfigModal() model {
@@ -162,6 +171,9 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.configVertexPickerActive {
 		return m.updateConfigVertexPicker(msg)
+	}
+	if m.configOpenRouterPickerActive {
+		return m.updateConfigOpenRouterPicker(msg)
 	}
 	if m.configKeybindingsPickerActive {
 		return m.updateConfigKeybindingsPicker(msg)
@@ -396,6 +408,9 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "vertex":
 		m = m.openConfigVertexPicker()
+		return m, nil
+	case "openrouter":
+		m = m.openConfigOpenRouterPicker()
 		return m, nil
 	case "keybindings":
 		m = m.openConfigKeybindingsPicker()

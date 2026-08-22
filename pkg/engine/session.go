@@ -57,12 +57,19 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 	if interaction == nil {
 		interaction = HeadlessInteractionHandler{AutoApproveTools: true}
 	}
-	modelID := providers.CanonicalVertexModelID(args.Model, providers.VertexDefaultModel)
+	modelID := args.Model
+	if spec, ok := providers.GetAgentProviderSpec(args.Provider); ok && spec != nil && spec.CanonicalModelID != nil {
+		modelID = spec.CanonicalModelID(args.Model, spec.DefaultModel)
+	}
+	contextWindow := int64(1_048_576)
+	if spec, ok := providers.GetAgentProviderSpec(args.Provider); ok && spec != nil && spec.ContextWindow != nil {
+		contextWindow = spec.ContextWindow(modelID)
+	}
 	s := &Session{
 		args:          args,
 		llm:           llm,
 		system:        system,
-		contextWindow: 1_048_576,
+		contextWindow: contextWindow,
 		modelID:       modelID,
 		tools:         tools,
 		midTurnQueue:  &MidTurnQueue{},

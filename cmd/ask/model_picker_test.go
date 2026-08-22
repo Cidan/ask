@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Cidan/ask/pkg/providers"
+
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 )
@@ -328,6 +330,41 @@ func TestModelPicker_VertexAppearsAsSection(t *testing.T) {
 	}
 	if !hasEntry {
 		t.Error("model picker must surface the vertex default model entry")
+	}
+}
+
+func TestModelPicker_OpenRouterKeyPrompt(t *testing.T) {
+	m := newProviderRegistryFixture(t)
+	// We need to inject openrouter provider into the test registry
+	withRegisteredProviders(t, vertexAgentProvider(), agentAPIProvider{spec: &providers.OpenRouterSpec})
+
+	m = m.openModelPicker()
+	// Filter for openrouter
+	m = pressText(t, m, "openrouter")
+	m = stepKey(t, m, pressSpecial(tea.KeyDown))
+	for {
+		row := selectedRow(t, m)
+		if row.kind == modelPickerRowEntry && row.entry.providerID == providers.OpenRouterProviderID {
+			break
+		}
+		m = stepKey(t, m, pressSpecial(tea.KeyDown))
+	}
+	
+	m = stepKey(t, m, pressSpecial(tea.KeyEnter))
+	if m.modelPicker.keyEntry == nil {
+		t.Fatal("expected OpenRouter key prompt to open")
+	}
+
+	m = pressText(t, m, "test-or-key")
+	m = stepKey(t, m, pressSpecial(tea.KeyEnter))
+
+	if m.mode != modeInput {
+		t.Errorf("expected to return to input mode, got %v", m.mode)
+	}
+
+	cfg, _ := loadConfig()
+	if cfg.OpenRouter.APIKey != "test-or-key" {
+		t.Errorf("expected OpenRouter API key saved, got %q", cfg.OpenRouter.APIKey)
 	}
 }
 

@@ -396,10 +396,16 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		cfg, _ := loadConfig()
 		if s.spec != nil && s.spec.BuildModel != nil {
 			built, err := engine.ModelBuilder(ctx, s.spec, toPkgConfig(cfg), s.modelID)
-			if err == nil {
-				llm = built
-				s.model = built
+			if err != nil {
+				s.emit(providerDoneMsg{
+					res: providerResult{SessionID: s.sessionID, IsError: true, Result: err.Error()},
+					err: err,
+				})
+				s.emit(turnCompleteMsg{})
+				return
 			}
+			llm = built
+			s.model = built
 		}
 	}
 	if llm == nil {

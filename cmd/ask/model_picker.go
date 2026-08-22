@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
+	"github.com/Cidan/ask/pkg/providers"
 )
 
 // Ctrl+M opens the unified model picker (crush-style): a search input
@@ -22,7 +23,14 @@ type providerKeySpec struct {
 	config func(*askConfig) *apiProviderConfig
 }
 
-var providerKeySpecs = []providerKeySpec{}
+var providerKeySpecs = []providerKeySpec{
+	{
+		id:     "openrouter",
+		title:  "OpenRouter API Key",
+		envKey: providers.OpenRouterEnvAPIKey,
+		config: func(c *askConfig) *apiProviderConfig { return &c.OpenRouter },
+	},
+}
 
 func providerKeySpecByID(id string) (providerKeySpec, bool) {
 	for _, s := range providerKeySpecs {

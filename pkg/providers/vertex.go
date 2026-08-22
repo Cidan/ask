@@ -184,6 +184,7 @@ var VertexSpec = AgentProviderSpec{
 	DefaultModel:  VertexDefaultModel,
 	ModelOptions:  VertexModelOptions,
 	EffortOptions: VertexEffortOptions,
+	CanonicalModelID: CanonicalVertexModelID,
 	BuildModel: func(ctx context.Context, cfg config.Config, modelID string) (model.LLM, error) {
 		return VertexModel(ctx, cfg.Vertex, modelID)
 	},

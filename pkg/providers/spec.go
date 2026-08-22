@@ -24,6 +24,7 @@ type AgentProviderSpec struct {
 	DefaultModel    string
 	ModelOptions    []string
 	EffortOptions   []string
+	CanonicalModelID func(modelID string, fallback ...string) string
 	BuildModel      func(ctx context.Context, cfg config.Config, modelID string) (model.LLM, error)
 	BuildClient     func(cfg config.Config) (*genai.Client, error)
 	CallOptions     func(modelID, effort string) (*genai.GenerateContentConfig, *float64)

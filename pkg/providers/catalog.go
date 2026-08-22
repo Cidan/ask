@@ -72,6 +72,54 @@ var defaultVertexModels = []ModelInfo{
 	},
 }
 
+var defaultOpenRouterModels = []ModelInfo{
+	{
+		ID:               "anthropic/claude-3.7-sonnet",
+		Name:             "Claude 3.7 Sonnet",
+		ContextWindow:    200_000,
+		DefaultMaxTokens: 64_000,
+		SupportsImages:   true,
+		ReasoningLevels:  []string{"low", "medium", "high"},
+	},
+	{
+		ID:               "anthropic/claude-3.5-sonnet",
+		Name:             "Claude 3.5 Sonnet",
+		ContextWindow:    200_000,
+		DefaultMaxTokens: 8192,
+		SupportsImages:   true,
+	},
+	{
+		ID:               "openai/o3-mini",
+		Name:             "o3-mini",
+		ContextWindow:    200_000,
+		DefaultMaxTokens: 100_000,
+		SupportsImages:   false,
+		ReasoningLevels:  []string{"low", "medium", "high"},
+	},
+	{
+		ID:               "openai/o1",
+		Name:             "o1",
+		ContextWindow:    200_000,
+		DefaultMaxTokens: 100_000,
+		SupportsImages:   true,
+		ReasoningLevels:  []string{"low", "medium", "high"},
+	},
+	{
+		ID:               "deepseek/deepseek-r1",
+		Name:             "DeepSeek-R1",
+		ContextWindow:    128_000,
+		DefaultMaxTokens: 8192,
+		SupportsImages:   false,
+	},
+	{
+		ID:               "google/gemini-2.5-pro",
+		Name:             "Gemini 2.5 Pro",
+		ContextWindow:    1_048_576,
+		DefaultMaxTokens: 8192,
+		SupportsImages:   true,
+	},
+}
+
 // NormalizeModelID trims provider prefixes ("vertex/", "publishers/google/models/", "models/")
 // to ensure model identifiers match registered catalog IDs.
 func NormalizeModelID(modelID string) string {
@@ -112,9 +160,34 @@ func CanonicalVertexModelID(modelID string, fallback ...string) string {
 	return norm
 }
 
+// CanonicalOpenRouterModelID normalizes the model ID and falls back to fallback
+// if the model ID is empty.
+func CanonicalOpenRouterModelID(modelID string, fallback ...string) string {
+	fb := "anthropic/claude-3.7-sonnet"
+	if len(fallback) > 0 && fallback[0] != "" {
+		fb = fallback[0]
+	}
+	norm := strings.TrimSpace(modelID)
+	if norm == "" {
+		return fb
+	}
+	if _, ok := CatalogModel("openrouter", norm); ok {
+		return norm
+	}
+	return norm
+}
+
 // CatalogModel looks up one model's metadata.
 func CatalogModel(provider string, modelID string) (ModelInfo, bool) {
 	norm := NormalizeModelID(modelID)
+	if provider == "openrouter" {
+		for _, m := range defaultOpenRouterModels {
+			if m.ID == norm {
+				return m, true
+			}
+		}
+		return ModelInfo{}, false
+	}
 	for _, m := range defaultVertexModels {
 		if m.ID == norm {
 			return m, true
@@ -125,6 +198,13 @@ func CatalogModel(provider string, modelID string) (ModelInfo, bool) {
 
 // CatalogModelIDs returns the provider's model ids in catalog order.
 func CatalogModelIDs(provider string) []string {
+	if provider == "openrouter" {
+		ids := make([]string, len(defaultOpenRouterModels))
+		for i, m := range defaultOpenRouterModels {
+			ids[i] = m.ID
+		}
+		return ids
+	}
 	ids := make([]string, len(defaultVertexModels))
 	for i, m := range defaultVertexModels {
 		ids[i] = m.ID

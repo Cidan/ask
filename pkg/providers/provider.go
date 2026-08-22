@@ -69,10 +69,12 @@ type Spec struct {
 var (
 	registryMu sync.RWMutex
 	specs      = map[string]Spec{
-		"vertex": {ID: "vertex", Name: "Vertex AI", DefaultModel: VertexDefaultModel},
+		"vertex":     {ID: "vertex", Name: "Vertex AI", DefaultModel: VertexDefaultModel},
+		"openrouter": {ID: "openrouter", Name: "OpenRouter", DefaultModel: OpenRouterDefaultModel},
 	}
 	agentSpecs = map[string]*AgentProviderSpec{
-		"vertex": &VertexSpec,
+		"vertex":     &VertexSpec,
+		"openrouter": &OpenRouterSpec,
 	}
 )
 
@@ -95,5 +97,6 @@ func AllAgentProviderSpecs() []*AgentProviderSpec {
 	defer registryMu.RUnlock()
 	return []*AgentProviderSpec{
 		&VertexSpec,
+		&OpenRouterSpec,
 	}
 }
