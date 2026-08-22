@@ -1876,3 +1876,106 @@ func TestWorkflowStepStartedMsg_HeaderFormat(t *testing.T) {
 		t.Errorf("inner loop step header should start with 7 spaces, got %q", loopHeader)
 	}
 }
+
+func TestWorkflowDoneMsg_OutcomeWordWrapping(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.id = 1
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{Name: "test"},
+	}
+	longDesc := "This is a very long description that should be word-wrapped correctly by the view layer. It exceeds the typical column boundary and would otherwise hard-cut mid-word if sliced by xansi.Cut without proper glamour word wrapping and indentation."
+	m2, _ := runUpdate(t, m, WorkflowDoneMsg{TabID: 1, Description: longDesc})
+	
+	if len(m2.history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(m2.history))
+	}
+	e := m2.history[0]
+	if e.kind != histWorkflowDone {
+		t.Errorf("expected histWorkflowDone, got %v", e.kind)
+	}
+	if !strings.Contains(e.text, longDesc) {
+		t.Errorf("expected text to contain longDesc, got %q", e.text)
+	}
+	if e.workflowHeader == "" {
+		t.Error("expected workflowHeader to be non-empty")
+	}
+	if e.workflowIndent != 2 {
+		t.Errorf("expected workflowIndent to be 2, got %d", e.workflowIndent)
+	}
+
+	// Test wrapping
+	m2.ensureEntryWrapped(0, 80)
+	wrapped := m2.history[0].wrapped
+	if len(wrapped) < 3 {
+		t.Errorf("expected wrapped lines to be at least 3 for narrow width, got %d", len(wrapped))
+	}
+	// Check for leading margin on continuation lines
+	marginFound := false
+	for _, line := range wrapped[1:] {
+		// Just verify they aren't wrapping to 0 columns
+		if len(line) > 0 && strings.HasPrefix(line, " ") {
+			marginFound = true
+			break
+		}
+	}
+	if !marginFound && len(wrapped) > 1 {
+		t.Errorf("expected continuation lines to have leading margins")
+	}
+}
+
+func TestWorkflowDoneMsg_EmptyDescription(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.id = 1
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{Name: "test"},
+	}
+	m2, _ := runUpdate(t, m, WorkflowDoneMsg{TabID: 1, Description: ""})
+	
+	if len(m2.history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(m2.history))
+	}
+	e := m2.history[0]
+	if e.kind != histWorkflowDone {
+		t.Errorf("expected histWorkflowDone, got %v", e.kind)
+	}
+	if e.text != "" {
+		t.Errorf("expected text to be empty, got %q", e.text)
+	}
+	
+	m2.ensureEntryWrapped(0, 80)
+	wrapped := m2.history[0].wrapped
+	// With empty body, the result should just be the header
+	if len(wrapped) == 0 {
+		t.Fatalf("expected wrapped to have the header")
+	}
+	if !strings.Contains(wrapped[0], "workflow complete") {
+		t.Errorf("expected header to contain 'workflow complete', got %q", wrapped[0])
+	}
+}
+
+func TestWorkflowFailedMsg_OutcomeWordWrapping(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.id = 1
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{Name: "test"},
+	}
+	longReason := "This is a very long failure reason that should be word-wrapped correctly by the view layer. It exceeds the typical column boundary and would otherwise hard-cut mid-word if sliced by xansi.Cut without proper glamour word wrapping and indentation."
+	m2, _ := runUpdate(t, m, WorkflowFailedMsg{TabID: 1, Reason: longReason})
+	
+	if len(m2.history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(m2.history))
+	}
+	e := m2.history[0]
+	if e.kind != histWorkflowDone {
+		t.Errorf("expected histWorkflowDone, got %v", e.kind)
+	}
+	if !strings.Contains(e.text, longReason) {
+		t.Errorf("expected text to contain longReason, got %q", e.text)
+	}
+	if e.workflowHeader == "" {
+		t.Error("expected workflowHeader to be non-empty")
+	}
+	if e.workflowIndent != 2 {
+		t.Errorf("expected workflowIndent to be 2, got %d", e.workflowIndent)
+	}
+}

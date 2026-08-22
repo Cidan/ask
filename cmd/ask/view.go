@@ -252,12 +252,19 @@ func (m *model) ensureEntryWrapped(idx, width int) {
 				m.renderer = newRenderer(width)
 				m.rendererWidth = width
 			}
-			rendered := m.renderResponse(e.text)
-			if e.workflowIndent > 0 {
-				rendered = lipgloss.NewStyle().MarginLeft(e.workflowIndent).Render(rendered)
+			var rendered string
+			if strings.TrimSpace(e.text) != "" {
+				rendered = m.renderResponse(e.text)
+				if e.workflowIndent > 0 {
+					rendered = lipgloss.NewStyle().MarginLeft(e.workflowIndent).Render(rendered)
+				}
 			}
 			if e.workflowHeader != "" {
-				e.rendered = e.workflowHeader + "\n" + rendered
+				if rendered != "" {
+					e.rendered = e.workflowHeader + "\n" + rendered
+				} else {
+					e.rendered = e.workflowHeader
+				}
 			} else {
 				e.rendered = rendered
 			}
