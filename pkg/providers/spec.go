@@ -19,20 +19,20 @@ type ProviderSettings struct {
 
 // AgentProviderSpec describes one in-process API provider.
 type AgentProviderSpec struct {
-	ID              string
-	DisplayName     string
-	DefaultModel    string
-	ModelOptions    []string
-	EffortOptions   []string
+	ID               string
+	DisplayName      string
+	DefaultModel     string
+	ModelOptions     []string
+	EffortOptions    []string
 	CanonicalModelID func(modelID string, fallback ...string) string
-	BuildModel      func(ctx context.Context, cfg config.Config, modelID string) (model.LLM, error)
-	BuildClient     func(cfg config.Config) (*genai.Client, error)
-	CallOptions     func(modelID, effort string) (*genai.GenerateContentConfig, *float64)
-	SupportsImages  func(modelID string) bool
-	ContextWindow   func(modelID string) int64
-	MaxOutputTokens func(modelID string) int64
-	LoadSettings    func(config.Config) ProviderSettings
-	SaveSettings    func(*config.Config, ProviderSettings)
+	BuildModel       func(ctx context.Context, cfg config.Config, modelID string) (model.LLM, error)
+	BuildClient      func(cfg config.Config) (*genai.Client, error)
+	CallOptions      func(modelID, effort string) (*genai.GenerateContentConfig, *float64)
+	SupportsImages   func(modelID string) bool
+	ContextWindow    func(modelID string) int64
+	MaxOutputTokens  func(modelID string) int64
+	LoadSettings     func(config.Config) ProviderSettings
+	SaveSettings     func(*config.Config, ProviderSettings)
 }
 
 // MissingAPIKeyError returns a descriptive error when an API key is missing.

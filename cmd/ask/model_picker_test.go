@@ -349,7 +349,7 @@ func TestModelPicker_OpenRouterKeyPrompt(t *testing.T) {
 		}
 		m = stepKey(t, m, pressSpecial(tea.KeyDown))
 	}
-	
+
 	m = stepKey(t, m, pressSpecial(tea.KeyEnter))
 	if m.modelPicker.keyEntry == nil {
 		t.Fatal("expected OpenRouter key prompt to open")

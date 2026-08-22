@@ -12,7 +12,7 @@ func TestConfigOpenRouterPicker(t *testing.T) {
 	t.Cleanup(invalidateKeyMapCache)
 
 	m := model{}
-	
+
 	// Open picker
 	m = m.openConfigOpenRouterPicker()
 	if !m.configOpenRouterPickerActive {

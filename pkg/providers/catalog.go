@@ -1,6 +1,9 @@
 package providers
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // ModelInfo describes model metadata without external catalog dependencies.
 type ModelInfo struct {
@@ -167,12 +170,11 @@ func CanonicalOpenRouterModelID(modelID string, fallback ...string) string {
 	if len(fallback) > 0 && fallback[0] != "" {
 		fb = fallback[0]
 	}
+	// OpenRouter model IDs are provider-qualified slugs ("anthropic/claude-...")
+	// passed straight through; only an empty ID falls back to the default.
 	norm := strings.TrimSpace(modelID)
 	if norm == "" {
 		return fb
-	}
-	if _, ok := CatalogModel("openrouter", norm); ok {
-		return norm
 	}
 	return norm
 }
@@ -280,30 +282,39 @@ func CatalogClampEffort(provider string, modelID, effort string) string {
 	if len(m.ReasoningLevels) == 0 {
 		return ""
 	}
-	available := map[string]bool{}
-	for _, l := range m.ReasoningLevels {
-		available[l] = true
+	return clampEffortToSet(effort, m.ReasoningLevels)
+}
+
+// effortRank orders abstract reasoning efforts from least to most.
+var effortRank = map[string]int{"minimal": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5}
+
+// clampEffortToSet maps a requested effort onto the closest one a model
+// actually supports: the highest supported effort not exceeding the request,
+// else the lowest supported effort. An exact match passes through unchanged, as
+// does an unrankable request or an empty supported set.
+func clampEffortToSet(requested string, supported []string) string {
+	if len(supported) == 0 {
+		return requested
 	}
-	if available[effort] {
-		return effort
+	if slices.Contains(supported, requested) {
+		return requested
 	}
-	rank := map[string]int{"minimal": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5}
-	want, ok := rank[effort]
+	want, ok := effortRank[requested]
 	if !ok {
-		return effort
+		return requested
 	}
 	best, bestRank := "", -1
 	lowest, lowestRank := "", int(^uint(0)>>1)
-	for _, l := range m.ReasoningLevels {
-		r, ok := rank[l]
+	for _, s := range supported {
+		r, ok := effortRank[s]
 		if !ok {
 			continue
 		}
 		if r <= want && r > bestRank {
-			best, bestRank = l, r
+			best, bestRank = s, r
 		}
 		if r < lowestRank {
-			lowest, lowestRank = l, r
+			lowest, lowestRank = s, r
 		}
 	}
 	if best != "" {
@@ -312,5 +323,5 @@ func CatalogClampEffort(provider string, modelID, effort string) string {
 	if lowest != "" {
 		return lowest
 	}
-	return effort
+	return requested
 }

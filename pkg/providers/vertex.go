@@ -179,11 +179,11 @@ func VertexProviderOptions(modelID, effort string) (*genai.GenerateContentConfig
 }
 
 var VertexSpec = AgentProviderSpec{
-	ID:            VertexProviderID,
-	DisplayName:   "Vertex AI",
-	DefaultModel:  VertexDefaultModel,
-	ModelOptions:  VertexModelOptions,
-	EffortOptions: VertexEffortOptions,
+	ID:               VertexProviderID,
+	DisplayName:      "Vertex AI",
+	DefaultModel:     VertexDefaultModel,
+	ModelOptions:     VertexModelOptions,
+	EffortOptions:    VertexEffortOptions,
 	CanonicalModelID: CanonicalVertexModelID,
 	BuildModel: func(ctx context.Context, cfg config.Config, modelID string) (model.LLM, error) {
 		return VertexModel(ctx, cfg.Vertex, modelID)

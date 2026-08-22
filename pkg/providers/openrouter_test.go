@@ -4,17 +4,14 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	"github.com/Cidan/ask/pkg/config"
 )
 
 func TestResolveOpenRouterAPIKey(t *testing.T) {
-	// Setup
-	os.Clearenv()
-	os.Setenv("OPENROUTER_API_KEY", "env-key")
-	
+	t.Setenv("OPENROUTER_API_KEY", "env-key")
+
 	// Test env var
 	cfg := config.APIProviderConfig{}
 	key := ResolveOpenRouterAPIKey(cfg)
@@ -66,7 +63,7 @@ func TestListOpenRouterModels(t *testing.T) {
 }
 
 func TestOpenRouterModelBuilder(t *testing.T) {
-	os.Clearenv()
+	t.Setenv("OPENROUTER_API_KEY", "")
 	cfg := config.APIProviderConfig{}
 	_, err := OpenRouterModelBuilder(context.Background(), cfg, "model")
 	if err == nil {
