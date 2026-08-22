@@ -207,6 +207,9 @@ func TestBuildStepInstruction(t *testing.T) {
 	if !strings.Contains(got, "end_turn") {
 		t.Errorf("instruction must carry the end_turn contract: %q", got)
 	}
+	if !strings.Contains(got, "call the todos tool") {
+		t.Errorf("instruction must mandate the todos tool: %q", got)
+	}
 	if strings.Contains(got, "Previous step output:") {
 		t.Errorf("previous-step threading belongs to the graph now: %q", got)
 	}

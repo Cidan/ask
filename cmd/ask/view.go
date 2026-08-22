@@ -1546,7 +1546,7 @@ func (m model) providerChipSegments(_ time.Time) []string {
 		mdl = m.providerModel
 	}
 	ctxPct := contextPercent(m.lastUsageTokens, modelContextLimit(mdl))
-	return []string{fmt.Sprintf("ctx:%d%%", ctxPct)}
+	return []string{dimStyle.Render(fmt.Sprintf("%d%%", ctxPct))}
 }
 
 func (m model) renderProviderChip(segs []string) string {
@@ -1554,12 +1554,11 @@ func (m model) renderProviderChip(segs []string) string {
 	if mdl == "" {
 		mdl = "default"
 	}
-	body := "[ p: " + m.provider.ID() + " m: " + mdl
+	body := m.provider.ID() + "/" + mdl
 	for _, s := range segs {
 		body += " " + s
 	}
-	body += " ]"
-	return dimStyle.Render(body)
+	return body
 }
 
 func (m model) pendingBlockHeight() int {

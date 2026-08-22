@@ -15,11 +15,8 @@ func TestProviderChip_ShowsIDAndModel(t *testing.T) {
 	m := newTestModel(t, p)
 	m.providerModel = "claude-fable-5"
 	got := m.providerChip()
-	if !strings.Contains(got, "p: anthropic") {
-		t.Errorf("chip should contain 'p: anthropic', got %q", got)
-	}
-	if !strings.Contains(got, "m: claude-fable-5") {
-		t.Errorf("chip should contain 'm: claude-fable-5', got %q", got)
+	if !strings.Contains(got, "anthropic/claude-fable-5") {
+		t.Errorf("chip should contain 'anthropic/claude-fable-5', got %q", got)
 	}
 }
 
@@ -29,8 +26,8 @@ func TestProviderChip_DefaultModelLabel(t *testing.T) {
 	m := newTestModel(t, p)
 	m.providerModel = ""
 	got := m.providerChip()
-	if !strings.Contains(got, "m: default") {
-		t.Errorf("empty providerModel should render as 'm: default', got %q", got)
+	if !strings.Contains(got, "openai/default") {
+		t.Errorf("empty providerModel should render as 'openai/default', got %q", got)
 	}
 }
 
@@ -65,11 +62,11 @@ func TestStatusChipRow_LeftAndRightCoexist(t *testing.T) {
 	if !strings.Contains(row, "feat-x") {
 		t.Errorf("left worktree chip should render: %q", row)
 	}
-	if !strings.Contains(row, "p: anthropic") {
+	if !strings.Contains(row, "anthropic") {
 		t.Errorf("right provider chip should render: %q", row)
 	}
 	leftAt := strings.Index(row, "feat-x")
-	rightAt := strings.Index(row, "p: anthropic")
+	rightAt := strings.Index(row, "anthropic")
 	if leftAt < 0 || rightAt < 0 || leftAt >= rightAt {
 		t.Errorf("right chip must follow left chip: leftAt=%d rightAt=%d row=%q", leftAt, rightAt, row)
 	}
@@ -99,8 +96,8 @@ func TestProviderChip_CtxSegmentAlwaysPresent(t *testing.T) {
 	m := newTestModel(t, p)
 	m.providerModel = "gemini-2.5-pro"
 	got := m.providerChip()
-	if !strings.Contains(got, "ctx:0%") {
-		t.Errorf("chip should contain 'ctx:0%%' when no usage yet: %q", got)
+	if !strings.Contains(got, "0%") {
+		t.Errorf("chip should contain '0%%' when no usage yet: %q", got)
 	}
 	if strings.Contains(got, "5h:") || strings.Contains(got, "wk:") || strings.Contains(got, "pr:") {
 		t.Errorf("quota segments are gone for good: %q", got)
@@ -115,7 +112,7 @@ func TestProviderChip_ContextPercentWithUnknownModel(t *testing.T) {
 	// 50k tokens against the default 200k limit (unknown model) = 25%.
 	m.lastUsageTokens = 50_000
 	got := m.providerChip()
-	if !strings.Contains(got, "ctx:25%") {
+	if !strings.Contains(got, "25%") {
 		t.Errorf("chip should compute ctx against default 200k limit: %q", got)
 	}
 }
@@ -127,7 +124,7 @@ func TestProviderChip_CatalogModelDrivesPercent(t *testing.T) {
 	m.providerModel = "custom-1m"
 	m.lastUsageTokens = 104_857
 	got := m.providerChip()
-	if !strings.Contains(got, "ctx:9%") && !strings.Contains(got, "ctx:10%") {
+	if !strings.Contains(got, "9%") && !strings.Contains(got, "10%") {
 		t.Errorf("catalog window must drive the percent: %q", got)
 	}
 }
@@ -140,7 +137,7 @@ func TestProviderChip_ModelForContextWins(t *testing.T) {
 	m.modelForContext = "custom-1m"
 	m.lastUsageTokens = 524_288
 	got := m.providerChip()
-	if !strings.Contains(got, "ctx:50%") {
+	if !strings.Contains(got, "50%") {
 		t.Errorf("modelForContext must win the denominator: %q", got)
 	}
 }
@@ -153,15 +150,15 @@ func TestProviderChipFitting_DropsCtxWhenNarrow(t *testing.T) {
 	m.lastUsageTokens = 150_000
 
 	full := m.providerChipFitting(0)
-	if !strings.Contains(full, "ctx:") {
-		t.Fatalf("unbounded fit should keep the ctx segment: %q", full)
+	if !strings.Contains(full, "%") {
+		t.Fatalf("unbounded fit should keep the percentage segment: %q", full)
 	}
 	fullW := visibleWidth(full)
 	got := m.providerChipFitting(fullW - 1)
-	if strings.Contains(got, "ctx:") {
-		t.Errorf("fitting at %d cols should drop ctx: %q", fullW-1, got)
+	if strings.Contains(got, "%") {
+		t.Errorf("fitting at %d cols should drop percentage: %q", fullW-1, got)
 	}
-	if !strings.Contains(got, "p: vertex") {
+	if !strings.Contains(got, "vertex") {
 		t.Errorf("bare chip must survive: %q", got)
 	}
 }
