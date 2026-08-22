@@ -44,6 +44,10 @@ func (p agentAPIProvider) ModelPicker() ProviderPicker {
 		if dynamicModels, err := providers.ListVertexModels(context.Background(), cfg.Vertex); err == nil && len(dynamicModels) > 0 {
 			options = dynamicModels
 		}
+	} else if p.spec.ID == "openrouter" {
+		if dynamicModels, err := providers.ListOpenRouterModels(context.Background(), cfg.OpenRouter); err == nil && len(dynamicModels) > 0 {
+			options = dynamicModels
+		}
 	}
 	return ProviderPicker{
 		Prompt:      "Select " + p.spec.DisplayName + " model",
@@ -87,7 +91,10 @@ func (p agentAPIProvider) store() *agentSessionStore {
 
 func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
 	cfg, _ := loadConfig()
-	modelID := providers.CanonicalVertexModelID(args.Model, p.spec.DefaultModel)
+	modelID := args.Model
+	if p.spec.CanonicalModelID != nil {
+		modelID = p.spec.CanonicalModelID(args.Model, p.spec.DefaultModel)
+	}
 	client, err := p.spec.BuildClient(toPkgConfig(cfg))
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", p.spec.ID, err)

@@ -1,6 +1,9 @@
 package providers
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // ModelInfo describes model metadata without external catalog dependencies.
 type ModelInfo struct {
@@ -72,6 +75,54 @@ var defaultVertexModels = []ModelInfo{
 	},
 }
 
+var defaultOpenRouterModels = []ModelInfo{
+	{
+		ID:               "anthropic/claude-3.7-sonnet",
+		Name:             "Claude 3.7 Sonnet",
+		ContextWindow:    200_000,
+		DefaultMaxTokens: 64_000,
+		SupportsImages:   true,
+		ReasoningLevels:  []string{"low", "medium", "high"},
+	},
+	{
+		ID:               "anthropic/claude-3.5-sonnet",
+		Name:             "Claude 3.5 Sonnet",
+		ContextWindow:    200_000,
+		DefaultMaxTokens: 8192,
+		SupportsImages:   true,
+	},
+	{
+		ID:               "openai/o3-mini",
+		Name:             "o3-mini",
+		ContextWindow:    200_000,
+		DefaultMaxTokens: 100_000,
+		SupportsImages:   false,
+		ReasoningLevels:  []string{"low", "medium", "high"},
+	},
+	{
+		ID:               "openai/o1",
+		Name:             "o1",
+		ContextWindow:    200_000,
+		DefaultMaxTokens: 100_000,
+		SupportsImages:   true,
+		ReasoningLevels:  []string{"low", "medium", "high"},
+	},
+	{
+		ID:               "deepseek/deepseek-r1",
+		Name:             "DeepSeek-R1",
+		ContextWindow:    128_000,
+		DefaultMaxTokens: 8192,
+		SupportsImages:   false,
+	},
+	{
+		ID:               "google/gemini-2.5-pro",
+		Name:             "Gemini 2.5 Pro",
+		ContextWindow:    1_048_576,
+		DefaultMaxTokens: 8192,
+		SupportsImages:   true,
+	},
+}
+
 // NormalizeModelID trims provider prefixes ("vertex/", "publishers/google/models/", "models/")
 // to ensure model identifiers match registered catalog IDs.
 func NormalizeModelID(modelID string) string {
@@ -112,9 +163,33 @@ func CanonicalVertexModelID(modelID string, fallback ...string) string {
 	return norm
 }
 
+// CanonicalOpenRouterModelID normalizes the model ID and falls back to fallback
+// if the model ID is empty.
+func CanonicalOpenRouterModelID(modelID string, fallback ...string) string {
+	fb := "anthropic/claude-3.7-sonnet"
+	if len(fallback) > 0 && fallback[0] != "" {
+		fb = fallback[0]
+	}
+	// OpenRouter model IDs are provider-qualified slugs ("anthropic/claude-...")
+	// passed straight through; only an empty ID falls back to the default.
+	norm := strings.TrimSpace(modelID)
+	if norm == "" {
+		return fb
+	}
+	return norm
+}
+
 // CatalogModel looks up one model's metadata.
 func CatalogModel(provider string, modelID string) (ModelInfo, bool) {
 	norm := NormalizeModelID(modelID)
+	if provider == "openrouter" {
+		for _, m := range defaultOpenRouterModels {
+			if m.ID == norm {
+				return m, true
+			}
+		}
+		return ModelInfo{}, false
+	}
 	for _, m := range defaultVertexModels {
 		if m.ID == norm {
 			return m, true
@@ -125,6 +200,13 @@ func CatalogModel(provider string, modelID string) (ModelInfo, bool) {
 
 // CatalogModelIDs returns the provider's model ids in catalog order.
 func CatalogModelIDs(provider string) []string {
+	if provider == "openrouter" {
+		ids := make([]string, len(defaultOpenRouterModels))
+		for i, m := range defaultOpenRouterModels {
+			ids[i] = m.ID
+		}
+		return ids
+	}
 	ids := make([]string, len(defaultVertexModels))
 	for i, m := range defaultVertexModels {
 		ids[i] = m.ID
@@ -200,30 +282,39 @@ func CatalogClampEffort(provider string, modelID, effort string) string {
 	if len(m.ReasoningLevels) == 0 {
 		return ""
 	}
-	available := map[string]bool{}
-	for _, l := range m.ReasoningLevels {
-		available[l] = true
+	return clampEffortToSet(effort, m.ReasoningLevels)
+}
+
+// effortRank orders abstract reasoning efforts from least to most.
+var effortRank = map[string]int{"minimal": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5}
+
+// clampEffortToSet maps a requested effort onto the closest one a model
+// actually supports: the highest supported effort not exceeding the request,
+// else the lowest supported effort. An exact match passes through unchanged, as
+// does an unrankable request or an empty supported set.
+func clampEffortToSet(requested string, supported []string) string {
+	if len(supported) == 0 {
+		return requested
 	}
-	if available[effort] {
-		return effort
+	if slices.Contains(supported, requested) {
+		return requested
 	}
-	rank := map[string]int{"minimal": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5}
-	want, ok := rank[effort]
+	want, ok := effortRank[requested]
 	if !ok {
-		return effort
+		return requested
 	}
 	best, bestRank := "", -1
 	lowest, lowestRank := "", int(^uint(0)>>1)
-	for _, l := range m.ReasoningLevels {
-		r, ok := rank[l]
+	for _, s := range supported {
+		r, ok := effortRank[s]
 		if !ok {
 			continue
 		}
 		if r <= want && r > bestRank {
-			best, bestRank = l, r
+			best, bestRank = s, r
 		}
 		if r < lowestRank {
-			lowest, lowestRank = l, r
+			lowest, lowestRank = s, r
 		}
 	}
 	if best != "" {
@@ -232,5 +323,5 @@ func CatalogClampEffort(provider string, modelID, effort string) string {
 	if lowest != "" {
 		return lowest
 	}
-	return effort
+	return requested
 }

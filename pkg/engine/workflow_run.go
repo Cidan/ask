@@ -65,10 +65,17 @@ func buildStepModel(ctx context.Context, e *Engine, step workflow.Step) (adkmode
 	if !ok || spec == nil {
 		return nil, fmt.Errorf("unknown provider %q", providerID)
 	}
-	modelID := providers.CanonicalVertexModelID(step.Model, "")
+	modelID := step.Model
+	if spec.CanonicalModelID != nil {
+		modelID = spec.CanonicalModelID(step.Model, "")
+	}
 	if modelID == "" {
 		settings := spec.LoadSettings(e.opts.Config)
-		modelID = providers.CanonicalVertexModelID(settings.Model, spec.DefaultModel)
+		if spec.CanonicalModelID != nil {
+			modelID = spec.CanonicalModelID(settings.Model, spec.DefaultModel)
+		} else {
+			modelID = settings.Model
+		}
 	}
 	if modelID == "" {
 		modelID = spec.DefaultModel

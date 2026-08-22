@@ -22,6 +22,7 @@ func WithConfigLock(fn func() error) error {
 type Config struct {
 	Provider     string                     `json:"provider,omitempty"`
 	Effort       string                     `json:"effort,omitempty"`
+	OpenRouter   APIProviderConfig          `json:"openrouter,omitempty"`
 	DeepSeek     APIProviderConfig          `json:"deepseek,omitempty"`
 	Moonshot     APIProviderConfig          `json:"kimi,omitempty"`
 	Anthropic    APIProviderConfig          `json:"anthropic,omitempty"`
@@ -349,6 +350,9 @@ func MigrateLegacyProviderEffort(cfg *Config, data []byte) {
 		OpenAI struct {
 			Effort string `json:"effort,omitempty"`
 		} `json:"openai,omitempty"`
+		OpenRouter struct {
+			Effort string `json:"effort,omitempty"`
+		} `json:"openrouter,omitempty"`
 		DeepSeek struct {
 			Effort string `json:"effort,omitempty"`
 		} `json:"deepseek,omitempty"`
@@ -372,6 +376,8 @@ func MigrateLegacyProviderEffort(cfg *Config, data []byte) {
 	var found string
 	if legacy.Anthropic.Effort != "" {
 		found = legacy.Anthropic.Effort
+	} else if legacy.OpenRouter.Effort != "" {
+		found = legacy.OpenRouter.Effort
 	} else if legacy.OpenAI.Effort != "" {
 		found = legacy.OpenAI.Effort
 	} else if legacy.DeepSeek.Effort != "" {

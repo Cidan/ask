@@ -19,7 +19,7 @@ func TestResolveAPIProviderKey(t *testing.T) {
 }
 
 func TestGetAgentProviderSpec(t *testing.T) {
-	for _, id := range []string{"vertex"} {
+	for _, id := range []string{"vertex", "openrouter"} {
 		spec, ok := GetAgentProviderSpec(id)
 		if !ok || spec == nil {
 			t.Fatalf("expected spec for %q", id)
@@ -33,7 +33,7 @@ func TestGetAgentProviderSpec(t *testing.T) {
 	}
 
 	all := AllAgentProviderSpecs()
-	if len(all) != 1 {
-		t.Errorf("expected 1 provider spec, got %d", len(all))
+	if len(all) != 2 {
+		t.Errorf("expected 2 provider specs, got %d", len(all))
 	}
 }

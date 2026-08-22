@@ -172,6 +172,36 @@ func TestWorkflowSession_UnmarshalBothCasings(t *testing.T) {
 	}
 }
 
+func TestConfig_MigrateLegacyEffort(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Write a config with provider-specific effort but no global effort
+	legacyJSON := `{
+		"provider": "openrouter",
+		"openrouter": {
+			"api_key": "sk-test",
+			"effort": "high"
+		}
+	}`
+
+	configDir := filepath.Join(tmpHome, ".config", "ask")
+	_ = os.MkdirAll(configDir, 0755)
+	err := os.WriteFile(filepath.Join(configDir, "ask.json"), []byte(legacyJSON), 0644)
+	if err != nil {
+		t.Fatalf("failed to write legacy config: %v", err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if loaded.Effort != "high" {
+		t.Errorf("expected global effort to be migrated to 'high', got %q", loaded.Effort)
+	}
+}
+
 func TestConfig_AgentRetryOptions(t *testing.T) {
 	// Defaults
 	mr, id, bf := AgentRetryOptions(Config{})

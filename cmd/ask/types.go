@@ -580,6 +580,11 @@ type model struct {
 	configVertexFieldEditing string
 	configVertexFieldDraft   string
 
+	configOpenRouterPickerActive bool
+	configOpenRouterCursor       int
+	configOpenRouterFieldEditing string
+	configOpenRouterFieldDraft   string
+
 	// /config now layers into Global Options (existing knobs) vs
 	// Project Options (per-cwd issue provider). configGlobalPicker-
 	// Active is the gate for the Global submenu — it carries the
