@@ -60,6 +60,8 @@ type agentSession struct {
 	ch     chan tea.Msg
 	sendCh chan agentTurn
 
+	midTurnQueue *engine.MidTurnQueue
+
 	closed    chan struct{}
 	closeOnce sync.Once
 
@@ -213,6 +215,9 @@ func (s *agentSession) emit(msg tea.Msg) {
 	case turnCompleteMsg:
 		m.proc = s.proc
 		msg = m
+	case queuedMessageDrainedMsg:
+		m.proc = s.proc
+		msg = m
 	}
 	msg = injectTabID(msg, s.args.TabID)
 	select {
@@ -220,6 +225,13 @@ func (s *agentSession) emit(msg tea.Msg) {
 	default:
 	}
 	agentSendToProgram(msg)
+}
+
+func (s *agentSession) queueMidTurn(text string) {
+	if s.midTurnQueue == nil {
+		return
+	}
+	s.midTurnQueue.Push(text)
 }
 
 func (s *agentSession) queueTurn(text string, files ...[]engine.FilePart) error {
@@ -251,6 +263,14 @@ func (s *agentSession) run() {
 				first = false
 			}
 			s.runTurn(turn)
+			if s.midTurnQueue != nil {
+				msgs := s.midTurnQueue.Drain()
+				if len(msgs) > 0 {
+					combined := strings.Join(msgs, "\n\n")
+					s.emit(queuedMessageDrainedMsg{text: combined})
+					go s.queueTurn(combined)
+				}
+			}
 		case <-s.closed:
 			if s.env != nil && s.env.Jobs != nil {
 				s.env.Jobs.KillAll()
@@ -300,6 +320,30 @@ func (m *streamToADKModel) GenerateContent(ctx context.Context, req *adkmodel.LL
 			}
 		}
 	}
+}
+
+func (s *agentSession) beforeModelCallback(ctx adkagent.Context, req *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+	if s.midTurnQueue == nil {
+		return nil, nil
+	}
+	msgs := s.midTurnQueue.Drain()
+	if len(msgs) == 0 {
+		return nil, nil
+	}
+	combined := strings.Join(msgs, "\n\n")
+	req.Contents = append(req.Contents, genai.NewContentFromText(combined, genai.RoleUser))
+
+	if sess := ctx.Session(); sess != nil && s.sessSvc != nil {
+		s.sessSvc.AppendEvent(ctx, sess, &session.Event{
+			LLMResponse: adkmodel.LLMResponse{
+				Content: genai.NewContentFromText(combined, genai.RoleUser),
+			},
+			Author: "user",
+		})
+	}
+
+	s.emit(queuedMessageDrainedMsg{text: combined})
+	return nil, nil
 }
 
 func (s *agentSession) runTurn(turn agentTurn) {
@@ -375,6 +419,9 @@ func (s *agentSession) runTurn(turn agentTurn) {
 			Tools:                 adkTools,
 			Toolsets:              toolsets,
 			GenerateContentConfig: genaiConfig,
+			BeforeModelCallbacks: []llmagent.BeforeModelCallback{
+				s.beforeModelCallback,
+			},
 		})
 	}
 	if err != nil {

@@ -441,22 +441,23 @@ func themeByName(name string) theme {
 // All themable style vars live here. applyTheme() populates them; every other
 // file references them read-only.
 var (
-	selectedStyle     lipgloss.Style
-	dimStyle          lipgloss.Style
-	promptStyle       lipgloss.Style
-	promptArrowStyle  lipgloss.Style
-	promptDotStyle    lipgloss.Style
-	cwdStyle          lipgloss.Style
-	errStyle          lipgloss.Style
-	userBarStyle      lipgloss.Style
-	outputStyle       lipgloss.Style
-	thinkingStyle     lipgloss.Style
-	chipStyle         lipgloss.Style
-	planningChipStyle lipgloss.Style
-	scrollThumbStyle  lipgloss.Style
-	scrollTrackStyle  lipgloss.Style
-	thumbBorderStyle  lipgloss.Style
-	pathBoxStyle      lipgloss.Style
+	selectedStyle      lipgloss.Style
+	dimStyle           lipgloss.Style
+	promptStyle        lipgloss.Style
+	promptArrowStyle   lipgloss.Style
+	promptDotStyle     lipgloss.Style
+	cwdStyle           lipgloss.Style
+	errStyle           lipgloss.Style
+	userBarStyle       lipgloss.Style
+	userBarQueuedStyle lipgloss.Style
+	outputStyle        lipgloss.Style
+	thinkingStyle      lipgloss.Style
+	chipStyle          lipgloss.Style
+	planningChipStyle  lipgloss.Style
+	scrollThumbStyle   lipgloss.Style
+	scrollTrackStyle   lipgloss.Style
+	thumbBorderStyle   lipgloss.Style
+	pathBoxStyle       lipgloss.Style
 
 	todoBoxStyle       lipgloss.Style
 	todoPendingStyle   lipgloss.Style
@@ -544,6 +545,11 @@ func applyTheme(t theme) {
 		MarginLeft(3).
 		Border(lipgloss.NormalBorder(), false, false, false, true).
 		BorderForeground(t.accent).
+		PaddingLeft(1)
+	userBarQueuedStyle = lipgloss.NewStyle().
+		MarginLeft(3).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(t.dim).
 		PaddingLeft(1)
 	outputStyle = lipgloss.NewStyle().MarginLeft(5)
 	thinkingStyle = lipgloss.NewStyle().MarginLeft(3)

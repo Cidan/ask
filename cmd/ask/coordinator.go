@@ -98,6 +98,10 @@ func (c *Coordinator) Dispatch(tabID int, p Provider, args ProviderSessionArgs, 
 		if len(attachments) > 0 {
 			files = attachmentFileParts(attachments)
 		}
+		if session.isBusy() {
+			session.queueMidTurn(text)
+			return nil
+		}
 		return session.queueTurn(text, files)
 	}
 	return nil
@@ -199,6 +203,9 @@ func injectTabID(msg tea.Msg, tabID int) tea.Msg {
 		m.tabID = tabID
 		return m
 	case providerExitedMsg:
+		m.tabID = tabID
+		return m
+	case queuedMessageDrainedMsg:
 		m.tabID = tabID
 		return m
 	}

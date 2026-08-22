@@ -39,6 +39,8 @@ type WorkflowAgentConfig struct {
 	// MaxRetries bounds per-node retries on failure. Zero means
 	// workflowDefaultMaxRetries; negative disables retries.
 	MaxRetries int
+	// BeforeModelCallbacks run before every LLM invocation.
+	BeforeModelCallbacks []llmagent.BeforeModelCallback
 }
 
 // workflowDefaultMaxRetries is the per-node retry budget. Replaces the
@@ -275,9 +277,10 @@ func buildStepAgent(ctx context.Context, cfg WorkflowAgentConfig, step Step, ste
 		// ADK interpolates that field, failing the run on any brace.
 		InstructionProvider: literalInstruction(instruction),
 		// Each step gets its own context; see CompileWorkflow.
-		IncludeContents: llmagent.IncludeContentsNone,
-		Tools:           tools,
-		Toolsets:        toolsets,
+		IncludeContents:      llmagent.IncludeContentsNone,
+		Tools:                tools,
+		Toolsets:             toolsets,
+		BeforeModelCallbacks: cfg.BeforeModelCallbacks,
 	})
 }
 

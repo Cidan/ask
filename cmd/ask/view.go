@@ -237,7 +237,7 @@ func (m *model) ensureEntryWrapped(idx, width int) {
 	e := &m.history[idx]
 	if e.wrappedFor != width {
 		switch e.kind {
-		case histResponse, histUser, histWorkflowDone:
+		case histResponse, histUser, histUserQueued, histWorkflowDone:
 			e.rendered = ""
 		}
 	}
@@ -275,7 +275,9 @@ func (m *model) ensureEntryWrapped(idx, width int) {
 			}
 			e.rendered = m.renderResponse(e.text)
 		case histUser:
-			e.rendered = m.renderUserBarAt(e.text, width)
+			e.rendered = m.renderUserBarAt(e.text, width, false)
+		case histUserQueued:
+			e.rendered = m.renderUserBarAt(e.text, width, true)
 		default:
 			e.rendered = e.text
 		}
@@ -289,10 +291,13 @@ func (m *model) ensureEntryWrapped(idx, width int) {
 // uses this when the chat-view width drifts away from m.width (e.g.
 // the scrollbar column subtracts one) so the bar's box matches the
 // visible columns.
-func (m model) renderUserBarAt(text string, width int) string {
+func (m model) renderUserBarAt(text string, width int, queued bool) string {
 	w := width - 7
 	if w < 20 {
 		w = 20
+	}
+	if queued {
+		return userBarQueuedStyle.Width(w).Render(text)
 	}
 	return userBarStyle.Width(w).Render(text)
 }
@@ -598,6 +603,11 @@ func (m *model) appendResponse(raw string) {
 func (m *model) appendUser(text string) {
 	m.responseActive = false
 	m.history = append(m.history, historyEntry{kind: histUser, text: text})
+}
+
+func (m *model) appendUserQueued(text string) {
+	m.responseActive = false
+	m.history = append(m.history, historyEntry{kind: histUserQueued, text: text})
 }
 
 func (m *model) refreshPrompt() {

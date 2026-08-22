@@ -104,6 +104,12 @@ type turnCompleteMsg struct {
 	proc  *providerProc
 }
 
+type queuedMessageDrainedMsg struct {
+	text  string
+	tabID int
+	proc  *providerProc
+}
+
 type todoItem struct {
 	Content    string
 	ActiveForm string
@@ -250,6 +256,7 @@ const (
 	histPrerendered historyKind = iota
 	histResponse
 	histUser
+	histUserQueued
 	histWorkflowDone
 )
 

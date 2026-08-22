@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	pkgmemory "github.com/Cidan/ask/pkg/memory"
@@ -580,4 +581,27 @@ func AppendToolResultText(resp map[string]any, extra string) map[string]any {
 		resp["notes"] = extra
 	}
 	return resp
+}
+
+// MidTurnQueue is a thread-safe FIFO queue for pending user messages mid-turn.
+type MidTurnQueue struct {
+	mu       sync.Mutex
+	messages []string
+}
+
+func (q *MidTurnQueue) Push(text string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.messages = append(q.messages, text)
+}
+
+func (q *MidTurnQueue) Drain() []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.messages) == 0 {
+		return nil
+	}
+	msgs := q.messages
+	q.messages = nil
+	return msgs
 }

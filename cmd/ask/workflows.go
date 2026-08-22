@@ -442,7 +442,8 @@ func (m model) workflowTabHandleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.workflowRun = nil
 			return m, closeTabCmd(m.id)
 		}
-		return m, nil
+		// If workflow is running, let Enter fall through to updateInput so the
+		// user can submit mid-turn queue messages.
 	}
 	switch msg.Code {
 	case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown,
@@ -452,7 +453,10 @@ func (m model) workflowTabHandleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.lastContentFP = ""
 		return m, cmd
 	}
-	return m, nil
+
+	// Forward everything else to updateInput so users can type into the input box
+	// to steer the active workflow step mid-run.
+	return m.updateInput(msg)
 }
 
 func (m model) restoreSupplantedTab() (tea.Model, tea.Cmd) {
