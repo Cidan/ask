@@ -333,13 +333,19 @@ func (s *agentSession) beforeModelCallback(ctx adkagent.Context, req *adkmodel.L
 	combined := strings.Join(msgs, "\n\n")
 	req.Contents = append(req.Contents, genai.NewContentFromText(combined, genai.RoleUser))
 
-	if sess := ctx.Session(); sess != nil && s.sessSvc != nil {
-		s.sessSvc.AppendEvent(ctx, sess, &session.Event{
-			LLMResponse: adkmodel.LLMResponse{
-				Content: genai.NewContentFromText(combined, genai.RoleUser),
-			},
-			Author: "user",
-		})
+	if s.sessSvc != nil && s.sessionID != "" {
+		if getResp, err := s.sessSvc.Get(ctx, &session.GetRequest{
+			AppName:   "ask",
+			UserID:    "user",
+			SessionID: s.sessionID,
+		}); err == nil && getResp.Session != nil {
+			s.sessSvc.AppendEvent(ctx, getResp.Session, &session.Event{
+				LLMResponse: adkmodel.LLMResponse{
+					Content: genai.NewContentFromText(combined, genai.RoleUser),
+				},
+				Author: "user",
+			})
+		}
 	}
 
 	s.emit(queuedMessageDrainedMsg{text: combined})
