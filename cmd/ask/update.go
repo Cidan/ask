@@ -708,18 +708,21 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 				Artifacts:   msg.Artifacts,
 			}
 
-			var out strings.Builder
-			out.WriteString(promptStyle.Render("✓ workflow complete: " + m.workflowRun.Workflow.Name))
+			header := outputStyle.Render(promptStyle.Render("✓ workflow complete: " + m.workflowRun.Workflow.Name))
+			var body strings.Builder
 			if msg.Description != "" {
-				out.WriteString("\n  Outcome: " + msg.Description)
-				if len(msg.Artifacts) > 0 {
-					out.WriteString("\n  Artifacts:")
-					for _, art := range msg.Artifacts {
-						out.WriteString("\n  • " + art)
-					}
+				body.WriteString("Outcome: " + msg.Description)
+			}
+			if len(msg.Artifacts) > 0 {
+				if body.Len() > 0 {
+					body.WriteString("\n\n")
+				}
+				body.WriteString("Artifacts:")
+				for _, art := range msg.Artifacts {
+					body.WriteString("\n• " + art)
 				}
 			}
-			m.appendHistory(outputStyle.Render(out.String()))
+			m.appendWorkflowDone(header, body.String(), 2)
 		}
 		return m, nil
 
@@ -730,11 +733,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.workflowRun != nil {
 			m.workflowRun.failed = true
 			m.workflowRun.failedReason = msg.Reason
-			out := "✗ workflow failed: " + m.workflowRun.Workflow.Name
-			if msg.Reason != "" {
-				out += " — " + msg.Reason
-			}
-			m.appendHistory(outputStyle.Render(errStyle.Render(out)))
+			header := outputStyle.Render(errStyle.Render("✗ workflow failed: " + m.workflowRun.Workflow.Name))
+			m.appendWorkflowDone(header, msg.Reason, 2)
 		}
 		return m, nil
 

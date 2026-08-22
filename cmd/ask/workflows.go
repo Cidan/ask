@@ -408,6 +408,16 @@ func (m *model) appendWorkflowStepDone(name, provider, mdl, summary string, inde
 	})
 }
 
+func (m *model) appendWorkflowDone(header, body string, indent int) {
+	m.responseActive = false
+	m.history = append(m.history, historyEntry{
+		kind:           histWorkflowDone,
+		text:           body,
+		workflowHeader: header,
+		workflowIndent: indent,
+	})
+}
+
 func (m model) workflowTabHandleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if currentKeyMap().Matches(ActionTabClose, msg) {
 		if r := m.workflowRun; r != nil && (r.done || r.failed) {
