@@ -252,10 +252,14 @@ func (m *model) ensureEntryWrapped(idx, width int) {
 				m.renderer = newRenderer(width)
 				m.rendererWidth = width
 			}
+			rendered := m.renderResponse(e.text)
+			if e.workflowIndent > 0 {
+				rendered = lipgloss.NewStyle().MarginLeft(e.workflowIndent).Render(rendered)
+			}
 			if e.workflowHeader != "" {
-				e.rendered = e.workflowHeader + "\n" + m.renderResponse(e.text)
+				e.rendered = e.workflowHeader + "\n" + rendered
 			} else {
-				e.rendered = m.renderResponse(e.text)
+				e.rendered = rendered
 			}
 		case histResponse:
 			if m.renderer == nil || m.rendererWidth != width {

@@ -60,20 +60,25 @@ type StepRole struct {
 	IsFinal bool
 }
 
+// StepAgentInfo tracks metadata for one step agent in the compiled graph.
+type StepAgentInfo struct {
+	StepIndex int
+	StepName  string
+	Provider  string
+	Model     string
+	InLoop    bool
+	LoopName  string
+	InnerIdx  int
+}
+
 // Compiled is a Def rendered as an executable ADK graph, plus the lookup
 // the event adapter needs to attribute events back to steps.
 type Compiled struct {
 	Workflow *adkworkflow.Workflow
-	// StepIndexByAgent maps an emitted event's Author (an ADK agent
-	// name) to the top-level step index it belongs to. Inner loop
-	// agents map to their containing loop step, so the UI reports
-	// progress against the def the user authored rather than against
-	// compiler-generated node names.
-	StepIndexByAgent map[string]int
-	// StepNameByAgent maps an agent name back to the step name the
-	// user wrote, which sanitisation and de-duplication may have
-	// changed.
-	StepNameByAgent map[string]string
+	// AgentInfo maps an emitted event's Author (an ADK agent
+	// name) to its metadata. Inner loop agents map to their
+	// containing loop step index.
+	AgentInfo map[string]StepAgentInfo
 }
 
 // StepIndex resolves an event author to a top-level step index.
@@ -81,8 +86,8 @@ func (c *Compiled) StepIndex(author string) (int, bool) {
 	if c == nil || author == "" {
 		return 0, false
 	}
-	idx, ok := c.StepIndexByAgent[author]
-	return idx, ok
+	info, ok := c.AgentInfo[author]
+	return info.StepIndex, ok
 }
 
 // CompileWorkflow compiles a Def into an ADK workflow graph.
@@ -116,8 +121,7 @@ func CompileWorkflow(ctx context.Context, cfg WorkflowAgentConfig) (*Compiled, e
 
 	names := newAgentNamer()
 	out := &Compiled{
-		StepIndexByAgent: map[string]int{},
-		StepNameByAgent:  map[string]string{},
+		AgentInfo: map[string]StepAgentInfo{},
 	}
 
 	var nodes []adkworkflow.Node
@@ -129,7 +133,7 @@ func CompileWorkflow(ctx context.Context, cfg WorkflowAgentConfig) (*Compiled, e
 		if top.IsLoop() {
 			node, err = compileLoopNode(ctx, cfg, top, i, isFinal, names, out)
 		} else {
-			node, err = compileStepNode(ctx, cfg, top, i, isFinal, nil, names, out)
+			node, err = compileStepNode(ctx, cfg, top, i, -1, isFinal, nil, names, out)
 		}
 		if err != nil {
 			return nil, err
@@ -151,8 +155,8 @@ func CompileWorkflow(ctx context.Context, cfg WorkflowAgentConfig) (*Compiled, e
 
 // compileStepNode builds the AgentNode for one agent step. pc carries
 // the loop framing when the step is an inner loop step.
-func compileStepNode(ctx context.Context, cfg WorkflowAgentConfig, step Step, stepIdx int, isFinal bool, loop *LoopPromptCtx, names *agentNamer, out *Compiled) (adkworkflow.Node, error) {
-	ag, err := buildStepAgent(ctx, cfg, step, stepIdx, isFinal, loop, names, out)
+func compileStepNode(ctx context.Context, cfg WorkflowAgentConfig, step Step, stepIdx, innerIdx int, isFinal bool, loop *LoopPromptCtx, names *agentNamer, out *Compiled) (adkworkflow.Node, error) {
+	ag, err := buildStepAgent(ctx, cfg, step, stepIdx, innerIdx, isFinal, loop, names, out)
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +175,7 @@ func compileLoopNode(ctx context.Context, cfg WorkflowAgentConfig, loopStep Step
 			ExitCondition: loopStep.ExitCondition,
 			IsTail:        j == len(loopStep.Steps)-1,
 		}
-		ag, err := buildStepAgent(ctx, cfg, innerStep, stepIdx, isFinal && pc.IsTail, pc, names, out)
+		ag, err := buildStepAgent(ctx, cfg, innerStep, stepIdx, j, isFinal && pc.IsTail, pc, names, out)
 		if err != nil {
 			return nil, err
 		}
@@ -179,8 +183,13 @@ func compileLoopNode(ctx context.Context, cfg WorkflowAgentConfig, loopStep Step
 	}
 
 	loopName := names.claim(loopStep.Name, "loop")
-	out.StepIndexByAgent[loopName] = stepIdx
-	out.StepNameByAgent[loopName] = loopStep.Name
+	out.AgentInfo[loopName] = StepAgentInfo{
+		StepIndex: stepIdx,
+		StepName:  loopStep.Name,
+		InLoop:    true,
+		LoopName:  loopStep.Name,
+		InnerIdx:  -1,
+	}
 
 	loopAg, err := loopagent.New(loopagent.Config{
 		AgentConfig: agent.Config{
@@ -196,7 +205,7 @@ func compileLoopNode(ctx context.Context, cfg WorkflowAgentConfig, loopStep Step
 	return adkworkflow.NewAgentNode(loopAg, nodeConfig(cfg))
 }
 
-func buildStepAgent(ctx context.Context, cfg WorkflowAgentConfig, step Step, stepIdx int, isFinal bool, loop *LoopPromptCtx, names *agentNamer, out *Compiled) (agent.Agent, error) {
+func buildStepAgent(ctx context.Context, cfg WorkflowAgentConfig, step Step, stepIdx, innerIdx int, isFinal bool, loop *LoopPromptCtx, names *agentNamer, out *Compiled) (agent.Agent, error) {
 	llm, err := cfg.ModelBuilder(ctx, step)
 	if err != nil {
 		return nil, fmt.Errorf("workflow compile: model for step %q: %w", step.Name, err)
@@ -245,8 +254,18 @@ func buildStepAgent(ctx context.Context, cfg WorkflowAgentConfig, step Step, ste
 	})
 
 	name := names.claim(step.Name, "step")
-	out.StepIndexByAgent[name] = stepIdx
-	out.StepNameByAgent[name] = step.Name
+	info := StepAgentInfo{
+		StepIndex: stepIdx,
+		StepName:  step.Name,
+		Provider:  step.Provider,
+		Model:     step.Model,
+		InLoop:    loop != nil,
+		InnerIdx:  innerIdx,
+	}
+	if loop != nil {
+		info.LoopName = loop.Name
+	}
+	out.AgentInfo[name] = info
 
 	return llmagent.New(llmagent.Config{
 		Name:        name,

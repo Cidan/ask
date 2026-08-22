@@ -30,8 +30,8 @@ func testCompileConfig(def Def) WorkflowAgentConfig {
 }
 
 func agentNames(c *Compiled) []string {
-	out := make([]string, 0, len(c.StepIndexByAgent))
-	for name := range c.StepIndexByAgent {
+	out := make([]string, 0, len(c.AgentInfo))
+	for name := range c.AgentInfo {
 		out = append(out, name)
 	}
 	sort.Strings(out)
@@ -64,7 +64,7 @@ func TestCompileWorkflow_Linear(t *testing.T) {
 		if idx != i {
 			t.Errorf("agent %q maps to step %d, want %d", want, idx, i)
 		}
-		if got := c.StepNameByAgent[want]; got != want {
+		if got := c.AgentInfo[want].StepName; got != want {
 			t.Errorf("agent %q maps to step name %q", want, got)
 		}
 	}
@@ -133,10 +133,10 @@ func TestCompileWorkflow_AgentNamesSanitizedAndUnique(t *testing.T) {
 			t.Error("empty agent name")
 		}
 	}
-	if _, ok := c.StepIndexByAgent["do_the_thing"]; !ok {
+	if _, ok := c.AgentInfo["do_the_thing"]; !ok {
 		t.Errorf("expected spaces to become underscores, got %v", names)
 	}
-	if _, ok := c.StepIndexByAgent["do_the_thing_2"]; !ok {
+	if _, ok := c.AgentInfo["do_the_thing_2"]; !ok {
 		t.Errorf("expected the duplicate to be suffixed, got %v", names)
 	}
 }

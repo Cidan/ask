@@ -393,3 +393,10 @@ func TestUpdateEQ_120BPMPulse(t *testing.T) {
 		}
 	}
 }
+
+func TestTodoBoxStyle_MarginMatchesControls(t *testing.T) {
+	if todoBoxStyle.GetMarginLeft() != thinkingStyle.GetMarginLeft() {
+		t.Errorf("todoBoxStyle margin (%d) must match thinkingStyle margin (%d)",
+			todoBoxStyle.GetMarginLeft(), thinkingStyle.GetMarginLeft())
+	}
+}

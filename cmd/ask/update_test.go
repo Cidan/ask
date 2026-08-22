@@ -507,6 +507,50 @@ func TestUpdate_TodoUpdatedMsg(t *testing.T) {
 	if len(m2.todos) != 1 || m2.todos[0].Content != "a" {
 		t.Errorf("todos=%+v want [{a}]", m2.todos)
 	}
+
+	// When all todos are completed, m.todos is reset to nil and expanded is false.
+	m2.taskListExpanded = true
+	doneTodos := []todoItem{{Content: "a", Status: "completed"}}
+	m3, _ := runUpdate(t, m2, todoUpdatedMsg{todos: doneTodos, proc: m.proc})
+	if m3.todos != nil {
+		t.Errorf("expected todos to be nil when all completed, got %+v", m3.todos)
+	}
+	if m3.taskListExpanded {
+		t.Errorf("expected taskListExpanded to be false")
+	}
+
+	// WorkflowStepStartedMsg clears todos
+	m2.todos = newTodos
+	m4, _ := runUpdate(t, m2, WorkflowStepStartedMsg{TabID: m2.id, StepIdx: 0, StepName: "Step 1"})
+	if m4.todos != nil {
+		t.Errorf("expected WorkflowStepStartedMsg to clear todos, got %+v", m4.todos)
+	}
+}
+
+func TestWorkflowTab_ActionTaskListToggle(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{
+			Name: "test",
+			Steps: []workflowStep{
+				{Name: "step1", Prompt: "do step 1"},
+			},
+		},
+	}
+	m.todos = []todoItem{{Content: "in progress", Status: "in_progress"}}
+	m.taskListExpanded = false
+
+	// Press Ctrl+X
+	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'x'})
+	if !m2.taskListExpanded {
+		t.Fatalf("expected taskListExpanded to be true after Ctrl+X")
+	}
+
+	// Press Ctrl+X again
+	m3, _ := runUpdate(t, m2, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'x'})
+	if m3.taskListExpanded {
+		t.Fatalf("expected taskListExpanded to be false after second Ctrl+X")
+	}
 }
 
 func TestUpdate_SubagentLifecycleEvents(t *testing.T) {
@@ -1781,5 +1825,54 @@ func TestUpdate_ToggleTaskList(t *testing.T) {
 	m3, _ := runUpdate(t, m2, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'x'})
 	if m3.taskListExpanded {
 		t.Error("expected another Ctrl+X to collapse task list")
+	}
+}
+
+func TestWorkflowStepStartedMsg_HeaderFormat(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{
+			Name: "test",
+			Steps: []workflowStep{
+				{Name: "step1", Prompt: "do step 1"},
+				{Name: "loop1", Kind: "loop", Steps: []workflowStep{{Name: "inner1"}}},
+			},
+		},
+	}
+
+	m2, _ := runUpdate(t, m, WorkflowStepStartedMsg{
+		TabID:    m.id,
+		StepIdx:  0,
+		StepName: "step1",
+		Provider: "vertex",
+		Model:    "gemini-3.7-flash",
+	})
+	if len(m2.history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(m2.history))
+	}
+	last := m2.history[0].text
+	if strings.Contains(last, "|") {
+		t.Errorf("step header should not contain pipe, got %q", last)
+	}
+	if !strings.HasPrefix(last, "     ") {
+		t.Errorf("top-level step header should start with 5 spaces, got %q", last)
+	}
+
+	m3, _ := runUpdate(t, m2, WorkflowStepStartedMsg{
+		TabID:    m.id,
+		StepIdx:  1,
+		StepName: "inner1",
+		Provider: "vertex",
+		Model:    "gemini-3.7-flash",
+	})
+	if len(m3.history) != 2 {
+		t.Fatalf("expected 2 history entries, got %d", len(m3.history))
+	}
+	loopHeader := m3.history[1].text
+	if strings.Contains(loopHeader, "|") {
+		t.Errorf("inner loop step header should not contain pipe, got %q", loopHeader)
+	}
+	if !strings.HasPrefix(loopHeader, "       ") {
+		t.Errorf("inner loop step header should start with 7 spaces, got %q", loopHeader)
 	}
 }
