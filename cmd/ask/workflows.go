@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -396,6 +397,9 @@ func (m *model) workflowAssistantText(text string) {
 }
 
 func (m *model) appendWorkflowStepDone(name, provider, mdl, summary string, indent int) {
+	if strings.TrimSpace(summary) == "" {
+		return
+	}
 	m.history = append(m.history, historyEntry{
 		kind:           histWorkflowDone,
 		text:           summary,

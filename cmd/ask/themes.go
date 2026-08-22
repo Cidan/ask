@@ -557,7 +557,7 @@ func applyTheme(t theme) {
 		BorderForeground(t.accent).
 		Padding(0, 1)
 
-	todoBoxStyle = lipgloss.NewStyle().MarginLeft(5)
+	todoBoxStyle = lipgloss.NewStyle().MarginLeft(3)
 	todoPendingStyle = lipgloss.NewStyle().Foreground(t.dim)
 	todoProgressStyle = lipgloss.NewStyle().Foreground(t.accentAlt).Bold(true)
 	todoCompletedStyle = lipgloss.NewStyle().Foreground(t.dim)

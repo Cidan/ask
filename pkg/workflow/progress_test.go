@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"google.golang.org/adk/v2/session"
@@ -253,5 +254,51 @@ func TestProgress_LoopReentryEmitsInnerAgents(t *testing.T) {
 	}
 	if starts != 4 {
 		t.Errorf("loop inner agents started %d times, want 4", starts)
+	}
+}
+
+func TestProgress_ExitLoopCompletesStepBeforeBreakNote(t *testing.T) {
+	def := Def{Name: "wf", Steps: []Step{
+		{Name: "fix", Kind: "loop", MaxIterations: 3, Steps: []Step{
+			{Name: "edit", Prompt: "edit"},
+			{Name: "verify", Prompt: "verify"},
+		}},
+		{Name: "finalize", Prompt: "finalize"},
+	}}
+	l := &recordingListener{}
+	p := testProgress(t, def, l)
+
+	p.Observe(textEvent("edit", "edit done"))
+	p.Observe(textEvent("verify", "tests pass"))
+	p.Observe(callEvent("verify", "exit_loop", map[string]any{}))
+	p.Observe(textEvent("finalize", "finalizing"))
+	p.Finish(nil)
+
+	verifyDoneIdx := -1
+	breakNoteIdx := -1
+	finalizeStartIdx := -1
+
+	for i, c := range l.calls {
+		if c.kind == "step_done" && c.text == "tests pass" {
+			verifyDoneIdx = i
+		}
+		if c.kind == "note" && strings.Contains(c.text, "break") {
+			breakNoteIdx = i
+		}
+		if c.kind == "step_started" && c.text == "finalize" {
+			finalizeStartIdx = i
+		}
+	}
+
+	if verifyDoneIdx == -1 || breakNoteIdx == -1 || finalizeStartIdx == -1 {
+		t.Fatalf("missing expected events: verifyDone=%d breakNote=%d finalizeStart=%d (all calls: %+v)",
+			verifyDoneIdx, breakNoteIdx, finalizeStartIdx, l.calls)
+	}
+
+	if verifyDoneIdx > breakNoteIdx {
+		t.Errorf("verify step_done (%d) should precede break note (%d)", verifyDoneIdx, breakNoteIdx)
+	}
+	if breakNoteIdx > finalizeStartIdx {
+		t.Errorf("break note (%d) should precede finalize step_started (%d)", breakNoteIdx, finalizeStartIdx)
 	}
 }

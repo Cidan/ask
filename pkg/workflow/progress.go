@@ -159,6 +159,9 @@ func (p *Progress) captureToolSignals(author string, info StepAgentInfo, ev *ses
 			}
 		case "exit_loop":
 			if info.InLoop {
+				if p.currentAgent == author {
+					p.complete(author)
+				}
 				p.listener.OnNote(p.tabID, LoopNoteLine(info.LoopName, "break", ""))
 			}
 		case "finish_workflow":
@@ -184,6 +187,9 @@ func (p *Progress) complete(author string) {
 
 	p.summaries[author] = ""
 	p.text[author] = ""
+	if p.currentAgent == author {
+		p.currentAgent = ""
+	}
 }
 
 // Finish closes the run. A nil err completes the in-flight step and
