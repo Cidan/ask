@@ -483,7 +483,7 @@ func (m model) spinnerLine() string {
 	}
 	statusLine := thinkingStyle.Render(dimStyle.Render(s))
 	eqLine := thinkingStyle.Render(m.renderEQMeter())
-	return statusLine + "\n" + eqLine
+	return eqLine + "\n\n" + statusLine
 }
 
 func (m model) renderEQMeter() string {
@@ -496,16 +496,13 @@ func (m model) renderEQMeter() string {
 		} else if h > 7 {
 			h = 7
 		}
-		barHue := t + (float64(i) * 0.05)
+		barHue := t + (float64(i) * 0.06)
 		if barHue > 1.0 {
 			barHue -= 1.0
 		}
-		hex := hsvToHex(barHue*360.0, 0.8, 0.9)
+		hex := hsvToHex(barHue*360.0, 0.75, 0.58)
 		style := lipgloss.NewStyle().Foreground(lipgloss.Color(hex))
 		sb.WriteString(style.Render(string(eqBarSteps[h])))
-		if i < len(m.eqHeights)-1 {
-			sb.WriteString(" ")
-		}
 	}
 	return sb.String()
 }
@@ -538,7 +535,7 @@ func (m model) spinnerBlockHeight() int {
 		return 2
 	}
 	if m.busy() || (m.workflowRun != nil && !m.workflowRun.done && !m.workflowRun.failed) {
-		return 3
+		return 4
 	}
 	return 0
 }

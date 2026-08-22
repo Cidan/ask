@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -2278,20 +2279,52 @@ func (m model) dispatchProviderTurn(line string) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) updateEQ() {
+	m.updateEQAt(float64(time.Now().UnixNano()) / 1e9)
+}
+
+func (m *model) updateEQAt(t float64) {
+	m.eqFrame++
+
+	// 120 BPM in 4/4 time: 1 beat = 0.5s (500ms).
+	const beatDuration = 0.5
+	beatIndex := int64(math.Floor(t / beatDuration))
+	beatPhase := (t - float64(beatIndex)*beatDuration) / beatDuration
+	if beatPhase < 0 {
+		beatPhase = 0
+	} else if beatPhase >= 1.0 {
+		beatPhase = math.Mod(beatPhase, 1.0)
+	}
+
+	// Pulse envelope:
+	// 0.00 - 0.30 (0 - 150ms): Fast rise (attack) using cubic ease-out to peak.
+	// 0.30 - 0.85 (150 - 425ms): Slower downfall (decay) using cubic decay to 0.
+	// 0.85 - 1.00 (425 - 500ms): Bottomed-out rest at 0 before next pulse.
+	var envelope float64
+	switch {
+	case beatPhase < 0.30:
+		r := beatPhase / 0.30
+		envelope = 1.0 - math.Pow(1.0-r, 3)
+	case beatPhase < 0.85:
+		f := (beatPhase - 0.30) / 0.55
+		envelope = math.Pow(1.0-f, 3)
+	default:
+		envelope = 0.0
+	}
+
 	for i := 0; i < len(m.eqHeights); i++ {
-		// Randomly step up or down by 1, constrained to 0-7
-		step := m.eqHeights[i]
-		if step == 0 {
-			step++
-		} else if step == 7 {
-			step--
-		} else {
-			if (time.Now().UnixNano()+int64(i))%2 == 0 {
-				step++
-			} else {
-				step--
-			}
+		// Deterministic pseudo-random peak in [0.50, 1.00] (50% to 100% height) per bar per beat
+		seed := uint64(beatIndex*7 + int64(i)*31 + 1337)
+		seed = (seed ^ (seed >> 30)) * 0xbf58476d1ce4e5b9
+		seed = (seed ^ (seed >> 27)) * 0x94d049bb133111eb
+		seed = seed ^ (seed >> 31)
+		peak := 0.50 + 0.50*(float64(seed%1000)/1000.0)
+
+		val := int(math.Round(envelope * peak * 7.0))
+		if val < 0 {
+			val = 0
+		} else if val > 7 {
+			val = 7
 		}
-		m.eqHeights[i] = step
+		m.eqHeights[i] = val
 	}
 }

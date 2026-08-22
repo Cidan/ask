@@ -60,7 +60,10 @@ func newTab(id int, cfg askConfig) (*model, error) {
 	applyInputTheme(&ta)
 
 	sp := spinner.New()
-	sp.Spinner = spinner.Dot
+	sp.Spinner = spinner.Spinner{
+		Frames: spinner.Dot.Frames,
+		FPS:    time.Second / 60,
+	}
 
 	renderer := newRenderer(100)
 

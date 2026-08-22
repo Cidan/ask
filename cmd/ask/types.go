@@ -466,6 +466,7 @@ type model struct {
 	status          string
 	statusRevertSeq int
 	eqHeights       [7]int
+	eqFrame         int
 
 	// Preserved solely for backward-compatibility in tests.
 	// Unused and unreferenced in the main application code.
