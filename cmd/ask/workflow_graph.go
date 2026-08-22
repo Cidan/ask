@@ -9,6 +9,7 @@ import (
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/tools"
 	"github.com/Cidan/ask/pkg/workflow"
+	"google.golang.org/adk/v2/agent/llmagent"
 	adkmodel "google.golang.org/adk/v2/model"
 	adktool "google.golang.org/adk/v2/tool"
 )
@@ -143,6 +144,7 @@ func tuiWorkflowCompileConfig(sess *agentSession, def workflow.Def, src workflow
 			}
 			return toolsets, nil
 		},
+		BeforeModelCallbacks: []llmagent.BeforeModelCallback{sess.beforeModelCallback},
 	}
 }
 

@@ -620,6 +620,18 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case queuedMessageDrainedMsg:
+		if !m.matchesTabID(msg.tabID, msg.proc) {
+			return m, nil
+		}
+		for i := len(m.history) - 1; i >= 0; i-- {
+			if m.history[i].kind == histUserQueued {
+				m.history[i].kind = histUser
+				m.history[i].wrappedFor = 0 // force re-render
+			}
+		}
+		return m, nil
+
 	case turnCompleteMsg:
 		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
@@ -2273,9 +2285,29 @@ func (m model) sendToProvider(line string) (tea.Model, tea.Cmd) {
 }
 
 func (m model) dispatchProviderTurn(line string) (tea.Model, tea.Cmd) {
-	m.responseActive = false
 	nAtt := len(m.pending)
 	(&m).clearSelection()
+
+	if m.busy() {
+		m.appendUserQueued(userBarText(line, nAtt))
+		args := m.sessionArgs()
+		p := m.provider
+		pending := append([]pendingAttachment(nil), m.pending...)
+		m.pending = nil
+		cmd := func() tea.Msg {
+			err := globalCoordinator.Dispatch(m.id, p, args, line, pending)
+			if err != nil {
+				return providerDoneMsg{
+					tabID: m.id,
+					err:   err,
+				}
+			}
+			return nil
+		}
+		return m, tea.Batch(cmd, m.spinner.Tick)
+	}
+
+	m.responseActive = false
 	if m.workflowRun == nil {
 		m.appendUser(userBarText(line, nAtt))
 	}

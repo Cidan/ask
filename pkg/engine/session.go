@@ -40,6 +40,7 @@ type Session struct {
 	modelID       string
 	tools         []Tool
 	lastResponse  string
+	midTurnQueue  *MidTurnQueue
 	sendCh        chan Turn
 	closed        chan struct{}
 	closeOnce     sync.Once
@@ -64,6 +65,7 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 		contextWindow: 1_048_576,
 		modelID:       modelID,
 		tools:         tools,
+		midTurnQueue:  &MidTurnQueue{},
 		sendCh:        make(chan Turn, 8),
 		closed:        make(chan struct{}),
 		listener:      listener,
@@ -101,6 +103,9 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 		InstructionProvider:   instructionProvider,
 		Tools:                 adkTools,
 		GenerateContentConfig: genConfig,
+		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
+			s.beforeModelCallback,
+		},
 	})
 	if err == nil {
 		s.sessSvc = NewFileSessionService(args.Provider, args.Cwd)
@@ -138,6 +143,35 @@ func (s *Session) Close() {
 		close(s.closed)
 		s.InterruptTurn()
 	})
+}
+
+func (s *Session) QueueMidTurn(text string) {
+	s.midTurnQueue.Push(text)
+}
+
+func (s *Session) beforeModelCallback(ctx agent.Context, llmRequest *model.LLMRequest) (*model.LLMResponse, error) {
+	msgs := s.midTurnQueue.Drain()
+	if len(msgs) == 0 {
+		return nil, nil
+	}
+	combined := strings.Join(msgs, "\n\n")
+	llmRequest.Contents = append(llmRequest.Contents, genai.NewContentFromText(combined, genai.RoleUser))
+
+	if sess := ctx.Session(); sess != nil && s.sessSvc != nil {
+		s.sessSvc.AppendEvent(ctx, sess, &session.Event{
+			LLMResponse: model.LLMResponse{
+				Content: genai.NewContentFromText(combined, genai.RoleUser),
+			},
+			Author: "user",
+		})
+	}
+
+	s.Emit(MidTurnDrainedEvent{
+		BaseEvent: BaseEvent{TabID: s.args.TabID},
+		Text:      combined,
+	})
+
+	return nil, nil
 }
 
 func (s *Session) QueueTurn(text string, files ...[]FilePart) error {
@@ -231,6 +265,15 @@ func (s *Session) run() {
 				first = false
 			}
 			s.runTurn(turn)
+			msgs := s.midTurnQueue.Drain()
+			if len(msgs) > 0 {
+				combined := strings.Join(msgs, "\n\n")
+				s.Emit(MidTurnDrainedEvent{
+					BaseEvent: BaseEvent{TabID: s.args.TabID},
+					Text:      combined,
+				})
+				go s.QueueTurn(combined)
+			}
 		case <-s.closed:
 			s.Emit(ExitedEvent{
 				BaseEvent: BaseEvent{TabID: s.args.TabID},

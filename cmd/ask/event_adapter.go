@@ -107,6 +107,8 @@ func EngineEventToTeaMsg(event engine.EngineEvent) tea.Msg {
 		return providerExitedMsg{tabID: tabID}
 	case engine.TurnCompleteEvent:
 		return turnCompleteMsg{tabID: tabID}
+	case engine.MidTurnDrainedEvent:
+		return queuedMessageDrainedMsg{text: ev.Text, tabID: tabID}
 	default:
 		return nil
 	}

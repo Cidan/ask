@@ -1,12 +1,14 @@
 package main
 
 import (
-	"github.com/Cidan/ask/pkg/diff"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Cidan/ask/pkg/diff"
+	"github.com/Cidan/ask/pkg/engine"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -178,6 +180,61 @@ func TestUpdate_QuietModeEmptyBufferNoOp(t *testing.T) {
 	m2, _ := runUpdate(t, m, turnCompleteMsg{proc: m.proc})
 	if len(m2.history) != 0 {
 		t.Fatalf("expected 0 history entries for empty turn buffer, got %d", len(m2.history))
+	}
+}
+
+func TestUpdate_QueuedMessageDrainedMsg(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.testBusy = true
+	m.appendUserQueued("queued text")
+
+	if len(m.history) != 1 || m.history[0].kind != histUserQueued {
+		t.Fatalf("history should contain histUserQueued")
+	}
+
+	m2, _ := runUpdate(t, m, queuedMessageDrainedMsg{proc: m.proc})
+	if len(m2.history) != 1 || m2.history[0].kind != histUser {
+		t.Errorf("history should be converted to histUser, got %v", m2.history[0].kind)
+	}
+	if m2.history[0].wrappedFor != 0 {
+		t.Errorf("wrappedFor should be reset to 0 to force render, got %d", m2.history[0].wrappedFor)
+	}
+}
+
+func TestUpdate_DispatchWhileBusyQueuesUserBar(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.testBusy = true
+
+	m2, cmd := m.dispatchProviderTurn("my queued instruction")
+	if cmd == nil {
+		t.Errorf("expected cmd returned from dispatchProviderTurn")
+	}
+	resM, ok := m2.(model)
+	if !ok {
+		t.Fatalf("expected model type")
+	}
+	if len(resM.history) != 1 || resM.history[0].kind != histUserQueued {
+		t.Fatalf("expected histUserQueued in history, got %+v", resM.history)
+	}
+	if resM.history[0].text != "my queued instruction" {
+		t.Errorf("expected text %q, got %q", "my queued instruction", resM.history[0].text)
+	}
+}
+
+func TestEventAdapter_MidTurnDrainedEvent(t *testing.T) {
+	ev := engine.MidTurnDrainedEvent{
+		BaseEvent: engine.BaseEvent{TabID: 5},
+		Text:      "drained text",
+	}
+	msg := EngineEventToTeaMsg(ev)
+	qdMsg, ok := msg.(queuedMessageDrainedMsg)
+	if !ok {
+		t.Fatalf("expected queuedMessageDrainedMsg, got %T", msg)
+	}
+	if qdMsg.tabID != 5 || qdMsg.text != "drained text" {
+		t.Errorf("unexpected msg fields: %+v", qdMsg)
 	}
 }
 
@@ -1885,7 +1942,7 @@ func TestWorkflowDoneMsg_OutcomeWordWrapping(t *testing.T) {
 	}
 	longDesc := "This is a very long description that should be word-wrapped correctly by the view layer. It exceeds the typical column boundary and would otherwise hard-cut mid-word if sliced by xansi.Cut without proper glamour word wrapping and indentation."
 	m2, _ := runUpdate(t, m, WorkflowDoneMsg{TabID: 1, Description: longDesc})
-	
+
 	if len(m2.history) != 1 {
 		t.Fatalf("expected 1 history entry, got %d", len(m2.history))
 	}
@@ -1930,7 +1987,7 @@ func TestWorkflowDoneMsg_EmptyDescription(t *testing.T) {
 		Workflow: workflowDef{Name: "test"},
 	}
 	m2, _ := runUpdate(t, m, WorkflowDoneMsg{TabID: 1, Description: ""})
-	
+
 	if len(m2.history) != 1 {
 		t.Fatalf("expected 1 history entry, got %d", len(m2.history))
 	}
@@ -1941,7 +1998,7 @@ func TestWorkflowDoneMsg_EmptyDescription(t *testing.T) {
 	if e.text != "" {
 		t.Errorf("expected text to be empty, got %q", e.text)
 	}
-	
+
 	m2.ensureEntryWrapped(0, 80)
 	wrapped := m2.history[0].wrapped
 	// With empty body, the result should just be the header
@@ -1961,7 +2018,7 @@ func TestWorkflowFailedMsg_OutcomeWordWrapping(t *testing.T) {
 	}
 	longReason := "This is a very long failure reason that should be word-wrapped correctly by the view layer. It exceeds the typical column boundary and would otherwise hard-cut mid-word if sliced by xansi.Cut without proper glamour word wrapping and indentation."
 	m2, _ := runUpdate(t, m, WorkflowFailedMsg{TabID: 1, Reason: longReason})
-	
+
 	if len(m2.history) != 1 {
 		t.Fatalf("expected 1 history entry, got %d", len(m2.history))
 	}

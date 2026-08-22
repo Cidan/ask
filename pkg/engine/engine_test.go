@@ -393,3 +393,127 @@ func TestEngine_RunWorkflow_BracesInStepPromptDoNotFailTheRun(t *testing.T) {
 		}
 	}
 }
+
+func TestMidTurnQueue(t *testing.T) {
+	q := &MidTurnQueue{}
+	if msgs := q.Drain(); msgs != nil {
+		t.Fatalf("expected nil from empty drain, got %v", msgs)
+	}
+
+	q.Push("msg1")
+	q.Push("msg2")
+
+	msgs := q.Drain()
+	if len(msgs) != 2 || msgs[0] != "msg1" || msgs[1] != "msg2" {
+		t.Fatalf("unexpected drain result: %v", msgs)
+	}
+
+	if msgsAfter := q.Drain(); msgsAfter != nil {
+		t.Fatalf("expected nil after drain, got %v", msgsAfter)
+	}
+
+	// Concurrent test
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			q.Push("item")
+		}(i)
+	}
+	wg.Wait()
+	drained := q.Drain()
+	if len(drained) != 50 {
+		t.Fatalf("expected 50 items from concurrent pushes, got %d", len(drained))
+	}
+}
+
+func TestSession_MidTurnQueueInjection(t *testing.T) {
+	var mu sync.Mutex
+	var receivedContents []string
+
+	mockModel := &mockLLM{
+		name: "mock-model",
+		generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+			mu.Lock()
+			for _, c := range req.Contents {
+				if c != nil {
+					for _, p := range c.Parts {
+						if p != nil && p.Text != "" {
+							receivedContents = append(receivedContents, p.Text)
+						}
+					}
+				}
+			}
+			mu.Unlock()
+			return mockLLMSequence(
+				partialTextResponse("ok"),
+				textResponse("ok"),
+			)
+		},
+	}
+
+	var events []EngineEvent
+	var evMu sync.Mutex
+	listener := func(ev EngineEvent) {
+		evMu.Lock()
+		defer evMu.Unlock()
+		events = append(events, ev)
+	}
+
+	session := NewSession(
+		SessionArgs{TabID: 2, Cwd: t.TempDir(), Model: "mock-model"},
+		mockModel,
+		"system prompt",
+		nil,
+		listener,
+		HeadlessInteractionHandler{AutoApproveTools: true},
+	)
+	defer session.Close()
+
+	session.QueueMidTurn("steer instruction mid-turn")
+
+	if err := session.QueueTurn("initial prompt"); err != nil {
+		t.Fatalf("queue turn: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		for {
+			evMu.Lock()
+			for _, ev := range events {
+				if ev.Kind() == EventKindTurnComplete {
+					evMu.Unlock()
+					close(done)
+					return
+				}
+			}
+			evMu.Unlock()
+		}
+	}()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	joined := strings.Join(receivedContents, " ")
+	if !strings.Contains(joined, "steer instruction mid-turn") {
+		t.Errorf("expected queued mid-turn message in model request, got: %q", joined)
+	}
+
+	evMu.Lock()
+	defer evMu.Unlock()
+	var gotMidTurnDrained bool
+	for _, ev := range events {
+		if ev.Kind() == EventKindMidTurnDrained {
+			gotMidTurnDrained = true
+			if mtd, ok := ev.(MidTurnDrainedEvent); ok {
+				if mtd.Text != "steer instruction mid-turn" {
+					t.Errorf("expected drained event text %q, got %q", "steer instruction mid-turn", mtd.Text)
+				}
+			}
+		}
+	}
+	if !gotMidTurnDrained {
+		t.Error("expected MidTurnDrainedEvent to be emitted")
+	}
+}

@@ -21,6 +21,7 @@ const (
 	EventKindDone            EventKind = "done"
 	EventKindExited          EventKind = "exited"
 	EventKindTurnComplete    EventKind = "turn_complete"
+	EventKindMidTurnDrained  EventKind = "mid_turn_drained"
 	EventKindWorkflowStarted EventKind = "workflow_started"
 	EventKindWorkflowStep    EventKind = "workflow_step"
 	EventKindWorkflowDone    EventKind = "workflow_done"
@@ -204,6 +205,14 @@ type TurnCompleteEvent struct {
 }
 
 func (TurnCompleteEvent) Kind() EventKind { return EventKindTurnComplete }
+
+// MidTurnDrainedEvent is emitted when a queued mid-turn message is drained into the session.
+type MidTurnDrainedEvent struct {
+	BaseEvent
+	Text string `json:"text"`
+}
+
+func (MidTurnDrainedEvent) Kind() EventKind { return EventKindMidTurnDrained }
 
 // WorkflowStartedEvent is emitted when a workflow begins execution.
 type WorkflowStartedEvent struct {
