@@ -110,6 +110,25 @@ func TestBuildSystemPrompt_InWorkflow(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPrompt_NoPreToolAnnouncement(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stubGitStatus(t, "")
+	cwd := t.TempDir()
+	opts := PromptOptions{
+		Cwd: cwd,
+	}
+	prompt := BuildSystemPrompt(opts)
+
+	if strings.Contains(prompt, "say in a sentence what you're about to do") {
+		t.Error("prompt should not instruct agent to say in a sentence what it is about to do before the first tool call")
+	}
+
+	if strings.Contains(prompt, "Keep text between tool calls to brief status notes") {
+		t.Error("prompt should not instruct agent to keep text between tool calls to brief status notes")
+	}
+}
+
 func TestBuildSystemPrompt_NonRepoOmitsGit(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
