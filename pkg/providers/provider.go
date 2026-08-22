@@ -28,6 +28,8 @@ const askSteeringPromptP6 = `End the turn only when the work you committed to in
 
 const askSteeringPromptInWorkflowP6 = `End the turn only when the work you committed to in your text is actually done. Do not write a closing sentence that promises future work ("Let me X next", "I will then Y", "Then I'll commit") without immediately performing that work via tool calls in the same turn. When you have finished the step's tasks, you MUST call the end_turn tool as your final action to record your summary and outcome in the workflow log. Do not finish the turn without calling end_turn.`
 
+const askSteeringPromptTodos = `You MUST actively use the 'todos' tool for ANY multi-step task, whether you are running inline or inside a workflow step. Break your work down into a clear plan, mark the first item in_progress, and update the list live as you complete each task. Do NOT batch work and send a completed list at the end — the task list must track reality at every moment.`
+
 type SteeringOptions struct {
 	InWorkflow bool
 	Cwd        string
@@ -44,7 +46,7 @@ func SteeringPrompt(opts SteeringOptions) string {
 	if opts.InWorkflow {
 		p6 = askSteeringPromptInWorkflowP6
 	}
-	paragraphs = append(paragraphs, askSteeringPromptP4, askSteeringPromptP5, p6)
+	paragraphs = append(paragraphs, askSteeringPromptP4, askSteeringPromptP5, p6, askSteeringPromptTodos)
 
 	prompt := strings.Join(paragraphs, "\n\n")
 	if strings.Contains(opts.Cwd, ".claude/worktrees/") {

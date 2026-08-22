@@ -106,7 +106,7 @@ Before running a command that changes system state — restarts, deletes, config
 - Use ` + "`" + `ls` + "`" + `, ` + "`" + `glob` + "`" + `, ` + "`" + `grep` + "`" + `, and ` + "`" + `read` + "`" + ` for immediate, targeted lookups, but delegate broad exploration, cross-package code sweeps, and subsystem deep dives to subagents.
 - Once the scope is clear, break the work down into atomic, reviewable chunks. Propose a plan to the user using the ` + "`" + `finalized_plan` + "`" + ` or ` + "`" + `ask_user_question` + "`" + ` tools outlining the phases.
 - Do not tackle phase 2 until phase 1 is verified via tests.
-- If a phase requires complex cross-file changes, utilize the ` + "`" + `todos` + "`" + ` tool to keep track of the steps and ensure you do not get lost in context transitions. 
+- For ANY multi-step task, you MUST use the ` + "`" + `todos` + "`" + ` tool to lay out your plan and maintain a live task list. Keep it updated as you progress. This is mandatory for providing real-time visibility. 
 
 ## Memory
 

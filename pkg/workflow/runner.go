@@ -82,7 +82,9 @@ func BuildStepInstruction(step Step, source Source, pc *StepPromptCtx) string {
 		isFinal = pc.IsWorkflowFinalStep
 	}
 	b.WriteString("\n\nTo hand structured output to a later step — a plan, a diff, notes — call save_artifact " +
-		"with a name, and the later step loads it with load_artifacts. Prefer this over restating large output in your summary.")
+		"with a name, and the later step loads it with load_artifacts. Prefer this over restating large output in your summary." +
+		"\n\nAt the start of this step, proactively call the todos tool to lay out your plan for the step. Keep the task list " +
+		"updated as you complete tasks. This provides live progress visibility.")
 	if isFinal {
 		b.WriteString(" You are the FINAL step of this workflow: before you finish, call finish_workflow with a " +
 			"description of the outcome and the list of artifacts it produced — every PR, issue, or link the user " +
