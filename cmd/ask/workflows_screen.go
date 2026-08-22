@@ -97,13 +97,11 @@ type workflowsBuilderState struct {
 	renaming    string
 	renameDraft string
 
-	// providerPicker / modelPicker flag the small overlays for
-	// step.Provider and step.Model selection.
-	providerPicker  bool
-	providerCursor  int
-	modelPicker     bool
-	modelCursor     int
-	modelPickerOpts []string
+	// providerPicker flags the small overlay for step.Provider
+	// selection. Model selection reuses the full-frame Ctrl+M picker
+	// (openModelPickerForStep) instead of a builder-local overlay.
+	providerPicker bool
+	providerCursor int
 
 	// prompt is the in-flight multi-line textarea editor. Non-nil while
 	// open; Enter inserts a newline, Ctrl+S commits, Esc cancels. It is
@@ -148,9 +146,6 @@ func (workflowsScreen) updateKey(m model, msg tea.KeyPressMsg) (model, tea.Cmd, 
 	}
 	if b.providerPicker {
 		return m.workflowsBuilderUpdateProviderPicker(msg)
-	}
-	if b.modelPicker {
-		return m.workflowsBuilderUpdateModelPicker(msg)
 	}
 	switch b.focus {
 	case workflowsBuilderFocusLeft:
@@ -880,9 +875,7 @@ func (m model) workflowsAgentFieldEnter(t stepTarget) (model, tea.Cmd, bool) {
 		b.providerPicker = true
 		b.providerCursor = indexOfRegisteredProvider(step.Provider)
 	case workflowsStepFieldModel:
-		b.modelPickerOpts = modelOptionsForProvider(step.Provider)
-		b.modelPicker = true
-		b.modelCursor = indexOfModel(b.modelPickerOpts, step.Model)
+		return m.openModelPickerForStep(t)
 	case workflowsStepFieldPrompt:
 		ta := newPromptTextarea(step.Prompt)
 		b.prompt = &ta
@@ -928,27 +921,46 @@ func indexOfRegisteredProvider(id string) int {
 	return 0
 }
 
-// modelOptionsForProvider returns the option strings the step model
-// picker should show. Wraps the existing modelPickerOptions helper.
-// Empty when the provider has no model picker.
-func modelOptionsForProvider(id string) []string {
-	for _, p := range providerRegistry {
-		if p.ID() == id {
-			return modelPickerOptions(p.ModelPicker())
-		}
-	}
-	return nil
+// openModelPickerForStep opens the full-frame Ctrl+M model picker
+// (model_picker.go) retargeted at the step named by t: the state's
+// stepTarget makes a pick write step.Provider/step.Model instead of
+// switching the live tab. The picker is dispatched by mode
+// (modeModelPicker) before any screen handler and composited at the app
+// layer, so it renders over the whole frame exactly as Ctrl+M does — the
+// only difference is the callsite and the terminal action.
+func (m model) openModelPickerForStep(t stepTarget) (model, tea.Cmd, bool) {
+	b := m.workflowsBuilder
+	step := b.stepAt(t)
+	cfg, _ := loadConfig()
+	s := buildModelPickerState(cfg)
+	tt := t
+	s.stepTarget = &tt
+	s.seedCursor(step.Provider, step.Model)
+	m.modelPicker = s
+	m.mode = modeModelPicker
+	return m, m.modelPickerLoadCmd(false), true
 }
 
-// indexOfModel returns the slice index whose label equals `model`,
-// or 0 when no match.
-func indexOfModel(opts []string, model string) int {
-	for i, o := range opts {
-		if o == model {
-			return i
+// applyModelPickerToStep is the workflows-builder terminal action for the
+// shared model picker: it writes the chosen provider+model onto the step
+// (a picker entry always carries both, since the list is provider-grouped),
+// commits, and returns to the builder screen. Called from
+// applyModelPickerEntry when modelPicker.stepTarget is set.
+func (m model) applyModelPickerToStep(t stepTarget, entry modelPickerEntry) (tea.Model, tea.Cmd) {
+	b := m.workflowsBuilder
+	if b != nil && t.wIdx >= 0 && t.wIdx < len(b.items) {
+		step := b.stepAt(t)
+		step.Provider = entry.providerID
+		modelID := entry.modelID
+		if strings.EqualFold(modelID, "default") {
+			modelID = ""
+		}
+		step.Model = modelID
+		if err := b.commitItems(); err != nil {
+			b.toast = "save failed: " + err.Error()
 		}
 	}
-	return 0
+	return m.closeModelPicker(), nil
 }
 
 // newPromptTextarea spins up a multi-line textarea seeded with the
@@ -1011,53 +1023,6 @@ func (m model) workflowsBuilderUpdateProviderPicker(msg tea.KeyPressMsg) (model,
 	return m, nil, true
 }
 
-// ----- Sub-modal: model picker -----
-
-func (m model) workflowsBuilderUpdateModelPicker(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
-	b := m.workflowsBuilder
-	switch {
-	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
-		b.modelPicker = false
-		return m, nil, true
-	case listNavPrev(msg):
-		b.modelCursor = listNavWrap(b.modelCursor, -1, len(b.modelPickerOpts))
-		return m, nil, true
-	case listNavNext(msg):
-		b.modelCursor = listNavWrap(b.modelCursor, +1, len(b.modelPickerOpts))
-		return m, nil, true
-	case msg.Code == tea.KeyEnter:
-		if b.modelCursor < 0 || b.modelCursor >= len(b.modelPickerOpts) {
-			b.modelPicker = false
-			return m, nil, true
-		}
-		picked := b.modelPickerOpts[b.modelCursor]
-		if picked == switcherCustomRowLabel {
-			b.modelPicker = false
-			b.renaming = "model"
-			if t, ok := b.currentStepTarget(); ok && !t.isLoop {
-				step := b.stepAt(t)
-				if step.Model != switcherCustomRowLabel {
-					b.renameDraft = step.Model
-				} else {
-					b.renameDraft = ""
-				}
-			} else {
-				b.renameDraft = ""
-			}
-			return m, nil, true
-		}
-		if t, ok := b.currentStepTarget(); ok && !t.isLoop {
-			b.stepAt(t).Model = picked
-			if err := b.commitItems(); err != nil {
-				b.toast = "save failed: " + err.Error()
-			}
-		}
-		b.modelPicker = false
-		return m, nil, true
-	}
-	return m, nil, true
-}
-
 // ----- Sub-modal: rename (workflow or step) -----
 
 func (m model) workflowsBuilderUpdateRename(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
@@ -1115,13 +1080,6 @@ func (m model) workflowsBuilderUpdateRename(msg tea.KeyPressMsg) (model, tea.Cmd
 				}
 			}
 			b.stepAt(t).Name = draft
-		case "model":
-			t, ok := b.currentStepTarget()
-			if !ok {
-				b.renaming = ""
-				return m, nil, true
-			}
-			b.stepAt(t).Model = draft
 		}
 		if err := b.commitItems(); err != nil {
 			b.toast = "save failed: " + err.Error()
@@ -1362,8 +1320,6 @@ func (b *workflowsBuilderState) renderOverlay(width, height int) string {
 		return b.renderPromptEditor(width, height)
 	case b.providerPicker:
 		return b.renderProviderPicker(width, height)
-	case b.modelPicker:
-		return b.renderModelPicker(width, height)
 	}
 	return ""
 }
@@ -1919,25 +1875,6 @@ func (b *workflowsBuilderState) renderProviderPicker(width, height int) string {
 	})
 }
 
-func (b *workflowsBuilderState) renderModelPicker(width, height int) string {
-	rows := make([]configItem, 0, len(b.modelPickerOpts))
-	for _, o := range b.modelPickerOpts {
-		rows = append(rows, configItem{name: o, key: ""})
-	}
-	if len(rows) == 0 {
-		rows = append(rows, configItem{name: "(no model picker for this provider)", key: ""})
-	}
-	return renderLayeredConfigBox(layeredConfigBoxArgs{
-		width:      width,
-		height:     height,
-		title:      "Step Model",
-		promptLine: configPromptStyle.Render("> ") + dimStyle.Render("Pick the model for this step"),
-		items:      rows,
-		cursor:     b.modelCursor,
-		helpText:   "enter pick · esc cancel",
-	})
-}
-
 func (b *workflowsBuilderState) renderRename(width, height int) string {
 	title := "Rename"
 	hint := "Type a new name; enter to save, esc to cancel"
@@ -1946,9 +1883,6 @@ func (b *workflowsBuilderState) renderRename(width, height int) string {
 		title = "Rename step"
 	case "workflow":
 		title = "Rename workflow"
-	case "model":
-		title = "Step Model"
-		hint = "Type custom model ID; enter to save, esc to cancel"
 	case "maxiter":
 		title = "Max iterations"
 		hint = "Whole number (blank = default of 10); enter to save"

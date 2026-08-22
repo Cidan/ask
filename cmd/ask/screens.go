@@ -154,7 +154,7 @@ func (m model) popoverOpen() bool {
 			return true
 		}
 	}
-	if b := m.workflowsBuilder; m.screen == screenWorkflows && b != nil && (b.providerPicker || b.modelPicker) {
+	if b := m.workflowsBuilder; m.screen == screenWorkflows && b != nil && b.providerPicker {
 		return true
 	}
 	return false

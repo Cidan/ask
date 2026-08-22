@@ -147,6 +147,12 @@ type modelPickerState struct {
 	// descCache holds rendered descriptions keyed by provider, model, and
 	// pane width — glamour runs once per model, not once per keystroke.
 	descCache map[string]string
+	// stepTarget retargets the picker for the workflows builder: when it is
+	// set, choosing a model writes step.Provider/step.Model on
+	// m.workflowsBuilder and returns to the builder, instead of switching the
+	// live tab's provider/model. nil ⇒ the Ctrl+M behavior. See
+	// openModelPickerForStep.
+	stepTarget *stepTarget
 }
 
 func buildModelPickerState(cfg askConfig) *modelPickerState {
@@ -467,6 +473,9 @@ func (m model) dispatchModelPick(entry modelPickerEntry) (tea.Model, tea.Cmd) {
 
 func (m model) applyModelPickerEntry(entry modelPickerEntry) (tea.Model, tea.Cmd) {
 	recordRecentModel(entry.providerID, entry.modelID)
+	if m.modelPicker != nil && m.modelPicker.stepTarget != nil {
+		return m.applyModelPickerToStep(*m.modelPicker.stepTarget, entry)
+	}
 	modelID := entry.modelID
 	if strings.EqualFold(modelID, "default") {
 		modelID = ""

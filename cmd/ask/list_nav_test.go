@@ -170,11 +170,6 @@ func TestPopoverOpen_WorkflowsBuilderSubpicker(t *testing.T) {
 	if !m.popoverOpen() {
 		t.Errorf("workflows builder provider sub-picker should make popoverOpen=true")
 	}
-	m.workflowsBuilder.providerPicker = false
-	m.workflowsBuilder.modelPicker = true
-	if !m.popoverOpen() {
-		t.Errorf("workflows builder model sub-picker should make popoverOpen=true")
-	}
 }
 
 func TestPopoverOpen_WorkflowPickerOnlyOnScreensThatRenderIt(t *testing.T) {

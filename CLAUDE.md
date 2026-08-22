@@ -586,11 +586,20 @@ of truth). Row 0 is "+ New step"; loops render as a `⟳` header with
 `▏`-railed indented inner steps and a trailing "+ add step"; the last
 row is "+ New loop". Enter on an affordance creates a step/loop/inner
 step and drops into its detail; Enter on a real step/loop opens its
-detail. The detail pane branches on kind: an agent step shows
-Provider/Model pickers + a Prompt `textarea`; a loop shows an inline
+detail. The detail pane branches on kind: an agent step shows a
+builder-local Provider picker, the shared full-frame model picker for
+the Model field, and a Prompt `textarea`; a loop shows an inline
 numeric Max-iterations editor (`renaming=="maxiter"`) and an Exit-
 condition `textarea` (the textarea is shared, `promptTarget` says
 which field it commits to). Every commit writes to disk immediately.
+The Model field opens the **same** Ctrl+M model picker
+(`openModelPickerForStep` → `modeModelPicker`), not a builder-local
+overlay: `modelPickerState.stepTarget` retargets its terminal action
+from the live-tab switch to `applyModelPickerToStep`, which writes
+BOTH `step.Provider` and `step.Model` (a picker entry is
+provider-grouped, so it always carries both) and returns to the
+builder. This subsumes the old "Enter your own" custom-model path —
+the shared picker's own custom-id entry handles it.
 
 ### Edit guards
 

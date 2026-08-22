@@ -315,58 +315,69 @@ func TestUpdateRename_DuplicateNameToasts(t *testing.T) {
 	}
 }
 
-func TestUpdateModelPicker_EnterYourOwn(t *testing.T) {
-	m := withWorkflowsBuilder(t, workflowDef{
-		Name: "wf",
-		Steps: []workflowStep{
-			{Name: "s1", Provider: "fake", Model: "old-model"},
-		},
-	})
-	m.workflowsBuilder.listCursor = 1 // select wf
-	m.workflowsBuilder.syncRightFromLeft()
-	m.workflowsBuilder.rightMode = workflowsBuilderRightSteps
-	m.workflowsBuilder.stepsCursor = 1 // on s1
+// onStepModelField parks the builder in the step-detail pane with the
+// cursor on the Model field of the first step of the first workflow.
+func onStepModelField(m model) model {
+	b := m.workflowsBuilder
+	b.listCursor = 1 // select the workflow
+	b.syncRightFromLeft()
+	b.rightMode = workflowsBuilderRightStep
+	b.stepsCursor = 1 // on the first step
+	b.focus = workflowsBuilderFocusRight
+	b.stepFieldCursor = workflowsStepFieldModel
+	return m
+}
 
-	m.workflowsBuilder.modelPicker = true
-	m.workflowsBuilder.modelPickerOpts = []string{"opt1", switcherCustomRowLabel}
-	m.workflowsBuilder.modelCursor = 1
+// TestWorkflowsBuilder_ModelFieldOpensSharedPicker: Enter on a step's
+// Model field opens the same full-frame Ctrl+M picker (modeModelPicker),
+// retargeted at that step via modelPicker.stepTarget.
+func TestWorkflowsBuilder_ModelFieldOpensSharedPicker(t *testing.T) {
+	m := onStepModelField(withWorkflowsBuilder(t, workflowDef{
+		Name:  "wf",
+		Steps: []workflowStep{{Name: "s1", Provider: "fake", Model: "m-one"}},
+	}))
 
-	m2, _, _ := m.workflowsBuilderUpdateModelPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
-	b := m2.workflowsBuilder
-
-	if b.modelPicker {
-		t.Error("modelPicker should be closed")
+	m2, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m2.mode != modeModelPicker {
+		t.Fatalf("mode=%v want modeModelPicker", m2.mode)
 	}
-	if b.renaming != "model" {
-		t.Errorf("renaming = %q want 'model'", b.renaming)
+	s := m2.modelPicker
+	if s == nil || s.stepTarget == nil {
+		t.Fatal("expected the shared model picker with a step target")
 	}
-	if b.renameDraft != "old-model" {
-		t.Errorf("renameDraft = %q want 'old-model'", b.renameDraft)
+	if st := *s.stepTarget; st.wIdx != 0 || st.topIdx != 0 || st.innerIdx != -1 || st.isLoop {
+		t.Fatalf("stepTarget=%+v want {wIdx:0 topIdx:0 innerIdx:-1 isLoop:false}", st)
 	}
 }
 
-func TestUpdateRename_CustomModel(t *testing.T) {
-	m := withWorkflowsBuilder(t, workflowDef{
-		Name: "wf",
-		Steps: []workflowStep{
-			{Name: "s1", Provider: "fake", Model: "old-model"},
-		},
-	})
-	m.workflowsBuilder.listCursor = 1 // select wf
-	m.workflowsBuilder.syncRightFromLeft()
-	m.workflowsBuilder.rightMode = workflowsBuilderRightSteps
-	m.workflowsBuilder.stepsCursor = 1 // on s1
+// TestWorkflowsBuilder_ModelPickAppliesToStep: choosing an entry in the
+// shared picker writes the step's provider+model (an entry carries both),
+// persists to disk, and returns to the builder. "default" clears the model.
+func TestWorkflowsBuilder_ModelPickAppliesToStep(t *testing.T) {
+	m := onStepModelField(withWorkflowsBuilder(t, workflowDef{
+		Name:  "wf",
+		Steps: []workflowStep{{Name: "s1", Provider: "fake", Model: "m-one"}},
+	}))
+	m2, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	m.workflowsBuilder.renaming = "model"
-	m.workflowsBuilder.renameDraft = "my-custom-model-id"
-
-	m2, _, _ := m.workflowsBuilderUpdateRename(tea.KeyPressMsg{Code: tea.KeyEnter})
-	b := m2.workflowsBuilder
-
-	if b.renaming != "" {
-		t.Error("renaming should be cleared")
+	res, _ := m2.dispatchModelPick(modelPickerEntry{providerID: "fake", providerName: "Fake", modelID: "m-two"})
+	m3 := res.(model)
+	if m3.mode != modeInput || m3.modelPicker != nil {
+		t.Fatalf("picker should be closed; mode=%v picker=%v", m3.mode, m3.modelPicker)
 	}
-	if step := b.items[0].Steps[0]; step.Model != "my-custom-model-id" {
-		t.Errorf("step model = %q want 'my-custom-model-id'", step.Model)
+	if step := m3.workflowsBuilder.items[0].Steps[0]; step.Provider != "fake" || step.Model != "m-two" {
+		t.Fatalf("step provider/model = %q/%q want fake/m-two", step.Provider, step.Model)
+	}
+	if got := projectWorkflows(m3.cwd); got[0].Steps[0].Model != "m-two" {
+		t.Fatalf("persisted model = %q want m-two", got[0].Steps[0].Model)
+	}
+
+	// "default" is the clear-to-provider-default sentinel → empty Model.
+	m4 := onStepModelField(m3)
+	m5, _, _ := workflowsScreen{}.updateKey(m4, tea.KeyPressMsg{Code: tea.KeyEnter})
+	res2, _ := m5.dispatchModelPick(modelPickerEntry{providerID: "fake", providerName: "Fake", modelID: "default"})
+	m6 := res2.(model)
+	if step := m6.workflowsBuilder.items[0].Steps[0]; step.Model != "" {
+		t.Fatalf("step model = %q want empty after picking default", step.Model)
 	}
 }

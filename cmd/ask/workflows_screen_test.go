@@ -474,18 +474,6 @@ func TestWorkflowsBuilderSubpickers_EmacsListNav(t *testing.T) {
 	if m3.workflowsBuilder.providerCursor != 0 {
 		t.Fatalf("provider Ctrl+P cursor=%d want 0", m3.workflowsBuilder.providerCursor)
 	}
-
-	m3.workflowsBuilder.providerPicker = false
-	m3.workflowsBuilder.modelPicker = true
-	m3.workflowsBuilder.modelPickerOpts = []string{"default", "sonnet"}
-	m4, _, _ := workflowsScreen{}.updateKey(m3, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
-	if m4.workflowsBuilder.modelCursor != 1 {
-		t.Fatalf("model Ctrl+N cursor=%d want 1", m4.workflowsBuilder.modelCursor)
-	}
-	m5, _, _ := workflowsScreen{}.updateKey(m4, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
-	if m5.workflowsBuilder.modelCursor != 0 {
-		t.Fatalf("model Ctrl+P cursor=%d want 0", m5.workflowsBuilder.modelCursor)
-	}
 }
 
 func TestWorkflowsBuilder_RenderPromptOverlayOverBase(t *testing.T) {
