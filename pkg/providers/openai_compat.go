@@ -176,11 +176,33 @@ func convertTools(tools []*genai.Tool) []openai.ChatCompletionToolUnionParam {
 			out = append(out, openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
 				Name:        f.Name,
 				Description: openai.String(f.Description),
-				Parameters:  convertSchema(f.Parameters),
+				Parameters:  toolParameters(f),
 			}))
 		}
 	}
 	return out
+}
+
+// toolParameters extracts a tool's input schema as an OpenAI-shaped JSON-schema
+// map. ADK's functiontool populates FunctionDeclaration.ParametersJsonSchema (a
+// raw JSON Schema from jsonschema-go), NOT the *genai.Schema Parameters field —
+// so preferring it is what actually gets parameters (and therefore tool
+// arguments) to the model. Without this every tool ships parameterless and the
+// model calls it with {}. convertSchema(Parameters) stays the fallback for
+// declarations built the genai.Schema way.
+func toolParameters(f *genai.FunctionDeclaration) map[string]any {
+	if f.ParametersJsonSchema != nil {
+		if b, err := json.Marshal(f.ParametersJsonSchema); err == nil {
+			var m map[string]any
+			if err := json.Unmarshal(b, &m); err == nil && len(m) > 0 {
+				// $schema is a JSON-Schema meta key some strict validators reject
+				// in function parameters; the rest is a valid parameters object.
+				delete(m, "$schema")
+				return m
+			}
+		}
+	}
+	return convertSchema(f.Parameters)
 }
 
 // convertSchema maps a genai.Schema onto a JSON-Schema map (the shape OpenAI's

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/openai/openai-go/v3"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
@@ -321,6 +322,58 @@ func TestOpenAICompat_ErrorStatus(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "test/model") {
 		t.Errorf("error should name the model: %v", err)
+	}
+}
+
+// The bug that made every tool call arrive with empty args: ADK's functiontool
+// sets FunctionDeclaration.ParametersJsonSchema (built via jsonschema.For), not
+// the *genai.Schema Parameters field. convertTools must read that, or tools ship
+// parameterless and the model calls them with {}.
+func TestToolParameters_UsesParametersJsonSchema(t *testing.T) {
+	type bashArgs struct {
+		Command     string `json:"command" jsonschema:"the shell command"`
+		Description string `json:"description" jsonschema:"phrase describing the call"`
+		Background  bool   `json:"run_in_background,omitempty"`
+	}
+	schema, err := jsonschema.For[bashArgs](nil)
+	if err != nil {
+		t.Fatalf("build schema: %v", err)
+	}
+	// Mirror ADK: ParametersJsonSchema set, Parameters nil.
+	decl := &genai.FunctionDeclaration{
+		Name:                 "bash",
+		Description:          "run a command",
+		ParametersJsonSchema: schema,
+	}
+
+	params := toolParameters(decl)
+	props, ok := params["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("wire params carry no properties: %#v", params)
+	}
+	if props["command"] == nil || props["description"] == nil {
+		t.Errorf("properties missing command/description: %#v", props)
+	}
+	req := map[string]bool{}
+	if reqRaw, ok := params["required"].([]any); ok {
+		for _, r := range reqRaw {
+			req[r.(string)] = true
+		}
+	}
+	if !req["command"] || !req["description"] {
+		t.Errorf("required = %v, want command+description", params["required"])
+	}
+	if _, present := params["$schema"]; present {
+		t.Errorf("$schema must be stripped from function parameters")
+	}
+
+	// End-to-end: the parameters must survive SDK serialization onto the wire.
+	b, _ := json.Marshal(openai.ChatCompletionNewParams{
+		Model: "m",
+		Tools: convertTools([]*genai.Tool{{FunctionDeclarations: []*genai.FunctionDeclaration{decl}}}),
+	})
+	if !strings.Contains(string(b), `"command"`) || !strings.Contains(string(b), `"required"`) {
+		t.Errorf("serialized tool dropped parameters: %s", string(b))
 	}
 }
 
