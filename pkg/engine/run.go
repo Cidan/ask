@@ -144,7 +144,12 @@ var ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, 
 	if spec.BuildModel == nil {
 		return nil, fmt.Errorf("provider %s has no BuildModel implementation", spec.ID)
 	}
-	return spec.BuildModel(ctx, cfg, modelID)
+	llm, err := spec.BuildModel(ctx, cfg, modelID)
+	if err != nil {
+		return nil, err
+	}
+	_, initialDelay, backoff := config.AgentRetryOptions(cfg)
+	return newRetryingModel(llm, initialDelay, backoff), nil
 }
 
 // RunnerBuilder allows customizing or mocking the ADK runner in tests.
