@@ -226,20 +226,27 @@ func (m *model) sidebarMeta() string {
 	return providerMeta(m.provider.ID(), m.providerModel)
 }
 
-// sidebarCost is the dim third row: the session's accumulated API
-// spend in dollars and cents, live-updated per step (usage.go prices
-// each call via the catwalk catalog). Before any priceable call lands
-// it shows an honest $0.00 only when the current provider/model pair
-// is in the catalog; unpriceable models (custom ids, providers
-// without a catalog) render an empty row instead of a fake zero.
+// sidebarCost is the dim third row: the session's context usage percentage
+// and accumulated API spend in dollars and cents (e.g. "7%/$0.00" or "7%").
 func (m *model) sidebarCost() string {
+	mdl := m.modelForContext
+	if mdl == "" {
+		mdl = m.providerModel
+	}
+	ctxPct := contextPercent(m.lastUsageTokens, modelContextLimit(mdl))
+	pctStr := fmt.Sprintf("%d%%", ctxPct)
+
+	cost := ""
 	if m.sessionCostKnown {
-		return formatUSD(m.sessionCostUSD)
+		cost = formatUSD(m.sessionCostUSD)
+	} else if m.provider != nil && modelPricingKnown(m.provider.ID(), m.effectiveModelID()) {
+		cost = formatUSD(0)
 	}
-	if m.provider != nil && modelPricingKnown(m.provider.ID(), m.effectiveModelID()) {
-		return formatUSD(0)
+
+	if cost != "" {
+		return pctStr + "/" + cost
 	}
-	return ""
+	return pctStr
 }
 
 // effectiveModelID resolves the model the next turn would actually

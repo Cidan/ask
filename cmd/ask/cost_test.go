@@ -268,37 +268,64 @@ func TestTaskToolBackgroundExecution(t *testing.T) {
 }
 
 func TestSidebarCost(t *testing.T) {
-	// Accumulated spend renders dollars-and-cents.
+	// Accumulated spend renders percentage with dollars-and-cents.
 	m := newTestModel(t, newFakeProvider())
 	m.sessionCostUSD = 1.234
 	m.sessionCostKnown = true
-	if got := m.sidebarCost(); got != "$1.23" {
-		t.Errorf("sidebarCost = %q, want $1.23", got)
+	if got := m.sidebarCost(); got != "0%/$1.23" {
+		t.Errorf("sidebarCost = %q, want '0%%/$1.23'", got)
 	}
 
-	// No spend yet on an unpriceable provider: empty, never a fake $0.
+	// No spend yet on an unpriceable provider: percentage only, never a fake $0.
 	m2 := newTestModel(t, newFakeProvider())
-	if got := m2.sidebarCost(); got != "" {
-		t.Errorf("fake-provider sidebarCost = %q, want empty", got)
+	if got := m2.sidebarCost(); got != "0%" {
+		t.Errorf("fake-provider sidebarCost = %q, want '0%%'", got)
 	}
 
 	// No spend yet but the provider default model is in the catalog:
-	// an honest $0.00.
+	// an honest 0%/$0.00.
 	m3 := newTestModel(t, newFakeProvider())
 	m3.provider = vertexAgentProvider()
-	if got := m3.sidebarCost(); got != "$0.00" {
-		t.Errorf("catalog-model sidebarCost = %q, want $0.00", got)
+	if got := m3.sidebarCost(); got != "0%/$0.00" {
+		t.Errorf("catalog-model sidebarCost = %q, want '0%%/$0.00'", got)
 	}
 	if got := m3.effectiveModelID(); got != vertexDefaultModel {
 		t.Errorf("effectiveModelID = %q, want %q", got, vertexDefaultModel)
 	}
 
-	// Custom model id on a catalog provider: unpriceable → empty.
+	// Custom model id on a catalog provider: unpriceable → percentage only.
 	m4 := newTestModel(t, newFakeProvider())
 	m4.provider = vertexAgentProvider()
 	m4.providerModel = "my-custom"
-	if got := m4.sidebarCost(); got != "" {
-		t.Errorf("custom-model sidebarCost = %q, want empty", got)
+	if got := m4.sidebarCost(); got != "0%" {
+		t.Errorf("custom-model sidebarCost = %q, want '0%%'", got)
+	}
+
+	// Context percent calculation with usage tokens.
+	m5 := newTestModel(t, newFakeProvider())
+	m5.lastUsageTokens = 50_000 // 50k / 200k = 25%
+	if got := m5.sidebarCost(); got != "25%" {
+		t.Errorf("sidebarCost = %q, want '25%%'", got)
+	}
+
+	// Catalog model window drives context percent.
+	m6 := newTestModel(t, newFakeProvider())
+	m6.provider = vertexAgentProvider()
+	m6.providerModel = "custom-1m"
+	m6.lastUsageTokens = 104_857
+	got6 := m6.sidebarCost()
+	if !strings.Contains(got6, "9%") && !strings.Contains(got6, "10%") {
+		t.Errorf("catalog window must drive the percent: %q", got6)
+	}
+
+	// ModelForContext wins denominator.
+	m7 := newTestModel(t, newFakeProvider())
+	m7.provider = vertexAgentProvider()
+	m7.providerModel = "custom-alias"
+	m7.modelForContext = "custom-1m"
+	m7.lastUsageTokens = 524_288
+	if got := m7.sidebarCost(); !strings.Contains(got, "50%") {
+		t.Errorf("modelForContext must win: %q", got)
 	}
 }
 
@@ -311,7 +338,7 @@ func TestSidebarCardHasCostRow(t *testing.T) {
 	if len(lines) != sidebarCardHeight {
 		t.Fatalf("card lines = %d, want %d", len(lines), sidebarCardHeight)
 	}
-	if !strings.Contains(lines[2], "$0.07") {
-		t.Errorf("cost row = %q, want it to contain $0.07", lines[2])
+	if !strings.Contains(lines[2], "$0.07") || !strings.Contains(lines[2], "0%") {
+		t.Errorf("cost row = %q, want it to contain 0%% and $0.07", lines[2])
 	}
 }

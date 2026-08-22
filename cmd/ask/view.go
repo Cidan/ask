@@ -1424,56 +1424,14 @@ func renderTodoLine(t todoItem) string {
 }
 
 // statusChipRow renders a single status line that sits between the
-// spinner and the input. Worktree/background-worker badges anchor to
-// the left, the provider/model chip anchors to the right. The right
-// chip is always shown so the user can glance to see which backend they
-// are talking to; the left chip appears only when there's something to
-// report.
-//
-// When the terminal is narrow, the right chip drops its usage segments
-// (ctx → wk → 5h) before the left chip is sacrificed.
+// spinner and the input: the worktree and background worker badge.
 func (m model) statusChipRow() string {
 	left := m.worktreeChip()
-	const leftMargin = 3
-	if m.width <= 0 {
-		right := m.providerChip()
-		if right == "" && left == "" {
-			return ""
-		}
-		if left == "" {
-			return right
-		}
-		return strings.Repeat(" ", leftMargin) + left + "  " + right
-	}
-	lw := lipgloss.Width(left)
-	usable := m.width - 2
-	// Budget for the right chip assuming the left stays. A pad of 1
-	// column separates them; when the left chip is empty the right
-	// gets the full usable width.
-	rightBudget := usable
-	if left != "" {
-		rightBudget = usable - leftMargin - lw - 1
-	}
-	right := m.providerChipFitting(rightBudget)
-	rw := lipgloss.Width(right)
-	if right == "" && left == "" {
+	if left == "" {
 		return ""
 	}
-	pad := usable - leftMargin - lw - rw
-	if pad < 1 {
-		// Even the trimmed right chip won't coexist with left; drop
-		// the left entirely and re-fit against the full usable width.
-		if rw+leftMargin > usable {
-			right = m.providerChipFitting(usable)
-			rw = lipgloss.Width(right)
-			return strings.Repeat(" ", max(0, usable-rw)) + right
-		}
-		pad = 1
-	}
-	if left == "" {
-		return strings.Repeat(" ", max(0, usable-rw)) + right
-	}
-	return strings.Repeat(" ", leftMargin) + left + strings.Repeat(" ", pad) + right
+	const leftMargin = 3
+	return strings.Repeat(" ", leftMargin) + left
 }
 
 func (m model) statusChipHeight() int {
@@ -1506,59 +1464,6 @@ func (m model) worktreeChip() string {
 		return ""
 	}
 	return strings.Join(parts, "  ")
-}
-
-// providerChip is the right-anchored status badge: current provider ID,
-// model, and — when data is available — live plan-usage segments
-// (5h/wk/ctx). Shown even at idle so the user knows which backend
-// the model picker (Ctrl+M) will swap.
-func (m model) providerChip() string {
-	return m.providerChipFitting(0)
-}
-
-// providerChipFitting renders the chip trimmed to fit within maxW
-// columns. Segments are dropped right-to-left (ctx → wk → 5h) until the
-// chip fits; if even the base doesn't fit, it's rendered anyway so the
-// caller never sees an empty chip. maxW ≤ 0 means no cap.
-func (m model) providerChipFitting(maxW int) string {
-	if m.provider == nil {
-		return ""
-	}
-	segs := m.providerChipSegments(time.Now())
-	for keep := len(segs); keep > 0; keep-- {
-		chip := m.renderProviderChip(segs[:keep])
-		if maxW <= 0 || lipgloss.Width(chip) <= maxW {
-			return chip
-		}
-	}
-	return m.renderProviderChip(nil)
-}
-
-// providerChipSegments returns the optional trailing segments of the
-// chip in drop-last-first order (the width-degradation loop drops
-// from the tail). Every provider is API-billed, so the only segment
-// is the standard context-usage percentage: accumulated usage tokens
-// over the model's window. Always emitted (0% before data lands) so
-// users see the feature is live.
-func (m model) providerChipSegments(_ time.Time) []string {
-	mdl := m.modelForContext
-	if mdl == "" {
-		mdl = m.providerModel
-	}
-	ctxPct := contextPercent(m.lastUsageTokens, modelContextLimit(mdl))
-	return []string{dimStyle.Render(fmt.Sprintf("%d%%", ctxPct))}
-}
-
-func (m model) renderProviderChip(segs []string) string {
-	mdl := m.providerModel
-	if mdl == "" {
-		mdl = "default"
-	}
-	body := m.provider.ID() + "/" + mdl
-	for _, s := range segs {
-		body += " " + s
-	}
-	return body
 }
 
 func (m model) pendingBlockHeight() int {
