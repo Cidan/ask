@@ -258,6 +258,7 @@ type historyEntry struct {
 	text           string
 	rendered       string
 	workflowHeader string
+	workflowIndent int
 
 	// wrapped is the soft-wrapped slice of rendered lines for the
 	// width recorded in wrappedFor. It is the only thing chatView

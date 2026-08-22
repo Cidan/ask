@@ -129,7 +129,7 @@ func EndTurnInstructionBlock(loop *LoopPromptCtx) string {
 
 // WorkflowNoteLine formats a single-line status note.
 func WorkflowNoteLine(msg, detail string) string {
-	res := "   " + msg
+	res := "     " + msg
 	if strings.TrimSpace(detail) != "" {
 		res += ": " + strings.TrimSpace(detail)
 	}

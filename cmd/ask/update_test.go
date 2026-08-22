@@ -507,6 +507,50 @@ func TestUpdate_TodoUpdatedMsg(t *testing.T) {
 	if len(m2.todos) != 1 || m2.todos[0].Content != "a" {
 		t.Errorf("todos=%+v want [{a}]", m2.todos)
 	}
+
+	// When all todos are completed, m.todos is reset to nil and expanded is false.
+	m2.taskListExpanded = true
+	doneTodos := []todoItem{{Content: "a", Status: "completed"}}
+	m3, _ := runUpdate(t, m2, todoUpdatedMsg{todos: doneTodos, proc: m.proc})
+	if m3.todos != nil {
+		t.Errorf("expected todos to be nil when all completed, got %+v", m3.todos)
+	}
+	if m3.taskListExpanded {
+		t.Errorf("expected taskListExpanded to be false")
+	}
+
+	// WorkflowStepStartedMsg clears todos
+	m2.todos = newTodos
+	m4, _ := runUpdate(t, m2, WorkflowStepStartedMsg{TabID: m2.id, StepIdx: 0, StepName: "Step 1"})
+	if m4.todos != nil {
+		t.Errorf("expected WorkflowStepStartedMsg to clear todos, got %+v", m4.todos)
+	}
+}
+
+func TestWorkflowTab_ActionTaskListToggle(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{
+			Name: "test",
+			Steps: []workflowStep{
+				{Name: "step1", Prompt: "do step 1"},
+			},
+		},
+	}
+	m.todos = []todoItem{{Content: "in progress", Status: "in_progress"}}
+	m.taskListExpanded = false
+
+	// Press Ctrl+X
+	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'x'})
+	if !m2.taskListExpanded {
+		t.Fatalf("expected taskListExpanded to be true after Ctrl+X")
+	}
+
+	// Press Ctrl+X again
+	m3, _ := runUpdate(t, m2, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'x'})
+	if m3.taskListExpanded {
+		t.Fatalf("expected taskListExpanded to be false after second Ctrl+X")
+	}
 }
 
 func TestUpdate_SubagentLifecycleEvents(t *testing.T) {

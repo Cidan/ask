@@ -223,9 +223,9 @@ func TestProgress_IgnoresUnknownAuthors(t *testing.T) {
 	}
 }
 
-// A loop node re-entered for another iteration must not be reported as a
-// second step start; it is still the same step of the user's definition.
-func TestProgress_LoopReentryIsNotANewStep(t *testing.T) {
+// A loop node re-entered for another iteration emits a new step start
+// for its inner agents.
+func TestProgress_LoopReentryEmitsInnerAgents(t *testing.T) {
 	def := Def{Name: "wf", Steps: []Step{
 		{Name: "fix", Kind: "loop", MaxIterations: 3, Steps: []Step{
 			{Name: "edit", Prompt: "edit"},
@@ -251,7 +251,7 @@ func TestProgress_LoopReentryIsNotANewStep(t *testing.T) {
 			}
 		}
 	}
-	if starts != 1 {
-		t.Errorf("loop step started %d times, want 1", starts)
+	if starts != 4 {
+		t.Errorf("loop inner agents started %d times, want 4", starts)
 	}
 }

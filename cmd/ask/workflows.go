@@ -395,11 +395,12 @@ func (m *model) workflowAssistantText(text string) {
 	m.workflowRun.currentStep.WriteString(text)
 }
 
-func (m *model) appendWorkflowStepDone(name, provider, mdl, summary string) {
+func (m *model) appendWorkflowStepDone(name, provider, mdl, summary string, indent int) {
 	m.history = append(m.history, historyEntry{
 		kind:           histWorkflowDone,
 		text:           summary,
 		workflowHeader: "",
+		workflowIndent: indent,
 	})
 }
 
@@ -412,6 +413,12 @@ func (m model) workflowTabHandleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, closeTabCmd(m.id)
 		}
 		return m, closeTabCmd(m.id)
+	}
+	if currentKeyMap().Matches(ActionTaskListToggle, msg) {
+		if len(m.todos) > 0 || len(m.activeSubagents) > 0 {
+			m.taskListExpanded = !m.taskListExpanded
+			return m, nil
+		}
 	}
 	if msg.Mod == 0 && msg.Code == tea.KeyEnter {
 		if r := m.workflowRun; r != nil && (r.done || r.failed) {

@@ -321,7 +321,19 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
-		m.todos = msg.todos
+		allDone := true
+		for _, t := range msg.todos {
+			if t.Status != "completed" {
+				allDone = false
+				break
+			}
+		}
+		if len(msg.todos) == 0 || allDone {
+			m.todos = nil
+			m.taskListExpanded = false
+		} else {
+			m.todos = msg.todos
+		}
 		return m, nil
 
 	case providerCwdMsg:
@@ -632,6 +644,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if msg.TabID != m.id {
 			return m, nil
 		}
+		m.todos = nil
+		m.taskListExpanded = false
 		var supplanted *workflowTabSnapshot
 		if m.workflowRun != nil {
 			supplanted = m.workflowRun.supplanted
@@ -649,9 +663,15 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if msg.TabID != m.id {
 			return m, nil
 		}
+		m.todos = nil
+		m.taskListExpanded = false
 		if m.workflowRun != nil {
 			m.workflowRun.StepIdx = msg.StepIdx
-			header := "   " + workflowMarginStyle.Render("|") + " " +
+			indent := "   "
+			if m.workflowRun.Workflow.Steps[msg.StepIdx].IsLoop() {
+				indent = "     "
+			}
+			header := indent + workflowMarginStyle.Render("|") + " " +
 				promptStyle.Render("▸ "+nonEmpty(msg.StepName, "step"))
 			if meta := providerMeta(msg.Provider, msg.Model); meta != "" {
 				header += dimStyle.Render(" (" + meta + ")")
@@ -664,9 +684,15 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if msg.TabID != m.id {
 			return m, nil
 		}
+		m.todos = nil
+		m.taskListExpanded = false
 		if m.workflowRun != nil {
 			step := m.workflowRun.Workflow.Steps[msg.StepIdx]
-			m.appendWorkflowStepDone(step.Name, step.Provider, step.Model, msg.Summary)
+			indent := 0
+			if step.IsLoop() {
+				indent = 2
+			}
+			m.appendWorkflowStepDone(step.Name, step.Provider, step.Model, msg.Summary, indent)
 		}
 		return m, nil
 
@@ -674,6 +700,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if msg.TabID != m.id {
 			return m, nil
 		}
+		m.todos = nil
+		m.taskListExpanded = false
 		if m.workflowRun != nil {
 			m.workflowRun.done = true
 			m.workflowRun.finishData = &finishWorkflowData{

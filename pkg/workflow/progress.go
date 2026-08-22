@@ -27,20 +27,17 @@ type Progress struct {
 	tracker  *Tracker
 	cwd      string
 
-	started map[int]bool
-	done    map[int]bool
-	// summaries holds the latest end_turn summary seen for each step,
-	// used as the step's completion line.
-	summaries map[int]string
-	// text holds the latest assistant text per step, the fallback when
+	// summaries holds the latest end_turn summary seen for each agent.
+	summaries map[string]string
+	// text holds the latest assistant text per agent, the fallback when
 	// a step ends without calling end_turn.
-	text map[int]string
+	text map[string]string
 
-	current    int
-	haveCurr   bool
-	loopIters  map[int]int
-	finishData *FinishData
-	state      *RunState
+	currentAgent string
+	haveCurr     bool
+	loopIters    map[string]int
+	finishData   *FinishData
+	state        *RunState
 }
 
 // NewProgress builds a Progress for one run and emits OnWorkflowStarted.
@@ -56,12 +53,9 @@ func NewProgress(compiled *Compiled, def Def, src Source, cwd string, tabID int,
 		tabID:     tabID,
 		listener:  listener,
 		tracker:   tracker,
-		started:   map[int]bool{},
-		done:      map[int]bool{},
-		summaries: map[int]string{},
-		text:      map[int]string{},
-		loopIters: map[int]int{},
-		current:   -1,
+		summaries: map[string]string{},
+		text:      map[string]string{},
+		loopIters: map[string]int{},
 		state: &RunState{
 			Workflow:  def,
 			Source:    src,
@@ -83,52 +77,55 @@ func (p *Progress) Observe(ev *session.Event) {
 	if p == nil || ev == nil || ev.Author == "" || ev.Author == "user" {
 		return
 	}
-	idx, ok := p.compiled.StepIndex(ev.Author)
+	info, ok := p.compiled.AgentInfo[ev.Author]
 	if !ok {
 		return
 	}
 
-	p.enter(idx)
-	p.captureText(idx, ev)
-	p.captureToolSignals(idx, ev)
+	p.enter(ev.Author, info)
+	p.captureText(ev.Author, ev)
+	p.captureToolSignals(ev.Author, info, ev)
 }
 
 // enter marks a step started, closing out the previous one. A workflow
 // graph runs its nodes in order, so the arrival of an event for a later
 // step is the signal that the earlier one finished.
-func (p *Progress) enter(idx int) {
-	if p.haveCurr && p.current == idx {
+func (p *Progress) enter(author string, info StepAgentInfo) {
+	if p.haveCurr && p.currentAgent == author {
 		return
 	}
-	if p.haveCurr && p.current != idx {
-		p.complete(p.current)
+	if p.haveCurr && p.currentAgent != author {
+		p.complete(p.currentAgent)
 	}
-	p.current = idx
+	p.currentAgent = author
 	p.haveCurr = true
-	p.state.StepIdx = idx
+	p.state.StepIdx = info.StepIndex
 
-	if p.started[idx] {
-		// Re-entering a loop node: a new iteration of the same step.
-		p.loopIters[idx]++
-		if step := p.step(idx); step != nil && step.IsLoop() {
-			p.listener.OnNote(p.tabID, LoopNoteLine(step.Name,
-				"iteration "+itoa(p.loopIters[idx]+1), ""))
+	if info.InLoop {
+		if info.InnerIdx == -1 {
+			return
 		}
-		return
-	}
-	p.started[idx] = true
-	step := p.step(idx)
-	if step == nil {
-		return
-	}
-	p.listener.OnWorkflowStepStarted(p.tabID, idx, step.Name, step.Provider, step.Model)
-	if step.IsLoop() {
-		p.listener.OnNote(p.tabID, LoopNoteLine(step.Name, "started",
-			"max "+itoa(p.def.EffectiveMaxIterations(*step))+" iteration(s)"))
+		if info.InnerIdx == 0 {
+			if p.loopIters[info.LoopName] == 0 {
+				p.loopIters[info.LoopName] = 1
+				step := p.step(info.StepIndex)
+				maxIter := "unknown"
+				if step != nil {
+					maxIter = itoa(p.def.EffectiveMaxIterations(*step))
+				}
+				p.listener.OnNote(p.tabID, LoopNoteLine(info.LoopName, "started", "max "+maxIter+" iteration(s)"))
+			} else {
+				p.loopIters[info.LoopName]++
+				p.listener.OnNote(p.tabID, LoopNoteLine(info.LoopName, "iteration "+itoa(p.loopIters[info.LoopName]), ""))
+			}
+		}
+		p.listener.OnWorkflowStepStarted(p.tabID, info.StepIndex, info.StepName, info.Provider, info.Model)
+	} else {
+		p.listener.OnWorkflowStepStarted(p.tabID, info.StepIndex, info.StepName, info.Provider, info.Model)
 	}
 }
 
-func (p *Progress) captureText(idx int, ev *session.Event) {
+func (p *Progress) captureText(author string, ev *session.Event) {
 	if ev.LLMResponse.Content == nil {
 		return
 	}
@@ -140,14 +137,14 @@ func (p *Progress) captureText(idx int, ev *session.Event) {
 		b.WriteString(part.Text)
 	}
 	if t := strings.TrimSpace(b.String()); t != "" {
-		p.text[idx] = t
+		p.text[author] = t
 	}
 }
 
 // captureToolSignals reads the two tool calls that carry workflow
 // meaning: end_turn's summary (the step's log line) and finish_workflow's
 // completion report.
-func (p *Progress) captureToolSignals(idx int, ev *session.Event) {
+func (p *Progress) captureToolSignals(author string, info StepAgentInfo, ev *session.Event) {
 	if ev.LLMResponse.Content == nil {
 		return
 	}
@@ -158,11 +155,11 @@ func (p *Progress) captureToolSignals(idx int, ev *session.Event) {
 		switch part.FunctionCall.Name {
 		case "end_turn":
 			if s, ok := part.FunctionCall.Args["summary"].(string); ok && strings.TrimSpace(s) != "" {
-				p.summaries[idx] = strings.TrimSpace(s)
+				p.summaries[author] = strings.TrimSpace(s)
 			}
 		case "exit_loop":
-			if step := p.step(idx); step != nil && step.IsLoop() {
-				p.listener.OnNote(p.tabID, LoopNoteLine(step.Name, "break", ""))
+			if info.InLoop {
+				p.listener.OnNote(p.tabID, LoopNoteLine(info.LoopName, "break", ""))
 			}
 		case "finish_workflow":
 			desc, _ := part.FunctionCall.Args["description"].(string)
@@ -174,20 +171,19 @@ func (p *Progress) captureToolSignals(idx int, ev *session.Event) {
 	}
 }
 
-func (p *Progress) complete(idx int) {
-	if p.done[idx] {
+func (p *Progress) complete(author string) {
+	info, ok := p.compiled.AgentInfo[author]
+	if (!ok) || (info.InLoop && info.InnerIdx == -1) {
 		return
 	}
-	p.done[idx] = true
-	step := p.step(idx)
-	if step == nil {
-		return
-	}
-	summary := p.summaries[idx]
+	summary := p.summaries[author]
 	if summary == "" {
-		summary = firstLine(p.text[idx])
+		summary = firstLine(p.text[author])
 	}
-	p.listener.OnWorkflowStepDone(p.tabID, idx, summary)
+	p.listener.OnWorkflowStepDone(p.tabID, info.StepIndex, summary)
+
+	p.summaries[author] = ""
+	p.text[author] = ""
 }
 
 // Finish closes the run. A nil err completes the in-flight step and
@@ -208,7 +204,7 @@ func (p *Progress) Finish(err error) *RunState {
 	}
 
 	if p.haveCurr {
-		p.complete(p.current)
+		p.complete(p.currentAgent)
 	}
 	p.state.Done = true
 	p.state.FinishData = p.finishData
