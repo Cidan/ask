@@ -252,10 +252,10 @@ func TestAgentSession_ToolRoundTrip(t *testing.T) {
 
 	var sawPhrase, sawGeneric bool
 	for _, st := range statuses {
-		if st == "ping: pinging the fake" {
+		if st == "Pinging the fake" {
 			sawPhrase = true
 		}
-		if st == "running ping…" {
+		if st == "Running…" {
 			sawGeneric = true
 		}
 	}
@@ -278,6 +278,24 @@ func TestAgentSession_ToolRoundTrip(t *testing.T) {
 		}
 		if len(events) < 4 {
 			t.Errorf("expected at least 4 events in session, got %d", len(events))
+		}
+	}
+}
+
+func TestCapitalizeFirst(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"reading view.go", "Reading view.go"},
+		{"Reading view.go", "Reading view.go"},
+		{"123 test", "123 test"},
+		{"a", "A"},
+	}
+	for _, tc := range tests {
+		if got := capitalizeFirst(tc.in); got != tc.want {
+			t.Errorf("capitalizeFirst(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

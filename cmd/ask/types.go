@@ -53,6 +53,11 @@ type streamStatusMsg struct {
 	proc   *providerProc
 }
 
+type statusRevertMsg struct {
+	tabID int
+	seq   int
+}
+
 // usageMsg carries the running context size in tokens pulled from an
 // assistant event's message.usage block, plus that step's estimated
 // dollar cost (catwalk pricing; costKnown is false for models the
@@ -458,7 +463,10 @@ type model struct {
 	pathMatches []string
 	pathIdx     int
 
-	status string
+	status          string
+	statusRevertSeq int
+	eqHeights       [7]int
+	eqFrame         int
 
 	// Preserved solely for backward-compatibility in tests.
 	// Unused and unreferenced in the main application code.

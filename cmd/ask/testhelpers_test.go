@@ -279,6 +279,10 @@ func newTestModel(t *testing.T, prov Provider) model {
 	ta.Focus()
 	vp := newChatView()
 	sp := spinner.New()
+	sp.Spinner = spinner.Spinner{
+		Frames: spinner.Dot.Frames,
+		FPS:    time.Second / 60,
+	}
 	return model{
 		id:              1,
 		cwd:             t.TempDir(),

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -467,6 +468,8 @@ func (m *model) blankChatFrame(contentH int) string {
 	return m.chat.style.Render(strings.Repeat("\n", max(0, contentH-1)))
 }
 
+var eqBarSteps = []rune{' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
+
 func (m model) spinnerLine() string {
 	if m.shellMode {
 		return thinkingStyle.Render(promptStyle.Render("▸ Shell Mode"))
@@ -476,14 +479,63 @@ func (m model) spinnerLine() string {
 	}
 	s := m.status
 	if s == "" {
-		s = "thinking…"
+		s = "Thinking…"
 	}
-	return thinkingStyle.Render(m.spinner.View() + dimStyle.Render(s))
+	statusLine := thinkingStyle.Render(dimStyle.Render(s))
+	eqLine := thinkingStyle.Render(m.renderEQMeter())
+	return eqLine + "\n\n" + statusLine
+}
+
+func (m model) renderEQMeter() string {
+	var sb strings.Builder
+	t := float64(time.Now().UnixNano()%2_000_000_000) / 2_000_000_000.0
+	for i := 0; i < len(m.eqHeights); i++ {
+		h := m.eqHeights[i]
+		if h < 0 {
+			h = 0
+		} else if h > 7 {
+			h = 7
+		}
+		barHue := t + (float64(i) * 0.06)
+		if barHue > 1.0 {
+			barHue -= 1.0
+		}
+		hex := hsvToHex(barHue*360.0, 0.75, 0.58)
+		style := lipgloss.NewStyle().Foreground(lipgloss.Color(hex))
+		sb.WriteString(style.Render(string(eqBarSteps[h])))
+	}
+	return sb.String()
+}
+
+func hsvToHex(h, s, v float64) string {
+	c := h / 60.0
+	x := v * s
+	y := x * (1 - math.Abs(math.Mod(c, 2)-1))
+	m := v - x
+	var r, g, b float64
+	switch {
+	case 0 <= c && c < 1:
+		r, g, b = x, y, 0
+	case 1 <= c && c < 2:
+		r, g, b = y, x, 0
+	case 2 <= c && c < 3:
+		r, g, b = 0, x, y
+	case 3 <= c && c < 4:
+		r, g, b = 0, y, x
+	case 4 <= c && c < 5:
+		r, g, b = y, 0, x
+	case 5 <= c && c < 6:
+		r, g, b = x, 0, y
+	}
+	return fmt.Sprintf("#%02x%02x%02x", uint8((r+m)*255), uint8((g+m)*255), uint8((b+m)*255))
 }
 
 func (m model) spinnerBlockHeight() int {
-	if m.shellMode || m.busy() || (m.workflowRun != nil && !m.workflowRun.done && !m.workflowRun.failed) {
+	if m.shellMode {
 		return 2
+	}
+	if m.busy() || (m.workflowRun != nil && !m.workflowRun.done && !m.workflowRun.failed) {
+		return 4
 	}
 	return 0
 }

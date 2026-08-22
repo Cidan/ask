@@ -327,3 +327,69 @@ func TestTodoBlock_Expanded_FullListWithCircleGlyphs(t *testing.T) {
 		t.Errorf("expected '○  Docs', got: %q", out)
 	}
 }
+
+func TestEQMeter_RendersSevenBarsAndSpinnerLine(t *testing.T) {
+	m := model{
+		testBusy:  true,
+		status:    "Reading views.go",
+		eqHeights: [7]int{1, 2, 3, 4, 5, 6, 7},
+	}
+	meter := m.renderEQMeter()
+	var barCount int
+	for _, r := range meter {
+		for _, step := range eqBarSteps[1:] {
+			if r == step {
+				barCount++
+				break
+			}
+		}
+	}
+	if barCount != 7 {
+		t.Errorf("expected 7 EQ bars rendered, got %d in %q", barCount, meter)
+	}
+	if strings.Contains(meter, " ") {
+		t.Errorf("expected edge-to-edge bars without spaces, got %q", meter)
+	}
+
+	line := m.spinnerLine()
+	if !strings.Contains(line, "Reading views.go") {
+		t.Errorf("spinner line missing status: %q", line)
+	}
+	if !strings.Contains(line, "\n\n") {
+		t.Errorf("spinner line must have a gap between EQ meter and status: %q", line)
+	}
+
+	if h := m.spinnerBlockHeight(); h != 4 {
+		t.Errorf("expected spinnerBlockHeight to be 4 when busy, got %d", h)
+	}
+}
+
+func TestUpdateEQ_120BPMPulse(t *testing.T) {
+	m := model{}
+	hitZero := make([]bool, 7)
+	hitPulsePeak := make([]bool, 7)
+	// Simulate 150 frames at 60 FPS (2.5 seconds = 5 beats at 120 BPM)
+	for i := 0; i < 150; i++ {
+		simulatedTime := float64(i) * (1.0 / 60.0)
+		m.updateEQAt(simulatedTime)
+		for j, h := range m.eqHeights {
+			if h < 0 || h > 7 {
+				t.Fatalf("bar %d height out of bounds [0, 7]: %d", j, h)
+			}
+			if h == 0 {
+				hitZero[j] = true
+			}
+			if h >= 4 { // at least 50% height (4/7 ~ 57%)
+				hitPulsePeak[j] = true
+			}
+		}
+	}
+	for j := 0; j < 7; j++ {
+		if !hitZero[j] {
+			t.Errorf("bar %d never bottomed out at 0", j)
+		}
+		if !hitPulsePeak[j] {
+			t.Errorf("bar %d never hit pulse peak >= 50%% height", j)
+		}
+	}
+}

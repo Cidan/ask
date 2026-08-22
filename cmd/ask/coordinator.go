@@ -156,6 +156,9 @@ func injectTabID(msg tea.Msg, tabID int) tea.Msg {
 	case streamStatusMsg:
 		m.tabID = tabID
 		return m
+	case statusRevertMsg:
+		m.tabID = tabID
+		return m
 	case assistantTextMsg:
 		m.tabID = tabID
 		return m
