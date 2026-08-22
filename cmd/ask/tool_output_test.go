@@ -327,3 +327,48 @@ func TestTodoBlock_Expanded_FullListWithCircleGlyphs(t *testing.T) {
 		t.Errorf("expected '○  Docs', got: %q", out)
 	}
 }
+
+func TestEQMeter_RendersSevenBarsAndSpinnerLine(t *testing.T) {
+	m := model{
+		testBusy:  true,
+		status:    "Reading views.go",
+		eqHeights: [7]int{1, 2, 3, 4, 5, 6, 7},
+	}
+	meter := m.renderEQMeter()
+	var barCount int
+	for _, r := range meter {
+		for _, step := range eqBarSteps[1:] {
+			if r == step {
+				barCount++
+				break
+			}
+		}
+	}
+	if barCount != 7 {
+		t.Errorf("expected 7 EQ bars rendered, got %d in %q", barCount, meter)
+	}
+
+	line := m.spinnerLine()
+	if !strings.Contains(line, "Reading views.go") {
+		t.Errorf("spinner line missing status: %q", line)
+	}
+	if !strings.Contains(line, "\n") {
+		t.Errorf("spinner line must be 2 lines (status over EQ meter): %q", line)
+	}
+
+	if h := m.spinnerBlockHeight(); h != 3 {
+		t.Errorf("expected spinnerBlockHeight to be 3 when busy, got %d", h)
+	}
+}
+
+func TestUpdateEQ_StepsHeights(t *testing.T) {
+	m := model{}
+	for i := 0; i < 20; i++ {
+		m.updateEQ()
+		for j, h := range m.eqHeights {
+			if h < 0 || h > 7 {
+				t.Fatalf("bar %d height out of bounds [0, 7]: %d", j, h)
+			}
+		}
+	}
+}

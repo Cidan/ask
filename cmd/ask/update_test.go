@@ -1547,6 +1547,59 @@ func TestUpdate_PasteMsgInAskModalCustomRowPreservesNewlines(t *testing.T) {
 	}
 }
 
+func TestUpdate_StatusRevertMsg_RevertsToThinking(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.testBusy = true
+	m.status = "Reading file.go"
+	m.statusRevertSeq = 5
+
+	// Processing statusRevertMsg with matching seq resets status to "Thinking…"
+	m2, _ := runUpdate(t, m, statusRevertMsg{tabID: m.id, seq: 5})
+	if m2.status != "Thinking…" {
+		t.Errorf("expected status 'Thinking…', got %q", m2.status)
+	}
+
+	// Processing statusRevertMsg with mismatched seq does not reset status
+	m.status = "Writing file.go"
+	m.statusRevertSeq = 6
+	m3, _ := runUpdate(t, m, statusRevertMsg{tabID: m.id, seq: 5})
+	if m3.status != "Writing file.go" {
+		t.Errorf("expected status unchanged on stale seq, got %q", m3.status)
+	}
+
+	// Processing statusRevertMsg when not busy does not set status
+	m.testBusy = false
+	m.status = ""
+	m.statusRevertSeq = 7
+	m4, _ := runUpdate(t, m, statusRevertMsg{tabID: m.id, seq: 7})
+	if m4.status != "" {
+		t.Errorf("expected empty status when not busy, got %q", m4.status)
+	}
+}
+
+func TestUpdate_ToolResult_IncrementsSequenceAndSchedulesTick(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.testBusy = true
+	m.status = "Executing command"
+	initSeq := m.statusRevertSeq
+
+	m2, cmd := runUpdate(t, m, toolResultMsg{proc: m.proc, tabID: m.id, output: "done"})
+	if m2.statusRevertSeq != initSeq+1 {
+		t.Errorf("expected seq %d, got %d", initSeq+1, m2.statusRevertSeq)
+	}
+	if cmd == nil {
+		t.Fatalf("expected timer Cmd from toolResultMsg, got nil")
+	}
+
+	// Now another tool call arrives before the timer fires
+	m3, _ := runUpdate(t, m2, toolCallMsg{proc: m2.proc, tabID: m2.id, name: "read"})
+	if m3.statusRevertSeq != initSeq+2 {
+		t.Errorf("expected seq to increment on toolCallMsg, got %d", m3.statusRevertSeq)
+	}
+}
+
 func TestUpdate_PasteMsgInAskModalCustomRowAutoSelectsForPickMany(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m = m.startAsk([]question{{

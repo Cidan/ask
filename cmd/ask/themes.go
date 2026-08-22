@@ -458,11 +458,11 @@ var (
 	thumbBorderStyle  lipgloss.Style
 	pathBoxStyle      lipgloss.Style
 
-	todoBoxStyle           lipgloss.Style
-	todoPendingStyle       lipgloss.Style
-	todoProgressStyle      lipgloss.Style
-	todoCompletedStyle     lipgloss.Style
-	todoDoneGlyphStyle     lipgloss.Style
+	todoBoxStyle       lipgloss.Style
+	todoPendingStyle   lipgloss.Style
+	todoProgressStyle  lipgloss.Style
+	todoCompletedStyle lipgloss.Style
+	todoDoneGlyphStyle lipgloss.Style
 
 	diffPathStyle       lipgloss.Style
 	diffHunkHeaderStyle lipgloss.Style

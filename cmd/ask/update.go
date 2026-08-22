@@ -294,6 +294,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if !m.busy() {
 			return m, nil
 		}
+		m.updateEQ()
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
@@ -302,6 +303,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
+		m.statusRevertSeq++
 		wasIdle := m.status == "" && !m.testBusy
 		m.testBusy = true
 		m.status = msg.status
@@ -445,6 +447,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
+		m.statusRevertSeq++
 		m.responseActive = false
 		if m.shouldRenderToolCall(msg) {
 			m.appendHistory(renderToolCallBlock(msg.name, msg.input, m.toolOutputMode))
@@ -455,9 +458,22 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
+		m.statusRevertSeq++
+		seq := m.statusRevertSeq
 		m.responseActive = false
 		if m.shouldRenderToolResult(msg) {
 			m.appendHistory(renderToolResultBlock(msg.output, msg.isError))
+		}
+		return m, tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
+			return statusRevertMsg{tabID: msg.tabID, seq: seq}
+		})
+
+	case statusRevertMsg:
+		if msg.tabID != m.id || msg.seq != m.statusRevertSeq {
+			return m, nil
+		}
+		if m.busy() {
+			m.status = "Thinking…"
 		}
 		return m, nil
 
@@ -544,14 +560,14 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			m.status = ""
 			m.pendingWorkflow = nil
 			m.todos = nil
-		m.taskListExpanded = false
+			m.taskListExpanded = false
 			m.activeSubagents = nil
 		case msg.res.IsError:
 			m.appendHistory(outputStyle.Render(errStyle.Render("error: " + msg.res.Result)))
 			m.status = ""
 			m.pendingWorkflow = nil
 			m.todos = nil
-		m.taskListExpanded = false
+			m.taskListExpanded = false
 			m.activeSubagents = nil
 		}
 		m.refreshPathMatches()
@@ -2259,4 +2275,23 @@ func (m model) dispatchProviderTurn(line string) (tea.Model, tea.Cmd) {
 	}
 
 	return m, tea.Batch(cmd, m.spinner.Tick)
+}
+
+func (m *model) updateEQ() {
+	for i := 0; i < len(m.eqHeights); i++ {
+		// Randomly step up or down by 1, constrained to 0-7
+		step := m.eqHeights[i]
+		if step == 0 {
+			step++
+		} else if step == 7 {
+			step--
+		} else {
+			if (time.Now().UnixNano()+int64(i))%2 == 0 {
+				step++
+			} else {
+				step--
+			}
+		}
+		m.eqHeights[i] = step
+	}
 }

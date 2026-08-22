@@ -490,9 +490,9 @@ func (s *agentSession) runTurn(turn agentTurn) {
 						input:      inputMap,
 						background: bg,
 					})
-					status := "running " + name + "…"
+					status := "Running…"
 					if phrase := toolCallPhrase(inputMap); phrase != "" {
-						status = name + ": " + phrase
+						status = capitalizeFirst(phrase)
 					}
 					s.emit(streamStatusMsg{status: status})
 				}
@@ -561,4 +561,13 @@ func checkLoopDetection(sigs [][32]byte) bool {
 		}
 	}
 	return false
+}
+
+func capitalizeFirst(s string) string {
+	if s == "" {
+		return ""
+	}
+	r := []rune(s)
+	r[0] = []rune(strings.ToUpper(string(r[0])))[0]
+	return string(r)
 }
