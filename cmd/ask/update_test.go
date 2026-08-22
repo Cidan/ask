@@ -1827,3 +1827,52 @@ func TestUpdate_ToggleTaskList(t *testing.T) {
 		t.Error("expected another Ctrl+X to collapse task list")
 	}
 }
+
+func TestWorkflowStepStartedMsg_HeaderFormat(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.workflowRun = &workflowRunState{
+		Workflow: workflowDef{
+			Name: "test",
+			Steps: []workflowStep{
+				{Name: "step1", Prompt: "do step 1"},
+				{Name: "loop1", Kind: "loop", Steps: []workflowStep{{Name: "inner1"}}},
+			},
+		},
+	}
+
+	m2, _ := runUpdate(t, m, WorkflowStepStartedMsg{
+		TabID:    m.id,
+		StepIdx:  0,
+		StepName: "step1",
+		Provider: "vertex",
+		Model:    "gemini-3.7-flash",
+	})
+	if len(m2.history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(m2.history))
+	}
+	last := m2.history[0].text
+	if strings.Contains(last, "|") {
+		t.Errorf("step header should not contain pipe, got %q", last)
+	}
+	if !strings.HasPrefix(last, "     ") {
+		t.Errorf("top-level step header should start with 5 spaces, got %q", last)
+	}
+
+	m3, _ := runUpdate(t, m2, WorkflowStepStartedMsg{
+		TabID:    m.id,
+		StepIdx:  1,
+		StepName: "inner1",
+		Provider: "vertex",
+		Model:    "gemini-3.7-flash",
+	})
+	if len(m3.history) != 2 {
+		t.Fatalf("expected 2 history entries, got %d", len(m3.history))
+	}
+	loopHeader := m3.history[1].text
+	if strings.Contains(loopHeader, "|") {
+		t.Errorf("inner loop step header should not contain pipe, got %q", loopHeader)
+	}
+	if !strings.HasPrefix(loopHeader, "       ") {
+		t.Errorf("inner loop step header should start with 7 spaces, got %q", loopHeader)
+	}
+}

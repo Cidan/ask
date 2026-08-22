@@ -667,12 +667,11 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m.taskListExpanded = false
 		if m.workflowRun != nil {
 			m.workflowRun.StepIdx = msg.StepIdx
-			indent := "   "
+			indent := "     "
 			if m.workflowRun.Workflow.Steps[msg.StepIdx].IsLoop() {
-				indent = "     "
+				indent = "       "
 			}
-			header := indent + workflowMarginStyle.Render("|") + " " +
-				promptStyle.Render("▸ "+nonEmpty(msg.StepName, "step"))
+			header := indent + promptStyle.Render("▸ "+nonEmpty(msg.StepName, "step"))
 			if meta := providerMeta(msg.Provider, msg.Model); meta != "" {
 				header += dimStyle.Render(" (" + meta + ")")
 			}
