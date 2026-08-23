@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Cidan/ask/pkg/config"
 	"google.golang.org/genai"
 )
 
@@ -106,23 +105,6 @@ func TestSubagentTools_GrantSets(t *testing.T) {
 // ADK's agenttool — see the note at the top of subagents.go. The builders
 // that wrapped them in agenttool had no production callers and are gone,
 // so the tests that exercised them are too.
-
-func TestResolveSubagentModel(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	// Inherit
-	client, budget, err := ResolveSubagentModel(SubagentDef{Name: "x"}, "vertex", nil, config.Config{})
-	if err != nil || client != nil || budget != 0 {
-		t.Errorf("inherit failed: %v budget=%d %v", client, budget, err)
-	}
-
-	// Unknown provider
-	if _, _, err := ResolveSubagentModel(SubagentDef{Name: "x", Provider: "unknown-provider"}, "vertex", nil, config.Config{}); err == nil ||
-		!strings.Contains(err.Error(), "not an in-process provider") {
-		t.Errorf("unknown provider must be rejected: %v", err)
-	}
-}
 
 func TestDiscoverSubagents_LinkedDocs(t *testing.T) {
 	home := t.TempDir()

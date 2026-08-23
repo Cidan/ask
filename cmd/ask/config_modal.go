@@ -6,6 +6,7 @@ import (
 	"charm.land/bubbles/v2/cursor"
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
+	"github.com/Cidan/ask/pkg/providers"
 )
 
 type configItem struct {
@@ -83,11 +84,27 @@ func (m model) globalConfigItems() []configItem {
 		{"Theme", m.themeName, "theme"},
 		{"Default Provider", provName, "provider"},
 		{"Web Search...", webSearch, "webSearch"},
-		{"Vertex AI...", vertexSummary(), "vertex"},
-		{"OpenRouter...", openRouterSummary(), "openrouter"},
-		{"Keybindings...", "", "keybindings"},
 	}
+	// One settings row per registered provider, generated from the
+	// registry: the row reads "on" once the provider has its credentials.
+	for _, p := range providers.All() {
+		items = append(items, configItem{p.DisplayName() + "...", providerConfigSummary(cfg, p), providerConfigItemID(p)})
+	}
+	items = append(items, configItem{"Keybindings...", "", "keybindings"})
 	return items
+}
+
+const providerConfigItemPrefix = "provider:"
+
+func providerConfigItemID(p providers.Provider) string {
+	return providerConfigItemPrefix + p.ID()
+}
+
+func providerConfigSummary(cfg askConfig, p providers.Provider) string {
+	if p.Configured(cfg.ProviderConfig(p.ID())) {
+		return "on"
+	}
+	return "off"
 }
 
 func (m model) refreshHistoryCmd() tea.Cmd {
@@ -100,30 +117,6 @@ func (m model) refreshHistoryCmd() tea.Cmd {
 			ToolOutput:  m.toolOutputMode,
 			QuietMode:   m.quietMode,
 		}, true)
-}
-
-// vertexSummary reports the user-facing Vertex row key for the
-// /config menu: "off" when neither project nor location is set, a
-// "<project>/<location>" pair when both are. Mirrors the live-state
-// pattern used for memory ("on" vs "off (open failed)").
-func vertexSummary() string {
-	cfg, _ := loadConfig()
-	if cfg.Vertex.Project == "" {
-		return "off"
-	}
-	loc := vertexResolveLocation(cfg.Vertex)
-	if loc == vertexDefaultLocation {
-		return cfg.Vertex.Project + "/global"
-	}
-	return cfg.Vertex.Project + "/" + loc
-}
-
-func openRouterSummary() string {
-	cfg, _ := loadConfig()
-	if cfg.OpenRouter.APIKey == "" {
-		return "off"
-	}
-	return "on"
 }
 
 func (m model) startConfigModal() model {
@@ -166,14 +159,8 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.configProviderPickerActive {
 		return m.updateConfigProviderPicker(msg)
 	}
-	if m.configWebSearchPickerActive {
-		return m.updateConfigWebSearchPicker(msg)
-	}
-	if m.configVertexPickerActive {
-		return m.updateConfigVertexPicker(msg)
-	}
-	if m.configOpenRouterPickerActive {
-		return m.updateConfigOpenRouterPicker(msg)
+	if m.configFields.active {
+		return m.updateFieldsPicker(msg)
 	}
 	if m.configKeybindingsPickerActive {
 		return m.updateConfigKeybindingsPicker(msg)
@@ -404,16 +391,16 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 		m = m.openConfigProviderPicker()
 		return m, nil
 	case "webSearch":
-		m = m.openConfigWebSearchPicker()
-		return m, nil
-	case "vertex":
-		m = m.openConfigVertexPicker()
-		return m, nil
-	case "openrouter":
-		m = m.openConfigOpenRouterPicker()
+		m = m.openWebSearchFieldsPicker()
 		return m, nil
 	case "keybindings":
 		m = m.openConfigKeybindingsPicker()
+		return m, nil
+	}
+	if id, ok := strings.CutPrefix(itemID, providerConfigItemPrefix); ok {
+		if p, ok := providers.Get(id); ok {
+			m = m.openProviderFieldsPicker(p)
+		}
 		return m, nil
 	}
 	return m, nil

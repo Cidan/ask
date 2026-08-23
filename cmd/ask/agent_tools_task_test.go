@@ -19,7 +19,7 @@ func TestAgentTaskTool_Delegation(t *testing.T) {
 	origModelBuilder := engine.ModelBuilder
 	defer func() { engine.ModelBuilder = origModelBuilder }()
 
-	engine.ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (adkmodel.LLM, error) {
+	engine.ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (adkmodel.LLM, error) {
 		return &mockADKModel{
 			name: modelID,
 			generateFunc: func(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {

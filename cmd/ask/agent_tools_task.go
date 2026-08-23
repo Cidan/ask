@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"errors"
-	adkagent "google.golang.org/adk/v2/agent"
 	"strings"
 
+	adkagent "google.golang.org/adk/v2/agent"
+
 	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/tools"
 	"github.com/google/uuid"
 )
@@ -60,9 +62,16 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 			}
 
 			subEnv := tools.NewSubagentToolEnv(env, subagentID)
+			// The sub-agent inherits the parent session's provider and model;
+			// a named agent may pin either. An empty model resolves to the
+			// provider's configured or default model in engine.Run.
 			sess := getSession()
-			modelID := "gemini-3.1-pro-preview"
-			if sess != nil && sess.modelID != "" {
+			providerID := providers.DefaultProviderID()
+			modelID := ""
+			if sess != nil {
+				if sess.provider != nil {
+					providerID = sess.provider.ID()
+				}
 				modelID = sess.modelID
 			}
 
@@ -86,6 +95,10 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 				if def == nil {
 					return agentTaskResult{}, errors.New("unknown agent " + name + " — see <available_agents> for what is defined")
 				}
+				if def.Provider != "" && def.Provider != providerID {
+					providerID = def.Provider
+					modelID = ""
+				}
 				if def.Model != "" {
 					modelID = def.Model
 				}
@@ -101,7 +114,7 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 					Prompt:             prompt,
 					Cwd:                env.Cwd,
 					Config:             toPkgConfig(cfg),
-					Provider:           "vertex",
+					Provider:           providerID,
 					Model:              modelID,
 					Tools:              toolsList,
 					SkipAllPermissions: true,

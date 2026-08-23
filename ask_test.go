@@ -35,7 +35,7 @@ func TestAskTopLevel_Run(t *testing.T) {
 	origModelBuilder := engine.ModelBuilder
 	defer func() { engine.ModelBuilder = origModelBuilder }()
 
-	engine.ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+	engine.ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 		return &mockLLM{
 			name: modelID,
 			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {

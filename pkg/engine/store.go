@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Cidan/ask/pkg/providers"
 	"github.com/google/uuid"
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
@@ -116,7 +117,7 @@ func (s *FileSessionService) Root() (string, error) {
 	}
 	provider := s.provider
 	if provider == "" {
-		provider = "vertex"
+		provider = providers.DefaultProviderID()
 	}
 	return filepath.Join(home, ".config", "ask", "agent-sessions", provider), nil
 }

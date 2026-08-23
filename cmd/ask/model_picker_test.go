@@ -293,8 +293,8 @@ func TestModelPicker_OverlayGeometry(t *testing.T) {
 	}
 
 	m.modelPicker.keyEntry = &modelPickerKeyEntry{
-		pending: modelPickerEntry{display: "X"},
-		spec:    providerKeySpec{id: "test", title: "Test", envKey: "TEST_KEY"},
+		pending: modelPickerEntry{display: "X", providerName: "Test"},
+		field:   providers.SettingField{Key: "apiKey", Title: "API Key", Secret: true, EnvKey: "TEST_KEY"},
 	}
 	if kv := m.modelPickerOverlay(120, 40); lipgloss.Width(kv) != 112 || lipgloss.Height(kv) != 36 {
 		t.Errorf("key prompt must keep the box footprint, got %dx%d", lipgloss.Width(kv), lipgloss.Height(kv))
@@ -596,7 +596,8 @@ func TestModelPicker_VertexAppearsAsSection(t *testing.T) {
 func TestModelPicker_OpenRouterKeyPrompt(t *testing.T) {
 	m := newProviderRegistryFixture(t)
 	// We need to inject openrouter provider into the test registry
-	withRegisteredProviders(t, vertexAgentProvider(), agentAPIProvider{spec: &providers.OpenRouterSpec})
+	withRegisteredProviders(t, vertexAgentProvider(), agentAPIProvider{prov: providers.OpenRouter{}})
+	t.Setenv(providers.OpenRouterEnvAPIKey, "")
 
 	m = m.openModelPicker()
 	// Filter for openrouter
@@ -614,6 +615,9 @@ func TestModelPicker_OpenRouterKeyPrompt(t *testing.T) {
 	if m.modelPicker.keyEntry == nil {
 		t.Fatal("expected OpenRouter key prompt to open")
 	}
+	if ke := m.modelPicker.keyEntry; ke.field.Key != providers.OpenRouterFieldAPIKey || ke.title() != "OpenRouter API Key" {
+		t.Errorf("key prompt must ask for the provider's Secret setting: %+v", ke.field)
+	}
 
 	m = pressText(t, m, "test-or-key")
 	m = stepKey(t, m, pressSpecial(tea.KeyEnter))
@@ -623,8 +627,29 @@ func TestModelPicker_OpenRouterKeyPrompt(t *testing.T) {
 	}
 
 	cfg, _ := loadConfig()
-	if cfg.OpenRouter.APIKey != "test-or-key" {
-		t.Errorf("expected OpenRouter API key saved, got %q", cfg.OpenRouter.APIKey)
+	if got := cfg.ProviderConfig(providers.OpenRouterProviderID).Field(providers.OpenRouterFieldAPIKey); got != "test-or-key" {
+		t.Errorf("expected OpenRouter API key saved, got %q", got)
+	}
+	if providerNeedsAPIKey(cfg, providers.OpenRouterProviderID) {
+		t.Error("a saved key must satisfy the gate")
+	}
+}
+
+func TestProviderNeedsAPIKey_EnvAndUnknown(t *testing.T) {
+	isolateHome(t)
+	t.Setenv(providers.OpenRouterEnvAPIKey, "")
+	if !providerNeedsAPIKey(askConfig{}, providers.OpenRouterProviderID) {
+		t.Error("no key anywhere → needs one")
+	}
+	t.Setenv(providers.OpenRouterEnvAPIKey, "env")
+	if providerNeedsAPIKey(askConfig{}, providers.OpenRouterProviderID) {
+		t.Error("the env fallback satisfies the gate")
+	}
+	if providerNeedsAPIKey(askConfig{}, providers.VertexProviderID) {
+		t.Error("a provider without a Secret setting never prompts")
+	}
+	if providerNeedsAPIKey(askConfig{}, "nosuch") {
+		t.Error("an unknown provider never prompts")
 	}
 }
 
@@ -632,7 +657,7 @@ func TestModelPicker_VertexNoKeyPrompt(t *testing.T) {
 	m := newProviderRegistryFixture(t)
 	if err := withConfigLock(func() error {
 		cfg, _ := loadConfig()
-		cfg.Vertex.Project = ""
+		cfg.SetProviderConfig(vertexProviderID, providerConfig{})
 		return saveConfig(cfg)
 	}); err != nil {
 		t.Fatal(err)
@@ -659,12 +684,12 @@ func TestModelPicker_VertexNoKeyPrompt(t *testing.T) {
 // persisted. Regression for "picked OpenRouter, relaunched, back on Vertex".
 func TestModelPicker_OpenRouterPickPersistsProviderAndModel(t *testing.T) {
 	m := newProviderRegistryFixture(t)
-	withRegisteredProviders(t, vertexAgentProvider(), agentAPIProvider{spec: &providers.OpenRouterSpec})
+	withRegisteredProviders(t, vertexAgentProvider(), agentAPIProvider{prov: providers.OpenRouter{}})
 
 	// Pre-seed the key so the pick applies directly instead of prompting.
 	if err := withConfigLock(func() error {
 		cfg, _ := loadConfig()
-		cfg.OpenRouter.APIKey = "k"
+		cfg.SetProviderConfig(providers.OpenRouterProviderID, providerConfig{}.WithField(providers.OpenRouterFieldAPIKey, "k"))
 		return saveConfig(cfg)
 	}); err != nil {
 		t.Fatal(err)
@@ -685,8 +710,8 @@ func TestModelPicker_OpenRouterPickPersistsProviderAndModel(t *testing.T) {
 		t.Errorf("cfg.Provider = %q, want %q (Ctrl+M must set the default for new tabs)",
 			cfg.Provider, providers.OpenRouterProviderID)
 	}
-	if cfg.OpenRouter.Model != "anthropic/claude-3.7-sonnet" {
-		t.Errorf("cfg.OpenRouter.Model = %q, want it persisted", cfg.OpenRouter.Model)
+	if got := cfg.ProviderConfig(providers.OpenRouterProviderID); got.Model != "anthropic/claude-3.7-sonnet" || got.Field(providers.OpenRouterFieldAPIKey) != "k" {
+		t.Errorf("openrouter block = %+v, want the model persisted next to the key", got)
 	}
 }
 
@@ -695,13 +720,13 @@ func TestModelPicker_OpenRouterPickPersistsProviderAndModel(t *testing.T) {
 // model so it never reached disk.
 func TestAgentProvider_SaveSettingsPersistsNonVertexModel(t *testing.T) {
 	isolateHome(t)
-	p := agentAPIProvider{spec: &providers.OpenRouterSpec}
+	p := agentAPIProvider{prov: providers.OpenRouter{}}
 	if err := p.SaveSettings(ProviderSettings{Model: "openai/o3-mini", Effort: "high"}); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
 	}
 	cfg, _ := loadConfig()
-	if cfg.OpenRouter.Model != "openai/o3-mini" {
-		t.Errorf("cfg.OpenRouter.Model = %q, want openai/o3-mini", cfg.OpenRouter.Model)
+	if got := cfg.ProviderConfig(providers.OpenRouterProviderID).Model; got != "openai/o3-mini" {
+		t.Errorf("openrouter model = %q, want openai/o3-mini", got)
 	}
 	if cfg.Effort != "high" {
 		t.Errorf("cfg.Effort = %q, want high", cfg.Effort)

@@ -133,7 +133,7 @@ func TestEngineRun_SingleTurn(t *testing.T) {
 	tmpCwd := t.TempDir()
 
 	origBuilder := ModelBuilder
-	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 		return &mockLLM{
 			name: modelID,
 			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
@@ -179,7 +179,7 @@ func TestEngineRun_MultiTurnResumption(t *testing.T) {
 
 	turn := 0
 	origBuilder := ModelBuilder
-	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 		return &mockLLM{
 			name: modelID,
 			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
@@ -229,7 +229,7 @@ func TestEngineRun_StreamingEvents(t *testing.T) {
 	tmpCwd := t.TempDir()
 
 	origBuilder := ModelBuilder
-	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 		return &mockLLM{
 			name: modelID,
 			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
@@ -335,7 +335,7 @@ func TestEngineRun_ToolExecution(t *testing.T) {
 
 	step := 0
 	origBuilder := ModelBuilder
-	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 		return &mockLLM{
 			name: modelID,
 			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
@@ -399,7 +399,7 @@ func TestEngineRun_ProviderErrorHandling(t *testing.T) {
 	tmpCwd := t.TempDir()
 
 	origBuilder := ModelBuilder
-	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 		return nil, errors.New("simulated model build failure")
 	}
 	defer func() { ModelBuilder = origBuilder }()
@@ -486,7 +486,7 @@ func TestEngineRun_ThoughtSignaturePreservation(t *testing.T) {
 
 	step := 0
 	origBuilder := ModelBuilder
-	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 		return &mockLLM{
 			name: modelID,
 			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
@@ -566,7 +566,7 @@ func TestEngineRun_ADKMemoryIntegration(t *testing.T) {
 
 	step := 0
 	origBuilder := ModelBuilder
-	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 		return &mockLLM{
 			name: modelID,
 			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
@@ -604,7 +604,7 @@ func TestEngineRun_DynamicInstructionProvider(t *testing.T) {
 
 	var capturedInstruction string
 	origBuilder := ModelBuilder
-	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 		return &mockLLM{
 			name: modelID,
 			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
@@ -643,7 +643,7 @@ func TestEngineRun_AutoCreateSession(t *testing.T) {
 	tmpCwd := t.TempDir()
 
 	origBuilder := ModelBuilder
-	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 		return &mockLLM{
 			name: modelID,
 			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
@@ -715,7 +715,7 @@ func TestRunner_AutoCreateSession(t *testing.T) {
 			return mockLLMSequence(textResponse("Session object auto created"))
 		},
 	}
-	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 		return mockInstance, nil
 	}
 	defer func() { ModelBuilder = origBuilder }()
@@ -790,7 +790,7 @@ func TestEngineRun_RetryAndReflect_SelfHealing(t *testing.T) {
 
 	step := 0
 	origBuilder := ModelBuilder
-	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 		return &mockLLM{
 			name: modelID,
 			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
@@ -877,7 +877,7 @@ func TestEngineRun_InstructionutilSessionInterpolation(t *testing.T) {
 	origModelBuilder := ModelBuilder
 	defer func() { ModelBuilder = origModelBuilder }()
 
-	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 		return &mockLLM{
 			name: "mock",
 			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {

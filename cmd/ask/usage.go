@@ -15,12 +15,15 @@ type TokenUsage struct {
 	CacheReadTokens     int
 }
 
-// modelContextLimit maps a model name to its context window size.
-func modelContextLimit(model string) int {
-	lower := strings.ToLower(model)
-	if m, ok := catalogModel("vertex", model); ok && m.ContextWindow > 0 {
-		return int(m.ContextWindow)
+// modelContextLimit is the model's context window: the provider's answer
+// when the provider is known, else a name heuristic.
+func modelContextLimit(providerID, model string) int {
+	if p, ok := providers.Get(providerID); ok {
+		if w := p.ContextWindow(model); w > 0 {
+			return int(w)
+		}
 	}
+	lower := strings.ToLower(model)
 	if strings.Contains(lower, "1m") || strings.Contains(lower, "gemini") {
 		return 1_048_576
 	}

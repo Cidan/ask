@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/providers"
+	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
 
@@ -214,24 +217,61 @@ func TestResumeRehydratesTitle(t *testing.T) {
 	}
 }
 
-func TestGenerateTabTitle_StreamsTitle(t *testing.T) {
-	origStream := engine.GenerateStream
-	defer func() { engine.GenerateStream = origStream }()
+// The title call goes through the provider's ADK model (engine.ModelBuilder),
+// so it works for every registered provider, not only genai-native ones.
+func TestGenerateTabTitle_UsesProviderModel(t *testing.T) {
+	isolateHome(t)
+	origBuilder := engine.ModelBuilder
+	defer func() { engine.ModelBuilder = origBuilder }()
 
-	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
-		return func(yield func(*genai.GenerateContentResponse, error) bool) {
-			yield(genaiTextChunk("Recovered Title", 5, 3), nil)
-		}
+	var gotProvider, gotModel string
+	var gotStream bool
+	var gotPrompt string
+	engine.ModelBuilder = func(_ context.Context, p providers.Provider, _ config.Config, modelID string) (adkmodel.LLM, error) {
+		gotProvider, gotModel = p.ID(), modelID
+		return &mockADKModel{
+			name: modelID,
+			generateFunc: func(_ context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+				gotStream = stream
+				for _, c := range req.Contents {
+					for _, part := range c.Parts {
+						gotPrompt += part.Text
+					}
+				}
+				return func(yield func(*adkmodel.LLMResponse, error) bool) {
+					yield(&adkmodel.LLMResponse{
+						Content: &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{
+							{Thought: true, Text: "thinking…"},
+							genai.NewPartFromText("Recovered Title"),
+						}},
+						UsageMetadata: &genai.GenerateContentResponseUsageMetadata{PromptTokenCount: 5, CandidatesTokenCount: 3},
+					}, nil)
+				}
+			},
+		}, nil
 	}
 
-	title, usage, err := generateTabTitleText("vertex", "gemini-2.5-pro", "fix the flaky test")
+	title, usage, err := generateTabTitleText(providers.OpenRouterProviderID, "", "fix the flaky test")
 	if err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
 	if title != "Recovered Title" {
-		t.Errorf("title = %q want %q", title, "Recovered Title")
+		t.Errorf("title = %q want %q (thought parts skipped)", title, "Recovered Title")
 	}
-	if usage.OutputTokens != 3 {
-		t.Errorf("usage.OutputTokens = %d want 3", usage.OutputTokens)
+	if usage.InputTokens != 5 || usage.OutputTokens != 3 {
+		t.Errorf("usage = %+v want 5/3", usage)
+	}
+	if gotProvider != providers.OpenRouterProviderID || gotModel != providers.OpenRouterDefaultModel {
+		t.Errorf("built %s/%s, want the provider's default model", gotProvider, gotModel)
+	}
+	if gotStream {
+		t.Error("the title call must be non-streaming so the final aggregate is not concatenated onto the deltas")
+	}
+	if !strings.Contains(gotPrompt, "fix the flaky test") {
+		t.Errorf("prompt must reach the model: %q", gotPrompt)
+	}
+
+	if _, _, err := generateTabTitleText("nosuch", "", "x"); err == nil {
+		t.Error("unknown provider must error")
 	}
 }

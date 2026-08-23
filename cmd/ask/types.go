@@ -559,32 +559,11 @@ type model struct {
 	configProviderCursor       int
 	configProviderBackup       string
 
-	// configWebSearchPickerActive toggles the /config → Web Search
-	// sub-picker. It carries the Brave Search API key (the only knob).
-	// Pressing Enter on the key row opens the inline editor
-	// (configWebSearchEditing flips true); the draft accumulates
-	// keystrokes/pastes and Enter persists it to cfg.WebSearch.BraveAPIKey.
-	configWebSearchPickerActive bool
-	configWebSearchCursor       int
-	configWebSearchEditing      bool
-	configWebSearchDraft        string
-
-	// configVertexPickerActive toggles the /config → Vertex AI
-	// sub-picker. Three rows: Project, Location, Service Account
-	// Key path. Pressing Enter on a row opens the inline editor
-	// (configVertexFieldEditing flips to the row id); the draft
-	// accumulates keystrokes/pastes and Enter validates + persists
-	// to cfg.Vertex.* via the matching vertexFieldSpec. Mirrors
-	// the memory picker's multi-field shape.
-	configVertexPickerActive bool
-	configVertexCursor       int
-	configVertexFieldEditing string
-	configVertexFieldDraft   string
-
-	configOpenRouterPickerActive bool
-	configOpenRouterCursor       int
-	configOpenRouterFieldEditing string
-	configOpenRouterFieldDraft   string
+	// configFields is the data-driven field editor behind every
+	// /config → <provider>... row and Web Search (config_fields.go).
+	// Active while .active is set; .editing names the field whose
+	// inline editor is open.
+	configFields fieldsPickerState
 
 	// /config now layers into Global Options (existing knobs) vs
 	// Project Options (per-cwd issue provider). configGlobalPicker-

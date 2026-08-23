@@ -29,6 +29,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
+	"github.com/Cidan/ask/pkg/providers"
 )
 
 const (
@@ -233,7 +234,11 @@ func (m *model) sidebarCost() string {
 	if mdl == "" {
 		mdl = m.providerModel
 	}
-	ctxPct := contextPercent(m.lastUsageTokens, modelContextLimit(mdl))
+	providerID := ""
+	if m.provider != nil {
+		providerID = m.provider.ID()
+	}
+	ctxPct := contextPercent(m.lastUsageTokens, modelContextLimit(providerID, mdl))
 	pctStr := fmt.Sprintf("%d%%", ctxPct)
 
 	cost := ""
@@ -256,8 +261,8 @@ func (m *model) effectiveModelID() string {
 		return m.providerModel
 	}
 	if m.provider != nil {
-		if spec, ok := agentSpecByID(m.provider.ID()); ok {
-			return spec.DefaultModel
+		if p, ok := providers.Get(m.provider.ID()); ok {
+			return p.DefaultModel()
 		}
 	}
 	return ""

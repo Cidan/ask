@@ -131,7 +131,7 @@ func TestWorkflowArtifactHandoff(t *testing.T) {
 
 	scripted := &scriptedModel{calls: map[string]int{}}
 	origBuilder := engine.ModelBuilder
-	engine.ModelBuilder = func(_ context.Context, _ *providers.AgentProviderSpec, _ config.Config, _ string) (adkmodel.LLM, error) {
+	engine.ModelBuilder = func(_ context.Context, _ providers.Provider, _ config.Config, _ string) (adkmodel.LLM, error) {
 		return scripted, nil
 	}
 	defer func() { engine.ModelBuilder = origBuilder }()

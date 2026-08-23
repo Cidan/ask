@@ -1138,14 +1138,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, cmd
 
 	case tea.PasteMsg:
-		if m.mode == modeConfig && m.configWebSearchPickerActive && m.configWebSearchEditing {
-			return m.applyConfigWebSearchPaste(msg.Content)
-		}
-		if m.mode == modeConfig && m.configVertexPickerActive && m.configVertexFieldEditing != "" {
-			return m.applyConfigVertexPaste(msg.Content)
-		}
-		if m.mode == modeConfig && m.configOpenRouterPickerActive && m.configOpenRouterFieldEditing != "" {
-			return m.applyConfigOpenRouterPaste(msg.Content)
+		if m.mode == modeConfig && m.configFields.active && m.configFields.editing != "" {
+			return m.applyFieldsPickerPaste(msg.Content)
 		}
 		if m.mode == modeModelPicker {
 			return m.applyModelPickerPaste(msg.Content)

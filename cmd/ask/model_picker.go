@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"os"
 	"sort"
 	"strings"
 	"unicode"
@@ -17,31 +16,6 @@ import (
 // selected model's details on the right. The list is seeded from whatever
 // the catalog cache already holds and refreshed when the async load lands.
 
-type providerKeySpec struct {
-	id     string
-	title  string
-	envKey string
-	config func(*askConfig) *apiProviderConfig
-}
-
-var providerKeySpecs = []providerKeySpec{
-	{
-		id:     "openrouter",
-		title:  "OpenRouter API Key",
-		envKey: providers.OpenRouterEnvAPIKey,
-		config: func(c *askConfig) *apiProviderConfig { return &c.OpenRouter },
-	},
-}
-
-func providerKeySpecByID(id string) (providerKeySpec, bool) {
-	for _, s := range providerKeySpecs {
-		if s.id == id {
-			return s, true
-		}
-	}
-	return providerKeySpec{}, false
-}
-
 func missingAPIKeyError(envKey string) error {
 	picker := "the model picker"
 	if k := keyHintFor(ActionProviderSwitch); k != "" {
@@ -50,22 +24,20 @@ func missingAPIKeyError(envKey string) error {
 	return errors.New("no API key configured — add one via " + picker + ", or export " + envKey)
 }
 
+// providerNeedsAPIKey reports whether picking providerID should first ask
+// for its credential: the provider declares a Secret setting and neither
+// config nor its env fallback supplies one. Providers without a secret
+// (Vertex authenticates with ADC) never prompt.
 func providerNeedsAPIKey(cfg askConfig, providerID string) bool {
-	spec, ok := providerKeySpecByID(providerID)
+	p, ok := providers.Get(providerID)
 	if !ok {
 		return false
 	}
-	if spec.envKey != "" && os.Getenv(spec.envKey) != "" {
+	f, ok := providers.SecretField(p)
+	if !ok {
 		return false
 	}
-	if spec.config == nil {
-		return false
-	}
-	conf := spec.config(&cfg)
-	if conf == nil {
-		return false
-	}
-	return conf.APIKey == ""
+	return providers.SettingValue(cfg.ProviderConfig(providerID), f) == ""
 }
 
 func friendlyModelName(providerID, modelID string) string {
@@ -124,8 +96,13 @@ type modelPickerRow struct {
 
 type modelPickerKeyEntry struct {
 	pending modelPickerEntry
-	spec    providerKeySpec
+	field   providers.SettingField
 	draft   string
+}
+
+// title is the prompt's heading: "OpenRouter API Key".
+func (ke *modelPickerKeyEntry) title() string {
+	return ke.pending.providerName + " " + ke.field.Title
 }
 
 type modelPickerCustomEntry struct {
@@ -464,8 +441,9 @@ func (m model) updateModelPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m model) dispatchModelPick(entry modelPickerEntry) (tea.Model, tea.Cmd) {
 	cfg, _ := loadConfig()
 	if providerNeedsAPIKey(cfg, entry.providerID) {
-		spec, _ := providerKeySpecByID(entry.providerID)
-		m.modelPicker.keyEntry = &modelPickerKeyEntry{pending: entry, spec: spec}
+		p, _ := providers.Get(entry.providerID)
+		f, _ := providers.SecretField(p)
+		m.modelPicker.keyEntry = &modelPickerKeyEntry{pending: entry, field: f}
 		return m, nil
 	}
 	return m.applyModelPickerEntry(entry)
@@ -505,14 +483,15 @@ func (m model) updateModelPickerKeyEntry(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 		if key == "" {
 			return m, nil
 		}
+		id := ke.pending.providerID
 		if err := withConfigLock(func() error {
 			cfg, _ := loadConfig()
-			ke.spec.config(&cfg).APIKey = key
+			cfg.SetProviderConfig(id, cfg.ProviderConfig(id).WithField(ke.field.Key, key))
 			return saveConfig(cfg)
 		}); err != nil {
-			debugLog("%s API key saveConfig: %v", ke.spec.id, err)
+			debugLog("%s %s saveConfig: %v", id, ke.field.Key, err)
 			s.keyEntry = nil
-			return m, m.toast.show(ke.spec.title + ": save key: " + err.Error())
+			return m, m.toast.show(ke.title() + ": save key: " + err.Error())
 		}
 		pending := ke.pending
 		s.keyEntry = nil

@@ -58,12 +58,11 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 		interaction = HeadlessInteractionHandler{AutoApproveTools: true}
 	}
 	modelID := args.Model
-	if spec, ok := providers.GetAgentProviderSpec(args.Provider); ok && spec != nil && spec.CanonicalModelID != nil {
-		modelID = spec.CanonicalModelID(args.Model, spec.DefaultModel)
-	}
 	contextWindow := int64(1_048_576)
-	if spec, ok := providers.GetAgentProviderSpec(args.Provider); ok && spec != nil && spec.ContextWindow != nil {
-		contextWindow = spec.ContextWindow(modelID)
+	prov, hasProvider := providers.Get(args.Provider)
+	if hasProvider {
+		modelID = prov.CanonicalModelID(args.Model, prov.DefaultModel())
+		contextWindow = prov.ContextWindow(modelID)
 	}
 	s := &Session{
 		args:          args,
@@ -86,8 +85,8 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 	genConfig := &genai.GenerateContentConfig{
 		MaxOutputTokens: int32(providers.MaxOutputTokensGemini),
 	}
-	if spec, ok := providers.GetAgentProviderSpec(args.Provider); ok && spec != nil && spec.CallOptions != nil {
-		if callOpts, _ := spec.CallOptions(modelID, args.Effort); callOpts != nil {
+	if hasProvider {
+		if callOpts, _ := prov.CallOptions(modelID, args.Effort); callOpts != nil {
 			if callOpts.ThinkingConfig != nil {
 				genConfig.ThinkingConfig = callOpts.ThinkingConfig
 			}

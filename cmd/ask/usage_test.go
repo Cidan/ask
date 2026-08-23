@@ -1,22 +1,32 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/Cidan/ask/pkg/providers"
+)
 
 func TestModelContextLimit(t *testing.T) {
 	cases := []struct {
-		model string
-		want  int
+		provider string
+		model    string
+		want     int
 	}{
-		{"custom-gemini", 1_048_576},
-		{"custom-1m", 1_048_576},
-		{"CUSTOM-1M", 1_048_576},
-		{"unknown-model", 200_000},
-		{"default", 200_000},
-		{"", 200_000},
+		// Unknown provider: the name heuristic.
+		{"", "custom-gemini", 1_048_576},
+		{"", "custom-1m", 1_048_576},
+		{"", "CUSTOM-1M", 1_048_576},
+		{"", "unknown-model", 200_000},
+		{"", "default", 200_000},
+		{"", "", 200_000},
+		// A registered provider answers for its own models.
+		{vertexProviderID, "gemini-2.5-pro", 1_048_576},
+		{vertexProviderID, "unknown-model", 1_048_576},
+		{providers.OpenRouterProviderID, "anthropic/claude-3.7-sonnet", 200_000},
 	}
 	for _, tc := range cases {
-		if got := modelContextLimit(tc.model); got != tc.want {
-			t.Errorf("modelContextLimit(%q) = %d, want %d", tc.model, got, tc.want)
+		if got := modelContextLimit(tc.provider, tc.model); got != tc.want {
+			t.Errorf("modelContextLimit(%q, %q) = %d, want %d", tc.provider, tc.model, got, tc.want)
 		}
 	}
 }

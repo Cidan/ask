@@ -13,14 +13,14 @@ func TestResolveOpenRouterAPIKey(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "env-key")
 
 	// Test env var
-	cfg := config.APIProviderConfig{}
+	cfg := config.ProviderConfig{}
 	key := ResolveOpenRouterAPIKey(cfg)
 	if key != "env-key" {
 		t.Errorf("Expected env-key, got %s", key)
 	}
 
 	// Test config takes precedence
-	cfg.APIKey = "cfg-key"
+	cfg = cfg.WithField(OpenRouterFieldAPIKey, "cfg-key")
 	key = ResolveOpenRouterAPIKey(cfg)
 	if key != "cfg-key" {
 		t.Errorf("Expected cfg-key, got %s", key)
@@ -28,13 +28,13 @@ func TestResolveOpenRouterAPIKey(t *testing.T) {
 }
 
 func TestResolveOpenRouterBaseURL(t *testing.T) {
-	cfg := config.APIProviderConfig{}
+	cfg := config.ProviderConfig{}
 	url := ResolveOpenRouterBaseURL(cfg)
 	if url != OpenRouterDefaultBaseURL {
 		t.Errorf("Expected default url %s, got %s", OpenRouterDefaultBaseURL, url)
 	}
 
-	cfg.BaseURL = "http://custom-url"
+	cfg = cfg.WithField(OpenRouterFieldBaseURL, "http://custom-url")
 	url = ResolveOpenRouterBaseURL(cfg)
 	if url != "http://custom-url" {
 		t.Errorf("Expected custom url, got %s", url)
@@ -61,8 +61,9 @@ func TestListOpenRouterModels(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := config.APIProviderConfig{BaseURL: server.URL}
-	models, err := ListOpenRouterModels(context.Background(), cfg)
+	cfg := config.ProviderConfig{}.WithField(OpenRouterFieldBaseURL, server.URL)
+	var lister ModelLister = OpenRouter{}
+	models, err := lister.ListModels(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -106,14 +107,15 @@ func TestListOpenRouterModels(t *testing.T) {
 
 func TestOpenRouterModelBuilder(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "")
-	cfg := config.APIProviderConfig{}
-	_, err := OpenRouterModelBuilder(context.Background(), cfg, "model")
+	cfg := config.ProviderConfig{}
+	var p Provider = OpenRouter{}
+	_, err := p.BuildModel(context.Background(), cfg, "model")
 	if err == nil {
 		t.Errorf("Expected error for missing API key")
 	}
 
-	cfg.APIKey = "key"
-	m, err := OpenRouterModelBuilder(context.Background(), cfg, "model")
+	cfg = cfg.WithField(OpenRouterFieldAPIKey, "key")
+	m, err := p.BuildModel(context.Background(), cfg, "model")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -122,23 +124,32 @@ func TestOpenRouterModelBuilder(t *testing.T) {
 	}
 }
 
-func TestOpenRouterSpec(t *testing.T) {
-	if OpenRouterSpec.ID != OpenRouterProviderID {
-		t.Errorf("Expected ID %s, got %s", OpenRouterProviderID, OpenRouterSpec.ID)
+func TestOpenRouter_Provider(t *testing.T) {
+	var p Provider = OpenRouter{}
+	if p.ID() != OpenRouterProviderID || p.DisplayName() != "OpenRouter" || p.DefaultModel() != OpenRouterDefaultModel {
+		t.Errorf("identity wrong: %s %s %s", p.ID(), p.DisplayName(), p.DefaultModel())
 	}
-	cfg := config.Config{}
-	cfg.OpenRouter.Model = "cfg-model"
-	cfg.Effort = "low"
-	cfg.OpenRouter.SlashCommands = []config.ProviderSlashEntry{{Name: "test", Description: "test cmd"}}
-
-	s := OpenRouterSpec.LoadSettings(cfg)
-	if s.Model != "cfg-model" || s.Effort != "low" || len(s.SlashCommands) != 1 {
-		t.Errorf("Unexpected settings: %+v", s)
+	if got := p.CanonicalModelID("anthropic/claude-3.7-sonnet", ""); got != "anthropic/claude-3.7-sonnet" {
+		t.Errorf("slugs pass through: %q", got)
 	}
-
-	s.Model = "new-model"
-	OpenRouterSpec.SaveSettings(&cfg, s)
-	if cfg.OpenRouter.Model != "new-model" {
-		t.Errorf("Expected new-model, got %s", cfg.OpenRouter.Model)
+	if got := p.CanonicalModelID("", ""); got != OpenRouterDefaultModel {
+		t.Errorf("empty → default: %q", got)
+	}
+	if got := p.MaxOutputTokens("openai/o3-mini"); got != 100_000 {
+		t.Errorf("catalog max tokens: %d", got)
+	}
+	t.Setenv(OpenRouterEnvAPIKey, "")
+	if p.Configured(config.ProviderConfig{}) {
+		t.Error("no key → not configured")
+	}
+	if !p.Configured(config.ProviderConfig{}.WithField(OpenRouterFieldAPIKey, "k")) {
+		t.Error("key set → configured")
+	}
+	keys := make([]string, 0, 2)
+	for _, f := range p.Settings() {
+		keys = append(keys, f.Key)
+	}
+	if len(keys) != 2 || keys[0] != OpenRouterFieldAPIKey || keys[1] != OpenRouterFieldBaseURL {
+		t.Errorf("settings order: %v", keys)
 	}
 }

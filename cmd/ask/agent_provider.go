@@ -13,19 +13,18 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 )
 
-// agentProviderSpec describes one in-process API provider.
-type agentProviderSpec = providers.AgentProviderSpec
-
 // toPkgConfig returns config.Config (which askConfig is aliased to).
 func toPkgConfig(c askConfig) config.Config {
 	return c
 }
 
-// agentAPIProvider implements Provider generically over a spec.
-type agentAPIProvider struct{ spec *agentProviderSpec }
+// agentAPIProvider adapts one providers.Provider to the TUI's Provider
+// interface: sessions, settings, the picker, and slash commands are all
+// generic over the registry entry.
+type agentAPIProvider struct{ prov providers.Provider }
 
-func (p agentAPIProvider) ID() string          { return p.spec.ID }
-func (p agentAPIProvider) DisplayName() string { return p.spec.DisplayName }
+func (p agentAPIProvider) ID() string          { return p.prov.ID() }
+func (p agentAPIProvider) DisplayName() string { return p.prov.DisplayName() }
 
 func (p agentAPIProvider) Capabilities() ProviderCapabilities {
 	return ProviderCapabilities{
@@ -41,30 +40,33 @@ func (p agentAPIProvider) Capabilities() ProviderCapabilities {
 // provider's live listing once a catalog load (model_catalog.go) has cached
 // one, and the static catalog ids until then.
 func (p agentAPIProvider) ModelPicker() ProviderPicker {
-	options := p.spec.ModelOptions
-	if live, ok := cachedModelOptions(p.spec.ID); ok && len(live) > 0 {
+	options := p.prov.ModelOptions()
+	if live, ok := cachedModelOptions(p.prov.ID()); ok && len(live) > 0 {
 		options = live
 	}
 	return ProviderPicker{
-		Prompt:      "Select " + p.spec.DisplayName + " model",
+		Prompt:      "Select " + p.prov.DisplayName() + " model",
 		Options:     options,
 		AllowCustom: true,
 	}
 }
 
-// ListModels is the network path behind the catalog load.
+// ListModels is the network path behind the catalog load. Providers
+// without the ModelLister capability report no listing and keep the
+// static catalog.
 func (p agentAPIProvider) ListModels(ctx context.Context) ([]string, error) {
-	if p.spec.ListModels == nil {
+	lister, ok := p.prov.(providers.ModelLister)
+	if !ok {
 		return nil, nil
 	}
 	cfg, _ := loadConfig()
-	return p.spec.ListModels(ctx, toPkgConfig(cfg))
+	return lister.ListModels(ctx, cfg.ProviderConfig(p.prov.ID()))
 }
 
-func (p agentAPIProvider) EffortOptions() []string { return p.spec.EffortOptions }
+func (p agentAPIProvider) EffortOptions() []string { return p.prov.EffortOptions() }
 
 func (p agentAPIProvider) BaseSlashCommands() []slashCmd {
-	name := p.spec.DisplayName
+	name := p.prov.DisplayName()
 	return []slashCmd{
 		{"/resume", "resume a previous " + name + " session"},
 		{"/new", "start a new " + name + " session"},
@@ -91,45 +93,38 @@ func (p agentAPIProvider) PreMintSessionID(_ ProviderSessionArgs) string { retur
 func (p agentAPIProvider) NativeSessionID(_ *providerProc) string { return "" }
 
 func (p agentAPIProvider) store() *agentSessionStore {
-	return &agentSessionStore{provider: p.spec.ID}
+	return &agentSessionStore{provider: p.prov.ID()}
 }
 
+// StartSession builds the session's model up front so a provider that
+// cannot run (no project, no key) fails here, with the provider's own
+// message, instead of on the first turn.
 func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
 	cfg, _ := loadConfig()
-	modelID := args.Model
-	if p.spec.CanonicalModelID != nil {
-		modelID = p.spec.CanonicalModelID(args.Model, p.spec.DefaultModel)
-	}
-	client, err := p.spec.BuildClient(toPkgConfig(cfg))
+	modelID := p.prov.CanonicalModelID(args.Model, p.prov.DefaultModel())
+	llm, err := engine.ModelBuilder(context.Background(), p.prov, toPkgConfig(cfg), modelID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", p.spec.ID, err)
+		return nil, nil, fmt.Errorf("%s: %w", p.prov.ID(), err)
 	}
 
 	store := p.store()
-	callOpts, temperature := p.spec.CallOptions(modelID, args.Effort)
+	callOpts, temperature := p.prov.CallOptions(modelID, args.Effort)
 	session := &agentSession{
-		args:          args,
-		spec:          p.spec,
-		client:        client,
-		system:        buildAgentSystemPrompt(args),
-		callOpts:      callOpts,
-		temperature:   temperature,
-		contextWindow: p.spec.ContextWindow(modelID),
-		modelID:       modelID,
-		ch:            make(chan tea.Msg, 256),
-		sendCh:        make(chan agentTurn, 8),
-		midTurnQueue:  &engine.MidTurnQueue{},
-		closed:        make(chan struct{}),
-		store:         store,
-		sessSvc:       engine.NewFileSessionService(p.spec.ID, args.Cwd),
-	}
-	if p.spec.MaxOutputTokens != nil {
-		session.maxOutputTokens = p.spec.MaxOutputTokens(modelID)
-	}
-	if p.spec.BuildModel != nil {
-		if llm, err := p.spec.BuildModel(context.Background(), toPkgConfig(cfg), modelID); err == nil {
-			session.model = llm
-		}
+		args:            args,
+		provider:        p.prov,
+		model:           llm,
+		system:          buildAgentSystemPrompt(args),
+		callOpts:        callOpts,
+		temperature:     temperature,
+		contextWindow:   p.prov.ContextWindow(modelID),
+		maxOutputTokens: p.prov.MaxOutputTokens(modelID),
+		modelID:         modelID,
+		ch:              make(chan tea.Msg, 256),
+		sendCh:          make(chan agentTurn, 8),
+		midTurnQueue:    &engine.MidTurnQueue{},
+		closed:          make(chan struct{}),
+		store:           store,
+		sessSvc:         engine.NewFileSessionService(p.prov.ID(), args.Cwd),
 	}
 	session.retryMaxRetries, session.retryInitialDelay, session.retryBackoffFactor = agentRetryOptions(cfg)
 
@@ -140,7 +135,7 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 			UserID:    "user",
 			SessionID: args.SessionID,
 		}); err != nil {
-			return nil, nil, fmt.Errorf("%s: resume %s: %w", p.spec.ID, short(args.SessionID), err)
+			return nil, nil, fmt.Errorf("%s: resume %s: %w", p.prov.ID(), short(args.SessionID), err)
 		}
 		session.sessionID = args.SessionID
 	case args.NewSessionID != "":
@@ -203,7 +198,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	s.deferredBase = append(s.deferredBase, agentExtensionTools(env)...)
 	s.mcp = newMCPManager(s.args.TabID,
 		func() bool {
-			return s.spec != nil && s.spec.SupportsImages != nil && s.spec.SupportsImages(s.modelID)
+			return s.provider != nil && s.provider.SupportsImages(s.modelID)
 		},
 		s.refreshToolset,
 		globalTUIInteractionHandler,
@@ -233,10 +228,10 @@ func agentSessionMCPServers(args ProviderSessionArgs, cfg askConfig) []agentMCPS
 func (p agentAPIProvider) Send(proc *providerProc, text string, attachments []pendingAttachment) error {
 	session, ok := proc.payload.(*agentSession)
 	if !ok {
-		return errors.New(p.spec.ID + ": proc payload is not an agent session")
+		return errors.New(p.prov.ID() + ": proc payload is not an agent session")
 	}
-	if len(attachments) > 0 && (p.spec.SupportsImages == nil || !p.spec.SupportsImages(session.modelID)) {
-		return errors.New(p.spec.DisplayName + " model " + session.modelID +
+	if len(attachments) > 0 && !p.prov.SupportsImages(session.modelID) {
+		return errors.New(p.prov.DisplayName() + " model " + session.modelID +
 			" does not support image attachments — remove the image and resend")
 	}
 	return session.queueTurn(text, attachmentFileParts(attachments))
@@ -275,19 +270,14 @@ func (p agentAPIProvider) LoadHistory(sessionID string, opts HistoryOpts) ([]his
 
 func (p agentAPIProvider) LoadSettings() ProviderSettings {
 	cfg, _ := loadConfig()
-	return p.spec.LoadSettings(toPkgConfig(cfg))
+	return providers.LoadSettings(toPkgConfig(cfg), p.prov.ID())
 }
 
 func (p agentAPIProvider) SaveSettings(s ProviderSettings) error {
 	return withConfigLock(func() error {
 		cfg, _ := loadConfig()
-		pkgCfg := toPkgConfig(cfg)
-		p.spec.SaveSettings(&pkgCfg, s)
-		// pkgCfg is the full config the spec just mutated (askConfig is an
-		// alias of config.Config); persist all of it. Copying back only Vertex
-		// silently dropped every other provider's model — the OpenRouter model
-		// picked via Ctrl+M never reached disk.
-		return saveConfig(pkgCfg)
+		providers.SaveSettings(&cfg, p.prov.ID(), s)
+		return saveConfig(cfg)
 	})
 }
 

@@ -153,7 +153,7 @@ func CanonicalVertexModelID(modelID string, fallback ...string) string {
 	if norm == "" {
 		return fb
 	}
-	if _, ok := CatalogModel("vertex", norm); ok {
+	if _, ok := CatalogModel(VertexProviderID, norm); ok {
 		return norm
 	}
 	lower := strings.ToLower(norm)
@@ -175,7 +175,7 @@ func CanonicalVertexModelID(modelID string, fallback ...string) string {
 // CanonicalOpenRouterModelID normalizes the model ID and falls back to fallback
 // if the model ID is empty.
 func CanonicalOpenRouterModelID(modelID string, fallback ...string) string {
-	fb := "anthropic/claude-3.7-sonnet"
+	fb := OpenRouterDefaultModel
 	if len(fallback) > 0 && fallback[0] != "" {
 		fb = fallback[0]
 	}
@@ -211,7 +211,7 @@ func CatalogModel(provider string, modelID string) (ModelInfo, bool) {
 
 // CatalogModelIDs returns the provider's model ids in catalog order.
 func CatalogModelIDs(provider string) []string {
-	if provider == "openrouter" {
+	if provider == OpenRouterProviderID {
 		ids := make([]string, len(defaultOpenRouterModels))
 		for i, m := range defaultOpenRouterModels {
 			ids[i] = m.ID

@@ -355,8 +355,8 @@ func registerProvider(p Provider) { providerRegistry = append(providerRegistry, 
 // with it the default provider for an empty config) is explicit
 // instead of an accident of file-name init() ordering.
 func init() {
-	for _, spec := range providers.AllAgentProviderSpecs() {
-		registerProvider(agentAPIProvider{spec: spec})
+	for _, p := range providers.All() {
+		registerProvider(agentAPIProvider{prov: p})
 	}
 }
 

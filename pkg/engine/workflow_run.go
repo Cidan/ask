@@ -59,28 +59,13 @@ func buildStepModel(ctx context.Context, e *Engine, step workflow.Step) (adkmode
 		providerID = e.opts.Config.Provider
 	}
 	if providerID == "" {
-		providerID = "vertex"
+		providerID = providers.DefaultProviderID()
 	}
-	spec, ok := providers.GetAgentProviderSpec(providerID)
-	if !ok || spec == nil {
+	prov, ok := providers.Get(providerID)
+	if !ok {
 		return nil, fmt.Errorf("unknown provider %q", providerID)
 	}
-	modelID := step.Model
-	if spec.CanonicalModelID != nil {
-		modelID = spec.CanonicalModelID(step.Model, "")
-	}
-	if modelID == "" {
-		settings := spec.LoadSettings(e.opts.Config)
-		if spec.CanonicalModelID != nil {
-			modelID = spec.CanonicalModelID(settings.Model, spec.DefaultModel)
-		} else {
-			modelID = settings.Model
-		}
-	}
-	if modelID == "" {
-		modelID = spec.DefaultModel
-	}
-	return ModelBuilder(ctx, spec, e.opts.Config, modelID)
+	return ModelBuilder(ctx, prov, e.opts.Config, providers.ResolveModelID(prov, step.Model, e.opts.Config))
 }
 
 // CompileWorkflow compiles a workflow definition into an executable ADK

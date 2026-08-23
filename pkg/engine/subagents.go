@@ -2,7 +2,6 @@ package engine
 
 import (
 	"fmt"
-	"google.golang.org/genai"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/plugin"
-	"github.com/Cidan/ask/pkg/providers"
 )
 
 // SubagentDef is a named subagent definition.
@@ -196,34 +194,6 @@ func SubagentsPromptBlock(defs []SubagentDef) string {
 Named agents run through the task tool: pass agent:"<name>" with a self-contained prompt. Each runs in its own context with its own instructions (and possibly its own model), and returns one final report. Set run_in_background:true to keep working while it runs, then collect the report with job_output.
 </agents_usage>`)
 	return b.String()
-}
-
-// ResolveSubagentModel builds the child Client for a def.
-func ResolveSubagentModel(def SubagentDef, parentProviderID string, parent *genai.Client, cfg config.Config) (*genai.Client, int64, error) {
-	providerID := def.Provider
-	if providerID == "" && def.Model == "" {
-		return parent, 0, nil
-	}
-	if providerID == "" {
-		providerID = parentProviderID
-	}
-	spec, ok := providers.GetAgentProviderSpec(providerID)
-	if !ok {
-		return nil, 0, fmt.Errorf("subagent %s: provider %q is not an in-process provider", def.Name, providerID)
-	}
-	model := def.Model
-	if model == "" {
-		model = spec.DefaultModel
-	}
-	client, err := spec.BuildClient(cfg)
-	if err != nil {
-		return nil, 0, err
-	}
-	var budget int64
-	if spec.MaxOutputTokens != nil {
-		budget = spec.MaxOutputTokens(model)
-	}
-	return client, budget, nil
 }
 
 // AllSubagentTools is the full list of tool names available to subagents.

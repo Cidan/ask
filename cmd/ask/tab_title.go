@@ -12,6 +12,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/providers"
+	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
 
@@ -33,50 +35,53 @@ var tabTitleTimeout = 30 * time.Second
 // generateTabTitleText runs the one-shot LLM title call, returning the
 // raw title text and the call's token usage.
 var generateTabTitleText = func(providerID, modelID, prompt string) (string, TokenUsage, error) {
-	spec, ok := agentSpecByID(providerID)
+	p, ok := providers.Get(providerID)
 	if !ok {
-		return "", TokenUsage{}, fmt.Errorf("tab title: provider %q has no agent spec", providerID)
+		return "", TokenUsage{}, fmt.Errorf("tab title: unknown provider %q", providerID)
 	}
 	cfg, _ := loadConfig()
 	if modelID == "" {
-		modelID = spec.DefaultModel
-	}
-	client, err := spec.BuildClient(toPkgConfig(cfg))
-	if err != nil {
-		return "", TokenUsage{}, err
+		modelID = p.DefaultModel()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), tabTitleTimeout)
 	defer cancel()
 
-	genaiConfig := &genai.GenerateContentConfig{
-		SystemInstruction: genai.NewContentFromText(tabTitleSystemPrompt, genai.RoleUser),
+	llm, err := engine.ModelBuilder(ctx, p, toPkgConfig(cfg), modelID)
+	if err != nil {
+		return "", TokenUsage{}, err
 	}
-	contents := []*genai.Content{
-		genai.NewContentFromText("Generate a concise title for the following session-opening message:\n\n"+prompt, genai.RoleUser),
+	req := &adkmodel.LLMRequest{
+		Model: modelID,
+		Contents: []*genai.Content{
+			genai.NewContentFromText("Generate a concise title for the following session-opening message:\n\n"+prompt, genai.RoleUser),
+		},
+		Config: &genai.GenerateContentConfig{
+			SystemInstruction: genai.NewContentFromText(tabTitleSystemPrompt, genai.RoleUser),
+		},
 	}
 
-	stream := engine.GenerateStream(ctx, client, modelID, contents, genaiConfig)
+	// One non-streaming call: a streamed run yields deltas and then the
+	// aggregated final message, and concatenating both doubles the title.
 	var sb strings.Builder
 	var usage TokenUsage
-	for chunk, err := range stream {
+	for resp, err := range llm.GenerateContent(ctx, req, false) {
 		if err != nil {
 			return "", usage, err
 		}
-		if chunk == nil {
+		if resp == nil {
 			continue
 		}
-		if chunk.UsageMetadata != nil {
-			usage.InputTokens = int(chunk.UsageMetadata.PromptTokenCount)
-			usage.OutputTokens = int(chunk.UsageMetadata.CandidatesTokenCount)
+		if resp.UsageMetadata != nil {
+			usage.InputTokens = int(resp.UsageMetadata.PromptTokenCount)
+			usage.OutputTokens = int(resp.UsageMetadata.CandidatesTokenCount)
 		}
-		for _, cand := range chunk.Candidates {
-			if cand.Content != nil {
-				for _, part := range cand.Content.Parts {
-					if part.Text != "" && !part.Thought {
-						sb.WriteString(part.Text)
-					}
-				}
+		if resp.Content == nil {
+			continue
+		}
+		for _, part := range resp.Content.Parts {
+			if part.Text != "" && !part.Thought {
+				sb.WriteString(part.Text)
 			}
 		}
 	}
@@ -93,8 +98,8 @@ func generateTabTitleCmd(tabID int, providerID, modelID, prompt string) tea.Cmd 
 		}
 		costModel := modelID
 		if costModel == "" {
-			if spec, ok := agentSpecByID(providerID); ok {
-				costModel = spec.DefaultModel
+			if p, ok := providers.Get(providerID); ok {
+				costModel = p.DefaultModel()
 			}
 		}
 		cost, known := stepCostUSD(providerID, costModel, usage)

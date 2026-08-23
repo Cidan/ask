@@ -52,7 +52,8 @@ type RunOptions struct {
 	// Config optionally overrides default configuration (~/.config/ask/ask.json).
 	Config config.Config `json:"config,omitempty"`
 
-	// Provider optionally overrides the LLM provider (e.g. "vertex").
+	// Provider optionally overrides the LLM provider (e.g. "vertex"); empty
+	// means Config.Provider, then the first registered provider.
 	Provider string `json:"provider,omitempty"`
 
 	// Model optionally overrides the default model for the selected provider.
@@ -136,15 +137,14 @@ func GetDefaultToolFactory() ToolFactory {
 	return defaultToolFactory
 }
 
-// ModelBuilder allows customizing or mocking ADK LLM instantiation in tests.
-var ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
-	if spec == nil {
-		return nil, errors.New("provider spec is nil")
+// ModelBuilder builds the ADK LLM for a provider and wraps it in the
+// transient-error retry decorator. Swappable so tests can hand back a
+// scripted model.
+var ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
+	if p == nil {
+		return nil, errors.New("provider is nil")
 	}
-	if spec.BuildModel == nil {
-		return nil, fmt.Errorf("provider %s has no BuildModel implementation", spec.ID)
-	}
-	llm, err := spec.BuildModel(ctx, cfg, modelID)
+	llm, err := p.BuildModel(ctx, cfg.ProviderConfig(p.ID()), modelID)
 	if err != nil {
 		return nil, err
 	}
@@ -220,34 +220,19 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		providerID = strings.TrimSpace(opts.Config.Provider)
 	}
 	if providerID == "" {
-		providerID = "vertex"
+		providerID = providers.DefaultProviderID()
 	}
 
-	spec, ok := providers.GetAgentProviderSpec(providerID)
-	if !ok || spec == nil {
+	prov, ok := providers.Get(providerID)
+	if !ok {
 		return nil, fmt.Errorf("unknown provider %q", providerID)
 	}
 
-	modelID := opts.Model
-	if spec.CanonicalModelID != nil {
-		modelID = spec.CanonicalModelID(opts.Model, "")
-	}
-	if modelID == "" {
-		settings := spec.LoadSettings(opts.Config)
-		if spec.CanonicalModelID != nil {
-			modelID = spec.CanonicalModelID(settings.Model, spec.DefaultModel)
-		} else {
-			modelID = settings.Model
-		}
-	}
-	if modelID == "" {
-		modelID = spec.DefaultModel
-	}
+	modelID := providers.ResolveModelID(prov, opts.Model, opts.Config)
 
 	effort := strings.TrimSpace(opts.Effort)
 	if effort == "" {
-		settings := spec.LoadSettings(opts.Config)
-		effort = strings.TrimSpace(settings.Effort)
+		effort = strings.TrimSpace(opts.Config.Effort)
 	}
 	if effort == "" {
 		effort = "medium"
@@ -260,7 +245,7 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 
 	sessSvc := NewFileSessionService(providerID, opts.Cwd)
 
-	llm, err := ModelBuilder(ctx, spec, opts.Config, modelID)
+	llm, err := ModelBuilder(ctx, prov, opts.Config, modelID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build model for provider %s: %w", providerID, err)
 	}
@@ -301,14 +286,12 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	genConfig := &genai.GenerateContentConfig{
 		MaxOutputTokens: int32(providers.MaxOutputTokensGemini),
 	}
-	if spec.CallOptions != nil {
-		if callOpts, _ := spec.CallOptions(modelID, effort); callOpts != nil {
-			if callOpts.ThinkingConfig != nil {
-				genConfig.ThinkingConfig = callOpts.ThinkingConfig
-			}
-			if callOpts.MaxOutputTokens > 0 {
-				genConfig.MaxOutputTokens = callOpts.MaxOutputTokens
-			}
+	if callOpts, _ := prov.CallOptions(modelID, effort); callOpts != nil {
+		if callOpts.ThinkingConfig != nil {
+			genConfig.ThinkingConfig = callOpts.ThinkingConfig
+		}
+		if callOpts.MaxOutputTokens > 0 {
+			genConfig.MaxOutputTokens = callOpts.MaxOutputTokens
 		}
 	}
 

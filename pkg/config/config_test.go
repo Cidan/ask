@@ -24,9 +24,8 @@ func TestConfig_LoadAndSave(t *testing.T) {
 	cfg := Config{
 		Provider: "openai",
 		Effort:   "medium",
-		OpenAI: APIProviderConfig{
-			APIKey: "sk-test",
-			Model:  "gpt-4o",
+		Providers: map[string]ProviderConfig{
+			"openai": {Model: "gpt-4o", Fields: map[string]string{"apiKey": "sk-test"}},
 		},
 		UI: UIConfig{
 			GateTodosBeforeMutate: &gateTrue,
@@ -59,8 +58,8 @@ func TestConfig_LoadAndSave(t *testing.T) {
 	if loaded.Effort != "medium" {
 		t.Errorf("expected effort 'medium', got %q", loaded.Effort)
 	}
-	if loaded.OpenAI.APIKey != "sk-test" {
-		t.Errorf("expected apiKey 'sk-test', got %q", loaded.OpenAI.APIKey)
+	if pc := loaded.ProviderConfig("openai"); pc.Field("apiKey") != "sk-test" || pc.Model != "gpt-4o" {
+		t.Errorf("provider block lost in round trip: %+v", pc)
 	}
 	if loaded.UI.GateTodosBeforeMutate == nil || !*loaded.UI.GateTodosBeforeMutate {
 		t.Errorf("expected GateTodosBeforeMutate true")

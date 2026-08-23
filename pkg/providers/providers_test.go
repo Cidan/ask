@@ -27,13 +27,13 @@ func TestProviders_SteeringPrompt(t *testing.T) {
 }
 
 func TestProviders_Specs(t *testing.T) {
-	for _, id := range []string{"vertex"} {
-		spec, ok := GetSpec(id)
+	for _, id := range []string{"vertex", "openrouter"} {
+		p, ok := Get(id)
 		if !ok {
-			t.Errorf("expected spec for %q", id)
+			t.Fatalf("expected provider for %q", id)
 		}
-		if spec.DefaultModel == "" {
-			t.Errorf("expected default model for %q", id)
+		if p.DefaultModel() == "" || len(p.ModelOptions()) == 0 || len(p.EffortOptions()) == 0 {
+			t.Errorf("%q: default model, model options, and effort options are required", id)
 		}
 	}
 }

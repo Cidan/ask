@@ -12,6 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/tools"
 	"github.com/Cidan/ask/pkg/workflow"
 	adkagent "google.golang.org/adk/v2/agent"
@@ -37,8 +38,7 @@ type agentTurn struct {
 // agentSession owns a GenAI agent session and the conversation history.
 type agentSession struct {
 	args            ProviderSessionArgs
-	spec            *agentProviderSpec
-	client          *genai.Client
+	provider        providers.Provider
 	model           adkmodel.LLM
 	env             *agentToolEnv
 	sysMu           sync.RWMutex
@@ -143,10 +143,10 @@ func (s *agentSession) setTurnCancel(fn context.CancelFunc) {
 }
 
 func (s *agentSession) stepCost(u TokenUsage) (float64, bool) {
-	if s.spec == nil {
+	if s.provider == nil {
 		return 0, false
 	}
-	return stepCostUSD(s.spec.ID, s.modelID, u)
+	return stepCostUSD(s.provider.ID(), s.modelID, u)
 }
 
 func (s *agentSession) interruptTurn() bool {
@@ -394,8 +394,8 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	llm := s.model
 	if llm == nil {
 		cfg, _ := loadConfig()
-		if s.spec != nil && s.spec.BuildModel != nil {
-			built, err := engine.ModelBuilder(ctx, s.spec, toPkgConfig(cfg), s.modelID)
+		if s.provider != nil {
+			built, err := engine.ModelBuilder(ctx, s.provider, toPkgConfig(cfg), s.modelID)
 			if err != nil {
 				s.emit(providerDoneMsg{
 					res: providerResult{SessionID: s.sessionID, IsError: true, Result: err.Error()},
@@ -409,7 +409,9 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		}
 	}
 	if llm == nil {
-		llm = &streamToADKModel{modelID: s.modelID, client: s.client}
+		// No provider (tests): the engine.GenerateStream seam stands in
+		// for the model. A real session always carries a provider.
+		llm = &streamToADKModel{modelID: s.modelID}
 	}
 
 	var toolsets []adktool.Toolset
@@ -446,9 +448,9 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	}
 
 	if s.sessSvc == nil {
-		providerID := "vertex"
-		if s.spec != nil && s.spec.ID != "" {
-			providerID = s.spec.ID
+		providerID := providers.DefaultProviderID()
+		if s.provider != nil {
+			providerID = s.provider.ID()
 		}
 		s.sessSvc = engine.NewFileSessionService(providerID, s.args.Cwd)
 	}

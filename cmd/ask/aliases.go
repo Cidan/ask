@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/Cidan/ask/pkg/engine"
@@ -10,7 +11,6 @@ import (
 	"github.com/Cidan/ask/pkg/tools"
 	"github.com/Cidan/ask/pkg/workflow"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"google.golang.org/genai"
 )
 
 // Workflow aliases
@@ -227,13 +227,12 @@ func agentMemoryIndexTool(env *agentToolEnv) tools.Tool {
 
 // Provider aliases
 const (
-	vertexProviderID      = providers.VertexProviderID
-	vertexDefaultLocation = providers.VertexDefaultLocation
-	vertexDefaultModel    = providers.VertexDefaultModel
+	vertexProviderID   = providers.VertexProviderID
+	vertexDefaultModel = providers.VertexDefaultModel
 )
 
 func vertexAgentProvider() agentAPIProvider {
-	return agentAPIProvider{spec: &providers.VertexSpec}
+	return agentAPIProvider{prov: providers.Vertex{}}
 }
 
 var (
@@ -246,11 +245,7 @@ var (
 	catalogResolveEffort     = providers.CatalogResolveEffort
 	catalogSupportsImages    = providers.CatalogSupportsImages
 	catalogModelIDs          = providers.CatalogModelIDs
-	agentSpecByID            = providers.GetAgentProviderSpec
-	vertexResolveLocation    = providers.VertexResolveLocation
-	vertexResolveProject     = providers.VertexResolveProject
 	filterVertexModelOptions = providers.FilterVertexModelOptions
-	vertexEffortOptions      = providers.VertexEffortOptions
 	globalEffortOptions      = providers.GlobalEffortOptions
 )
 
@@ -259,10 +254,10 @@ func validateProviderID(id string) error {
 	if id == "" {
 		return nil
 	}
-	if _, ok := providers.GetSpec(id); ok {
+	if _, ok := providers.Get(id); ok {
 		return nil
 	}
-	return nil
+	return fmt.Errorf("unknown provider %q", id)
 }
 
 func providerMeta(provider, model string) string {
@@ -289,11 +284,6 @@ var (
 	expandSkillInvocation = engine.ExpandSkillInvocation
 	agentGitStatus        = engine.AgentGitStatus
 )
-
-func resolveSubagentModel(def subagentDef, parentProviderID string, parent *genai.Client) (*genai.Client, int64, error) {
-	cfg, _ := loadConfig()
-	return engine.ResolveSubagentModel(def, parentProviderID, parent, toPkgConfig(cfg))
-}
 
 func subagentTools(def subagentDef, env *agentToolEnv, deferred func() []tools.Tool) []tools.Tool {
 	available := map[string]tools.Tool{

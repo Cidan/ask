@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"cloud.google.com/go/auth"
@@ -19,7 +20,7 @@ func TestFilterVertexModelOptions(t *testing.T) {
 }
 
 func TestVertexResolveProjectAndLocation(t *testing.T) {
-	vc := config.VertexConfig{Project: "my-proj", Location: "europe-west1"}
+	vc := config.ProviderConfig{}.WithField(VertexFieldProject, "my-proj").WithField(VertexFieldLocation, "europe-west1")
 	if got := VertexResolveProject(vc); got != "my-proj" {
 		t.Errorf("project wrong: %s", got)
 	}
@@ -27,7 +28,7 @@ func TestVertexResolveProjectAndLocation(t *testing.T) {
 		t.Errorf("location wrong: %s", got)
 	}
 
-	vcEmpty := config.VertexConfig{}
+	vcEmpty := config.ProviderConfig{}
 	t.Setenv(VertexEnvCloudProject, "env-proj")
 	if got := VertexResolveProject(vcEmpty); got != "env-proj" {
 		t.Errorf("project env fallback wrong: %s", got)
@@ -56,7 +57,7 @@ func TestVertexPrepareCredentials(t *testing.T) {
 	// Ensure GOOGLE_APPLICATION_CREDENTIALS is not set initially
 	t.Setenv(VertexEnvApplicationCredentials, "")
 
-	vc := config.VertexConfig{ServiceAccountKey: keyFile}
+	vc := config.ProviderConfig{}.WithField(VertexFieldServiceAccountKey, keyFile)
 	creds, err := VertexPrepareCredentials(vc)
 	if err != nil {
 		t.Fatalf("credentials prep failed: %v", err)
@@ -74,13 +75,13 @@ func TestVertexPrepareCredentials(t *testing.T) {
 	}
 
 	// Test missing file returns error
-	vcMissing := config.VertexConfig{ServiceAccountKey: filepath.Join(tmp, "nonexistent.json")}
+	vcMissing := config.ProviderConfig{}.WithField(VertexFieldServiceAccountKey, filepath.Join(tmp, "nonexistent.json"))
 	if _, err := VertexPrepareCredentials(vcMissing); err == nil {
 		t.Error("expected error for non-existent service account key")
 	}
 
 	// Test empty SA returns nil credentials without error
-	vcEmpty := config.VertexConfig{}
+	vcEmpty := config.ProviderConfig{}
 	emptyCreds, err := VertexPrepareCredentials(vcEmpty)
 	if err != nil {
 		t.Fatalf("unexpected error for empty config: %v", err)
@@ -88,38 +89,128 @@ func TestVertexPrepareCredentials(t *testing.T) {
 	if emptyCreds != nil {
 		t.Errorf("expected nil creds for empty config, got %v", emptyCreds)
 	}
+
+	// A tilde path is expanded before the file is read.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "sa.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loadedPath = ""
+	if _, err := VertexPrepareCredentials(config.ProviderConfig{}.WithField(VertexFieldServiceAccountKey, "~/sa.json")); err != nil {
+		t.Fatalf("tilde path: %v", err)
+	}
+	if loadedPath != filepath.Join(home, "sa.json") {
+		t.Errorf("tilde path must be expanded before loading, got %q", loadedPath)
+	}
+
+	// The env fallback is honoured when config has no key.
+	t.Setenv(VertexEnvApplicationCredentials, filepath.Join(home, "sa.json"))
+	loadedPath = ""
+	if _, err := VertexPrepareCredentials(config.ProviderConfig{}); err != nil {
+		t.Fatalf("env path: %v", err)
+	}
+	if loadedPath != filepath.Join(home, "sa.json") {
+		t.Errorf("env fallback must load the env path, got %q", loadedPath)
+	}
 }
 
-func TestVertexSpec_Properties(t *testing.T) {
-	if VertexSpec.ID != "vertex" || VertexSpec.DisplayName != "Vertex AI" {
-		t.Errorf("identity wrong: %+v", VertexSpec)
+func TestVertex_Provider(t *testing.T) {
+	var p Provider = Vertex{}
+	if p.ID() != "vertex" || p.DisplayName() != "Vertex AI" || p.DefaultModel() != VertexDefaultModel {
+		t.Errorf("identity wrong: %s %s %s", p.ID(), p.DisplayName(), p.DefaultModel())
 	}
-	if len(VertexSpec.ModelOptions) == 0 {
+	if len(p.ModelOptions()) == 0 {
 		t.Error("expected model options")
 	}
-	for _, m := range VertexSpec.ModelOptions {
+	for _, m := range p.ModelOptions() {
 		if m == "claude-sonnet-4-6" {
 			t.Error("Vertex models must not include claude")
 		}
 	}
-	if VertexSpec.ContextWindow("gemini-3.1-pro-preview") != 1_048_576 {
-		t.Errorf("context window wrong: %d", VertexSpec.ContextWindow("gemini-3.1-pro-preview"))
+	if p.ContextWindow("gemini-3.1-pro-preview") != 1_048_576 {
+		t.Errorf("context window wrong: %d", p.ContextWindow("gemini-3.1-pro-preview"))
 	}
-	if got := VertexSpec.MaxOutputTokens("gemini-3.7-flash"); got != MaxOutputTokensGemini {
+	if got := p.MaxOutputTokens("gemini-3.7-flash"); got != MaxOutputTokensGemini {
 		t.Errorf("gemini-3.7-flash max tokens wrong: %d want %d", got, MaxOutputTokensGemini)
 	}
-
-	cfg := config.Config{}
-	cfg.Vertex.Model = "gemini-vertex"
-	cfg.Effort = "medium"
-	settings := VertexSpec.LoadSettings(cfg)
-	if settings.Model != "gemini-vertex" || settings.Effort != "medium" {
-		t.Errorf("settings mismatch: %+v", settings)
+	if !p.SupportsImages("gemini-3.7-flash") {
+		t.Error("gemini takes images")
 	}
-	var newCfg config.Config
-	VertexSpec.SaveSettings(&newCfg, settings)
-	if newCfg.Vertex.Model != "gemini-vertex" || newCfg.Effort != "medium" {
-		t.Errorf("save settings mismatch: %+v", newCfg)
+	if got := p.CanonicalModelID("claude-3-7-sonnet", ""); got != VertexDefaultModel {
+		t.Errorf("foreign id must fall back to the default: %q", got)
+	}
+	if got := p.CanonicalModelID("", "gemini-2.5-pro"); got != "gemini-2.5-pro" {
+		t.Errorf("explicit fallback: %q", got)
+	}
+	keys := make([]string, 0, 3)
+	for _, f := range p.Settings() {
+		keys = append(keys, f.Key)
+	}
+	if len(keys) != 3 || keys[0] != VertexFieldProject || keys[1] != VertexFieldLocation || keys[2] != VertexFieldServiceAccountKey {
+		t.Errorf("settings order: %v", keys)
+	}
+	t.Setenv(VertexEnvCloudProject, "")
+	if p.Configured(config.ProviderConfig{}) {
+		t.Error("no project → not configured")
+	}
+	if !p.Configured(config.ProviderConfig{}.WithField(VertexFieldProject, "proj")) {
+		t.Error("project set → configured")
+	}
+	if _, err := p.BuildModel(context.Background(), config.ProviderConfig{}, VertexDefaultModel); err == nil || !strings.Contains(err.Error(), "project is required") {
+		t.Errorf("BuildModel without a project must fail fast, got %v", err)
+	}
+}
+
+func TestVertexValidators(t *testing.T) {
+	for _, good := range []string{"myproj", "my-proj", "abc123", "a12345"} {
+		if err := ValidateVertexProject(good); err != nil {
+			t.Errorf("%q must validate: %v", good, err)
+		}
+	}
+	for _, bad := range []string{"", "abc", "ABCdef", "1abcde", "a-very-long-project-name-that-is-too-long"} {
+		if err := ValidateVertexProject(bad); err == nil {
+			t.Errorf("%q must fail validation", bad)
+		}
+	}
+	for _, good := range []string{"global", "us-central1", "europe-west4"} {
+		if err := ValidateVertexLocation(good); err != nil {
+			t.Errorf("%q must validate: %v", good, err)
+		}
+	}
+	for _, bad := range []string{"", "blah", "US-central1"} {
+		if err := ValidateVertexLocation(bad); err == nil {
+			t.Errorf("%q must fail validation", bad)
+		}
+	}
+
+	if err := ValidateVertexServiceAccountKey(""); err != nil {
+		t.Errorf("empty SA key must validate (ADC): %v", err)
+	}
+	dir := t.TempDir()
+	real := filepath.Join(dir, "sa.json")
+	if err := os.WriteFile(real, []byte(`{"type":"service_account"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateVertexServiceAccountKey(real); err != nil {
+		t.Errorf("real path must validate: %v", err)
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "keys"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "keys", "sa.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateVertexServiceAccountKey("~/keys/sa.json"); err != nil {
+		t.Errorf("tilde path must validate: %v", err)
+	}
+	if err := ValidateVertexServiceAccountKey("/nonexistent/path/sa.json"); err == nil {
+		t.Error("missing file must fail")
+	}
+	if err := ValidateVertexServiceAccountKey(dir); err == nil {
+		t.Error("directory must fail")
 	}
 }
 
@@ -154,11 +245,12 @@ func TestListVertexModels_Swapped(t *testing.T) {
 	prev := ListVertexModels
 	defer func() { ListVertexModels = prev }()
 
-	ListVertexModels = func(ctx context.Context, vc config.VertexConfig) ([]string, error) {
+	ListVertexModels = func(ctx context.Context, pc config.ProviderConfig) ([]string, error) {
 		return []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-3.1-pro-preview"}, nil
 	}
 
-	models, err := ListVertexModels(context.Background(), config.VertexConfig{})
+	var lister ModelLister = Vertex{}
+	models, err := lister.ListModels(context.Background(), config.ProviderConfig{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

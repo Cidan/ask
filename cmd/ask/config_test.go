@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Cidan/ask/pkg/providers"
 )
 
 func TestLoadConfig_MissingReturnsZero(t *testing.T) {
@@ -17,7 +19,7 @@ func TestLoadConfig_MissingReturnsZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if cfg.Provider != "" || cfg.DeepSeek.Model != "" || cfg.Anthropic.Model != "" ||
+	if cfg.Provider != "" || len(cfg.Providers) != 0 ||
 		cfg.UI.Theme != "" || cfg.UI.QuietMode != nil {
 		t.Errorf("missing file should yield zero askConfig, got %+v", cfg)
 	}
@@ -35,10 +37,16 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	want := askConfig{
 		Provider: "anthropic",
 		Effort:   "high",
-		Anthropic: apiProviderConfig{
-			Model: "claude-fable-5",
-			SlashCommands: []providerSlashEntry{
-				{Name: "extra", Description: "demo"},
+		Providers: map[string]providerConfig{
+			"anthropic": {
+				Model: "claude-fable-5",
+				SlashCommands: []providerSlashEntry{
+					{Name: "extra", Description: "demo"},
+				},
+			},
+			"deepseek": {
+				Model:  "deepseek-v4-flash",
+				Fields: map[string]string{"apiKey": "sk-test-123", "baseURL": "https://example.test/v1"},
 			},
 		},
 		UI: uiConfig{
@@ -54,11 +62,6 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 				BackoffFactor:  &retryFactor,
 			},
 		},
-		DeepSeek: apiProviderConfig{
-			Model:   "deepseek-v4-flash",
-			APIKey:  "sk-test-123",
-			BaseURL: "https://example.test/v1",
-		},
 	}
 	if err := saveConfig(want); err != nil {
 		t.Fatalf("saveConfig: %v", err)
@@ -70,14 +73,14 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	if got.Provider != want.Provider {
 		t.Errorf("Provider=%q want %q", got.Provider, want.Provider)
 	}
-	if got.Anthropic.Model != want.Anthropic.Model {
-		t.Errorf("anthropic model lost in roundtrip: %+v", got.Anthropic)
+	if got.ProviderConfig("anthropic").Model != "claude-fable-5" {
+		t.Errorf("anthropic model lost in roundtrip: %+v", got.ProviderConfig("anthropic"))
 	}
 	if got.Effort != want.Effort {
 		t.Errorf("effort lost in roundtrip: got %q, want %q", got.Effort, want.Effort)
 	}
-	if len(got.Anthropic.SlashCommands) != 1 || got.Anthropic.SlashCommands[0].Name != "extra" {
-		t.Errorf("slash commands: %+v", got.Anthropic.SlashCommands)
+	if sc := got.ProviderConfig("anthropic").SlashCommands; len(sc) != 1 || sc[0].Name != "extra" {
+		t.Errorf("slash commands: %+v", sc)
 	}
 	if got.UI.QuietMode == nil || *got.UI.QuietMode != true {
 		t.Errorf("quietMode lost: %+v", got.UI.QuietMode)
@@ -103,9 +106,9 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	if got.UI.Retry.BackoffFactor == nil || *got.UI.Retry.BackoffFactor != 1.5 {
 		t.Errorf("ui.retry.backoffFactor = %+v want 1.5", got.UI.Retry.BackoffFactor)
 	}
-	if got.DeepSeek.Model != want.DeepSeek.Model ||
-		got.DeepSeek.APIKey != want.DeepSeek.APIKey || got.DeepSeek.BaseURL != want.DeepSeek.BaseURL {
-		t.Errorf("deepseek lost in roundtrip: %+v", got.DeepSeek)
+	if ds := got.ProviderConfig("deepseek"); ds.Model != "deepseek-v4-flash" ||
+		ds.Field("apiKey") != "sk-test-123" || ds.Field("baseURL") != "https://example.test/v1" {
+		t.Errorf("deepseek lost in roundtrip: %+v", ds)
 	}
 
 	// Permissions 0600 per saveConfig contract.
@@ -584,25 +587,8 @@ func TestAnthropicProviderSettings_PreservesOtherFields(t *testing.T) {
 	if got.UI.QuietMode == nil || *got.UI.QuietMode != true {
 		t.Errorf("quietMode pointer lost: %+v", got.UI.QuietMode)
 	}
-	if got.Vertex.Model != "gemini-3.1-pro-preview" {
-		t.Errorf("model not persisted: %+v", got.Vertex)
-	}
-}
-
-func TestResolveVertexConfig(t *testing.T) {
-	t.Setenv("GOOGLE_CLOUD_PROJECT", "env-project")
-	if got := resolveVertexProject(vertexConfig{Project: "config-project"}); got != "config-project" {
-		t.Errorf("config project should win over env, got %q", got)
-	}
-	if got := resolveVertexProject(vertexConfig{}); got != "env-project" {
-		t.Errorf("empty config should fall back to env, got %q", got)
-	}
-
-	if got := resolveVertexLocation(vertexConfig{Location: "us-central1"}); got != "us-central1" {
-		t.Errorf("explicit location lost, got %q", got)
-	}
-	if got := resolveVertexLocation(vertexConfig{}); got != "global" {
-		t.Errorf("default location should be global, got %q", got)
+	if got.ProviderConfig(vertexProviderID).Model != "gemini-3.1-pro-preview" {
+		t.Errorf("model not persisted: %+v", got.ProviderConfig(vertexProviderID))
 	}
 }
 
@@ -622,14 +608,10 @@ func TestResolveBraveKey(t *testing.T) {
 
 func TestVertexConfigRoundTrip(t *testing.T) {
 	isolateHome(t)
-	want := askConfig{
-		Effort: "high",
-		Vertex: vertexConfig{
-			Project:  "my-gcp-project",
-			Location: "us-central1",
-			Model:    "gemini-3.1-pro-preview",
-		},
-	}
+	want := askConfig{Effort: "high"}
+	want.SetProviderConfig(vertexProviderID, providerConfig{Model: "gemini-3.1-pro-preview"}.
+		WithField(providers.VertexFieldProject, "my-gcp-project").
+		WithField(providers.VertexFieldLocation, "us-central1"))
 	if err := saveConfig(want); err != nil {
 		t.Fatalf("saveConfig: %v", err)
 	}
@@ -637,8 +619,9 @@ func TestVertexConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if got.Vertex.Project != "my-gcp-project" || got.Vertex.Location != "us-central1" || got.Vertex.Model != "gemini-3.1-pro-preview" {
-		t.Errorf("vertex block lost: %+v", got.Vertex)
+	v := got.ProviderConfig(vertexProviderID)
+	if v.Field(providers.VertexFieldProject) != "my-gcp-project" || v.Field(providers.VertexFieldLocation) != "us-central1" || v.Model != "gemini-3.1-pro-preview" {
+		t.Errorf("vertex block lost: %+v", v)
 	}
 	if got.Effort != "high" {
 		t.Errorf("effort block lost: got %q", got.Effort)

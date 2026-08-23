@@ -19,21 +19,84 @@ const (
 	OpenRouterDefaultModel   = "anthropic/claude-3.7-sonnet"
 	OpenRouterDefaultBaseURL = "https://openrouter.ai/api/v1"
 	OpenRouterEnvAPIKey      = "OPENROUTER_API_KEY"
+
+	OpenRouterFieldAPIKey  = "apiKey"
+	OpenRouterFieldBaseURL = "baseURL"
 )
 
 var OpenRouterEffortOptions = GlobalEffortOptions
 
 var OpenRouterModelOptions = CatalogModelIDs(OpenRouterProviderID)
 
-func ResolveOpenRouterAPIKey(c config.APIProviderConfig) string {
-	return ResolveAPIProviderKey(c, OpenRouterEnvAPIKey)
+// OpenRouter is the OpenRouter provider: any model behind the OpenAI
+// Chat Completions protocol at openrouter.ai, keyed by an API key.
+type OpenRouter struct{}
+
+var openRouterSettings = []SettingField{
+	{
+		Key:    OpenRouterFieldAPIKey,
+		Title:  "API Key",
+		Hint:   "OpenRouter API key; enter to save",
+		Secret: true,
+		EnvKey: OpenRouterEnvAPIKey,
+	},
+	{
+		Key:     OpenRouterFieldBaseURL,
+		Title:   "Base URL",
+		Hint:    "OpenRouter base URL (default: " + OpenRouterDefaultBaseURL + "); enter to save",
+		Default: OpenRouterDefaultBaseURL,
+	},
 }
 
-func ResolveOpenRouterBaseURL(c config.APIProviderConfig) string {
-	if c.BaseURL != "" {
-		return c.BaseURL
-	}
-	return OpenRouterDefaultBaseURL
+func (OpenRouter) ID() string              { return OpenRouterProviderID }
+func (OpenRouter) DisplayName() string     { return "OpenRouter" }
+func (OpenRouter) DefaultModel() string    { return OpenRouterDefaultModel }
+func (OpenRouter) ModelOptions() []string  { return OpenRouterModelOptions }
+func (OpenRouter) EffortOptions() []string { return OpenRouterEffortOptions }
+func (OpenRouter) Settings() []SettingField {
+	return append([]SettingField(nil), openRouterSettings...)
+}
+
+func (OpenRouter) Configured(pc config.ProviderConfig) bool {
+	return ResolveOpenRouterAPIKey(pc) != ""
+}
+
+func (OpenRouter) BuildModel(ctx context.Context, pc config.ProviderConfig, modelID string) (model.LLM, error) {
+	return OpenRouterModelBuilder(ctx, pc, modelID)
+}
+
+func (OpenRouter) CanonicalModelID(modelID, fallback string) string {
+	return CanonicalOpenRouterModelID(modelID, fallback)
+}
+
+func (OpenRouter) CallOptions(modelID, effort string) (*genai.GenerateContentConfig, *float64) {
+	return OpenRouterProviderOptions(modelID, effort)
+}
+
+func (OpenRouter) SupportsImages(modelID string) bool { return openRouterSupportsImages(modelID) }
+func (OpenRouter) ContextWindow(modelID string) int64 { return openRouterContextWindow(modelID) }
+
+func (OpenRouter) MaxOutputTokens(modelID string) int64 {
+	return CatalogDefaultMaxTokens(OpenRouterProviderID, modelID, 64_000)
+}
+
+func (OpenRouter) ListModels(ctx context.Context, pc config.ProviderConfig) ([]string, error) {
+	return ListOpenRouterModels(ctx, pc)
+}
+
+var (
+	_ Provider    = OpenRouter{}
+	_ ModelLister = OpenRouter{}
+)
+
+// ResolveOpenRouterAPIKey: config value wins, then OPENROUTER_API_KEY.
+func ResolveOpenRouterAPIKey(pc config.ProviderConfig) string {
+	return SettingValue(pc, openRouterSettings[0])
+}
+
+// ResolveOpenRouterBaseURL: config value wins, then the default endpoint.
+func ResolveOpenRouterBaseURL(pc config.ProviderConfig) string {
+	return SettingValue(pc, openRouterSettings[1])
 }
 
 // openRouterHeaders identify ask on OpenRouter's dashboards / rankings.
@@ -251,8 +314,8 @@ func openRouterReasoningEncoder(baseURL string) func(*openai.ChatCompletionNewPa
 	}
 }
 
-var ListOpenRouterModels = func(ctx context.Context, ac config.APIProviderConfig) ([]string, error) {
-	metas, err := fetchOpenRouterModels(ctx, ResolveOpenRouterBaseURL(ac))
+var ListOpenRouterModels = func(ctx context.Context, pc config.ProviderConfig) ([]string, error) {
+	metas, err := fetchOpenRouterModels(ctx, ResolveOpenRouterBaseURL(pc))
 	if err != nil {
 		return nil, err
 	}
@@ -281,17 +344,18 @@ func OpenRouterProviderOptions(modelID, effort string) (*genai.GenerateContentCo
 	return cfg, nil
 }
 
-var OpenRouterModelBuilder = func(ctx context.Context, ac config.APIProviderConfig, modelID string) (model.LLM, error) {
-	apiKey := ResolveOpenRouterAPIKey(ac)
+var OpenRouterModelBuilder = func(ctx context.Context, pc config.ProviderConfig, modelID string) (model.LLM, error) {
+	apiKey := ResolveOpenRouterAPIKey(pc)
 	if apiKey == "" {
 		return nil, MissingAPIKeyError(OpenRouterEnvAPIKey)
 	}
+	baseURL := ResolveOpenRouterBaseURL(pc)
 	return NewOpenAICompatModel(OpenAICompatConfig{
 		ModelID:         modelID,
 		APIKey:          apiKey,
-		BaseURL:         ResolveOpenRouterBaseURL(ac),
+		BaseURL:         baseURL,
 		Headers:         openRouterHeaders(),
-		EncodeReasoning: openRouterReasoningEncoder(ResolveOpenRouterBaseURL(ac)),
+		EncodeReasoning: openRouterReasoningEncoder(baseURL),
 	}), nil
 }
 
@@ -311,46 +375,4 @@ func openRouterContextWindow(modelID string) int64 {
 		return meta.ContextLength
 	}
 	return CatalogContextWindow(OpenRouterProviderID, modelID, 200_000)
-}
-
-var OpenRouterSpec = AgentProviderSpec{
-	ID:               OpenRouterProviderID,
-	DisplayName:      "OpenRouter",
-	DefaultModel:     OpenRouterDefaultModel,
-	ModelOptions:     OpenRouterModelOptions,
-	EffortOptions:    OpenRouterEffortOptions,
-	CanonicalModelID: CanonicalOpenRouterModelID,
-	BuildModel: func(ctx context.Context, cfg config.Config, modelID string) (model.LLM, error) {
-		return OpenRouterModelBuilder(ctx, cfg.OpenRouter, modelID)
-	},
-	BuildClient: func(cfg config.Config) (*genai.Client, error) {
-		// OpenRouter is reached through the OpenAI-compatible model.LLM
-		// (BuildModel), not a genai.Client. The in-process runtime only
-		// needs the client for genai-native providers (Vertex).
-		return nil, nil
-	},
-	Configured: func(cfg config.Config) bool {
-		return ResolveOpenRouterAPIKey(cfg.OpenRouter) != ""
-	},
-	CallOptions:    OpenRouterProviderOptions,
-	SupportsImages: openRouterSupportsImages,
-	ContextWindow:  openRouterContextWindow,
-	MaxOutputTokens: func(modelID string) int64 {
-		return CatalogDefaultMaxTokens(OpenRouterProviderID, modelID, 64_000)
-	},
-	ListModels: func(ctx context.Context, cfg config.Config) ([]string, error) {
-		return ListOpenRouterModels(ctx, cfg.OpenRouter)
-	},
-	LoadSettings: func(cfg config.Config) ProviderSettings {
-		return ProviderSettings{
-			Model:         cfg.OpenRouter.Model,
-			Effort:        cfg.Effort,
-			SlashCommands: cfg.OpenRouter.SlashCommands,
-		}
-	},
-	SaveSettings: func(cfg *config.Config, s ProviderSettings) {
-		cfg.OpenRouter.Model = s.Model
-		cfg.Effort = s.Effort
-		cfg.OpenRouter.SlashCommands = s.SlashCommands
-	},
 }

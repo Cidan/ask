@@ -335,8 +335,12 @@ func renderModelDescription(md string, w int) string {
 }
 
 func modelPickerKeyEntryLines(ke *modelPickerKeyEntry, w int) []string {
-	lines := []string{themePickerTitleStyle.Render(clipText(ke.spec.title, w)), ""}
-	for _, l := range wordWrap(ke.spec.title+" has no API key configured. Paste or type one to continue — it is stored in ~/.config/ask/ask.json (0600). $"+ke.spec.envKey+" also works.", w) {
+	lines := []string{themePickerTitleStyle.Render(clipText(ke.title(), w)), ""}
+	help := ke.title() + " is not configured. Paste or type one to continue — it is stored in ~/.config/ask/ask.json (0600)."
+	if ke.field.EnvKey != "" {
+		help += " $" + ke.field.EnvKey + " also works."
+	}
+	for _, l := range wordWrap(help, w) {
 		lines = append(lines, configHelpStyle.Render(l))
 	}
 	return append(lines,

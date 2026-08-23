@@ -132,7 +132,7 @@ func TestEngine_RunWorkflow_Graph(t *testing.T) {
 	}
 
 	origBuilder := ModelBuilder
-	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 		return mockModel, nil
 	}
 	defer func() { ModelBuilder = origBuilder }()
@@ -207,7 +207,7 @@ func TestEngine_RunWorkflow_FailureLeavesLaterStepsUnreported(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	origBuilder := ModelBuilder
-	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 		return nil, errors.New("model unavailable")
 	}
 	defer func() { ModelBuilder = origBuilder }()
@@ -303,7 +303,7 @@ func TestEngine_RunWorkflow_StepsSeeOnlyTheHandoffNotTheWholeChain(t *testing.T)
 	}
 
 	origBuilder := ModelBuilder
-	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 		return mockModel, nil
 	}
 	defer func() { ModelBuilder = origBuilder }()
@@ -365,7 +365,7 @@ func TestEngine_RunWorkflow_BracesInStepPromptDoNotFailTheRun(t *testing.T) {
 	}
 
 	origBuilder := ModelBuilder
-	ModelBuilder = func(ctx context.Context, spec *providers.AgentProviderSpec, cfg config.Config, modelID string) (model.LLM, error) {
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 		return mockModel, nil
 	}
 	defer func() { ModelBuilder = origBuilder }()

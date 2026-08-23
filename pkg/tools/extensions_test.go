@@ -451,8 +451,8 @@ func TestWorkflowProviderWarnings(t *testing.T) {
 	if len(warn) != 2 || !strings.Contains(warn[0], `step "a"`) || !strings.Contains(warn[1], `step "inner"`) {
 		t.Fatalf("unconfigured providers: %v", warn)
 	}
-	cfg.Vertex.Project = "proj"
-	cfg.OpenRouter.APIKey = "k"
+	cfg.SetProviderConfig("vertex", config.ProviderConfig{}.WithField("project", "proj"))
+	cfg.SetProviderConfig("openrouter", config.ProviderConfig{}.WithField("apiKey", "k"))
 	if warn := WorkflowProviderWarnings(cfg, w, "vertex"); len(warn) != 0 {
 		t.Fatalf("configured providers: %v", warn)
 	}

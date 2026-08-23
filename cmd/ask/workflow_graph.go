@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/providers"
@@ -155,24 +156,20 @@ func tuiWorkflowCompileConfig(sess *agentSession, def workflow.Def, src workflow
 // provider, the same seam agentRunShell and agentGitStatus use.
 var workflowStepModel = func(ctx context.Context, sess *agentSession, step workflow.Step) (adkmodel.LLM, error) {
 	providerID := step.Provider
-	if providerID == "" && sess.spec != nil {
-		providerID = sess.spec.ID
+	if providerID == "" && sess.provider != nil {
+		providerID = sess.provider.ID()
 	}
 	if providerID == "" {
-		providerID = "vertex"
+		providerID = providers.DefaultProviderID()
 	}
-	spec, ok := providers.GetAgentProviderSpec(providerID)
-	if !ok || spec == nil {
+	prov, ok := providers.Get(providerID)
+	if !ok {
 		return nil, fmt.Errorf("unknown provider %q for step %q", providerID, step.Name)
 	}
-	modelID := providers.CanonicalVertexModelID(step.Model, "")
-	if modelID == "" {
-		if sess.modelID != "" && sess.spec != nil && providerID == sess.spec.ID {
-			modelID = sess.modelID
-		} else {
-			modelID = spec.DefaultModel
-		}
+	modelID := strings.TrimSpace(step.Model)
+	if modelID == "" && sess.modelID != "" && sess.provider != nil && providerID == sess.provider.ID() {
+		modelID = sess.modelID
 	}
 	cfg, _ := loadConfig()
-	return engine.ModelBuilder(ctx, spec, toPkgConfig(cfg), modelID)
+	return engine.ModelBuilder(ctx, prov, toPkgConfig(cfg), prov.CanonicalModelID(modelID, ""))
 }

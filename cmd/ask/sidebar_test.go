@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Cidan/ask/pkg/providers"
 )
 
 // newSidebarTestApp builds an app with n freshly-stubbed tabs at a
@@ -432,7 +433,7 @@ func seedConfiguredVertex(t *testing.T) {
 	t.Helper()
 	if err := withConfigLock(func() error {
 		cfg, _ := loadConfig()
-		cfg.Vertex.Project = "test-project"
+		cfg.SetProviderConfig(vertexProviderID, cfg.ProviderConfig(vertexProviderID).WithField(providers.VertexFieldProject, "test-project"))
 		return saveConfig(cfg)
 	}); err != nil {
 		t.Fatal(err)

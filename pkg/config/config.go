@@ -20,16 +20,12 @@ func WithConfigLock(fn func() error) error {
 
 // Config represents the user-global ask configuration (~/.config/ask/ask.json).
 type Config struct {
-	Provider     string                     `json:"provider,omitempty"`
-	Effort       string                     `json:"effort,omitempty"`
-	OpenRouter   APIProviderConfig          `json:"openrouter,omitempty"`
-	DeepSeek     APIProviderConfig          `json:"deepseek,omitempty"`
-	Moonshot     APIProviderConfig          `json:"kimi,omitempty"`
-	Anthropic    APIProviderConfig          `json:"anthropic,omitempty"`
-	OpenAI       APIProviderConfig          `json:"openai,omitempty"`
-	MiniMax      APIProviderConfig          `json:"minimax,omitempty"`
-	GoogleAI     APIProviderConfig          `json:"googleai,omitempty"`
-	Vertex       VertexConfig               `json:"vertex,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Effort   string `json:"effort,omitempty"`
+	// Providers holds one block per registered provider id. Providers
+	// declare their own fields (pkg/providers SettingField); config only
+	// stores them.
+	Providers    map[string]ProviderConfig  `json:"providers,omitempty"`
 	UI           UIConfig                   `json:"ui,omitempty"`
 	WebSearch    WebSearchConfig            `json:"webSearch,omitempty"`
 	MCPServers   map[string]MCPServerConfig `json:"mcpServers,omitempty"`
@@ -43,21 +39,120 @@ type ProviderSlashEntry struct {
 	Description string `json:"description"`
 }
 
-type APIProviderConfig struct {
-	APIKey        string               `json:"apiKey,omitempty"`
-	Model         string               `json:"model,omitempty"`
-	BaseURL       string               `json:"baseURL,omitempty"`
-	SlashCommands []ProviderSlashEntry `json:"slashCommands,omitempty"`
+// ProviderConfig is one provider's block under Config.Providers: the
+// model the user picked, the slash commands the provider discovered, and
+// the settings the provider declares (an API key, a project id, …) keyed
+// by their setting key. On disk the block is flat —
+// {"model": "…", "apiKey": "…"} — so ask.json stays hand-editable and
+// byte-compatible with the per-provider blocks it replaced.
+type ProviderConfig struct {
+	Model         string
+	SlashCommands []ProviderSlashEntry
+	Fields        map[string]string
 }
 
-type VertexConfig struct {
-	Project           string               `json:"project,omitempty"`
-	Location          string               `json:"location,omitempty"`
-	ServiceAccountKey string               `json:"serviceAccountKey,omitempty"`
-	ServiceAccount    string               `json:"serviceAccount,omitempty"`
-	Model             string               `json:"model,omitempty"`
-	BaseURL           string               `json:"baseURL,omitempty"`
-	SlashCommands     []ProviderSlashEntry `json:"slashCommands,omitempty"`
+const (
+	providerConfigKeyModel         = "model"
+	providerConfigKeySlashCommands = "slashCommands"
+)
+
+// ProviderConfigReservedKeys are the typed keys of a provider block; a
+// provider must not declare a setting under one of them.
+var ProviderConfigReservedKeys = []string{providerConfigKeyModel, providerConfigKeySlashCommands}
+
+// Field returns the stored value for key, "" when unset.
+func (pc ProviderConfig) Field(key string) string { return pc.Fields[key] }
+
+// WithField returns a copy of pc with key set to value; an empty value
+// removes the key. The Fields map is copied, never shared.
+func (pc ProviderConfig) WithField(key, value string) ProviderConfig {
+	fields := make(map[string]string, len(pc.Fields)+1)
+	for k, v := range pc.Fields {
+		fields[k] = v
+	}
+	if value == "" {
+		delete(fields, key)
+	} else {
+		fields[key] = value
+	}
+	if len(fields) == 0 {
+		fields = nil
+	}
+	pc.Fields = fields
+	return pc
+}
+
+// IsEmpty reports whether the block carries nothing worth persisting.
+func (pc ProviderConfig) IsEmpty() bool {
+	return pc.Model == "" && len(pc.SlashCommands) == 0 && len(pc.Fields) == 0
+}
+
+func (pc ProviderConfig) MarshalJSON() ([]byte, error) {
+	out := make(map[string]any, len(pc.Fields)+2)
+	for k, v := range pc.Fields {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	if pc.Model != "" {
+		out[providerConfigKeyModel] = pc.Model
+	}
+	if len(pc.SlashCommands) > 0 {
+		out[providerConfigKeySlashCommands] = pc.SlashCommands
+	}
+	return json.Marshal(out)
+}
+
+// UnmarshalJSON reads the flat block: the typed keys land on their
+// fields, every other string-valued key lands in Fields. Non-string
+// extras are dropped — provider settings are strings by contract.
+func (pc *ProviderConfig) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*pc = ProviderConfig{}
+	for k, v := range raw {
+		switch k {
+		case providerConfigKeyModel:
+			if err := json.Unmarshal(v, &pc.Model); err != nil {
+				return err
+			}
+		case providerConfigKeySlashCommands:
+			if err := json.Unmarshal(v, &pc.SlashCommands); err != nil {
+				return err
+			}
+		default:
+			var s string
+			if json.Unmarshal(v, &s) != nil || s == "" {
+				continue
+			}
+			if pc.Fields == nil {
+				pc.Fields = make(map[string]string)
+			}
+			pc.Fields[k] = s
+		}
+	}
+	return nil
+}
+
+// ProviderConfig returns provider id's block, zero when absent.
+func (c Config) ProviderConfig(id string) ProviderConfig { return c.Providers[id] }
+
+// SetProviderConfig stores pc under id, dropping the entry (and the map,
+// when it empties) for an empty block so ask.json never grows "{}" rows.
+func (c *Config) SetProviderConfig(id string, pc ProviderConfig) {
+	if pc.IsEmpty() {
+		delete(c.Providers, id)
+		if len(c.Providers) == 0 {
+			c.Providers = nil
+		}
+		return
+	}
+	if c.Providers == nil {
+		c.Providers = make(map[string]ProviderConfig)
+	}
+	c.Providers[id] = pc
 }
 
 type UIConfig struct {
@@ -292,6 +387,7 @@ func Load() (Config, error) {
 	}
 	_ = json.Unmarshal(data, &cfg)
 	MigrateLegacyProviderEffort(&cfg, data)
+	MigrateLegacyProviderBlocks(&cfg, data)
 	MigrateLegacyToolOutput(&cfg, data)
 	MigrateLegacyIssuesGitHub(&cfg, data)
 	return cfg, nil
@@ -403,6 +499,48 @@ func MigrateLegacyProviderEffort(cfg *Config, data []byte) {
 		cfg.Effort = "medium"
 	case "high", "xhigh", "max":
 		cfg.Effort = "high"
+	}
+}
+
+// legacyProviderBlocks are the pre-registry top-level provider blocks and
+// the keys each carried that are not provider settings any more: effort
+// was folded into Config.Effort, serviceAccount was an alias of
+// serviceAccountKey, and vertex's baseURL was never read.
+var legacyProviderBlocks = map[string][]string{
+	"vertex":     {"effort", "serviceAccount", "baseURL"},
+	"openrouter": {"effort"},
+}
+
+// MigrateLegacyProviderBlocks lifts the pre-registry top-level provider
+// blocks ("vertex": {…}, "openrouter": {…}) into Config.Providers. Each
+// block is already flat, so it decodes as a ProviderConfig directly; the
+// keys listed in legacyProviderBlocks are dropped after the serviceAccount
+// alias is honoured. Runs only for ids absent from the new map — an
+// explicit new block always wins.
+func MigrateLegacyProviderBlocks(cfg *Config, data []byte) {
+	var legacy map[string]json.RawMessage
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return
+	}
+	for id, drop := range legacyProviderBlocks {
+		raw, ok := legacy[id]
+		if !ok {
+			continue
+		}
+		if _, present := cfg.Providers[id]; present {
+			continue
+		}
+		var pc ProviderConfig
+		if err := json.Unmarshal(raw, &pc); err != nil {
+			continue
+		}
+		if pc.Field("serviceAccountKey") == "" && pc.Field("serviceAccount") != "" {
+			pc = pc.WithField("serviceAccountKey", pc.Field("serviceAccount"))
+		}
+		for _, key := range drop {
+			pc = pc.WithField(key, "")
+		}
+		cfg.SetProviderConfig(id, pc)
 	}
 }
 
