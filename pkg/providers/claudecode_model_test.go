@@ -54,10 +54,23 @@ func resultFrame(text string) ccFrame {
 	return ccFrame{Type: "result", Subtype: "success", Result: text, Usage: &ccUsage{InputTokens: 20, OutputTokens: 8}}
 }
 
+func streamEventFrame(text string) ccFrame {
+	ev, _ := json.Marshal(map[string]any{
+		"type": "content_block_delta", "index": 1,
+		"delta": map[string]any{"type": "text_delta", "text": text},
+	})
+	return ccFrame{Type: "stream_event", Event: ev}
+}
+
 func collect(t *testing.T, m *claudeCodeModel, req *model.LLMRequest) []*model.LLMResponse {
 	t.Helper()
+	return collectStream(t, m, req, true)
+}
+
+func collectStream(t *testing.T, m *claudeCodeModel, req *model.LLMRequest, stream bool) []*model.LLMResponse {
+	t.Helper()
 	var out []*model.LLMResponse
-	for resp, err := range m.GenerateContent(context.Background(), req, true) {
+	for resp, err := range m.GenerateContent(context.Background(), req, stream) {
 		if err != nil {
 			t.Fatalf("GenerateContent yielded error: %v", err)
 		}
@@ -228,6 +241,84 @@ func TestClaudeCodeModel_HistoryPreamble(t *testing.T) {
 	}
 	if userTexts[1] != "second question" {
 		t.Errorf("new turn = %q", userTexts[1])
+	}
+}
+
+// TestClaudeCodeModel_NonStreamingNoPartials: when ADK asks for non-streaming
+// (RunConfig without SSE, the TUI's default), the model must not yield partial
+// deltas — the consumer accumulates every text event, so a partial plus the
+// full-text final would double the response. Regression for the doubled first
+// reply seen in the TUI.
+func TestClaudeCodeModel_NonStreamingNoPartials(t *testing.T) {
+	fc := newFakeConn(8)
+	prevDial := ccDial
+	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	defer func() { ccDial = prevDial }()
+
+	m := newClaudeCodeModel("claude", "haiku", "/repo")
+	fc.push(streamEventFrame("hello "))
+	fc.push(streamEventFrame("there"))
+	fc.push(assistantTextFrame("hello there"))
+	fc.push(resultFrame("hello there"))
+
+	out := collectStream(t, m, &model.LLMRequest{
+		Config:   &genai.GenerateContentConfig{},
+		Contents: []*genai.Content{userContent("hi")},
+	}, false)
+
+	// No partial responses at all.
+	for _, r := range out {
+		if r != nil && r.Partial {
+			t.Errorf("non-streaming mode must not yield partial responses; got %+v", r.Content)
+		}
+	}
+	// Exactly the final text, once.
+	if txt := lastText(out); txt != "hello there" {
+		t.Errorf("final text = %q, want %q", txt, "hello there")
+	}
+	// And the concatenation of every yielded text part is not doubled.
+	var all string
+	for _, r := range out {
+		if r == nil || r.Content == nil {
+			continue
+		}
+		for _, p := range r.Content.Parts {
+			if p != nil && !p.Thought {
+				all += p.Text
+			}
+		}
+	}
+	if all != "hello there" {
+		t.Errorf("total emitted text = %q, want %q (no doubling)", all, "hello there")
+	}
+}
+
+// TestClaudeCodeModel_StreamingYieldsPartials: with SSE streaming the model
+// yields the live deltas AND a final; that is correct because a streaming
+// consumer treats partials as preview.
+func TestClaudeCodeModel_StreamingYieldsPartials(t *testing.T) {
+	fc := newFakeConn(8)
+	prevDial := ccDial
+	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	defer func() { ccDial = prevDial }()
+
+	m := newClaudeCodeModel("claude", "haiku", "/repo")
+	fc.push(streamEventFrame("hi"))
+	fc.push(resultFrame("hi"))
+
+	out := collectStream(t, m, &model.LLMRequest{
+		Config:   &genai.GenerateContentConfig{},
+		Contents: []*genai.Content{userContent("hi")},
+	}, true)
+
+	sawPartial := false
+	for _, r := range out {
+		if r != nil && r.Partial {
+			sawPartial = true
+		}
+	}
+	if !sawPartial {
+		t.Error("streaming mode must yield partial deltas for live display")
 	}
 }
 

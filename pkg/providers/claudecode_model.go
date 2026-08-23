@@ -31,11 +31,12 @@ type claudeCodeModel struct {
 	modelID string
 	cwd     string
 
-	mu      sync.Mutex
-	conn    ccConn
-	started bool
-	tools   []ccTool // served on the child's tools/list
-	cursor  int      // how far into req.Contents has been sent to the child
+	mu         sync.Mutex
+	conn       ccConn
+	procCancel context.CancelFunc // cancels the child's own lifetime context
+	started    bool
+	tools      []ccTool // served on the child's tools/list
+	cursor     int      // how far into req.Contents has been sent to the child
 	// pending maps a tool_use id to the control-request id ask must answer
 	// with that tool's result.
 	pending map[string]ccPending
@@ -68,6 +69,10 @@ func (m *claudeCodeModel) Close() error {
 	// Best-effort interrupt so any in-flight turn unwinds before the kill.
 	_ = m.conn.send(ccControlEnvelope{Type: "control_request", RequestID: "close", Request: map[string]any{"subtype": "interrupt"}})
 	err := m.conn.close()
+	if m.procCancel != nil {
+		m.procCancel()
+		m.procCancel = nil
+	}
 	m.conn = nil
 	m.started = false
 	return err
@@ -75,7 +80,7 @@ func (m *claudeCodeModel) Close() error {
 
 func (m *claudeCodeModel) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
-		if err := m.ensure(ctx, req); err != nil {
+		if err := m.ensure(req); err != nil {
 			yield(nil, err)
 			return
 		}
@@ -83,14 +88,14 @@ func (m *claudeCodeModel) GenerateContent(ctx context.Context, req *model.LLMReq
 			yield(nil, err)
 			return
 		}
-		m.readStep(ctx, yield)
+		m.readStep(ctx, stream, yield)
 	}
 }
 
 // ensure spawns the child on the first call and sends the initialize control
 // request. The child's MCP initialize/tools_list and the system/init frame are
 // served lazily by readStep as they arrive, so ensure never blocks on them.
-func (m *claudeCodeModel) ensure(ctx context.Context, req *model.LLMRequest) error {
+func (m *claudeCodeModel) ensure(req *model.LLMRequest) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.tools = ccToolsFromRequest(reqTools(req))
@@ -99,16 +104,23 @@ func (m *claudeCodeModel) ensure(ctx context.Context, req *model.LLMRequest) err
 	}
 	sys := reqSystemPrompt(req)
 	argv := ccArgv(m.modelID, reqEffort(req), sys)
-	conn, err := ccDial(ctx, ccDialArgs{
+	// The child lives for the model's lifetime, not one turn: dial with a
+	// context derived from Background and cancelled only by Close. Binding it
+	// to the per-turn ctx (which the TUI cancels at turn end) would kill the
+	// child between turns and the next write would hit a broken pipe.
+	procCtx, cancel := context.WithCancel(context.Background())
+	conn, err := ccDial(procCtx, ccDialArgs{
 		Binary: m.binary,
 		Argv:   argv,
 		Dir:    m.cwd,
 		Env:    currentEnvMinusClaude(),
 	})
 	if err != nil {
+		cancel()
 		return err
 	}
 	m.conn = conn
+	m.procCancel = cancel
 	m.started = true
 	m.sysSent = sys
 	m.cursor = 0
@@ -171,7 +183,7 @@ func (m *claudeCodeModel) drainContents(req *model.LLMRequest) error {
 // readStep reads child frames until a tool-call batch or the turn result,
 // yielding partial text/thinking as it streams. Caller holds no lock; readStep
 // takes it only for short mutations.
-func (m *claudeCodeModel) readStep(ctx context.Context, yield func(*model.LLMResponse, error) bool) {
+func (m *claudeCodeModel) readStep(ctx context.Context, stream bool, yield func(*model.LLMResponse, error) bool) {
 	m.mu.Lock()
 	conn := m.conn
 	m.mu.Unlock()
@@ -209,9 +221,14 @@ func (m *claudeCodeModel) readStep(ctx context.Context, yield func(*model.LLMRes
 			}
 			switch fr.Type {
 			case "stream_event":
-				// Partial deltas are live-display only; the completed text is
-				// accumulated from the assistant frames (and the result), so
-				// nothing is double-counted in the final response.
+				// Partial deltas are live-display only, and only when ADK asked
+				// for streaming (RunConfig StreamingModeSSE). In non-streaming
+				// mode ADK/consumers accumulate every text event, so yielding
+				// partials there would double the text against the final. The
+				// completed text is accumulated from the assistant frames.
+				if !stream {
+					continue
+				}
 				if d, t := ccDelta(fr.Event); d != "" {
 					if t == "thinking" {
 						if !yield(m.buildResponse("", d, nil, nil, false), nil) {
