@@ -175,3 +175,39 @@ func createWorktreeAtName(repoRoot, name string) (string, string, error) {
 	lockWorktree(name)
 	return path, branch, nil
 }
+
+// TestPruneWorktrees_KeepsDirtyRemovesClean pins the clean-up contract for the
+// restored worktree lifecycle: on prune (startup/exit), a worktree with no
+// changes is removed, but one with uncommitted/untracked changes is preserved.
+// createWorktree locks each as ours, so prune (unlike a foreign or live-other
+// ask lock) is eligible to reap them — exactly the exit-prune case.
+func TestPruneWorktrees_KeepsDirtyRemovesClean(t *testing.T) {
+	repo := initGitRepo(t) // skips if git is unavailable
+	t.Chdir(repo)
+
+	cleanPath, _, err := createWorktree()
+	if err != nil {
+		t.Fatalf("create clean worktree: %v", err)
+	}
+	dirtyPath, _, err := createWorktree()
+	if err != nil {
+		t.Fatalf("create dirty worktree: %v", err)
+	}
+	// An untracked file makes `git worktree remove` (no --force) refuse.
+	if err := os.WriteFile(filepath.Join(dirtyPath, "scratch.txt"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatalf("dirty the worktree: %v", err)
+	}
+
+	pruneWorktrees()
+
+	if _, err := os.Stat(cleanPath); !os.IsNotExist(err) {
+		t.Errorf("clean worktree must be pruned; still present at %s (err=%v)", cleanPath, err)
+	}
+	if fi, err := os.Stat(dirtyPath); err != nil || !fi.IsDir() {
+		t.Errorf("dirty worktree must be preserved; missing at %s (err=%v)", dirtyPath, err)
+	}
+	// The preserved worktree's scratch file is still there.
+	if _, err := os.Stat(filepath.Join(dirtyPath, "scratch.txt")); err != nil {
+		t.Errorf("preserved worktree lost its changes: %v", err)
+	}
+}
