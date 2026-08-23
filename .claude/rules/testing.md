@@ -22,7 +22,7 @@ or, once `build/llama.cpp` exists, directly:
 ```
 export CGO_LDFLAGS="-L$PWD/build/llama.cpp/build/src -L$PWD/build/llama.cpp/build/ggml/src -lllama -lggml -lstdc++ -lm"
 export CGO_CXXFLAGS="-I$PWD/build/llama.cpp/include -I$PWD/build/llama.cpp/ggml/include"
-export CGO_CFLAGS="-I$PWD"
+export CGO_CFLAGS="-I$PWD/third_party/sqlite"
 go test ./...
 ```
 

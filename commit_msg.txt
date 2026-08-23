@@ -1,9 +1,0 @@
-feat: implement SUDO_ASKPASS architecture for internal password modal
-
-This implements the SUDO_ASKPASS architecture to allow password entry for sudo
-commands directly inside ask, without exposing it to LLMs, transcripts, or logs.
-
-- Adds Unix Domain Socket manager to handle IPC between helper and ask
-- Updates bash tool to inject ASK_INTERNAL_SUDO_ASKPASS and extraEnv
-- Adds Bubble Tea modal (EchoPassword) for password entry
-- Adds complete behavioral test coverage

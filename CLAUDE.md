@@ -66,6 +66,7 @@ runtime is `pkg/engine`, re-exported as a library by the root package
 | `pkg/memory/` | sqlite-vec memory store with a local llama.cpp embedding model (cgo). |
 | `pkg/config/` | `~/.config/ask/ask.json` shapes, per-provider blocks, legacy migration, worktree helpers. |
 | `pkg/diff/` | Pure-Go Myers unified diff and parser. |
+| `third_party/sqlite/` | `sqlite3.h` / `sqlite3ext.h` for sqlite-vec's cgo build (no system header assumed); reached through the Makefile's `CGO_CFLAGS`. |
 | `build/` | Gitignored: the llama.cpp checkout and static libraries that `pkg/memory` links against. |
 
 ## Where the detail lives

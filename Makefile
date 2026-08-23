@@ -13,7 +13,7 @@ MODEL_FILE := $(MODEL_DIR)/embeddinggemma-300M-Q8_0.gguf
 
 export CGO_LDFLAGS=-L$(PWD)/$(LLAMA_DIR)/build/src -L$(PWD)/$(LLAMA_DIR)/build/ggml/src -lllama -lggml -lstdc++ -lm
 export CGO_CXXFLAGS=-I$(PWD)/$(LLAMA_DIR)/include -I$(PWD)/$(LLAMA_DIR)/ggml/include
-export CGO_CFLAGS=-I$(PWD)
+export CGO_CFLAGS=-I$(PWD)/third_party/sqlite
 
 all: setup-llama download-model build
 

@@ -79,10 +79,11 @@ runner uses ADK's in-memory service; `Index`/`Recall` return
   and the static libs under `build/llama.cpp/build/{src,ggml/src}`;
   `make setup-llama` clones and builds them. Nothing in this package
   builds without that.
-- sqlite-vec's cgo includes `sqlite3.h`, which lives at the repo root
-  (`sqlite3.h`, `sqlite3ext.h`) and is found only through the Makefile's
-  `CGO_CFLAGS=-I$(PWD)`. Run `go build`/`go test` through `make` or with
-  the Makefile's three `CGO_*` exports in the environment.
+- sqlite-vec's cgo includes `sqlite3ext.h` → `sqlite3.h`; no system
+  header is assumed, the two live in `third_party/sqlite/` and are found
+  only through the Makefile's `CGO_CFLAGS=-I$(PWD)/third_party/sqlite`.
+  Run `go build`/`go test` through `make` or with the Makefile's three
+  `CGO_*` exports in the environment.
 - Tests use `NewFakeEmbedder` + a `t.TempDir()` DB. The default service
   is global: tests that `Open` it must `Close` it first and defer `Close`
   (`pkg/tools/memory_test.go`, `pkg/engine/run_test.go`).
