@@ -199,12 +199,22 @@ func withRegisteredProviders(t *testing.T, provs ...Provider) {
 	t.Cleanup(func() { providerRegistry = prev })
 }
 
+// testHomes makes isolateHome idempotent within one test: fixtures and
+// newTestModel can both call it, and seeding config between those calls
+// must keep landing in the same isolated home.
+var testHomes = map[*testing.T]string{}
+
 func isolateHome(t *testing.T) string {
 	t.Helper()
+	if home, ok := testHomes[t]; ok {
+		return home
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	testHomes[t] = home
+	t.Cleanup(func() { delete(testHomes, t) })
 	return home
 }
 
@@ -266,6 +276,7 @@ func runJJ(t *testing.T, dir string, args ...string) string {
 
 func newTestModel(t *testing.T, prov Provider) model {
 	t.Helper()
+	isolateHome(t)
 	globalCoordinator.RemoveSession(1)
 	globalCoordinator.CancelWorkflow(1)
 	t.Cleanup(func() {

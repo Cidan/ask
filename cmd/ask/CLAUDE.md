@@ -182,7 +182,14 @@ lockstep (`.claude/rules/issues.md`).
   Gate Todos Before Mutate, Theme, Default Provider, Web Search…, one
   `<Provider>...` row per `providers.All()` entry, Keybindings…) and
   Project Options (config_project.go: GitHub MCP endpoint/PAT, Linear
-  endpoint/key/team, Issue provider). `fieldsPickerState`
+  endpoint/key/team, Issue provider, Worktree). The project Worktree
+  row cycles inherit → on → off and shadows the global flag;
+  `config.WorktreeEnabled(cfg, cwd)` is the only resolver, and both
+  toggles go through `applyEffectiveWorktree` so the session restarts
+  only when the effective value moved. The Global row shows the
+  on-disk global value (plus any project shadow), not `m.worktree`.
+  `/cd` and shell-mode `cd` re-derive `m.worktree` for the new cwd;
+  only `/cd` clears the worktree name. `fieldsPickerState`
   (config_fields.go) is the only field editor: opened with a
   `[]providers.SettingField` plus load/save closures; rows show stored
   / `from $ENV` / default; chrome is `renderLayeredConfigBox`.

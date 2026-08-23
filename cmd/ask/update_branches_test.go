@@ -1,7 +1,9 @@
 package main
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -130,6 +132,43 @@ func TestUpdate_ShellDoneMsgClearsProcAndChannel(t *testing.T) {
 	}
 	if got.shellOutIdx != -1 {
 		t.Errorf("shellOutIdx should reset to -1; got %d", got.shellOutIdx)
+	}
+}
+
+// A shell-mode `cd` into another project re-derives the tab's worktree
+// flag for the next fresh session but leaves the live session (and its
+// worktree) alone.
+func TestUpdate_ShellDoneMsgCdRederivesWorktreeFlag(t *testing.T) {
+	origCwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origCwd) })
+	isolateHome(t)
+
+	dest := filepath.Join(t.TempDir(), "dest")
+	if err := os.MkdirAll(filepath.Join(dest, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	on := true
+	seedWorktreeConfig(t, dest, false, &on)
+
+	m := newTestModel(t, newFakeProvider())
+	m.shellCh = make(chan tea.Msg, 1)
+	m.shellProc = &exec.Cmd{}
+	m.proc = &providerProc{}
+	m.sessionID = "S-live"
+	m.worktreeName = "ask-claude-stillhere"
+	got, _ := runUpdate(t, m, shellBatchMsg{
+		tabID: m.id,
+		done:  &shellDoneMsg{input: "cd dest", newCwd: dest},
+	})
+	if got.cwd != dest {
+		t.Fatalf("cwd=%q want %q", got.cwd, dest)
+	}
+	if !got.worktree {
+		t.Error("shell cd into the overridden project should resolve the flag on")
+	}
+	if got.proc == nil || got.sessionID != "S-live" || got.worktreeName != "ask-claude-stillhere" {
+		t.Errorf("shell cd must not disturb the live session; proc=%v id=%q name=%q",
+			got.proc, got.sessionID, got.worktreeName)
 	}
 }
 

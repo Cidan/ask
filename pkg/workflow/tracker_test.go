@@ -9,6 +9,7 @@ import (
 )
 
 func TestTracker_Lifecycle(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	tr := NewTracker()
 	cwd := t.TempDir()
 	key := "issue-123"
@@ -88,6 +89,7 @@ func TestTracker_Lifecycle(t *testing.T) {
 }
 
 func TestTracker_ResetForTest(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	tr := NewTracker()
 	tr.MarkWorking(t.TempDir(), "k1", "w1", 1)
 	if _, ok := tr.ActiveTabFor("k1"); !ok {

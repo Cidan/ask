@@ -111,6 +111,7 @@ func (m model) projectPickerItems() []configItem {
 		{"Linear API key", maskedSummary(pc.MCP.Linear.Token), "linearAPIKey"},
 		{"Linear team key", lnTeam, "linearTeamKey"},
 		{"Issue provider", issueProviderByID(pc.Issues.Provider).DisplayName(), "issueProvider"},
+		{"Worktree", worktreeOverrideSummary(pc.Worktree, cfg), "worktree"},
 	}
 	wfCount := len(pc.Workflows.Items)
 	wfDesc := "(none)"
@@ -206,6 +207,8 @@ func (m model) updateConfigProjectPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 		switch id {
 		case "issueProvider":
 			return m.cycleIssueProvider()
+		case "worktree":
+			return m.cycleProjectWorktree()
 		case "workflows":
 			// "Workflows…" jumps to the dedicated builder screen so
 			// the per-cwd pipeline list / step editor / multi-line
@@ -309,6 +312,51 @@ func (m model) cycleIssueProvider() (tea.Model, tea.Cmd) {
 		msg += " (skipped: " + strings.Join(skipped, ", ") + ")"
 	}
 	return m, m.toast.show(msg)
+}
+
+// cycleProjectWorktree steps the project's worktree override through
+// inherit → on → off → inherit, persists it, and re-derives the tab's
+// effective flag (which restarts the session only when it moved).
+func (m model) cycleProjectWorktree() (tea.Model, tea.Cmd) {
+	var (
+		saved askConfig
+		next  *bool
+	)
+	if err := withConfigLock(func() error {
+		cfg, _ := loadConfig()
+		pc := loadProjectConfig(cfg, m.cwd)
+		next = nextWorktreeOverride(pc.Worktree)
+		pc.Worktree = next
+		cfg = upsertProjectConfig(cfg, m.cwd, pc)
+		saved = cfg
+		return saveConfig(cfg)
+	}); err != nil {
+		debugLog("project worktree saveConfig: %v", err)
+		return m, m.toast.show("config: " + err.Error())
+	}
+	m = m.applyEffectiveWorktree(saved)
+	return m, m.toast.show("worktree: " + worktreeOverrideSummary(next, saved))
+}
+
+func nextWorktreeOverride(cur *bool) *bool {
+	switch {
+	case cur == nil:
+		on := true
+		return &on
+	case *cur:
+		off := false
+		return &off
+	}
+	return nil
+}
+
+// worktreeOverrideSummary is the Worktree row's value: the override
+// itself, or the inherited global value when there is none.
+func worktreeOverrideSummary(override *bool, cfg askConfig) string {
+	if override != nil {
+		return onOff(*override)
+	}
+	return "(global: " + onOff(cfg.UI.Worktree != nil && *cfg.UI.Worktree) + ")"
 }
 
 // providerActivationReady reports whether the project carries the

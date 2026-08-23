@@ -226,6 +226,16 @@ type ProjectConfig struct {
 	MCP        ProjectMCPConfig           `json:"mcp,omitempty"`
 	Workflows  WorkflowsConfig            `json:"workflows,omitempty"`
 	MCPServers map[string]MCPServerConfig `json:"mcpServers,omitempty"`
+	Worktree   *bool                      `json:"worktree,omitempty"`
+}
+
+// WorktreeEnabled resolves the effective worktree flag for cwd: the
+// project override when set, else the global UI.Worktree, else false.
+func WorktreeEnabled(cfg Config, cwd string) bool {
+	if v := LoadProjectConfig(cfg, cwd).Worktree; v != nil {
+		return *v
+	}
+	return cfg.UI.Worktree != nil && *cfg.UI.Worktree
 }
 
 type IssuesConfig struct {
@@ -675,6 +685,9 @@ func IsProjectConfigEmpty(pc ProjectConfig) bool {
 		return false
 	}
 	if len(pc.MCPServers) > 0 {
+		return false
+	}
+	if pc.Worktree != nil {
 		return false
 	}
 	return true
