@@ -19,7 +19,7 @@ import (
 )
 
 // AgentCoderPrompt is the static head of the harness system prompt.
-// It must stay byte-stable across turns: DeepSeek's prefix cache keys
+// It must stay byte-stable across turns: provider prefix caches key
 // on exact prefixes, so anything volatile (env, git status, context
 // files) is appended AFTER this block, computed once per session.
 const AgentCoderPrompt = `You are a software engineering agent running inside ask, a terminal app. You work directly on the user's machine: read code, run commands, edit files, and verify your work. Be precise, autonomous, and honest about results.
@@ -567,8 +567,8 @@ func contextFilesInDir(dir, linkRoot string, seenReal map[string]bool) []LoadedC
 // dedup), <project_memory>, <available_skills>, <available_agents>,
 // then the shared ask steering prompt (with its worktree pinning clause
 // when args.Cwd is an ask-managed worktree). Called once per session —
-// the result must be reused verbatim on every request so DeepSeek's
-// automatic prefix caching can hit.
+// the result must be reused verbatim on every request so the
+// provider's prefix caching can hit.
 func BuildSystemPrompt(opts PromptOptions) string {
 	cwd := opts.Cwd
 	var b strings.Builder

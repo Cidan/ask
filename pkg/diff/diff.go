@@ -17,7 +17,7 @@ type Hunk struct {
 // Unified produces a standard unified diff (3 context lines) of two
 // file bodies for the agent harness’s edit/write tools. The output
 // round-trips through Parse so the existing renderDiffBlock
-// pipeline renders agent edits exactly like claude/codex diffs. Returns
+// pipeline renders agent edits exactly like any other diff block. Returns
 // "" when the bodies are identical. No ---/+++ file header is emitted:
 // toolDiffMsg carries the path separately and Parse drops
 // pre-@@ lines anyway.

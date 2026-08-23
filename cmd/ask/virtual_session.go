@@ -179,9 +179,8 @@ func newVirtualSessionID() string {
 }
 
 // newUUIDv4 returns a fresh RFC-4122 v4 UUID string ("8-4-4-4-12" hex
-// form). Used when synthesising native session files whose ids must
-// match each provider's UUID-shaped expectations (claude's
-// session-file name, codex's thread id).
+// form). Used for pre-minted agent session ids, materialized session
+// files, and workflow run ids, which are UUID-shaped by convention.
 func newUUIDv4() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -270,7 +269,7 @@ type translateVSReq struct {
 
 // virtualSessionMaterializedMsg lands on Update when translateVSCmd
 // finishes: nativeSessionID/nativeCwd point at the newly-written
-// native session file the target provider can --resume; entries
+// native session file the target provider can resume; entries
 // carries the source's rendered history for the UI when the source
 // path was used; err != nil means translation failed.
 type virtualSessionMaterializedMsg struct {
@@ -469,7 +468,7 @@ func (m *model) persistAddedDirs() {
 // for cross-provider session materialization: source provider's
 // history is distilled to []NeutralTurn and fed to the target
 // provider's Materialize to write a native session file it can
-// then --resume natively.
+// then resume natively.
 type NeutralTurn struct {
 	Role string // "user" | "assistant"
 	Text string

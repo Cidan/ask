@@ -139,12 +139,8 @@ func (e *Engine) RunWorkflow(ctx context.Context, cwd string, tabID int, def wor
 }
 
 // IngestWorkflowMemory files a finished run into ask's long-term memory.
-//
-// Workflow steps used to leave their reasoning in ask/plans/ notes
-// directories on disk, which nothing ever read back and which the runner
-// deleted at the end of the run. Memory is the durable store, and
-// pkg/memory is already an adkmemory.Service wired as the runner's
-// MemoryService — it just was never fed from a workflow.
+// pkg/memory is the adkmemory.Service wired as the runner's
+// MemoryService; this is the one place a workflow session is fed into it.
 func IngestWorkflowMemory(ctx context.Context, sessSvc session.Service, sessionID string) {
 	mem := pkgmemory.Default()
 	if mem == nil || !mem.IsOpen() || sessSvc == nil {

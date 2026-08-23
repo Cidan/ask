@@ -143,10 +143,9 @@ type bgTaskStartedMsg struct {
 	taskID string
 	// toolUseID is the assistant message tool_use_id of the Task call
 	// that spawned this background worker, taken from the task_started
-	// stream event. Empty when the CLI didn't include it. Stashed
-	// alongside taskID so the SubagentStop hook can reap stuck entries
-	// even when its agent_id is the tool_use_id rather than the task_id
-	// (claude's CLI uses different identifier namespaces for the two).
+	// stream event. Empty when the provider didn't include it. Stashed
+	// alongside taskID so a stop signal keyed by tool_use_id instead of
+	// task_id can still reap the entry.
 	toolUseID string
 	tabID     int
 	proc      *providerProc
@@ -199,11 +198,9 @@ type toolDiffMsg struct {
 }
 
 // toolCallMsg reports that a tool is about to run. Emitted when the
-// provider announces the call (Claude tool_use block, Codex
-// commandExecution/mcpToolCall item). The UI renders it according to
-// the tool-output mode and quiet flag. id/background are populated for
-// Claude tool_use blocks (codex leaves them zero); update.go uses them
-// to decide whether to suppress the matching ack result in non-full
+// agent loop announces the call. The UI renders it according to the
+// tool-output mode and quiet flag; update.go uses id/background to
+// decide whether to suppress the matching ack result in non-full
 // modes.
 type toolCallMsg struct {
 	id         string
@@ -406,11 +403,11 @@ type model struct {
 	resumeCwd string
 
 	// sessionMinted is set when ask just pre-minted m.sessionID via
-	// Provider.PreMintSessionID and the next fork must announce it as a
-	// new session (claude: --session-id) instead of resuming. Cleared
-	// once the dispatch closure has captured args, so subsequent forks
-	// (after a kill, a retry) take the --resume branch since the
-	// session file now exists on disk.
+	// Provider.PreMintSessionID and the next session start must
+	// announce it as a new session instead of resuming. Cleared once
+	// the dispatch closure has captured args, so subsequent starts
+	// (after a kill, a retry) take the resume branch since the session
+	// file now exists on disk.
 	sessionMinted bool
 
 	// virtualSessionID pins the tab to a VirtualSession in
@@ -613,10 +610,10 @@ type model struct {
 
 	// addedDirs lists absolute paths the user has registered with
 	// /add-dir for the current tab. Each entry surfaces to the active
-	// provider on the next launch (claude: --add-dir, codex:
-	// sandbox_workspace_write.writable_roots config override). Cleared by
-	// /new and /clear. The /add-dir handler kills the live proc so the
-	// next user turn relaunches with these wired in via --resume.
+	// provider on the next session start through
+	// ProviderSessionArgs.AddedDirs. Cleared by /new and /clear. The
+	// /add-dir handler kills the live session so the next user turn
+	// restarts it with these wired in.
 	addedDirs []string
 
 	turnBuffer     []string

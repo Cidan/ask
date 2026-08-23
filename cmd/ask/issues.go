@@ -1055,7 +1055,7 @@ func updateIssueScreenKey(m model, msg tea.KeyPressMsg, screen screenID) (model,
 	}
 	m.exitArmed = false
 	// Loading and error states own the screen until they resolve. While
-	// loading, ActionReload (default Ctrl+R) is honoured (cancels the
+	// loading, ActionReload (unbound by default) is honoured (cancels the
 	// in-flight + dispatches a fresh load); every other key is consumed
 	// silently so an early keypress can't fall through and mutate the
 	// (still-empty) list. While in error state, Enter/Esc dismiss back

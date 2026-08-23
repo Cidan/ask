@@ -7,8 +7,7 @@ import (
 )
 
 // Provider-agnostic plumbing between a session's message channel and
-// the tea loop. These predate the CLI providers' removal — every
-// in-process provider stream rides the same pump.
+// the tea loop. Every in-process provider stream rides the same pump.
 
 // nextStreamCmd pulls the next message off a provider stream channel.
 // A closed channel yields nil, which Update treats as end-of-stream.

@@ -51,7 +51,7 @@ func (r issueRef) Display() string {
 // GraphQL API (raw HTTP, no MCP). ClickUp / GitLab plug in alongside
 // as they land — the interface is wire-protocol-agnostic.
 //
-// We don't go through the agent (claude/codex) for issue ops — the
+// We don't go through the agent for issue ops — the
 // whole point is to avoid spending a turn on something the user
 // can do directly. The methods below are the typed surface a
 // per-provider client implements; the rest of the app is

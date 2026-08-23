@@ -64,8 +64,9 @@ func closeTabCmd(tabID int) tea.Cmd {
 // flag drives a single non-altscreen frame so the user sees the
 // "backgrounded" line in their actual terminal (not buried in ask's
 // history), then SIGTSTP fires and the shell prompt comes back. The
-// process group also pauses any claude/codex child along with ask;
-// SIGCONT (the shell's `fg`) wakes them, ResumeMsg clears the flag,
+// process group also pauses any child processes (shell jobs, stdio
+// MCP servers) along with ask; SIGCONT (the shell's `fg`) wakes them,
+// ResumeMsg clears the flag,
 // and the next render re-enters altscreen.
 func (a app) suspendApp() (tea.Model, tea.Cmd) {
 	a.suspending = true

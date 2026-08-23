@@ -51,10 +51,10 @@ func (m model) doCd(target string) (tea.Model, tea.Cmd) {
 }
 
 // doAddDir registers an additional directory with the active provider.
-// Kills the running proc so the next user turn relaunches with the
-// new dir in argv (claude --add-dir, codex writable_roots). The
-// session id and worktree are intentionally preserved so the relaunch
-// resumes — not restarts — the conversation.
+// Kills the running session so the next user turn restarts it with
+// the new dir in ProviderSessionArgs.AddedDirs. The session id and
+// worktree are intentionally preserved so the restart resumes — not
+// restarts — the conversation.
 func (m model) doAddDir(target string) (tea.Model, tea.Cmd) {
 	if strings.TrimSpace(target) == "" {
 		m.appendHistory(outputStyle.Render(errStyle.Render(

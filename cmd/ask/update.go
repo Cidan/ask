@@ -15,9 +15,9 @@ import (
 func (m model) Init() tea.Cmd {
 	debugLog("Init provider=%s", m.provider.ID())
 	// Skip ProbeInit when ask's cwd isn't a valid project root: it
-	// would fork claude/codex inside a subdir or worktree to discover
-	// slash commands. Startup itself stays silent — the user only
-	// sees the chat-facing error when they type their first command.
+	// would discover skills and slash commands relative to a subdir or
+	// worktree. Startup itself stays silent — the user only sees the
+	// chat-facing error when they type their first command.
 	if invalid := validateAskCwd(m.cwd); invalid.Msg != "" {
 		return cursor.Blink
 	}
@@ -33,7 +33,7 @@ func (m model) Init() tea.Cmd {
 }
 
 // startupResumeCmd returns a tea.Cmd that emits a startupResumeMsg
-// targeted at tabID. Used by Init when the CLI seeded a vsID so the
+// targeted at tabID. Used by Init when `ask resume` seeded a vsID so the
 // resume runs on the bubbletea event loop — model mutations inside
 // resumeVirtualSession (history reset, busy flag, etc.) only land
 // reliably when applied through Update.
@@ -524,9 +524,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m.bgTasks = nil
 		m.dismissCancelTurnConfirmIfIdle()
 		if m.mode == modeApproval {
-			// Unblock any codex approval responder still waiting on
-			// the user so the goroutine can exit cleanly. The channel
-			// is buffered, so a non-blocking send is safe.
+			// Unblock any approval responder still waiting on the
+			// user so the goroutine can exit cleanly. The channel is
+			// buffered, so a non-blocking send is safe.
 			if m.approvalReply != nil {
 				select {
 				case m.approvalReply <- approvalReply{allow: false}:
@@ -1999,10 +1999,10 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 	}
 	// Reuse the cached native id only when the current provider was
 	// also the last writer (or no last-writer recorded, treated as
-	// benign). A stale mapping — e.g. claude mapping cached before
-	// codex took subsequent turns — would strand the newer turns on
-	// the other provider's file; translating from VS.LastProvider is
-	// the only way to pick up the canonical state.
+	// benign). A stale mapping — one provider's id cached before
+	// another provider took subsequent turns — would strand the newer
+	// turns on the other provider's file; translating from
+	// VS.LastProvider is the only way to pick up the canonical state.
 	if ref, ok := vs.ProviderSessions[providerID]; ok && ref.SessionID != "" &&
 		(vs.LastProvider == "" || vs.LastProvider == providerID) {
 		m.sessionID = ref.SessionID
@@ -2097,7 +2097,7 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		switch cmd {
 		case "/resume", "/new", "/clear", "/effort", "/config", "/workflows", "/skills":
 			// Pure UI commands are still safe to run when ask's cwd
-			// is invalid — they don't fork a provider. Blocking them
+			// is invalid — they don't start a session. Blocking them
 			// would also strand the user without a way to fix things
 			// (e.g. /config to flip worktree off). /resume is the
 			// only exception: it pulls a session list scoped to cwd
@@ -2110,7 +2110,7 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 			}
 		default:
 			// Provider slash commands (or unknown ones) end up
-			// dispatched via sendToProvider → fork a provider, which
+			// dispatched via sendToProvider → start a session, which
 			// we must refuse the same way as a plain user message.
 			// sendToProvider has its own gate, but inserting the
 			// error here keeps the message ordering clean (no leaked

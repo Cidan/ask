@@ -82,12 +82,12 @@ type askCwdInvalidErr = config.AskCwdInvalidErr
 func validateAskCwd(cwd string) askCwdInvalidErr { return config.ValidateAskCwd(cwd) }
 
 // validateExecutorCwd is the last-line guard before we hand a cwd to
-// claude/codex. When worktree mode is enabled and the project root is
+// a provider session. When worktree mode is enabled and the project root is
 // a git/jj checkout, args.Cwd must point inside .claude/worktrees/ —
 // never at the project root or anywhere else outside the worktree
 // tree. Defense-in-depth on top of validateAskCwd so a stray surface
-// that bypasses the chat-facing block can't accidentally fork a
-// provider on the user's project root.
+// that bypasses the chat-facing block can't accidentally start a
+// session on the user's project root.
 //
 // Resume exception: a session whose recorded cwd is the project root
 // is honored even when worktree mode is on. The validator's intent is

@@ -280,9 +280,10 @@ func main() {
 	}
 	defer closeMemoryService()
 	// Resume-time provider override: respects the conversation's
-	// LastProvider so resuming a Claude thread under a Codex default
-	// reopens under Claude. Applied AFTER saveConfig so the override
-	// stays per-launch and never rewrites the persisted default.
+	// LastProvider so a session written by one provider reopens under
+	// that provider even when another is the configured default.
+	// Applied AFTER saveConfig so the override stays per-launch and
+	// never rewrites the persisted default.
 	cfg.Provider = resolveStartupProvider(startupResumeProvider, cfg.Provider, os.Stderr)
 	// Re-save right after load so any silent migration applied by
 	// loadConfig (legacy field rewrites) lands on disk in the

@@ -193,7 +193,7 @@ func pasteImageCmd() tea.Cmd {
 }
 
 // pasteImageFromClipboard dispatches by clipboardGOOS to the per-platform
-// reader. Linux uses wl-paste (no X11 fallback — see CLAUDE.md); macOS
+// reader. Linux uses wl-paste (no X11 fallback — see cmd/ask/CLAUDE.md); macOS
 // uses osascript to coerce the system pasteboard to a known image class.
 func pasteImageFromClipboard() ([]byte, string, error) {
 	switch clipboardGOOS {

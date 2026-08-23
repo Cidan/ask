@@ -43,14 +43,14 @@ type WorkflowListInput struct{}
 
 type WorkflowInnerListStepView struct {
 	Name     string `json:"name" jsonschema:"step name"`
-	Provider string `json:"provider" jsonschema:"provider id (claude, codex, ...)"`
+	Provider string `json:"provider" jsonschema:"provider id from ask's provider registry"`
 	Model    string `json:"model,omitempty" jsonschema:"model id (empty = provider default)"`
 }
 
 type WorkflowListStepView struct {
 	Name          string                      `json:"name" jsonschema:"step name"`
 	Kind          string                      `json:"kind,omitempty" jsonschema:"empty for an agent step; 'loop' for a loop container"`
-	Provider      string                      `json:"provider,omitempty" jsonschema:"provider id (claude, codex, ...); agent steps only"`
+	Provider      string                      `json:"provider,omitempty" jsonschema:"provider id from ask's provider registry; agent steps only"`
 	Model         string                      `json:"model,omitempty" jsonschema:"model id (empty = provider default)"`
 	Steps         []WorkflowInnerListStepView `json:"steps,omitempty" jsonschema:"inner steps run each iteration; loop steps only"`
 	MaxIterations int                         `json:"maxIterations,omitempty" jsonschema:"iteration cap; loop steps only (0 = default)"`
@@ -75,7 +75,7 @@ type WorkflowGetInput struct {
 
 type WorkflowInnerStepView struct {
 	Name     string `json:"name" jsonschema:"step name"`
-	Provider string `json:"provider" jsonschema:"provider id (claude, codex, ...)"`
+	Provider string `json:"provider" jsonschema:"provider id from ask's provider registry"`
 	Model    string `json:"model,omitempty" jsonschema:"model id (empty = provider default)"`
 	Prompt   string `json:"prompt,omitempty" jsonschema:"user-authored prompt for this step"`
 }

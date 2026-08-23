@@ -57,25 +57,25 @@ func steeringPromptFor(args ProviderSessionArgs) string {
 	})
 }
 
-// Provider is an agent backend ("anthropic", "openai", "deepseek").
-// Each implementation owns its session lifecycle, message translation
-// into tea.Msgs, the commands it supports, and where/how prior
-// sessions are persisted. The UI is provider-agnostic; model code
-// dispatches to whichever provider was selected at startup.
+// Provider is the TUI-facing adapter over an LLM backend. Each
+// implementation owns its session lifecycle, message translation into
+// tea.Msgs, the commands it supports, and where/how prior sessions are
+// persisted. The UI is provider-agnostic; model code dispatches to
+// whichever provider the tab runs on.
 //
-// Adding a new provider means implementing this interface and calling
-// registerProvider from an init() — no changes to update/view/ask code.
+// agentAPIProvider (agent_provider.go) implements it for every entry in
+// the pkg/providers registry and is registered from an init(); a new
+// LLM backend is a pkg/providers implementation, not a new type here.
 type Provider interface {
-	// ID is the short stable identifier stored in config
-	// ("anthropic", "openai", "deepseek").
+	// ID is the short stable identifier stored in config, matching
+	// providers.Provider.ID.
 	ID() string
 
 	// DisplayName is the human-readable name used in UI copy and errors.
 	DisplayName() string
 
 	// Capabilities reports optional features so the app knows which
-	// fallbacks to engage (externally-managed worktrees for providers
-	// without a --worktree flag, hiding /model if the provider has no
+	// fallbacks to engage (hiding /model when the provider has no
 	// picker, etc.).
 	Capabilities() ProviderCapabilities
 
@@ -97,39 +97,36 @@ type Provider interface {
 	ProbeInit(args ProviderSessionArgs) tea.Cmd
 
 	// PreMintSessionID returns a fresh native session id ask should
-	// pre-bind for this provider before forking, or "" when the
-	// provider can't accept a caller-chosen id. When non-empty, ask
-	// records the virtual-session row up front so a first-turn cancel
-	// cannot orphan the worktree. The returned id is passed back via
-	// args.NewSessionID on the StartSession that uses it (claude:
-	// --session-id <uuid>).
+	// pre-bind for this provider before starting the session, or ""
+	// when the provider can't accept a caller-chosen id. When non-empty,
+	// ask records the virtual-session row up front so a first-turn
+	// cancel cannot orphan the worktree. The returned id is passed back
+	// via args.NewSessionID on the StartSession that uses it.
 	PreMintSessionID(args ProviderSessionArgs) string
 
 	// NativeSessionID returns the provider-assigned session id carried
-	// on a started proc, or "" when the provider has no post-handshake
-	// id to surface (e.g. claude pre-mints; the model already knows it).
-	// Codex assigns its threadID during the app-server handshake, so
-	// returning it here lets the model capture the id at startup
-	// instead of waiting for turn/completed — without that, an
-	// interrupt-before-turn-completed leaves m.sessionID empty and the
-	// next send wrongly takes the fresh-thread path.
+	// on a started proc, or "" when the id was pre-minted (the model
+	// already knows it). Surfacing a late-assigned id here lets the
+	// model capture it at startup instead of at turn end — otherwise an
+	// interrupt before the turn completes leaves m.sessionID empty and
+	// the next send wrongly takes the fresh-session path.
 	NativeSessionID(p *providerProc) string
 
-	// StartSession forks the agent CLI in streaming mode. Returns the
-	// process handle and its event channel on success; err non-nil on
-	// launch failure.
+	// StartSession starts the agent session. Returns the session
+	// handle and its event channel on success; err non-nil when the
+	// session cannot start (missing credentials, no project, …).
 	StartSession(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error)
 
-	// Send writes a user turn (text + optional image attachments) to a
-	// running session's stdin.
+	// Send queues a user turn (text + optional image attachments) on a
+	// running session.
 	Send(p *providerProc, text string, attachments []pendingAttachment) error
 
 	// Interrupt cancels the in-flight turn cooperatively. Returns
 	// handled=true when the provider accepted the cancel (the app
-	// should keep the proc alive and wait for turn/completed) and
+	// should keep the session alive and wait for turnCompleteMsg) and
 	// handled=false when the provider has no cancel protocol and the
-	// caller should fall back to killing the subprocess. Errors
-	// always push the caller to the kill fallback.
+	// caller should fall back to killing the session. Errors always
+	// push the caller to the kill fallback.
 	Interrupt(p *providerProc) (handled bool, err error)
 
 	// ListSessions enumerates prior sessions rooted at cwd. Backs
@@ -156,9 +153,9 @@ type Provider interface {
 	// sessions under. Used by virtual-session translation: when the
 	// current tab's provider has no native mapping for a VS, the
 	// source provider's turns are distilled to []NeutralTurn and
-	// handed here so --resume / thread/resume can continue from the
-	// prior conversation natively, without injecting a prelude into
-	// the wire payload.
+	// handed here so the target provider can resume from the prior
+	// conversation natively, without injecting a prelude into the
+	// wire payload.
 	Materialize(workspace string, turns []NeutralTurn) (sessionID, cwd string, err error)
 }
 
@@ -180,16 +177,15 @@ type ProviderCapabilities struct {
 	// EffortPicker means /effort is exposed.
 	EffortPicker bool
 
-	// AskUserQuestionMCP means the provider needs the MCP
-	// ask_user_question bridge + the PreToolUse redirect hook to
-	// intercept the built-in AskUserQuestion tool. Providers with
-	// native question-asking in their own protocol leave this false.
+	// AskUserQuestionMCP means the provider needs an external
+	// ask_user_question bridge to intercept a built-in question tool.
+	// In-process providers ask through the question modal natively
+	// and leave this false.
 	AskUserQuestionMCP bool
 
-	// PermissionPromptMCP means the provider consumes a
-	// --permission-prompt-tool callback via the MCP bridge for tool
-	// approvals. Providers that model approvals natively leave this
-	// false.
+	// PermissionPromptMCP means the provider needs an external
+	// permission-prompt callback for tool approvals. In-process
+	// providers gate approvals natively and leave this false.
 	PermissionPromptMCP bool
 }
 
@@ -201,10 +197,9 @@ type ProviderPicker struct {
 	Options []string
 	// AllowCustom appends an "Enter your own" free-text row.
 	AllowCustom bool
-	// SubConfig maps an option label to a sub-config key (e.g. the
-	// Claude "ollama (configure...)" label → "ollama" which triggers
-	// the ollama host/model config form). Empty map means no
-	// sub-configs.
+	// SubConfig maps an option label to a sub-config key that opens a
+	// configuration form instead of applying the option directly.
+	// Empty map means no sub-configs.
 	SubConfig map[string]string
 }
 
@@ -212,10 +207,10 @@ type ProviderPicker struct {
 // session or run its init probe. Unused fields are ignored.
 //
 // SessionID and NewSessionID are mutually exclusive: SessionID is for
-// resuming a session the provider has already persisted (claude:
-// --resume); NewSessionID carries an id ask pre-minted for a fresh
-// session (claude: --session-id) so the worktree+VS pairing exists
-// before the first turn lands. Setting both is a programmer error.
+// resuming a session the provider has already persisted; NewSessionID
+// carries an id ask pre-minted for a fresh session so the worktree+VS
+// pairing exists before the first turn lands. Setting both is a
+// programmer error.
 type ProviderSessionArgs struct {
 	Cwd                 string
 	MCPPort             int
@@ -230,9 +225,8 @@ type ProviderSessionArgs struct {
 	InWorkflow          bool
 	IsWorkflowFinalStep bool
 	// AddedDirs are absolute paths the user has registered with /add-dir.
-	// Providers translate these into their native equivalents (claude:
-	// --add-dir; codex: sandbox_workspace_write.writable_roots). The
-	// list is deduped and ordered as the user added them.
+	// Providers decide how to expose them to the agent. The list is
+	// deduped and ordered as the user added them.
 	AddedDirs []string
 	// ProjectMCP is the project-level MCP server (today: the GitHub
 	// MCP slot the github issue provider also piggybacks on), exposed
@@ -266,18 +260,14 @@ type providerProc struct {
 
 // providerResult carries the end-of-turn summary from a provider.
 // SessionID is the provider-side session identifier used as the key
-// for history persistence. Subtype and StopReason mirror the fields
-// the Anthropic Agent SDK exposes on its ResultMessage so the UI can
-// surface *why* a turn ended (refusal, max_turns, max_budget, etc.)
-// rather than a generic "error".
+// for history persistence. Subtype and StopReason carry *why* a turn
+// ended (refusal, max turns, budget, …) when the provider reports it,
+// so the UI can surface that rather than a generic "error".
 //
-// NumTurns, PermissionDenials, and DeferredToolUse plumb additional
-// ResultMessage fields so a hook- or permission-induced premature
-// stop is distinguishable from a clean end_turn. Without these,
-// workflow steps can advance silently when a user-supplied hook (or
-// future bug) terminates the agent loop while the model still
-// believed work remained — see the OMC code-simplifier Stop-hook
-// incident at the changelog for the motivating case.
+// NumTurns, PermissionDenials, and DeferredToolUse make a permission-
+// or hook-induced premature stop distinguishable from a clean end_turn;
+// without them a workflow step could advance while the model still
+// believed work remained.
 type providerResult struct {
 	IsError           bool
 	Result            string
@@ -289,12 +279,10 @@ type providerResult struct {
 	DeferredToolUse   *deferredToolUse
 }
 
-// deferredToolUse mirrors ResultMessage.deferred_tool_use from the
-// Anthropic Agent SDK. The CLI emits it when a PreToolUse hook
-// returns `permissionDecision: "defer"`: the agent loop stops, and
-// the deferred call is attached so the caller can inspect and
-// optionally resume. Ask has no resume surface for this, so workflow
-// steps treat a non-nil value as a step failure.
+// deferredToolUse describes a tool call the agent loop stopped on
+// without executing, attached so the caller can inspect and optionally
+// resume it. Ask has no resume surface for this, so workflow steps
+// treat a non-nil value as a step failure.
 type deferredToolUse struct {
 	ID    string
 	Name  string
@@ -392,8 +380,9 @@ func providerByIDStrict(id string) (Provider, bool) {
 	return nil, false
 }
 
-// kill terminates the subprocess and closes stdin. Safe on nil or
-// already-reaped receivers.
+// kill tears the session down: closing stdin ends the in-process
+// session goroutine (agentStdin.Close), and a cmd, when one exists, is
+// killed. Safe on nil or already-reaped receivers.
 func (p *providerProc) kill() {
 	if p == nil {
 		return
