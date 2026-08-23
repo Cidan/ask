@@ -414,17 +414,34 @@ func TestClipText(t *testing.T) {
 
 // --- workflow supplant --------------------------------------------------
 
+// supplantTestMsg builds a launch request whose step provider is
+// configured (the launch path refuses steps whose provider has no
+// credentials), so the tests below exercise the supplant itself.
 func supplantTestMsg(a app) spawnWorkflowTabMsg {
 	return spawnWorkflowTabMsg{
 		OriginTabID: a.tabs[0].id,
 		Cwd:         a.tabs[0].cwd,
-		Workflow:    workflowDef{Name: "pipeline", Steps: []workflowStep{{Name: "s1", Provider: "fake"}}},
+		Workflow:    workflowDef{Name: "pipeline", Steps: []workflowStep{{Name: "s1", Provider: "vertex"}}},
 		Source:      chatWorkflowSource(a.tabs[0].id, nil),
+	}
+}
+
+// seedConfiguredVertex gives the isolated config a Vertex project so
+// "vertex" counts as a configured step provider.
+func seedConfiguredVertex(t *testing.T) {
+	t.Helper()
+	if err := withConfigLock(func() error {
+		cfg, _ := loadConfig()
+		cfg.Vertex.Project = "test-project"
+		return saveConfig(cfg)
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
 func TestWorkflowSupplantsTabInSidebarMode(t *testing.T) {
 	isolateHome(t)
+	seedConfiguredVertex(t)
 	resetWorkflowTrackerForTest()
 	a := newSidebarTestApp(t, 2)
 	t0 := a.tabs[0]
@@ -469,6 +486,7 @@ func TestWorkflowSupplantsTabInSidebarMode(t *testing.T) {
 
 func TestWorkflowSupplantDefersWhenBusy(t *testing.T) {
 	isolateHome(t)
+	seedConfiguredVertex(t)
 	resetWorkflowTrackerForTest()
 	a := newSidebarTestApp(t, 1)
 	a.tabs[0].toast = NewToastModel(80, 0)

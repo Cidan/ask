@@ -171,6 +171,7 @@ var (
 	agentFetchTool           = tools.FetchTool
 	agentTodosTool           = tools.TodosTool
 	agentWorkflowTools       = tools.WorkflowTools
+	agentExtensionTools      = tools.ExtensionTools
 	agentSearchToolsTool     = tools.SearchToolsTool
 	agentInvokeToolTool      = tools.InvokeToolTool
 	agentWebSearchTool       = tools.WebSearchTool

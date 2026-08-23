@@ -39,6 +39,7 @@ const (
 	workflowScopeUser   = config.WorkflowScopeUser
 	workflowScopeRepo   = config.WorkflowScopeRepo
 	workflowScopeGlobal = config.WorkflowScopeGlobal
+	workflowScopePlugin = config.WorkflowScopePlugin
 
 	workflowStepKindAgent = config.WorkflowStepKindAgent
 	workflowStepKindLoop  = config.WorkflowStepKindLoop

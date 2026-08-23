@@ -37,3 +37,22 @@ func TestGetAgentProviderSpec(t *testing.T) {
 		t.Errorf("expected 2 provider specs, got %d", len(all))
 	}
 }
+
+func TestProviderConfigured(t *testing.T) {
+	var cfg config.Config
+	if ProviderConfigured(cfg, "vertex") || ProviderConfigured(cfg, "openrouter") {
+		t.Fatal("no credentials → not configured")
+	}
+	if ProviderConfigured(cfg, "nosuch") {
+		t.Fatal("unknown provider → not configured")
+	}
+	cfg.Vertex.Project = "p"
+	cfg.OpenRouter.APIKey = "k"
+	if !ProviderConfigured(cfg, "vertex") || !ProviderConfigured(cfg, "openrouter") {
+		t.Fatal("credentials present → configured")
+	}
+	t.Setenv(OpenRouterEnvAPIKey, "env-key")
+	if !ProviderConfigured(config.Config{}, "openrouter") {
+		t.Fatal("env key counts")
+	}
+}

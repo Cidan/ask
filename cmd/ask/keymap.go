@@ -26,7 +26,9 @@ type Action string
 // approval, ask-question, ollama screen) stays hardcoded
 // for the same reason — Esc already closes those, but Ctrl+D is the
 // canonical exit so its dispatcher mustn't follow a rebound key into
-// nowhere. Same for j/k/arrow navigation inside the kanban / workflow
+// nowhere. The one exception is the skills browser, where Ctrl+D is
+// delete/uninstall (every plain key there types into the search) and
+// Esc is the exit. Same for j/k/arrow navigation inside the kanban / workflow
 // builder / pickers. ActionTabClose covers the tab-level close path
 // (chat dispatcher, issues / workflows / workflow-run tabs, pickers,
 // close-confirm bypass) — six sites that all want to follow the
@@ -37,6 +39,7 @@ const (
 	ActionScreenWorkflows Action = "screen.workflows"
 	ActionScreenAsk       Action = "screen.ask"
 	ActionProviderSwitch  Action = "provider.switch"
+	ActionSkillsBrowser   Action = "skills.browser"
 	ActionChatWorkflow    Action = "chat.workflow"
 	ActionReload          Action = "screen.reload"
 	ActionTabNew          Action = "tab.new"
@@ -242,6 +245,7 @@ var defaultKeyBindings = map[Action]KeyBinding{
 	ActionScreenWorkflows: {Mod: tea.ModCtrl, Code: 'w'},
 	ActionScreenAsk:       {Mod: tea.ModCtrl, Code: 'o'},
 	ActionProviderSwitch:  {Mod: tea.ModCtrl, Code: 'm'},
+	ActionSkillsBrowser:   {Mod: tea.ModCtrl, Code: 's'},
 	ActionChatWorkflow:    {Mod: tea.ModCtrl, Code: 'f'},
 	ActionTaskListToggle:  {Mod: tea.ModCtrl, Code: 'x'},
 	// Reload ships unbound: Ctrl+R belongs to the PRs screen. Users
@@ -368,6 +372,7 @@ var actionGroups = []actionMetaGroup{
 	}},
 	{Heading: "Pickers & dispatch", Items: []actionMetaItem{
 		{ActionProviderSwitch, "Model picker"},
+		{ActionSkillsBrowser, "Skills & marketplace browser"},
 		{ActionChatWorkflow, "Run workflow on chat"},
 		{ActionTaskListToggle, "Toggle task list"},
 		{ActionReload, "Reload issues/PRs"},

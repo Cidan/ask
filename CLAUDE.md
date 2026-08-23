@@ -77,6 +77,11 @@ One `package main`, one file per concern.
 | `agent_tools_task.go`  | task tool v2: default read-only researcher on the parent model, OR a named subagent definition (`agent:` param) with its own instructions/tools/model — including a DIFFERENT in-process provider (cross-provider delegation). `run_in_background` rides the bash job manager (job_output/job_kill + bgTask UI signals). |
 | `agent_subagents.go`   | Named subagent defs: `.claude/agents/*.md` + `~/.config/ask/agents` (frontmatter name/description/tools/model + ask's `provider` extension; body = system prompt), `<available_agents>` prompt block, tool grant sets (default read-only, `*` = coding core, never task/modal tools), claude model-alias mapping, cross-provider model resolution via `agentSpecByID`. |
 | `skills.go`            | Agent Skills standard (agentskills.io) using native ADK `skilltoolset` and `skill.Source`: SKILL.md discovery, progressive disclosure (body loads dynamically), `/skill-name` slash expansion, user-invocable skills surfaced through `ProbeInit`. |
+| `pkg/plugin/`          | Claude Code plugin-marketplace format and ask's operations over it: `manifest.go` (marketplace.json / plugin.json / the `source` union: path, `github`, `url`, `git-subdir`), `source.go` (what `/skills add marketplace` accepts), `store.go` (state files under `~/.config/ask/plugins/` in Claude Code's shapes + `<root>/.ask/plugins.json` for project scope), `marketplace.go` (add / remove / refresh / init), `install.go` (install / uninstall / `EnabledPlugins` / `SyncProject`), `contents.go` (`ResolveContents`: strict merge vs `strict:false` entry, default dirs, single-skill shorthand), `publish.go` (land a skill/agent/workflow as a plugin, lossless marketplace.json upsert, git commit/push), `claude.go` (explicit "Import from Claude" over `~/.claude/plugins` + `settings.json`). `RunGit` / `HTTPClient` / `ClaudeHome` / `Now` are the seams. |
+| `pkg/engine/skill_store.go` | Skill/agent CRUD behind the tools and the browser: `CreateSkill`/`UpdateSkill`/`DeleteSkill`, `CreateAgent`/`UpdateAgent`/`DeleteAgent`, `RenderSkillFile`/`RenderAgentFile`. New definitions land in ask's own dirs (`~/.config/ask/{skills,agents}` user, `<root>/.ask/{skills,agents}` project); edits rewrite the discovered file in place keeping unknown frontmatter keys; plugin copies are read-only (`Origin.Editable`). Every mutation calls `BumpSkillsGeneration`. |
+| `pkg/tools/extensions.go` | The registry (never wire) tool set over skills/agents/plugins/marketplaces: `skill_list`/`skill_get`/`skill_create`/`skill_edit`/`skill_delete`, `agent_create`/`agent_edit`/`agent_delete`, `marketplace_list`/`marketplace_search`/`marketplace_add`, `plugin_install`/`plugin_uninstall`, `skill_publish`, `skill_pull`. Built with `NativeBridgeTool` over shared cores the browser also calls (`MarketplaceSearch`, `PublishTargetFor`/`PublishItem`/`PullItem`, `WorkflowProviderWarnings`); items carry a `published` view with the sync status. `marketplace_add`, `plugin_install`, and `skill_publish` go through the approval gate; every mutation emits `ExtensionsChangedEvent`. |
+| `skills_browser.go`    | `/skills` / Ctrl+S browser state + keys (`modeSkillsBrowser`): two lenses switched by Tab — Installed (Project / User / one group per enabled plugin; every row tagged skill · agent · wf, ⚠ on workflows whose step provider is not configured) and Marketplace (one group per registered marketplace, plugins with ✓ when enabled, Enter drills into a plugin's contents, tail rows `+ Add marketplace` / `Import from Claude Code` / `+ New marketplace`). Every plain key types into the search, so actions are Ctrl+letter (never Ctrl+I = Tab, Ctrl+M = Enter, Ctrl+C = close) or Delete, and ↑/↓ are the only list-nav keys (no Ctrl+P/N aliases here): Enter (skill → `/name ` into the input, agent → a delegation prompt, plugin row → drill, item inside a drill → install), Ctrl+G install (scope prompt), Ctrl+D / Delete remove whatever the row is — the one overlay where Ctrl+D is NOT close-tab (Esc closes) (user/project skill or agent → delete the file after a confirm; anything plugin-backed → uninstall the plugin), Ctrl+N / Ctrl+E hand creation/editing to the agent by pre-filling a `skill_create`/`skill_edit` prompt, Ctrl+P publish (writable-marketplace chooser the first time; an update to the same plugin after that, confirming when the marketplace copy changed), Ctrl+U pull the marketplace copy back (confirm), Ctrl+A add marketplace, Ctrl+X remove marketplace, Ctrl+R refresh + `SyncProject`; Import from Claude is the tail row (and `/skills import claude`). Both footers list the keys that apply to the selected row. Mutations are async cmds resolving to `skillsBrowserOpDoneMsg`; the browser rebuilds from disk and broadcasts `extensionsChangedMsg` so every tab re-runs `ProbeInit` (new slash commands register mid-session). `/skills add marketplace <src> [project]`, `/skills remove marketplace <name>`, `/skills import claude`, `/skills refresh` run without the browser. |
+| `skills_browser_view.go` | The browser's look: the model picker's box/geometry/divider/scroll window (`modelPickerGeometry`, `modelPickerBoxStyle`, `modelPickerWindow`) with a lens tab line, the row renderer, and the detail pane (skill: slash, model-invoked, support files, path, glamour body; agent: invoke, model, tools, prompt; workflow: scope, steps, provider warnings; plugin: status, category, author, source, listed skills; inline editors in the same pane). Composited at the app layer next to the model picker overlay. |
 | `rules.go`             | Claude Code `.claude/rules/` standard: `*.md` rule files discovered recursively (symlink-following, cycle-guarded) under project `.claude/rules/` (git root) and user `~/.claude/rules/` (user loads first, project wins on same relative label). YAML `paths` frontmatter (block + inline list forms, brace patterns survive verbatim) splits rules two ways — no `paths` ⇒ EAGER (`rulesPromptBlock` → `<project_rules>` system-prompt block, byte-stable for prefix caching), with `paths` ⇒ JIT (`ruleAwareTool` decorates the read tool; reading a file whose project-root-relative path matches a glob appends the rule body to that tool result, once per rule per session, project-scope only). Globs reuse `agentGlobMatch` (doublestar + `{a,b}`). The same decorator ALSO injects project instruction files it walks past — but only ones the model has not already been given: `WrapContextAwareTools` seeds `seenCtxFile` with everything `AgentContextFiles(cwd)` already put in `<project_instructions>`, so a read next to CLAUDE.md no longer re-sends CLAUDE.md. Only genuinely unseen instructions (a `CLAUDE.md` in a subdirectory *below* cwd) arrive JIT, once each. Do not remove that seeding — without it, one `read` of a 3KB file returned 99KB. |
 | `agent_tools_ask.go`   | In-process twins of the bridge's `ask_user_question` / `end_turn` — same modal/workflow machinery, no HTTP loopback. |
 | `agent_tools_bridge.go`| Native twins of the `linear_*` bridge tools: a generic `nativeBridgeTool` adapter generates ADK schemas via jsonschema-go. In-process sessions never attach the loopback bridge. These tools live in the deferred registry, never on the wire. |
@@ -166,6 +171,11 @@ exercised by the user; code alone won't catch layout regressions.
 | `agent_tools_workflow_test.go`| Native workflow core tools — 6-tool coverage check, workflow CRUD round-trip against project config, workflow Description round-trip (create sets it, list/get surface it, edit replaces it, omitted leaves it unchanged across a rename), the workflow-guard disarm hooks (calling `workflow_list` sets `workflowsChecked`) so the two-stage todos guard clears on the direct path, plus the wire-schema shape tests (`flattenNullableTypes` table + Normalize-shape check) that pin `workflow_create.steps` / `workflow_edit.steps` / `workflow_edit.description` to the single-type shape strict validators accept. |
 | `agent_tools_registry_test.go`| Tool registry — search query forms (`*`/prefix/substring, schema fidelity, sorted, no-match name list, empty registry), invoke dispatch (identity + params JSON), replicated required-field check, phrase injection (natives yes, MCP no), unknown/core-name errors, response pass-through (IsError/StopTurn/image/hard error), `unwrapInvokeToolCall`, `refreshToolset` wire/registry split (decorateTools sees core only), session surface (linear_* in the registry, `workflow_*` on the wire), `web_search` backend selection (no native spec → Brave on the wire + nil `providerWebSearch`; native spec → off the wire + `providerWebSearch` set), end-to-end fakeLM unwrap (toolCallMsg/toolResultMsg/status), loadHistory replay unwrap. |
 | `skills_test.go`           | Skills — discovery validation (bad name / dir mismatch / no description skipped) + project-over-global precedence, trigger block (progressive disclosure, hidden skills), `/name args` expansion incl. user-invocable gating, frontmatter parser, ProbeInit → slash entries. |
+| `pkg/plugin/plugin_test.go` | Marketplace format — manifest shapes (string/object sources, `PathList`, `Author` string), `ParseMarketplaceSource` forms, directory marketplace add/install/uninstall/remove (cache copy, `installed_plugins.json` record, `strict:false` bare-skill entry, disable, installed-vs-enabled lenses), project scope (`.ask/plugins.json`, Missing on another HOME, `SyncProject`), git-backed marketplaces + remote `git-subdir` installs via swapped `RunGit` (clone/pull/checkout, sha version, no temp left behind, clone removed with the last registration), publish (files, plugin.json, lossless entry upsert, round-trip install, version bump, git add/commit/push, read-only url marketplaces), `InitMarketplace`, `ImportFromClaude` (state read, skip-present, unknown-marketplace plugin reported), `ResolveContents` shapes and path-escape rejection, `ParseRef`. |
+| `pkg/engine/skills_plugin_test.go` | Plugin origins — namespaced `plugin:skill` names, command files as skills (with and without frontmatter), `$ARGUMENTS` substitution, bare names resolve local over plugin, generation-bump rescans a live source, skill/agent store CRUD (quoted descriptions, scope ambiguity, flag set/clear, delete), plugin items read-only, plugin agents. |
+| `pkg/tools/extensions_test.go` | Extension tools — 14-tool coverage + off-the-wire check, skill CRUD round-trip with `ExtensionsChangedEvent` per mutation, agent CRUD, marketplace add/search/install (project scope writes `.ask/plugins.json`, installed plugin skills/agents discoverable, plugin workflow carries provider warnings) / uninstall, approval denial on the gated tools, publish of a skill, an agent, and a workflow, `WorkflowProviderWarnings`. |
+| `pkg/workflow/store_plugin_test.go` | Plugin-scope workflows — listed read-only from installed plugins, resolvable by name/scope, never written back by `SaveAll`, copyable into an editable scope; `ExportFile` shape. |
+| `skills_browser_test.go`   | Browser — open/close via Ctrl+S, `/skills`, Esc/Ctrl+C, modal gate, slash-menu entry; installed lens grouping + kind tags + provider warnings + type-to-search; Enter inserts `/name ` (agents: delegation prompt); marketplace lens rows, filter, drill/undrill; install flow (Ctrl+G scope prompt → async op → rebuilt rows, `.ask/plugins.json`, `extensionsChangedMsg` re-probes slash commands) and Delete-uninstall with confirm; Ctrl+A add-marketplace editor + paste + `/skills add|remove marketplace`; Delete confirm and Ctrl+P publish (agent + workflow) into the writable marketplace; Ctrl+N/Ctrl+E hand-off prompts, a plain letter only types into the search, plugin items refuse edit and Delete offers uninstall, Ctrl+P is never list-nav; overlay geometry (picker footprint, wide-and-flat, square corners) + paste + PgDn; Import from Claude (state summary, registers + installs, never writes `~/.claude`); workflow launch refused with a toast when a step's provider is not configured; `extensionsChangedMsg` broadcast re-probes every tab. |
 | `rules_test.go`            | `.claude/rules/` — `paths` frontmatter parsing (no-frontmatter/no-paths eager, block + inline list, brace verbatim, key-terminated list), eager/match split, recursive discovery + project-over-user precedence + non-md/empty-body skip, `rulesPromptBlock` (eager only, path attr), `ruleAwareTool` JIT injection + once-per-session dedup + non-match miss + eager exclusion, no-scoped-rules passthrough, `relPath` outside-root rejection. End-to-end eager block in `agent_prompt_test.go`. |
 | `agent_subagents_test.go`  | Subagents — def discovery/precedence/field parsing, tool grant sets, spec registry, claude model aliases, cross-provider model resolution (swapped LM var), task tool: named agent runs on the pinned provider w/ def prompt + report tail, background job lifecycle (bgTask signals, job_output), default researcher unchanged, `/skill` expansion reaches the wire. |
 | `agent_session_test.go`    | Store round-trip (typed parts survive), CreatedAt preservation, list ordering, LoadHistory tool-output modes, Materialize via ADK FileSessionService. |
@@ -610,6 +620,70 @@ rename / delete / step edits — the builder shows a dim
 run finalises (or the tab closes), the lock releases.
 
 
+## Skills, agents, plugins, and marketplaces
+
+One distribution format: the **Claude Code plugin marketplace**
+(`pkg/plugin`). A marketplace is a git repo (or directory, or a bare
+`marketplace.json` URL) with `.claude-plugin/marketplace.json`; a
+plugin is a directory with `.claude-plugin/plugin.json` plus
+`skills/`, `agents/`, `commands/` (single-file skills), and ask's
+`workflows/*.json`. `strict:false` entries let a bare SKILL.md
+directory be distributed without a plugin.json (how
+`anthropics/skills` ships). A plugin ask publishes installs in Claude
+Code unchanged; Claude Code ignores the `workflows/` dir and the
+`provider:` key on agents.
+
+Scopes and state (ask-private — nothing here overlaps Claude Code's
+own state, which is only ever read by the explicit *Import from
+Claude*):
+
+| What | user | project |
+|------|------|---------|
+| new skills / agents | `~/.config/ask/skills`, `~/.config/ask/agents` | `<root>/.ask/skills`, `<root>/.ask/agents` (committed) |
+| marketplaces | `~/.config/ask/plugins/known_marketplaces.json` | `<root>/.ask/plugins.json` `marketplaces` |
+| enabled plugins | `~/.config/ask/plugins/installed_plugins.json` (scope `user`) | `<root>/.ask/plugins.json` `enabled` |
+| plugin copies | `~/.config/ask/plugins/cache/<mkt>/<plugin>/<version>/` (machine-local; `SyncProject` fetches what the project file names) | |
+
+Discovery (`engine.SkillSearchRoots` / `SubagentSearchRoots` +
+`plugin.EnabledPlugins`): user dirs, then project dirs (project wins
+on a bare-name clash), then every enabled plugin. Plugin items are
+namespaced `plugin:name` (Claude Code's rule) so they never clash;
+`Skill.Origin` / `SubagentDef.Origin` / `workflow.Def.Plugin` carry
+provenance, and plugin copies are read-only (`Origin.Editable`,
+`workflow.ScopePlugin`; the builder's `runningGuard` blocks edits,
+`c` copies into an editable scope). The ADK skill source rescans
+whenever `BumpSkillsGeneration` fires, so a skill created mid-session
+is on the model's next request; `extensionsChangedMsg` re-runs
+`ProbeInit` so its slash command registers at the same moment.
+
+Model-facing: the `skill_*` / `agent_*` / `marketplace_*` /
+`plugin_*` / `skill_publish` tools live in the deferred registry
+(`pkg/tools/extensions.go`) — "make a skill from this conversation"
+is `skill_create` + iteration with `skill_edit`; the file is the
+draft. `marketplace_search` is the on-the-fly path: the model finds
+a fitting plugin, proposes `plugin_install`, and the approval modal
+gates the install. Catalogs never go on the wire.
+
+**Publishing is a link, not an install.** `Publish` copies the local
+item into `<mkt>/plugins/<name>/` and records a `Publication` (kind,
+name, scope, marketplace, plugin, file, version, content hash) — in
+`.ask/plugins.json` for project items, `~/.config/ask/plugins/published.json`
+for user items. The local copy stays the source of truth; the
+marketplace row reads `✓ yours` and refuses install. `plugin.Status`
+compares the local hash and the marketplace copy's hash against the
+recorded one: in sync / local changes (Ctrl+P publishes an update,
+patch version bumps) / marketplace newer (Ctrl+U pulls it, `skill_pull`)
+/ diverged (either, after a confirm) / missing. Git-backed
+marketplaces are pulled (ff-only), committed, and pushed on every
+publish unless `NoPush`.
+
+Workflows shipped by plugins run like any other (`f` / Ctrl+F), but
+the launch path (`supplantWorkflow`) refuses a workflow whose step
+provider has no credentials (`providers.ProviderConfigured`, the
+`Configured` hook on `AgentProviderSpec`) with a toast telling the
+user to switch that step's model; the browser shows the same ⚠ on
+the item.
+
 ## Sidebar tab mode
 
 The sidebar is the only tab mode (the bottom bar has been removed).
@@ -819,7 +893,8 @@ so the guard clears on the direct call — they are NOT in
 `invoke_tool` gets the existing "core tool — call it directly"
 error). To add a registry tool, append it to `s.deferredBase`
 (native) or expose it from an MCP server; it becomes searchable and
-invokable with zero wire cost.
+invokable with zero wire cost. The extension tools
+(`pkg/tools/extensions.go`) are the canonical registry-only set.
 
 Plumbing invariants worth knowing before touching this area:
 

@@ -329,6 +329,9 @@ var OpenRouterSpec = AgentProviderSpec{
 		// needs the client for genai-native providers (Vertex).
 		return nil, nil
 	},
+	Configured: func(cfg config.Config) bool {
+		return ResolveOpenRouterAPIKey(cfg.OpenRouter) != ""
+	},
 	CallOptions:    OpenRouterProviderOptions,
 	SupportsImages: openRouterSupportsImages,
 	ContextWindow:  openRouterContextWindow,

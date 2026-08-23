@@ -36,6 +36,23 @@ type AgentProviderSpec struct {
 	ListModels   func(ctx context.Context, cfg config.Config) ([]string, error)
 	LoadSettings func(config.Config) ProviderSettings
 	SaveSettings func(*config.Config, ProviderSettings)
+	// Configured reports whether the provider has the credentials it
+	// needs (an API key, a project). nil means always configured. It
+	// must not touch the network.
+	Configured func(cfg config.Config) bool
+}
+
+// ProviderConfigured reports whether provider id can run with cfg —
+// false for an unknown id or one missing its credentials.
+func ProviderConfigured(cfg config.Config, id string) bool {
+	spec, ok := GetAgentProviderSpec(id)
+	if !ok || spec == nil {
+		return false
+	}
+	if spec.Configured == nil {
+		return true
+	}
+	return spec.Configured(cfg)
 }
 
 // MissingAPIKeyError returns a descriptive error when an API key is missing.

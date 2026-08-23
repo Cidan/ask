@@ -172,6 +172,12 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.dispatchByTabID(m.tabID, msg)
 	case workflowStatusChangedMsg:
 		return a.broadcast(msg)
+	case extensionsChangedMsg:
+		// Skills/agents/plugins changed on disk: every tab re-registers
+		// its slash commands and an open browser rebuilds.
+		return a.broadcast(msg)
+	case skillsBrowserOpDoneMsg:
+		return a.dispatchByTabID(m.tabID, msg)
 
 	case askToolRequestMsg:
 		return a.dispatchByTabID(m.tabID, msg)
@@ -223,6 +229,10 @@ func (a app) View() tea.View {
 	if overlay := a.activeTab().modelPickerOverlay(a.width, a.height); overlay != "" {
 		// The picker is the one overlay that covers the whole frame,
 		// sidebar included, so it is drawn here rather than in the tab.
+		v.Content = drawOverlayCentered(v.Content, overlay, a.width, a.height)
+		v.Cursor = nil
+	}
+	if overlay := a.activeTab().skillsBrowserOverlay(a.width, a.height); overlay != "" {
 		v.Content = drawOverlayCentered(v.Content, overlay, a.width, a.height)
 		v.Cursor = nil
 	}
@@ -379,6 +389,9 @@ func (a app) supplantWorkflow(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
 		return a, a.activeTab().toast.show(
 			"workflow not started: tab is busy — let the current work finish first")
 	}
+	if warn := workflowProviderWarnings(req.Workflow); len(warn) > 0 {
+		return a, a.activeTab().toast.show("workflow not started: " + warn[0])
+	}
 	// Mid-turn (busy or procStarting): register the intent so the
 	// workflow launches when this turn completes, rather than failing
 	// with a toast the agent can't act on.
@@ -418,6 +431,7 @@ func (a app) supplantWorkflow(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
 	t.screen = screenAsk
 	t.mode = modeInput
 	t.modelPicker = nil
+	t.skillsBrowser = nil
 	t.workflowPicker = nil
 	t.configGlobalPickerActive = false
 	t.configProjectPickerActive = false

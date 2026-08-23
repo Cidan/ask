@@ -25,8 +25,9 @@ func BuildCoreTools(args engine.ToolFactoryArgs, attachWebSearch bool) []Tool {
 		args.EventListener,
 		args.InteractionHandler,
 	)
+	extensions := ExtensionTools(env)
 	registryFunc := func() []Tool {
-		return nil
+		return extensions
 	}
 	core := CoreTools(env, registryFunc, attachWebSearch)
 	if args.WorkflowStep {

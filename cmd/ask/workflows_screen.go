@@ -436,6 +436,7 @@ func (b *workflowsBuilderState) copySelectedToOtherScope() {
 	target := nextWorkflowScope(src.Scope)
 	dup := src
 	dup.Scope = target
+	dup.Plugin = ""
 	dup.Name = b.uniqueNameInScope(src.Name, target)
 	dup.Steps = cloneWorkflowSteps(src.Steps)
 	b.items = append(b.items, dup)
@@ -542,6 +543,9 @@ func (b *workflowsBuilderState) runningGuard() string {
 	active := workflowTracker().ActiveWorkflowNames()
 	if _, running := active[name]; running {
 		return "blocked: workflow is running"
+	}
+	if b.items[wIdx].Scope == workflowScopePlugin {
+		return "blocked: plugin workflow is read-only — press c to copy it"
 	}
 	return ""
 }

@@ -9,51 +9,123 @@ import (
 	"strings"
 
 	"github.com/Cidan/ask/pkg/config"
+	"github.com/Cidan/ask/pkg/plugin"
 	"github.com/Cidan/ask/pkg/providers"
 )
 
 // SubagentDef is a named subagent definition.
 type SubagentDef struct {
+	// Name is the task-tool name; plugin agents carry the "plugin:"
+	// prefix the way Claude Code namespaces them.
 	Name        string
+	BareName    string
 	Description string
 	Provider    string
 	Model       string
 	Tools       []string
 	Prompt      string
 	Source      string
+	Origin      Origin
 }
 
-// SubagentSearchDirs returns the subagent search directories in precedence order.
-func SubagentSearchDirs(cwd string) []string {
-	var dirs []string
+// SubagentRoot is one directory of agent definitions plus the origin
+// its agents are tagged with.
+type SubagentRoot struct {
+	Dir    string
+	Origin Origin
+}
+
+// SubagentSearchRoots returns the user and project roots in precedence
+// order (later wins). Plugin agents are namespaced and come from
+// plugin.EnabledPlugins.
+func SubagentSearchRoots(cwd string) []SubagentRoot {
+	var roots []SubagentRoot
 	if home, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs,
+		for _, d := range []string{
 			filepath.Join(home, ".config", "ask", "agents"),
 			filepath.Join(home, ".claude", "agents"),
-		)
+		} {
+			roots = append(roots, SubagentRoot{Dir: d, Origin: Origin{Scope: OriginUser}})
+		}
 	}
-	roots := []string{cwd}
+	projectRoots := []string{cwd}
 	if root := config.ProjectRoot(cwd); root != "" && root != cwd {
-		roots = append(roots, root)
+		projectRoots = append(projectRoots, root)
 	}
-	for _, root := range roots {
-		dirs = append(dirs,
+	for _, root := range projectRoots {
+		for _, d := range []string{
 			filepath.Join(root, ".claude", "agents"),
 			filepath.Join(root, ".ask", "agents"),
-		)
+		} {
+			roots = append(roots, SubagentRoot{Dir: d, Origin: Origin{Scope: OriginProject}})
+		}
+	}
+	return roots
+}
+
+// SubagentSearchDirs is SubagentSearchRoots without the origin tags.
+func SubagentSearchDirs(cwd string) []string {
+	roots := SubagentSearchRoots(cwd)
+	dirs := make([]string, 0, len(roots))
+	for _, r := range roots {
+		dirs = append(dirs, r.Dir)
 	}
 	return dirs
 }
 
-// DiscoverSubagents reads every *.md definition.
-func DiscoverSubagents(cwd string) []SubagentDef {
-	byName := map[string]SubagentDef{}
+// loadSubagentDef parses one definition file. prefix namespaces plugin
+// agents.
+func loadSubagentDef(path, repoRoot, prefix string, origin Origin) (SubagentDef, bool) {
+	fields, body, ok := ParseMarkdownFrontmatter(path)
+	if !ok {
+		return SubagentDef{}, false
+	}
+	bare := strings.TrimSpace(fields["name"])
+	if bare == "" {
+		bare = strings.TrimSuffix(filepath.Base(path), ".md")
+	}
+	if fields["description"] == "" {
+		return SubagentDef{}, false
+	}
+	var subTools []string
+	for _, t := range strings.Split(fields["tools"], ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			subTools = append(subTools, t)
+		}
+	}
+	prompt := strings.TrimSpace(body)
+	if linked := RuleLinkedDocs(repoRoot, prompt); len(linked) > 0 {
+		var lb strings.Builder
+		lb.WriteString(prompt)
+		lb.WriteString("\n\n## @-linked docs\n\n")
+		for _, d := range linked {
+			fmt.Fprintf(&lb, "<file path=%q>\n%s\n</file>\n", d.Path, d.Body)
+		}
+		prompt = lb.String()
+	}
+	return SubagentDef{
+		Name:        prefix + bare,
+		BareName:    bare,
+		Description: fields["description"],
+		Provider:    strings.TrimSpace(fields["provider"]),
+		Model:       strings.TrimSpace(fields["model"]),
+		Tools:       subTools,
+		Prompt:      prompt,
+		Source:      path,
+		Origin:      origin,
+	}, true
+}
+
+// loadSubagentDefs lists every valid definition in root order, shadowed
+// copies included; plugin agents follow.
+func loadSubagentDefs(cwd string) []SubagentDef {
 	repoRoot := config.ProjectRoot(cwd)
 	if repoRoot == "" {
 		repoRoot = cwd
 	}
-	for _, dir := range SubagentSearchDirs(cwd) {
-		entries, err := os.ReadDir(dir)
+	var out []SubagentDef
+	for _, root := range SubagentSearchRoots(cwd) {
+		entries, err := os.ReadDir(root.Dir)
 		if err != nil {
 			continue
 		}
@@ -61,44 +133,31 @@ func DiscoverSubagents(cwd string) []SubagentDef {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 				continue
 			}
-			path := filepath.Join(dir, e.Name())
-			fields, body, ok := ParseMarkdownFrontmatter(path)
-			if !ok {
-				continue
-			}
-			name := fields["name"]
-			if name == "" {
-				name = strings.TrimSuffix(e.Name(), ".md")
-			}
-			if fields["description"] == "" {
-				continue
-			}
-			var subTools []string
-			for _, t := range strings.Split(fields["tools"], ",") {
-				if t = strings.TrimSpace(t); t != "" {
-					subTools = append(subTools, t)
-				}
-			}
-			prompt := strings.TrimSpace(body)
-			if linked := RuleLinkedDocs(repoRoot, prompt); len(linked) > 0 {
-				var lb strings.Builder
-				lb.WriteString(prompt)
-				lb.WriteString("\n\n## @-linked docs\n\n")
-				for _, d := range linked {
-					fmt.Fprintf(&lb, "<file path=%q>\n%s\n</file>\n", d.Path, d.Body)
-				}
-				prompt = lb.String()
-			}
-			byName[name] = SubagentDef{
-				Name:        name,
-				Description: fields["description"],
-				Provider:    strings.TrimSpace(fields["provider"]),
-				Model:       strings.TrimSpace(fields["model"]),
-				Tools:       subTools,
-				Prompt:      prompt,
-				Source:      path,
+			if d, ok := loadSubagentDef(filepath.Join(root.Dir, e.Name()), repoRoot, "", root.Origin); ok {
+				out = append(out, d)
 			}
 		}
+	}
+	for _, in := range plugin.EnabledPlugins(cwd) {
+		if in.Dir == "" {
+			continue
+		}
+		origin := Origin{Scope: OriginPlugin, Plugin: in.Ref.String()}
+		for _, f := range in.Contents().AgentFiles {
+			if d, ok := loadSubagentDef(f, repoRoot, in.Ref.Plugin+":", origin); ok {
+				out = append(out, d)
+			}
+		}
+	}
+	return out
+}
+
+// DiscoverSubagents reads every *.md definition; later roots win on a
+// name clash.
+func DiscoverSubagents(cwd string) []SubagentDef {
+	byName := map[string]SubagentDef{}
+	for _, d := range loadSubagentDefs(cwd) {
+		byName[d.Name] = d
 	}
 	names := make([]string, 0, len(byName))
 	for name := range byName {
@@ -110,6 +169,16 @@ func DiscoverSubagents(cwd string) []SubagentDef {
 		out = append(out, byName[name])
 	}
 	return out
+}
+
+// FindSubagent returns the discovered agent with name.
+func FindSubagent(cwd, name string) (SubagentDef, bool) {
+	for _, d := range DiscoverSubagents(cwd) {
+		if d.Name == name {
+			return d, true
+		}
+	}
+	return SubagentDef{}, false
 }
 
 // SubagentsPromptBlock lists the named subagents in the system prompt.

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"github.com/Cidan/ask/pkg/plugin"
 	"os"
 	"path/filepath"
 	"strings"
@@ -978,5 +980,63 @@ func TestWorkflowsBuilder_RenamePerScope(t *testing.T) {
 	}
 	if _, ok := findWorkflow(cwd, "shared", workflowScopeUser); !ok {
 		t.Error("rename should have landed in user scope")
+	}
+}
+
+// TestWorkflowsBuilder_PluginWorkflowReadOnlyAndCopy pins the plugin
+// scope in the builder: a workflow shipped by an installed plugin is
+// listed with the plugin tag, rename / delete / move are refused with
+// the read-only guard, and `c` lands an editable copy in repo scope
+// with the plugin provenance cleared.
+func TestWorkflowsBuilder_PluginWorkflowReadOnlyAndCopy(t *testing.T) {
+	m, cwd := seedWorkflowsBuilder(t, nil)
+	home, _ := os.UserHomeDir()
+	mkt := filepath.Join(home, "fixture-mkt")
+	writeSkillsFixtureMarketplace(t, mkt, "mkt")
+	if _, err := plugin.AddMarketplace(context.Background(), cwd, mkt, plugin.ScopeUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plugin.InstallPlugin(context.Background(), cwd, plugin.Ref{Plugin: "tools", Marketplace: "mkt"}, plugin.ScopeUser); err != nil {
+		t.Fatal(err)
+	}
+	m.workflowsBuilder.refreshItems()
+	b := m.workflowsBuilder
+	if len(b.items) != 1 || b.items[0].Scope != workflowScopePlugin || b.items[0].Plugin != "tools@mkt" || b.items[0].Name != "release" {
+		t.Fatalf("plugin workflow must be listed read-only: %+v", b.items)
+	}
+	if workflowScopeTag(b.items[0].Scope) != workflowScopePlugin {
+		t.Errorf("scope tag = %q", workflowScopeTag(b.items[0].Scope))
+	}
+	b.focus = workflowsBuilderFocusLeft
+	b.listCursor = 1
+	for _, key := range []rune{'r', 'd', 's'} {
+		m1, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: key})
+		if got := m1.workflowsBuilder.toast; !strings.Contains(got, "read-only") {
+			t.Errorf("%c on a plugin workflow must toast the read-only guard; got %q", key, got)
+		}
+		if m1.workflowsBuilder.renaming != "" || m1.workflowsBuilder.confirming != "" {
+			t.Errorf("%c must not open an editor on a plugin workflow", key)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".ask", "workflows")); !os.IsNotExist(err) {
+		t.Fatal("guarded keys must not write anything")
+	}
+	m1, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: 'c'})
+	b = m1.workflowsBuilder
+	copyDef, ok := findWorkflow(cwd, "release", workflowScopeRepo)
+	if !ok || copyDef.Plugin != "" || copyDef.Steps[0].Provider != "vertex" {
+		t.Fatalf("c must copy the plugin workflow into repo scope: %+v ok=%v", copyDef, ok)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".ask", "workflows", "release.json")); err != nil {
+		t.Errorf("repo copy file missing: %v", err)
+	}
+	if _, ok := findWorkflow(cwd, "release", workflowScopePlugin); !ok {
+		t.Error("the plugin original must survive the copy")
+	}
+	if !strings.Contains(b.toast, "repo") {
+		t.Errorf("toast should name the destination scope; got %q", b.toast)
+	}
+	if all := listAllWorkflows(cwd); len(all) != 2 {
+		t.Fatalf("repo copy + plugin original: %+v", all)
 	}
 }

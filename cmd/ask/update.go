@@ -946,6 +946,24 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		return m, nil
 
+	case extensionsChangedMsg:
+		// A skill/agent/plugin changed on disk (tool call, browser
+		// action, another tab). Re-register slash commands so a new
+		// skill is invocable right away, and rebuild an open browser.
+		if m.skillsBrowser != nil {
+			m.skillsBrowser.rebuild(m.cwd)
+		}
+		if m.provider == nil {
+			return m, nil
+		}
+		return m, m.provider.ProbeInit(m.sessionArgs())
+
+	case skillsBrowserOpDoneMsg:
+		if msg.tabID != m.id {
+			return m, nil
+		}
+		return m.finishSkillsBrowserOp(msg)
+
 	case workflowStatusChangedMsg:
 		// Status changed somewhere — invalidate cached frame so the
 		// kanban (if visible) repaints with the new icon. The
@@ -1132,6 +1150,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.mode == modeModelPicker {
 			return m.applyModelPickerPaste(msg.Content)
 		}
+		if m.mode == modeSkillsBrowser {
+			return m.applySkillsBrowserPaste(msg.Content)
+		}
 		if m.mode == modeConfig && m.configProjectPickerActive && m.configProjectFieldEditing != "" {
 			return m.applyConfigProjectPaste(msg.Content)
 		}
@@ -1231,6 +1252,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m.updateConfigModal(msg)
 		case modeModelPicker:
 			return m.updateModelPicker(msg)
+		case modeSkillsBrowser:
+			return m.updateSkillsBrowser(msg)
 		case modeFinalizedPlan:
 			return m.updateFinalizedPlan(msg)
 		case modeSudoPassword:
@@ -1436,6 +1459,12 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m = m.openModelPicker()
 		return m, m.modelPickerLoadCmd(false)
+	}
+	if km.Matches(ActionSkillsBrowser, msg) {
+		if m.pathPickerActive() || len(m.filterSlashCmds()) > 0 {
+			return m, nil
+		}
+		return m.openSkillsBrowser(), nil
 	}
 	if km.Matches(ActionChatWorkflow, msg) {
 		// Path-picker / slash popover are mid-edit affordances; let
@@ -2072,7 +2101,7 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 	cmd, _, _ := strings.Cut(line, " ")
 	if invalid := validateAskCwd(m.cwd); invalid.Msg != "" {
 		switch cmd {
-		case "/resume", "/new", "/clear", "/effort", "/config", "/workflows":
+		case "/resume", "/new", "/clear", "/effort", "/config", "/workflows", "/skills":
 			// Pure UI commands are still safe to run when ask's cwd
 			// is invalid — they don't fork a provider. Blocking them
 			// would also strand the user without a way to fix things
@@ -2129,6 +2158,9 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 	case "/config":
 		m = m.startConfigModal()
 		return m, nil
+	case "/skills":
+		_, args, _ := strings.Cut(line, " ")
+		return m.handleSkillsCommand(strings.TrimSpace(args))
 	case "/workflows":
 		// /workflows opens the builder. Same flow as Ctrl+W: drop
 		// any in-flight issues query so re-entry to the issues

@@ -58,7 +58,8 @@ type WorkflowListStepView struct {
 
 type WorkflowListItem struct {
 	Name        string                 `json:"name" jsonschema:"workflow name"`
-	Scope       string                 `json:"scope" jsonschema:"where the workflow is stored: 'user', 'repo', or 'global'"`
+	Scope       string                 `json:"scope" jsonschema:"where the workflow is stored: 'user', 'repo', 'global', or 'plugin' (read-only)"`
+	Plugin      string                 `json:"plugin,omitempty" jsonschema:"name@marketplace for plugin workflows"`
 	Description string                 `json:"description,omitempty" jsonschema:"the author's statement of what this workflow is for and when to use it"`
 	Steps       []WorkflowListStepView `json:"steps" jsonschema:"steps in execution order"`
 }
@@ -93,6 +94,7 @@ type WorkflowStepView struct {
 type WorkflowDefView struct {
 	Name        string             `json:"name"`
 	Scope       string             `json:"scope"`
+	Plugin      string             `json:"plugin,omitempty"`
 	Description string             `json:"description,omitempty"`
 	Steps       []WorkflowStepView `json:"steps"`
 }
@@ -202,6 +204,7 @@ func WorkflowListCore(cwd string, in WorkflowListInput) (*mcp.CallToolResult, Wo
 		out.Workflows = append(out.Workflows, WorkflowListItem{
 			Name:        w.Name,
 			Scope:       string(w.Scope),
+			Plugin:      w.Plugin,
 			Description: w.Description,
 			Steps:       steps,
 		})
@@ -277,6 +280,7 @@ func defToDefView(d workflow.Def) WorkflowDefView {
 	return WorkflowDefView{
 		Name:        d.Name,
 		Scope:       string(d.Scope),
+		Plugin:      d.Plugin,
 		Description: d.Description,
 		Steps:       stepsToStepViews(d.Steps),
 	}

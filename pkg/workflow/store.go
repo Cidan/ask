@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Cidan/ask/pkg/config"
+	"github.com/Cidan/ask/pkg/plugin"
 )
 
 const WorkflowsRepoDirName = ".ask/workflows"
@@ -45,10 +46,47 @@ func NormalizeScope(s Scope) (Scope, error) {
 		return ScopeRepo, nil
 	case string(ScopeGlobal):
 		return ScopeGlobal, nil
+	case string(ScopePlugin):
+		return "", fmt.Errorf("plugin workflows are read-only; copy the workflow into %q, %q, or %q scope first",
+			ScopeUser, ScopeRepo, ScopeGlobal)
 	default:
 		return "", fmt.Errorf("unknown workflow scope %q: valid scopes are %q, %q, %q",
 			s, ScopeUser, ScopeRepo, ScopeGlobal)
 	}
+}
+
+// LoadPluginWorkflows reads the workflows shipped by every enabled plugin.
+func LoadPluginWorkflows(cwd string) []Def {
+	var out []Def
+	for _, in := range plugin.EnabledPlugins(cwd) {
+		if in.Dir == "" {
+			continue
+		}
+		for _, path := range in.Contents().WorkflowFiles {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			var d Def
+			if err := json.Unmarshal(data, &d); err != nil {
+				continue
+			}
+			d.Name = strings.TrimSpace(d.Name)
+			if d.Name == "" {
+				continue
+			}
+			d.Scope = ScopePlugin
+			d.Plugin = in.Ref.String()
+			out = append(out, d)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Plugin != out[j].Plugin {
+			return out[i].Plugin < out[j].Plugin
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
 }
 
 // FileName maps a workflow name onto a filesystem-safe filename stem.
@@ -115,6 +153,36 @@ func LoadFileWorkflows(dir string, scope Scope) []Def {
 	return out
 }
 
+// ExportBytes renders d as the standalone JSON a plugin's workflows/
+// directory holds (scope-free).
+func ExportBytes(d Def) ([]byte, error) {
+	d.Scope = ""
+	d.Plugin = ""
+	data, err := json.MarshalIndent(d, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
+}
+
+// ExportFile writes ExportBytes(d) as FileName(d.Name).json in a fresh
+// temporary directory and returns its path.
+func ExportFile(d Def) (string, error) {
+	data, err := ExportBytes(d)
+	if err != nil {
+		return "", err
+	}
+	dir, err := os.MkdirTemp("", "ask-workflow-*")
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, FileName(d.Name)+".json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 // LoadUserWorkflows reads the user-scope workflow list from ask.json for cwd.
 func LoadUserWorkflows(cwd string) ([]Def, error) {
 	pc, err := config.LoadProject(cwd)
@@ -132,7 +200,8 @@ func LoadUserWorkflows(cwd string) ([]Def, error) {
 	return out, nil
 }
 
-// ListAll returns all workflows visible to cwd in order: global, repo, user.
+// ListAll returns all workflows visible to cwd in order: global, repo,
+// user, then the read-only plugin workflows.
 func ListAll(cwd string) []Def {
 	var merged []Def
 	seen := map[string]bool{}
@@ -165,6 +234,15 @@ func ListAll(cwd string) []Def {
 		}
 	}
 
+	// 4. Plugins (read-only)
+	for _, w := range LoadPluginWorkflows(cwd) {
+		key := string(ScopePlugin) + ":" + w.Plugin + ":" + w.Name
+		if !seen[key] {
+			seen[key] = true
+			merged = append(merged, w)
+		}
+	}
+
 	return merged
 }
 
@@ -178,9 +256,12 @@ func ResolveByName(cwd, name string, scope Scope) (Def, error) {
 		return Def{}, errors.New("workflow name is required")
 	}
 	if scope != "" {
-		norm, err := NormalizeScope(scope)
-		if err != nil {
-			return Def{}, err
+		norm := Scope(strings.TrimSpace(string(scope)))
+		if norm != ScopePlugin {
+			var err error
+			if norm, err = NormalizeScope(scope); err != nil {
+				return Def{}, err
+			}
 		}
 		for _, w := range ListAll(cwd) {
 			if w.Name == name && w.Scope == norm {
@@ -225,6 +306,9 @@ func saveAllLocked(cwd string, items []Def) error {
 			repo = append(repo, w)
 		case ScopeGlobal:
 			global = append(global, w)
+		case ScopePlugin:
+			// Plugin workflows are never written back: the installed copy
+			// is the source of truth until the plugin is updated.
 		default:
 			user = append(user, w)
 		}
@@ -258,6 +342,7 @@ func ConfigDefToDef(d config.WorkflowDef) Def {
 		Description: d.Description,
 		Steps:       configStepsToSteps(d.Steps),
 		Scope:       Scope(d.Scope),
+		Plugin:      d.Plugin,
 	}
 }
 
@@ -288,6 +373,7 @@ func DefToConfigDef(d Def) config.WorkflowDef {
 		Description: d.Description,
 		Steps:       stepsToConfigSteps(d.Steps),
 		Scope:       string(d.Scope),
+		Plugin:      d.Plugin,
 	}
 }
 

@@ -191,6 +191,9 @@ var VertexSpec = AgentProviderSpec{
 	BuildClient: func(cfg config.Config) (*genai.Client, error) {
 		return VertexNewClient(context.Background(), cfg.Vertex)
 	},
+	Configured: func(cfg config.Config) bool {
+		return VertexResolveProject(cfg.Vertex) != ""
+	},
 	CallOptions: VertexProviderOptions,
 	SupportsImages: func(modelID string) bool {
 		return CatalogSupportsImages("vertex", modelID, true)

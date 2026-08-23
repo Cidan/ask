@@ -11,6 +11,9 @@ const (
 	ScopeUser   Scope = "user"
 	ScopeRepo   Scope = "repo"
 	ScopeGlobal Scope = "global"
+	// ScopePlugin marks a workflow shipped by an installed plugin. It is
+	// read-only: copy it into another scope to change it.
+	ScopePlugin Scope = "plugin"
 )
 
 // Step represents a single agent step or a loop of inner steps.
@@ -31,7 +34,13 @@ type Def struct {
 	Description string `json:"description,omitempty"`
 	Steps       []Step `json:"steps"`
 	Scope       Scope  `json:"-"`
+	// Plugin is the "name@marketplace" that ships this workflow when
+	// Scope == ScopePlugin.
+	Plugin string `json:"-"`
 }
+
+// ReadOnly reports whether the workflow cannot be edited in place.
+func (d Def) ReadOnly() bool { return d.Scope == ScopePlugin }
 
 func (s Step) IsLoop() bool {
 	return s.Kind == "loop"

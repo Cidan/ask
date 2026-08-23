@@ -26,6 +26,7 @@ const (
 	EventKindWorkflowStep    EventKind = "workflow_step"
 	EventKindWorkflowDone    EventKind = "workflow_done"
 	EventKindWorkflowFailed  EventKind = "workflow_failed"
+	EventKindExtensions      EventKind = "extensions_changed"
 )
 
 // EngineEvent is the common interface implemented by all events emitted by the ask engine.
@@ -259,6 +260,16 @@ type WorkflowFailedEvent struct {
 }
 
 func (WorkflowFailedEvent) Kind() EventKind { return EventKindWorkflowFailed }
+
+// ExtensionsChangedEvent is emitted when a tool creates, edits, deletes,
+// installs, or publishes a skill, agent, plugin, or marketplace, so the
+// UI re-registers slash commands and refreshes the browser.
+type ExtensionsChangedEvent struct {
+	BaseEvent
+	What string `json:"what"`
+}
+
+func (ExtensionsChangedEvent) Kind() EventKind { return EventKindExtensions }
 
 // EventListener is a callback function that handles stream events from the engine.
 type EventListener func(event EngineEvent)

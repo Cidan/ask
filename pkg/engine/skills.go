@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,17 +13,52 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/Cidan/ask/pkg/config"
+	"github.com/Cidan/ask/pkg/plugin"
 	"google.golang.org/adk/v2/tool/skilltoolset"
 	"google.golang.org/adk/v2/tool/skilltoolset/skill"
 )
 
-// Skill is one discovered SKILL.md package.
+// OriginScope says where a skill or agent definition lives.
+type OriginScope string
+
+const (
+	OriginUser    OriginScope = "user"
+	OriginProject OriginScope = "project"
+	OriginPlugin  OriginScope = "plugin"
+)
+
+// Origin is the provenance of a discovered skill or agent: a user or
+// project directory, or an installed plugin ("name@marketplace").
+type Origin struct {
+	Scope  OriginScope
+	Plugin string
+}
+
+func (o Origin) String() string {
+	if o.Scope == OriginPlugin {
+		return "plugin " + o.Plugin
+	}
+	return string(o.Scope)
+}
+
+// Editable reports whether the definition can be changed in place —
+// plugin copies are replaced on update, never edited.
+func (o Origin) Editable() bool { return o.Scope == OriginUser || o.Scope == OriginProject }
+
+// Skill is one discovered skill: a SKILL.md package, or a single-file
+// command (Claude Code's commands/*.md) loaded with the same contract.
 type Skill struct {
+	// Name is the slash/invocation name; plugin skills carry the
+	// "plugin:" prefix the way Claude Code namespaces them.
 	Name        string
+	BareName    string
 	Description string
-	// Dir is the skill package directory; Path is its SKILL.md.
+	// Dir is the skill package directory; Path is its SKILL.md (or the
+	// command file).
 	Dir  string
 	Path string
 	// UserInvocable surfaces the skill as a /name slash command
@@ -33,6 +69,8 @@ type Skill struct {
 	DisableModelInvocation bool
 	// Frontmatter holds the parsed ADK frontmatter when available.
 	Frontmatter *skill.Frontmatter
+	Origin      Origin
+	Command     bool
 }
 
 // skillNameRe is the standard's name constraint: lowercase-friendly
@@ -44,30 +82,135 @@ const (
 	skillDescriptionMaxLen = 1024
 )
 
-// SkillSearchDirs returns the discovery roots in precedence order —
-// later directories win on name clash, so project skills override
-// user-global ones.
-func SkillSearchDirs(cwd string) []string {
-	var dirs []string
+// SkillRoot is one directory of skill packages plus the origin its
+// skills are tagged with.
+type SkillRoot struct {
+	Dir    string
+	Origin Origin
+}
+
+// SkillsUserDir is where ask writes new user-scope skills.
+func SkillsUserDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".config", "ask", "skills")
+}
+
+// SkillsProjectDir is where ask writes new project-scope skills.
+func SkillsProjectDir(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	root := config.ProjectRoot(cwd)
+	if root == "" {
+		root = cwd
+	}
+	return filepath.Join(root, ".ask", "skills")
+}
+
+// SkillSearchRoots returns the user and project discovery roots in
+// precedence order — later roots win on a name clash, so project
+// skills override user-global ones. Plugin skills are namespaced and
+// never clash; they come from plugin.EnabledPlugins.
+func SkillSearchRoots(cwd string) []SkillRoot {
+	var roots []SkillRoot
 	if home, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs,
+		for _, d := range []string{
 			filepath.Join(home, ".config", "ask", "skills"),
 			filepath.Join(home, ".agents", "skills"),
 			filepath.Join(home, ".claude", "skills"),
-		)
+		} {
+			roots = append(roots, SkillRoot{Dir: d, Origin: Origin{Scope: OriginUser}})
+		}
 	}
-	roots := []string{cwd}
+	projectRoots := []string{cwd}
 	if root := config.ProjectRoot(cwd); root != "" && root != cwd {
-		roots = append(roots, root)
+		projectRoots = append(projectRoots, root)
 	}
-	for _, root := range roots {
-		dirs = append(dirs,
+	for _, root := range projectRoots {
+		for _, d := range []string{
 			filepath.Join(root, ".agents", "skills"),
 			filepath.Join(root, ".claude", "skills"),
 			filepath.Join(root, ".ask", "skills"),
-		)
+		} {
+			roots = append(roots, SkillRoot{Dir: d, Origin: Origin{Scope: OriginProject}})
+		}
+	}
+	return roots
+}
+
+// SkillSearchDirs is SkillSearchRoots without the origin tags.
+func SkillSearchDirs(cwd string) []string {
+	roots := SkillSearchRoots(cwd)
+	dirs := make([]string, 0, len(roots))
+	for _, r := range roots {
+		dirs = append(dirs, r.Dir)
 	}
 	return dirs
+}
+
+type skillCandidate struct {
+	name    string
+	bare    string
+	dir     string
+	path    string
+	origin  Origin
+	command bool
+}
+
+func skillCandidates(cwd string) []skillCandidate {
+	var out []skillCandidate
+	for _, root := range SkillSearchRoots(cwd) {
+		entries, err := os.ReadDir(root.Dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			dir := filepath.Join(root.Dir, e.Name())
+			out = append(out, skillCandidate{
+				name:   e.Name(),
+				bare:   e.Name(),
+				dir:    dir,
+				path:   filepath.Join(dir, "SKILL.md"),
+				origin: root.Origin,
+			})
+		}
+	}
+	for _, in := range plugin.EnabledPlugins(cwd) {
+		if in.Dir == "" {
+			continue
+		}
+		origin := Origin{Scope: OriginPlugin, Plugin: in.Ref.String()}
+		prefix := in.Ref.Plugin + ":"
+		c := in.Contents()
+		for _, d := range c.SkillDirs {
+			bare := filepath.Base(d)
+			out = append(out, skillCandidate{
+				name:   prefix + bare,
+				bare:   bare,
+				dir:    d,
+				path:   filepath.Join(d, "SKILL.md"),
+				origin: origin,
+			})
+		}
+		for _, f := range c.CommandFiles {
+			bare := strings.TrimSuffix(filepath.Base(f), ".md")
+			out = append(out, skillCandidate{
+				name:    prefix + bare,
+				bare:    bare,
+				dir:     filepath.Dir(f),
+				path:    f,
+				origin:  origin,
+				command: true,
+			})
+		}
+	}
+	return out
 }
 
 // discoveredSkillItem holds internal metadata for a resolved skill.
@@ -77,100 +220,155 @@ type discoveredSkillItem struct {
 	body        string
 }
 
+// skillsGeneration is bumped whenever a skill or plugin is created,
+// changed, installed, or removed. Sources built earlier rescan lazily on
+// their next use, so a skill written mid-session is visible to the model
+// on its next request without restarting the session.
+var skillsGeneration atomic.Uint64
+
+// BumpSkillsGeneration invalidates every live skill source.
+func BumpSkillsGeneration() { skillsGeneration.Add(1) }
+
 // skillSource implements skill.Source backed by discovered skills in search directories.
 type skillSource struct {
 	cwd    string
+	mu     sync.RWMutex
+	gen    uint64
 	skills map[string]discoveredSkillItem
 	order  []string
 }
 
-// NewSkillSource constructs an ADK skill.Source across all discovery directories for cwd.
-// Later directories in SkillSearchDirs take precedence (project-overrides-global).
+// NewSkillSource constructs an ADK skill.Source across all discovery
+// roots for cwd plus every enabled plugin. Later roots take precedence
+// (project-overrides-global).
 func NewSkillSource(cwd string) skill.Source {
+	s := &skillSource{cwd: cwd}
+	s.rescan()
+	return s
+}
+
+func (s *skillSource) rescan() {
+	gen := skillsGeneration.Load()
 	byName := map[string]discoveredSkillItem{}
-	for _, dir := range SkillSearchDirs(cwd) {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
+	for _, c := range skillCandidates(s.cwd) {
+		item, ok := loadSkillCandidate(c)
+		if !ok {
 			continue
 		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			name := e.Name()
-			if len(name) > skillNameMaxLen || !skillNameRe.MatchString(name) {
-				continue
-			}
-			skillPath := filepath.Join(dir, name, "SKILL.md")
-			data, err := os.ReadFile(skillPath)
-			if err != nil {
-				continue
-			}
-			fields, body, ok := ParseFrontmatterBytes(data)
-			if !ok {
-				continue
-			}
-			fmName := fields["name"]
-			if fmName == "" {
-				fmName = name
-			}
-			if fmName != name || len(fmName) > skillNameMaxLen || !skillNameRe.MatchString(fmName) {
-				continue
-			}
-			desc := fields["description"]
-			if strings.TrimSpace(desc) == "" {
-				continue
-			}
-			if len(desc) > skillDescriptionMaxLen {
-				desc = desc[:skillDescriptionMaxLen]
-			}
-
-			// Validate with ADK's skill.Frontmatter if possible
-			var adkFM *skill.Frontmatter
-			if parsedFM, _, parseErr := skill.ParseBytes(data); parseErr == nil && parsedFM != nil {
-				adkFM = parsedFM
-			} else {
-				adkFM = &skill.Frontmatter{
-					Name:        fmName,
-					Description: desc,
-					Metadata:    fields,
-				}
-			}
-
-			s := Skill{
-				Name:                   fmName,
-				Description:            desc,
-				Dir:                    filepath.Join(dir, name),
-				Path:                   skillPath,
-				UserInvocable:          fields["user-invocable"] != "false",
-				DisableModelInvocation: fields["disable-model-invocation"] == "true",
-				Frontmatter:            adkFM,
-			}
-			byName[fmName] = discoveredSkillItem{
-				skill:       s,
-				frontmatter: adkFM,
-				body:        body,
-			}
-		}
+		byName[item.skill.Name] = item
 	}
-
 	names := make([]string, 0, len(byName))
 	for name := range byName {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	s.mu.Lock()
+	s.gen = gen
+	s.skills = byName
+	s.order = names
+	s.mu.Unlock()
+}
 
-	return &skillSource{
-		cwd:    cwd,
-		skills: byName,
-		order:  names,
+// snapshot returns the current skill map, rescanning first when a
+// mutation happened since the last scan.
+func (s *skillSource) snapshot() (map[string]discoveredSkillItem, []string) {
+	s.mu.RLock()
+	fresh := s.skills != nil && s.gen == skillsGeneration.Load()
+	skills, order := s.skills, s.order
+	s.mu.RUnlock()
+	if fresh {
+		return skills, order
 	}
+	s.rescan()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.skills, s.order
+}
+
+func loadSkillCandidate(c skillCandidate) (discoveredSkillItem, bool) {
+	isPlugin := c.origin.Scope == OriginPlugin
+	if !isPlugin && (len(c.bare) > skillNameMaxLen || !skillNameRe.MatchString(c.bare)) {
+		return discoveredSkillItem{}, false
+	}
+	data, err := os.ReadFile(c.path)
+	if err != nil {
+		return discoveredSkillItem{}, false
+	}
+	fields, body, ok := ParseFrontmatterBytes(data)
+	if !ok {
+		if !c.command {
+			return discoveredSkillItem{}, false
+		}
+		fields, body = map[string]string{}, string(data)
+	}
+	bare := fields["name"]
+	if bare == "" {
+		bare = c.bare
+	}
+	if len(bare) > skillNameMaxLen || !skillNameRe.MatchString(bare) {
+		return discoveredSkillItem{}, false
+	}
+	if !isPlugin && bare != c.bare {
+		return discoveredSkillItem{}, false
+	}
+	name := c.name
+	if isPlugin {
+		prefix, _, _ := strings.Cut(c.name, ":")
+		name = prefix + ":" + bare
+	}
+	desc := strings.TrimSpace(fields["description"])
+	if desc == "" {
+		if !c.command {
+			return discoveredSkillItem{}, false
+		}
+		desc = firstLine(body)
+	}
+	if len(desc) > skillDescriptionMaxLen {
+		desc = desc[:skillDescriptionMaxLen]
+	}
+
+	var adkFM *skill.Frontmatter
+	if parsedFM, _, parseErr := skill.ParseBytes(data); parseErr == nil && parsedFM != nil {
+		adkFM = parsedFM
+	} else {
+		adkFM = &skill.Frontmatter{Metadata: fields}
+	}
+	adkFM.Name = name
+	adkFM.Description = desc
+
+	s := Skill{
+		Name:                   name,
+		BareName:               bare,
+		Description:            desc,
+		Dir:                    c.dir,
+		Path:                   c.path,
+		UserInvocable:          fields["user-invocable"] != "false",
+		DisableModelInvocation: fields["disable-model-invocation"] == "true",
+		Frontmatter:            adkFM,
+		Origin:                 c.origin,
+		Command:                c.command,
+	}
+	return discoveredSkillItem{skill: s, frontmatter: adkFM, body: body}, true
+}
+
+func firstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(strings.TrimLeft(line, "#"))
+		if line != "" {
+			if len(line) > 120 {
+				return line[:120]
+			}
+			return line
+		}
+	}
+	return "(no description)"
 }
 
 func (s *skillSource) ListFrontmatters(ctx context.Context) ([]*skill.Frontmatter, error) {
-	out := make([]*skill.Frontmatter, 0, len(s.order))
-	for _, name := range s.order {
-		if item, ok := s.skills[name]; ok && item.frontmatter != nil {
+	skills, order := s.snapshot()
+	out := make([]*skill.Frontmatter, 0, len(order))
+	for _, name := range order {
+		if item, ok := skills[name]; ok && item.frontmatter != nil {
 			out = append(out, item.frontmatter)
 		}
 	}
@@ -178,21 +376,24 @@ func (s *skillSource) ListFrontmatters(ctx context.Context) ([]*skill.Frontmatte
 }
 
 func (s *skillSource) LoadFrontmatter(ctx context.Context, name string) (*skill.Frontmatter, error) {
-	if item, ok := s.skills[name]; ok && item.frontmatter != nil {
+	skills, _ := s.snapshot()
+	if item, ok := skills[name]; ok && item.frontmatter != nil {
 		return item.frontmatter, nil
 	}
 	return nil, skill.ErrSkillNotFound
 }
 
 func (s *skillSource) LoadInstructions(ctx context.Context, name string) (string, error) {
-	if item, ok := s.skills[name]; ok {
+	skills, _ := s.snapshot()
+	if item, ok := skills[name]; ok {
 		return item.body, nil
 	}
 	return "", skill.ErrSkillNotFound
 }
 
 func (s *skillSource) LoadResource(ctx context.Context, name, resourcePath string) (io.ReadCloser, error) {
-	item, ok := s.skills[name]
+	skills, _ := s.snapshot()
+	item, ok := skills[name]
 	if !ok {
 		return nil, skill.ErrSkillNotFound
 	}
@@ -212,7 +413,8 @@ func (s *skillSource) LoadResource(ctx context.Context, name, resourcePath strin
 }
 
 func (s *skillSource) ListResources(ctx context.Context, name, resourceDirectoryPath string) ([]string, error) {
-	item, ok := s.skills[name]
+	skills, _ := s.snapshot()
+	item, ok := skills[name]
 	if !ok {
 		return nil, skill.ErrSkillNotFound
 	}
@@ -262,21 +464,46 @@ func NewSkillToolset(ctx context.Context, cwd string) (*skilltoolset.SkillToolse
 	})
 }
 
-// DiscoverSkills walks every search dir for <name>/SKILL.md packages.
-// Invalid packages (bad name, missing description) are skipped rather than failing the session.
+// DiscoverSkills walks every root and enabled plugin for skill packages.
+// Invalid packages (bad name, missing description) are skipped rather
+// than failing the session.
 func DiscoverSkills(cwd string) []Skill {
 	src := NewSkillSource(cwd)
 	asSource, ok := src.(*skillSource)
 	if !ok {
 		return nil
 	}
-	out := make([]Skill, 0, len(asSource.order))
-	for _, name := range asSource.order {
-		if item, exists := asSource.skills[name]; exists {
+	skills, order := asSource.snapshot()
+	out := make([]Skill, 0, len(order))
+	for _, name := range order {
+		if item, exists := skills[name]; exists {
 			out = append(out, item.skill)
 		}
 	}
 	return out
+}
+
+// FindSkill returns the discovered skill with name.
+func FindSkill(cwd, name string) (Skill, bool) {
+	for _, s := range DiscoverSkills(cwd) {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return Skill{}, false
+}
+
+// SkillBody returns the instruction body of a discovered skill.
+func SkillBody(s Skill) string {
+	_, body, ok := ParseMarkdownFrontmatter(s.Path)
+	if !ok {
+		data, err := os.ReadFile(s.Path)
+		if err != nil {
+			return ""
+		}
+		return string(data)
+	}
+	return body
 }
 
 // SkillsPromptBlock renders the system-prompt trigger list: name +
@@ -319,39 +546,37 @@ func ExpandSkillInvocation(cwd, text string) (string, bool) {
 	if name == "" {
 		return "", false
 	}
-	for _, s := range DiscoverSkills(cwd) {
-		if s.Name != name || !s.UserInvocable {
-			continue
-		}
-		source := NewSkillSource(cwd)
-		body, err := source.LoadInstructions(context.Background(), s.Name)
-		if err != nil {
-			_, b, ok := ParseMarkdownFrontmatter(s.Path)
-			if !ok {
-				return "", false
-			}
-			body = b
-		}
-		var b strings.Builder
-		fmt.Fprintf(&b, "<loaded_skill name=%q path=%q>\n%s\n</loaded_skill>\n\n", s.Name, s.Path, strings.TrimSpace(body))
-		repoRoot := config.ProjectRoot(cwd)
-		if repoRoot == "" {
-			repoRoot = cwd
-		}
-		if linked := RuleLinkedDocs(repoRoot, body); len(linked) > 0 {
-			for _, d := range linked {
-				fmt.Fprintf(&b, "<file path=%q>\n%s\n</file>\n", d.Path, d.Body)
-			}
-		}
-		b.WriteString("\n")
-		if strings.TrimSpace(args) != "" {
-			fmt.Fprintf(&b, "The user invoked this skill with arguments: %s", strings.TrimSpace(args))
-		} else {
-			b.WriteString("The user invoked this skill with no arguments.")
-		}
-		return b.String(), true
+	source := NewSkillSource(cwd)
+	src := source.(*skillSource)
+	skills, _ := src.snapshot()
+	item, ok := skills[name]
+	if !ok || !item.skill.UserInvocable {
+		return "", false
 	}
-	return "", false
+	s := item.skill
+	body := strings.TrimSpace(item.body)
+	args = strings.TrimSpace(args)
+	if strings.Contains(body, "$ARGUMENTS") {
+		body = strings.ReplaceAll(body, "$ARGUMENTS", args)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "<loaded_skill name=%q path=%q>\n%s\n</loaded_skill>\n\n", s.Name, s.Path, body)
+	repoRoot := config.ProjectRoot(cwd)
+	if repoRoot == "" {
+		repoRoot = cwd
+	}
+	if linked := RuleLinkedDocs(repoRoot, body); len(linked) > 0 {
+		for _, d := range linked {
+			fmt.Fprintf(&b, "<file path=%q>\n%s\n</file>\n", d.Path, d.Body)
+		}
+	}
+	b.WriteString("\n")
+	if args != "" {
+		fmt.Fprintf(&b, "The user invoked this skill with arguments: %s", args)
+	} else {
+		b.WriteString("The user invoked this skill with no arguments.")
+	}
+	return b.String(), true
 }
 
 // ParseMarkdownFrontmatter reads a markdown file with YAML frontmatter
@@ -416,12 +641,21 @@ func ParseFrontmatterBytes(data []byte) (fields map[string]string, body string, 
 	return fields, body, true
 }
 
-// UnquoteYAML strips quotes surrounding a YAML string value.
+// UnquoteYAML strips quotes surrounding a YAML string value, decoding
+// the escapes each quoting style allows.
 func UnquoteYAML(s string) string {
-	if len(s) >= 2 {
-		if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
-			return s[1 : len(s)-1]
+	if len(s) < 2 {
+		return s
+	}
+	switch {
+	case s[0] == '"' && s[len(s)-1] == '"':
+		var out string
+		if err := json.Unmarshal([]byte(s), &out); err == nil {
+			return out
 		}
+		return s[1 : len(s)-1]
+	case s[0] == '\'' && s[len(s)-1] == '\'':
+		return strings.ReplaceAll(s[1:len(s)-1], "''", "'")
 	}
 	return s
 }

@@ -187,12 +187,16 @@ type WorkflowDef struct {
 	Description string         `json:"description,omitempty"`
 	Steps       []WorkflowStep `json:"steps,omitempty"`
 	Scope       string         `json:"-"`
+	// Plugin is the "name@marketplace" that ships this workflow when
+	// Scope == WorkflowScopePlugin (read-only).
+	Plugin string `json:"-"`
 }
 
 const (
 	WorkflowScopeUser   = "user"
 	WorkflowScopeRepo   = "repo"
 	WorkflowScopeGlobal = "global"
+	WorkflowScopePlugin = "plugin"
 
 	WorkflowStepKindAgent = ""
 	WorkflowStepKindLoop  = "loop"

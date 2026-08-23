@@ -411,4 +411,5 @@ func (p *providerProc) kill() {
 var appBuiltinSlashCmds = []slashCmd{
 	{"/config", "configure ask"},
 	{"/workflows", "edit workflow pipelines"},
+	{"/skills", "browse skills, agents, and marketplaces"},
 }

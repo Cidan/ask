@@ -45,6 +45,7 @@ const (
 	modeModelPicker
 	modeFinalizedPlan
 	modeSudoPassword
+	modeSkillsBrowser
 )
 
 type streamStatusMsg struct {
@@ -615,6 +616,10 @@ type model struct {
 	// a pick switches the current tab only and leaves persisted
 	// defaults alone.
 	modelPicker *modelPickerState
+
+	// skillsBrowser is the /skills (Ctrl+S) browser state
+	// (skills_browser.go). Non-nil while modeSkillsBrowser is up.
+	skillsBrowser *skillsBrowserState
 
 	themeName string
 

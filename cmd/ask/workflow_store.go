@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Cidan/ask/pkg/tools"
 	"github.com/Cidan/ask/pkg/workflow"
 )
 
@@ -97,9 +98,12 @@ func findWorkflow(cwd, name, scope string) (workflowDef, bool) {
 // surfaces must never guess which copy to touch.
 func resolveWorkflowByName(cwd, name, scope string) (workflowDef, error) {
 	if scope != "" {
-		norm, err := normalizeWorkflowScope(scope)
-		if err != nil {
-			return workflowDef{}, err
+		norm := scope
+		if scope != workflowScopePlugin {
+			var err error
+			if norm, err = normalizeWorkflowScope(scope); err != nil {
+				return workflowDef{}, err
+			}
 		}
 		w, ok := findWorkflow(cwd, name, norm)
 		if !ok {
@@ -203,6 +207,17 @@ func workflowScopeTag(scope string) string {
 		return workflowScopeRepo
 	case workflowScopeGlobal:
 		return workflowScopeGlobal
+	case workflowScopePlugin:
+		return workflowScopePlugin
 	}
 	return workflowScopeUser
+}
+
+// workflowProviderWarnings lists the steps of w whose provider has no
+// credentials configured — the run would fail at that step, so the
+// user is told to switch its model first.
+func workflowProviderWarnings(w workflowDef) []string {
+	cfg, _ := loadConfig()
+	pc := toPkgConfig(cfg)
+	return tools.WorkflowProviderWarnings(pc, toPkgWorkflowDef(w), pc.Provider)
 }
