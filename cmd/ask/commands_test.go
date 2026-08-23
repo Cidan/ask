@@ -92,6 +92,45 @@ func TestDoCd_ChdirFailureErrorInHistory(t *testing.T) {
 	}
 }
 
+// A project worktree override must not follow the tab into another
+// directory: /cd re-derives the flag for the new cwd and, when it goes
+// off, drops the stale worktree name so the next session starts clean.
+func TestDoCd_RederivesWorktreeFlagForNewProject(t *testing.T) {
+	origCwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origCwd) })
+	isolateHome(t)
+
+	src := filepath.Join(t.TempDir(), "src")
+	dest := filepath.Join(t.TempDir(), "dest")
+	for _, d := range []string{src, dest} {
+		if err := os.MkdirAll(filepath.Join(d, ".git"), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	on := true
+	seedWorktreeConfig(t, src, false, &on)
+
+	m := newTestModel(t, newFakeProvider())
+	m.cwd = src
+	m.worktree = true
+	m.worktreeName = "ask-claude-leftbehind"
+
+	mm, _ := m.doCd(dest)
+	got := mm.(model)
+	if got.worktree {
+		t.Error("cd into a project without the override should resolve to the global off")
+	}
+	if got.worktreeName != "" {
+		t.Errorf("cd that turns worktree off should clear worktreeName, got %q", got.worktreeName)
+	}
+
+	mm, _ = got.doCd(src)
+	got = mm.(model)
+	if !got.worktree {
+		t.Error("cd back into the overridden project should resolve to on")
+	}
+}
+
 // TestDoCd_SuccessUpdatesCwdAndClearsSession is the happy path. cwd
 // updates, the running proc is killed, and a confirmation message is
 // appended on top of any existing history.
