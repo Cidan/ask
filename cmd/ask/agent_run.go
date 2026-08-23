@@ -194,6 +194,9 @@ func (s *agentSession) emit(msg tea.Msg) {
 	case providerModelMsg:
 		m.proc = s.proc
 		msg = m
+	case providerCwdMsg:
+		m.proc = s.proc
+		msg = m
 	case todoUpdatedMsg:
 		m.proc = s.proc
 		msg = m

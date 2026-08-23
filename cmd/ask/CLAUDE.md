@@ -120,7 +120,15 @@ lockstep (`.claude/rules/issues.md`).
 - `Coordinator` (`globalCoordinator`, coordinator.go) owns sessions by
   tab: `Dispatch` starts one or queues a turn (`queueMidTurn` while
   busy), `Cancel`, `Kill`, `RunWorkflow` → `runWorkflowGraph`
-  (workflow_graph.go). `injectTabID` stamps every outgoing message.
+  (workflow_graph.go). `injectTabID` stamps every outgoing message. On a
+  first start `Dispatch` runs `prepareProviderSession` (proc.go) before
+  `StartSession` — this is the one place the worktree is created and
+  `args.Cwd` repointed into it (a no-op when worktree mode is off or the
+  cwd is not a repo); it then emits `providerCwdMsg` so the tab sets
+  `m.worktreeName` and shows the `[🌳 name]` chip. `WorktreeName` on
+  `ProviderSessionArgs` carries the tab's chosen worktree so a re-dispatch
+  reuses it. This is provider-agnostic — never move it into a provider's
+  `StartSession`.
 - The protocol every tab depends on (types.go; `emit` tags `proc` and
   tab): `streamStatusMsg`, `assistantTextMsg`,
   `toolCallMsg`/`toolResultMsg`, `toolDiffMsg`, `todoUpdatedMsg`,

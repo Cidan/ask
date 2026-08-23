@@ -75,6 +75,16 @@ func (c *Coordinator) Dispatch(tabID int, p Provider, args ProviderSessionArgs, 
 	session := c.sessions[tabID]
 	if session == nil {
 		c.mu.Unlock()
+		// Create (or reuse) the worktree and repoint args.Cwd into it before
+		// the session starts, so the session's tools, prompt, and session
+		// store all run in the worktree. A no-op when worktree mode is off or
+		// the cwd is not a repo. This is provider-agnostic — it belongs here,
+		// not in a provider's StartSession.
+		prepared, worktreeName, err := prepareProviderSession(args, args.WorktreeName)
+		if err != nil {
+			return err
+		}
+		args = prepared
 		proc, _, err := p.StartSession(args)
 		if err != nil {
 			return err
@@ -85,6 +95,11 @@ func (c *Coordinator) Dispatch(tabID int, p Provider, args ProviderSessionArgs, 
 				c.mu.Lock()
 				c.sessions[tabID] = session
 				c.mu.Unlock()
+				// Surface the worktree cwd so the tab sets m.worktreeName and
+				// shows the [🌳 name] chip. Only when a worktree is in play.
+				if worktreeName != "" {
+					session.emit(providerCwdMsg{cwd: args.Cwd})
+				}
 			}
 		} else if proc != nil {
 			return p.Send(proc, text, attachments)

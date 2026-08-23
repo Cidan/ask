@@ -212,13 +212,17 @@ type ProviderPicker struct {
 // pairing exists before the first turn lands. Setting both is a
 // programmer error.
 type ProviderSessionArgs struct {
-	Cwd                 string
-	MCPPort             int
-	TabID               int
-	Model               string
-	Effort              string
-	SkipAllPermissions  bool
-	Worktree            bool
+	Cwd                string
+	MCPPort            int
+	TabID              int
+	Model              string
+	Effort             string
+	SkipAllPermissions bool
+	Worktree           bool
+	// WorktreeName carries the tab's already-chosen worktree directory
+	// name so a re-dispatch (provider swap, kill+retry) reuses the same
+	// worktree instead of creating a new one. Empty on a fresh session.
+	WorktreeName        string
 	SessionID           string
 	NewSessionID        string
 	ResumeCwd           string
