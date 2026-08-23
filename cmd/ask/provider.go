@@ -234,8 +234,7 @@ type ProviderSessionArgs struct {
 	// ctrl+i. nil when the project hasn't configured a token. The chat
 	// agent gets this whenever projectConfig.MCP.GitHub.Token is set,
 	// regardless of whether issues are wired up. Providers wire this
-	// into their native MCP plumbing — claude appends it to its
-	// --mcp-config; providers without an MCP surface ignore it.
+	// into their MCP client; providers without an MCP surface ignore it.
 	ProjectMCP *issueMCPServer
 }
 
@@ -320,8 +319,9 @@ type providerInitLoadedMsg struct {
 }
 
 // providerCwdMsg reports the provider's current working directory for
-// this session (providers that switch cwd — e.g., claude --worktree —
-// emit this once at init so ask can surface the worktree chip).
+// this session (a provider that runs the session in another cwd, such
+// as a worktree, emits this once at start so ask can surface the
+// worktree chip).
 type providerCwdMsg struct {
 	cwd   string
 	tabID int

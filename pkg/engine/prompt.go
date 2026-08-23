@@ -352,7 +352,7 @@ var AgentContextFileNames = []string{
 // a vendored dump, a stray log) eating the context window. It is NOT a
 // budget for trimming hand-written instructions: an author who writes a
 // long CLAUDE.md means all of it, so the cap sits well above any
-// realistic one. At 48_000 this repo's own 83KB CLAUDE.md silently lost
+// realistic one. At 48_000 a real 83KB CLAUDE.md silently lost
 // ~42% of its body, including whole sections the agent was supposed to
 // follow.
 const AgentContextFileCap = 128_000

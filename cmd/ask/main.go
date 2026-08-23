@@ -153,7 +153,7 @@ type cliCommand struct {
 // returns the dispatched command. Bare ask is "run"; --help/-h/help
 // are "help"; resume <vid> is "resume". Anything else — unknown
 // flags, unknown leading positionals, wrong-arity resume — is an
-// error so typos in shell aliases (`ask --proivder claude`) fail
+// error so typos in shell aliases (`ask --proivder vertex`) fail
 // loudly instead of silently launching the TUI.
 //
 // The internal _hook subcommand is stripped by the caller before

@@ -38,7 +38,7 @@ func isIssueScreen(id screenID) bool {
 // every Update returns a fresh model, and we look up the handler each
 // time via activeScreen() rather than carrying a pointer.
 //
-// Background work (claude streaming, MCP modal requests, shell output,
+// Background work (agent streaming, MCP modal requests, shell output,
 // usage updates) is routed by message type at the model.Update layer,
 // not through this interface. That means an inactive screen still
 // receives updates to the model state it owns — when the user flips

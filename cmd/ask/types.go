@@ -83,11 +83,11 @@ type costMsg struct {
 	proc    *providerProc
 }
 
-// providerModelMsg carries the model name claude reports in its
-// system/init event. The providerChip prefers this over the user's
-// selected alias ("opus[1m]") because claude resolves shorthands to a
-// full id ("claude-opus-4-7-1m"), which is what we need to pick the
-// right context-window denominator.
+// providerModelMsg carries the canonical model id the session reports
+// once its model is built (agent_run.go). The providerChip prefers
+// this over the user's selected alias because the provider
+// canonicalizes ids, which is what we need to pick the right
+// context-window denominator.
 type providerModelMsg struct {
 	model string
 	tabID int
@@ -157,8 +157,8 @@ type bgTaskEndedMsg struct {
 	proc   *providerProc
 }
 
-// hookSubagentStartMsg is delivered when claude's SubagentStart hook
-// fires. It covers every Task-spawned sub-agent (foreground and
+// hookSubagentStartMsg is delivered when a provider reports a
+// sub-agent start. It covers every Task-spawned sub-agent (foreground and
 // background); the bgTasks map is driven by the background-only
 // task_started stream event, so this message is observability-only
 // unless agent_id happens to equal a task_id we're already tracking.
@@ -168,8 +168,8 @@ type hookSubagentStartMsg struct {
 	agentType string
 }
 
-// hookSubagentStopMsg is delivered when claude's SubagentStop hook
-// fires. We use it as an authoritative cleanup signal: agent_id is
+// hookSubagentStopMsg is delivered when a provider reports a
+// sub-agent stop. We use it as an authoritative cleanup signal: agent_id is
 // matched against either the bgTasks key (task_id) or the per-entry
 // tool_use_id captured at task_started, plugging the case where
 // task_notification never arrives. For foreground sub-agents nothing
@@ -651,8 +651,8 @@ type model struct {
 	// with run_in_background=true). Keyed on task_id from the
 	// task_started stream event; the value is the optional tool_use_id
 	// of the Task call that spawned the worker, used as a fallback for
-	// the SubagentStop hook reap path because claude's CLI sometimes
-	// reports agent_id as the tool_use_id rather than the task_id.
+	// the sub-agent stop reap path when a provider reports agent_id as
+	// the tool_use_id rather than the task_id.
 	bgTasks map[string]string
 
 	// lastUsageTokens is the running context size reported by the
@@ -672,10 +672,10 @@ type model struct {
 	sessionCostUSD   float64
 	sessionCostKnown bool
 
-	// modelForContext is the model id from claude's system/init event,
-	// preferred over providerModel for the context-limit denominator
-	// because claude resolves aliases ("opus[1m]") to fully-qualified
-	// ids. Falls back to providerModel before the init event lands.
+	// modelForContext is the model id from providerModelMsg, preferred
+	// over providerModel for the context-limit denominator because the
+	// provider canonicalizes the id. Falls back to providerModel before
+	// the message lands.
 	modelForContext string
 
 	// workflowRun, when non-nil, marks this tab as a workflow runner.

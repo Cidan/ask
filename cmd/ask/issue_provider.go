@@ -190,9 +190,9 @@ type mergeableState struct {
 }
 
 // issueMCPServer is the MCP server descriptor ask injects into the
-// chat agent. Name is the key that appears under mcpServers in
-// claude's --mcp-config (and the prefix the agent sees for tools, e.g.
-// `mcp__github__list_issues`). URL is the streamable HTTP endpoint;
+// chat agent. Name is the server key (and the prefix the agent sees
+// for tools, e.g. `mcp__github__list_issues`). URL is the streamable
+// HTTP endpoint;
 // Headers carries any auth headers the server needs (typically
 // `Authorization: Bearer <pat>`). Headers MUST NOT be logged — they
 // hold the user's credential.

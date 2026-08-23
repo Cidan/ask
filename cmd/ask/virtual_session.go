@@ -49,8 +49,8 @@ type VirtualSession struct {
 }
 
 // ProviderSessionRef points at a provider's native session. Cwd
-// matters for providers (claude) whose on-disk project dir is keyed
-// off cwd.
+// matters because the agent session store keys its on-disk project
+// dir off cwd.
 type ProviderSessionRef struct {
 	SessionID string `json:"sessionID"`
 	Cwd       string `json:"cwd,omitempty"`

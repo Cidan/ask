@@ -402,15 +402,15 @@ func (m model) confirmAskCancel() (tea.Model, tea.Cmd) {
 }
 
 func (m model) viewAskCancelConfirm() string {
-	return renderCancelConfirmBox("Cancel this dialog?", "Stops the current claude turn too.", m.askCancelChoice)
+	return renderCancelConfirmBox("Cancel this dialog?", "Stops the current agent turn too.", m.askCancelChoice)
 }
 
 func (m model) viewCancelTurnConfirm() string {
-	return renderCancelConfirmBox("Stop this turn?", "Cancels claude immediately.", m.cancelTurnChoice)
+	return renderCancelConfirmBox("Stop this turn?", "Cancels the agent immediately.", m.cancelTurnChoice)
 }
 
 func (m model) viewCloseTabConfirm() string {
-	return renderCancelConfirmBox("Close this tab?", "Stops claude in this tab.", m.closeTabChoice)
+	return renderCancelConfirmBox("Close this tab?", "Stops the agent in this tab.", m.closeTabChoice)
 }
 
 func (m model) viewMergePRConfirm() string {

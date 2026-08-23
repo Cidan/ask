@@ -163,7 +163,7 @@ var (
 // pasteboard, paired with the AppleScript four-char-code coercion
 // target and the marker substrings `clipboard info` uses to advertise
 // the type. Order is preference order: PNG first because macOS
-// auto-converts screenshots to PNG and Claude renders it without a
+// auto-converts screenshots to PNG and the model accepts it without a
 // re-encode. JPEG / GIF appear under either the «class XXXX» literal
 // or the human alias ("JPEG picture", "GIF picture") — we accept both.
 var darwinImageClasses = []struct {

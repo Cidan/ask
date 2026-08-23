@@ -119,14 +119,15 @@ func (m model) viewApproval() string {
 	return approvalBoxStyle.Width(innerW).Render(content)
 }
 
-// approvalHeadline is the single short line telling the user what Claude is
-// trying to do, e.g. "Claude wants to use Edit". The rest of the UI never
-// dumps tool arguments — just this headline plus a one-line summary.
+// approvalHeadline is the single short line telling the user what the
+// agent is trying to do, e.g. "The agent wants to use edit". The rest of
+// the UI never dumps tool arguments — just this headline plus a
+// one-line summary.
 func approvalHeadline(tool string) string {
 	if tool == "" {
-		return "Claude wants to use a tool"
+		return "The agent wants to use a tool"
 	}
-	return "Claude wants to use " + approvalToolStyle.Render(tool)
+	return "The agent wants to use " + approvalToolStyle.Render(tool)
 }
 
 // approvalSummary renders the narrowest useful one-liner identifying the

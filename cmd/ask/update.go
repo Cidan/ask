@@ -432,8 +432,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 	case hookSubagentStopMsg:
 		// Authoritative cleanup. agent_id may be the task_id (direct
 		// hit on the bgTasks key) or the spawning Task call's
-		// tool_use_id (claude's CLI uses different identifier
-		// namespaces depending on context). Try both before giving up.
+		// tool_use_id (a provider may report either). Try both before
+		// giving up.
 		// Foreground sub-agents and unknown ids are no-ops.
 		reaped := reapBgTaskByAgentID(m.bgTasks, msg.agentID)
 		switch reaped {
