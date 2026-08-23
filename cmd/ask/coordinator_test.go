@@ -257,3 +257,104 @@ func TestCoordinator_RunWorkflowUsesOneSessionForTheWholeGraph(t *testing.T) {
 		t.Errorf("workflow started %d provider sessions, want exactly 1 for the whole graph", got)
 	}
 }
+
+// TestCoordinator_Dispatch_CreatesWorktreeAndChip verifies the in-process
+// worktree wiring restored after the CLI-provider removal: with worktree mode
+// on in a git repo, Dispatch creates the worktree, repoints the session's cwd
+// into it, and emits a providerCwdMsg so the tab can show the [🌳 name] chip.
+func TestCoordinator_Dispatch_CreatesWorktreeAndChip(t *testing.T) {
+	isolateHome(t)
+	repo := initGitRepo(t) // skips if git is unavailable
+	t.Chdir(repo)
+
+	prov := newFakeProvider()
+	prov.id = "fake-prov"
+	sessCh := make(chan tea.Msg, 8)
+	prov.startSessionFn = func(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
+		proc := &providerProc{}
+		sess := &agentSession{
+			args:   args,
+			env:    newAgentToolEnv(args.Cwd, args.TabID, true, false, func(msg tea.Msg) {}),
+			ch:     sessCh,
+			sendCh: make(chan agentTurn, 8),
+			closed: make(chan struct{}),
+		}
+		proc.payload = sess
+		sess.proc = proc
+		return proc, sessCh, nil
+	}
+	withRegisteredProviders(t, prov)
+
+	c := &Coordinator{sessions: map[int]*agentSession{}, workflowCancels: map[int]context.CancelFunc{}}
+	args := ProviderSessionArgs{Cwd: repo, TabID: 1, Worktree: true, SkipAllPermissions: true}
+	if err := c.Dispatch(1, prov, args, "hello", nil); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	// StartSession must have been called with a cwd inside .claude/worktrees.
+	prov.mu.Lock()
+	starts := append([]ProviderSessionArgs(nil), prov.startArgs...)
+	prov.mu.Unlock()
+	if len(starts) != 1 {
+		t.Fatalf("StartSession called %d times, want 1", len(starts))
+	}
+	gotCwd := starts[0].Cwd
+	if worktreeNameFromCwd(gotCwd) == "" {
+		t.Fatalf("session cwd %q is not inside .claude/worktrees", gotCwd)
+	}
+	// The worktree directory actually exists on disk.
+	if fi, err := os.Stat(gotCwd); err != nil || !fi.IsDir() {
+		t.Fatalf("worktree dir %q missing: %v", gotCwd, err)
+	}
+	// A providerCwdMsg with that cwd was emitted so the tab can show the chip.
+	var sawCwd string
+	for {
+		select {
+		case msg := <-sessCh:
+			if cm, ok := msg.(providerCwdMsg); ok {
+				sawCwd = cm.cwd
+			}
+			continue
+		default:
+		}
+		break
+	}
+	if sawCwd == "" {
+		t.Fatal("no providerCwdMsg emitted — the worktree chip would never appear")
+	}
+	if worktreeNameFromCwd(sawCwd) == "" {
+		t.Errorf("providerCwdMsg cwd %q is not a worktree", sawCwd)
+	}
+}
+
+// TestCoordinator_Dispatch_NoWorktreeWhenOff: worktree mode off leaves the
+// session at the project root and emits no cwd message.
+func TestCoordinator_Dispatch_NoWorktreeWhenOff(t *testing.T) {
+	isolateHome(t)
+	repo := initGitRepo(t)
+	t.Chdir(repo)
+
+	prov := newFakeProvider()
+	prov.id = "fake-prov"
+	sessCh := make(chan tea.Msg, 8)
+	prov.startSessionFn = func(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
+		proc := &providerProc{}
+		sess := &agentSession{args: args, env: newAgentToolEnv(args.Cwd, args.TabID, true, false, func(msg tea.Msg) {}), ch: sessCh, sendCh: make(chan agentTurn, 8), closed: make(chan struct{})}
+		proc.payload = sess
+		sess.proc = proc
+		return proc, sessCh, nil
+	}
+	withRegisteredProviders(t, prov)
+
+	c := &Coordinator{sessions: map[int]*agentSession{}, workflowCancels: map[int]context.CancelFunc{}}
+	args := ProviderSessionArgs{Cwd: repo, TabID: 1, Worktree: false, SkipAllPermissions: true}
+	if err := c.Dispatch(1, prov, args, "hello", nil); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	prov.mu.Lock()
+	got := prov.startArgs[0].Cwd
+	prov.mu.Unlock()
+	if got != repo {
+		t.Errorf("worktree off must run at the project root; cwd = %q, want %q", got, repo)
+	}
+}
