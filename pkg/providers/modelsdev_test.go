@@ -251,7 +251,7 @@ func TestLoadModelsDev_NoCacheNetworkFailure(t *testing.T) {
 func TestLoadModelsDev_RejectsPayloadWithoutMappedProviders(t *testing.T) {
 	modelsDevTestHome(t)
 	resetModelsDev(t)
-	modelsDevTestServer(t, http.StatusOK, `{"anthropic": {"models": {}}}`)
+	modelsDevTestServer(t, http.StatusOK, `{"cohere": {"models": {}}}`)
 
 	if err := LoadModelsDev(context.Background()); err == nil {
 		t.Fatal("a payload with none of ask's providers must error")

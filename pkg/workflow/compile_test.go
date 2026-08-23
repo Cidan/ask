@@ -335,3 +335,49 @@ func TestCompileWorkflow_FinalLoopTailIsFinal(t *testing.T) {
 		t.Errorf("tail of the final loop c = %+v, want both tail and final", r)
 	}
 }
+
+// closableLLM records Close, verifying Compiled.Close releases every per-step
+// model (a subprocess-backed provider forks a child per step).
+type closableLLM struct {
+	fakeLLM
+	closed *bool
+}
+
+func (f *closableLLM) Close() error { *f.closed = true; return nil }
+
+func TestCompiledClose_ClosesEveryStepModel(t *testing.T) {
+	var flags []*bool
+	cfg := WorkflowAgentConfig{
+		Def:    Def{Name: "wf", Steps: []Step{{Name: "a", Prompt: "x"}, {Name: "b", Prompt: "y"}}},
+		Source: NewTextSource(1, "src"),
+		Cwd:    "/tmp/proj",
+		ModelBuilder: func(ctx context.Context, step Step) (model.LLM, error) {
+			closed := new(bool)
+			flags = append(flags, closed)
+			return &closableLLM{fakeLLM: fakeLLM{name: step.Name}, closed: closed}, nil
+		},
+	}
+	c, err := CompileWorkflow(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if len(c.Models) != 2 {
+		t.Fatalf("compiled tracked %d step models, want 2", len(c.Models))
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	for i, f := range flags {
+		if !*f {
+			t.Errorf("step %d model was not closed", i)
+		}
+	}
+	// Close is idempotent and nil-safe.
+	if err := c.Close(); err != nil {
+		t.Errorf("second Close: %v", err)
+	}
+	var nilCompiled *Compiled
+	if err := nilCompiled.Close(); err != nil {
+		t.Errorf("nil Close: %v", err)
+	}
+}

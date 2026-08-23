@@ -42,6 +42,12 @@ Related: `.claude/rules/tools.md`, `.claude/rules/providers.md`,
 - `ModelBuilder` (swappable) calls `p.BuildModel` and wraps it in
   `retryingModel` (retry.go). Every model in the process — tab titles,
   sub-agents, workflow steps — goes through it.
+- `CloseModel(m)` closes a model that holds resources (the Claude Code
+  provider forks a `claude -p` child on first use and implements
+  `io.Closer`; `retryingModel` forwards `Close`). Callers that own a
+  model for a bounded scope close it: `Session.Close`, `engine.Run`
+  (deferred), and the TUI's `agentSession.shutdown` / tab-title path. A
+  no-op for in-process models.
 - `retryingModel`: a failure before any content streamed retries without
   bound while `isTransientError` holds; backoff from
   `config.AgentRetryOptions` (`UI.Retry.InitialDelayMs`,

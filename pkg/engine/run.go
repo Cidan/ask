@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"os"
 	"strings"
@@ -249,6 +250,10 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to build model for provider %s: %w", providerID, err)
 	}
+	// A one-shot headless run (a sub-agent, a workflow step) owns its model
+	// for the duration of the run; close it so a subprocess-backed provider
+	// does not leak a child past the return.
+	defer CloseModel(llm)
 
 	var agentTools []Tool
 	if len(opts.Tools) > 0 {
@@ -475,4 +480,16 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		Messages:  resultMessages,
 		IsError:   false,
 	}, nil
+}
+
+// CloseModel releases any resources a model.LLM holds — a
+// subprocess-backed provider (Claude Code) forks a child on first use and
+// implements io.Closer to terminate it. Building a model through
+// ModelBuilder wraps it in retryingModel, which forwards Close, so callers
+// close whatever ModelBuilder returned. A no-op for in-process models.
+func CloseModel(m model.LLM) error {
+	if c, ok := m.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
 }
