@@ -61,6 +61,12 @@ func ModelMetaFor(providerID, modelID string) (ModelMeta, bool) {
 			hit = true
 		}
 	}
+	if providerID == ClaudeCodeProviderID {
+		if m, ok := cachedClaudeCodeMeta(modelID); ok {
+			out.mergeProviderNative(m.modelMeta())
+			hit = true
+		}
+	}
 	if !hit {
 		return ModelMeta{}, false
 	}

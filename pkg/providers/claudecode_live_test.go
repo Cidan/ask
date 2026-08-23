@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Cidan/ask/pkg/config"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
@@ -146,5 +147,26 @@ func TestClaudeCodeModel_LiveMultiTurn(t *testing.T) {
 	t.Logf("turn 2: %q", turn("Now reply with exactly the word RECOVERED."))
 	if got := turn("Reply with exactly the word DONE."); got == "" {
 		t.Fatal("third turn produced no text — the child did not survive")
+	}
+}
+
+// TestClaudeCode_LiveListModels forks a real child and reads the account's
+// model list from the initialize response.
+func TestClaudeCode_LiveListModels(t *testing.T) {
+	if os.Getenv("ASK_CC_LIVE") != "1" {
+		t.Skip("set ASK_CC_LIVE=1 to run the live claude -p smoke test")
+	}
+	ids, err := ClaudeCode{}.ListModels(context.Background(), config.ProviderConfig{})
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(ids) == 0 {
+		t.Fatal("live listing was empty")
+	}
+	t.Logf("live models: %v", ids)
+	// Whatever the account serves, each id should now resolve through the
+	// metadata layer (the probe caches it).
+	if meta, ok := ModelMetaFor("claude-code", ids[0]); ok {
+		t.Logf("meta[%s]: name=%q reasoning=%v levels=%v", ids[0], meta.Name, meta.Reasoning, meta.ReasoningLevels)
 	}
 }

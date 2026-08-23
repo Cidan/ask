@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os/exec"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Cidan/ask/pkg/config"
 	"google.golang.org/adk/v2/model"
@@ -111,11 +113,139 @@ func (ClaudeCode) MaxOutputTokens(modelID string) int64 {
 	return CatalogDefaultMaxTokens(ClaudeCodeProviderID, modelID, ClaudeCodeMaxOutputToken)
 }
 
-// ListModels reports the static catalog. A live listing (the initialize
-// response's models array) is a future enhancement; the catalog covers the
-// aliases the picker needs.
+// ListModels returns the account's live model list by spawning a short-lived
+// child, reading the initialize control response's `models` array, and killing
+// it — the same handshake a session does, without a turn. Falls back to the
+// static catalog if the probe fails so the picker is never empty.
 func (ClaudeCode) ListModels(ctx context.Context, pc config.ProviderConfig) ([]string, error) {
-	return ClaudeCodeModelOptions, nil
+	ids, err := probeClaudeCodeModels(ctx, ClaudeCodeResolveBinary(pc))
+	if err != nil || len(ids) == 0 {
+		return ClaudeCodeModelOptions, err
+	}
+	return ids, nil
+}
+
+// ccListTimeout bounds the model-listing probe: it is only a handshake.
+const ccListTimeout = 15 * time.Second
+
+// probeClaudeCodeModels forks `claude`, sends initialize, and returns the
+// `models` array's values. It also caches each model's live metadata
+// (displayName, description, effort levels) for ModelMetaFor. The child never
+// runs a turn; it is killed as soon as the response lands (or the timeout).
+func probeClaudeCodeModels(ctx context.Context, binary string) ([]string, error) {
+	pctx, cancel := context.WithTimeout(ctx, ccListTimeout)
+	defer cancel()
+
+	conn, err := ccDial(pctx, ccDialArgs{Binary: binary, Argv: ccProbeArgv(), Env: currentEnvMinusClaude()})
+	if err != nil {
+		return nil, err
+	}
+	defer conn.close()
+
+	if err := conn.send(ccControlEnvelope{
+		Type: "control_request", RequestID: "init",
+		Request: map[string]any{"subtype": "initialize", "hooks": nil},
+	}); err != nil {
+		return nil, err
+	}
+
+	for {
+		select {
+		case <-pctx.Done():
+			return nil, pctx.Err()
+		case fr, ok := <-conn.frames():
+			if !ok {
+				return nil, errChildExited
+			}
+			if fr.Type != "control_response" {
+				continue
+			}
+			var wrap ccInitResponseWrap
+			if json.Unmarshal(fr.Response, &wrap) != nil || wrap.RequestID != "init" {
+				continue
+			}
+			ids := make([]string, 0, len(wrap.Response.Models))
+			metas := make([]ccModelMeta, 0, len(wrap.Response.Models))
+			for _, m := range wrap.Response.Models {
+				if m.Value == "" {
+					continue
+				}
+				ids = append(ids, m.Value)
+				metas = append(metas, m.toMeta())
+			}
+			cacheClaudeCodeMeta(metas)
+			return ids, nil
+		}
+	}
+}
+
+// ccProbeArgv is the minimal argv for the listing probe: enough to complete the
+// initialize handshake, with no tools and no MCP server.
+func ccProbeArgv() []string {
+	return []string{
+		"-p",
+		"--input-format", "stream-json",
+		"--output-format", "stream-json",
+		"--verbose",
+		"--tools", "",
+		"--setting-sources", "",
+	}
+}
+
+func (m ccInitModelInfo) toMeta() ccModelMeta {
+	return ccModelMeta{
+		ID:              m.Value,
+		Name:            m.DisplayName,
+		Description:     m.Description,
+		ResolvedModel:   m.ResolvedModel,
+		Reasoning:       m.SupportsEffort || len(m.SupportedEffortLevels) > 0,
+		ReasoningLevels: m.SupportedEffortLevels,
+	}
+}
+
+// ccModelMeta is the slice of the initialize response's model info ask keeps.
+type ccModelMeta struct {
+	ID              string
+	Name            string
+	Description     string
+	ResolvedModel   string
+	Reasoning       bool
+	ReasoningLevels []string
+}
+
+func (m ccModelMeta) modelMeta() ModelMeta {
+	return ModelMeta{
+		ID:              m.ID,
+		Name:            m.Name,
+		Description:     m.Description,
+		Reasoning:       m.Reasoning,
+		ReasoningLevels: m.ReasoningLevels,
+	}
+}
+
+// claudeCodeMeta is the in-memory cache of the live model listing, keyed by the
+// `value` a session passes as --model. In-memory only, like OpenRouter's — the
+// picker must never block on a spawn.
+var claudeCodeMeta = struct {
+	mu   sync.RWMutex
+	byID map[string]ccModelMeta
+}{byID: map[string]ccModelMeta{}}
+
+func cacheClaudeCodeMeta(metas []ccModelMeta) {
+	claudeCodeMeta.mu.Lock()
+	defer claudeCodeMeta.mu.Unlock()
+	for _, m := range metas {
+		claudeCodeMeta.byID[m.ID] = m
+	}
+}
+
+// cachedClaudeCodeMeta looks up a model's live metadata; ok=false until a
+// listing has landed.
+func cachedClaudeCodeMeta(modelID string) (ccModelMeta, bool) {
+	claudeCodeMeta.mu.RLock()
+	defer claudeCodeMeta.mu.RUnlock()
+	m, ok := claudeCodeMeta.byID[modelID]
+	return m, ok
 }
 
 var (

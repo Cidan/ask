@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Cidan/ask/pkg/config"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
@@ -319,6 +320,76 @@ func TestClaudeCodeModel_StreamingYieldsPartials(t *testing.T) {
 	}
 	if !sawPartial {
 		t.Error("streaming mode must yield partial deltas for live display")
+	}
+}
+
+// TestProbeClaudeCodeModels_ParsesInitResponse drives the listing probe through
+// the fake conn: it sends initialize and reads the models array out of the
+// control response, caching each model's metadata for the picker.
+func TestProbeClaudeCodeModels_ParsesInitResponse(t *testing.T) {
+	fc := newFakeConn(4)
+	prevDial := ccDial
+	var gotArgv []string
+	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) {
+		gotArgv = args.Argv
+		return fc, nil
+	}
+	defer func() { ccDial = prevDial }()
+
+	// Reset the metadata cache so the assertion is about this probe.
+	claudeCodeMeta.mu.Lock()
+	claudeCodeMeta.byID = map[string]ccModelMeta{}
+	claudeCodeMeta.mu.Unlock()
+
+	resp, _ := json.Marshal(map[string]any{
+		"subtype": "success", "request_id": "init",
+		"response": map[string]any{"models": []map[string]any{
+			{"value": "default", "resolvedModel": "claude-opus-5[1m]", "displayName": "Default (recommended)",
+				"description": "Opus 5 with 1M context", "supportsEffort": true,
+				"supportedEffortLevels": []string{"low", "medium", "high", "xhigh", "max"}},
+			{"value": "haiku", "displayName": "Haiku 4.5", "description": "Fast"},
+			{"value": ""}, // dropped: no value
+		}},
+	})
+	fc.push(ccFrame{Type: "system", Subtype: "init"}) // noise before the response
+	fc.push(ccFrame{Type: "control_response", Response: resp})
+
+	ids, err := probeClaudeCodeModels(context.Background(), "claude")
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if len(ids) != 2 || ids[0] != "default" || ids[1] != "haiku" {
+		t.Fatalf("ids = %v, want [default haiku]", ids)
+	}
+	// The probe argv is the minimal handshake — no MCP server, no tools.
+	if indexOf(gotArgv, "--mcp-config") >= 0 {
+		t.Errorf("the listing probe must not declare an MCP server; got %v", gotArgv)
+	}
+	// Metadata cached and surfaced through ModelMetaFor.
+	meta, ok := ModelMetaFor("claude-code", "default")
+	if !ok {
+		t.Fatal("ModelMetaFor(default) missed after the probe")
+	}
+	if meta.Name != "Default (recommended)" || meta.Description != "Opus 5 with 1M context" {
+		t.Errorf("live metadata not applied: %+v", meta)
+	}
+	if !meta.Reasoning || len(meta.ReasoningLevels) != 5 {
+		t.Errorf("effort levels not applied: %+v", meta)
+	}
+}
+
+// TestClaudeCode_ListModels_FallsBackToCatalog: a probe failure returns the
+// static catalog rather than an empty picker.
+func TestClaudeCode_ListModels_FallsBackToCatalog(t *testing.T) {
+	prevDial := ccDial
+	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) {
+		return nil, errChildExited
+	}
+	defer func() { ccDial = prevDial }()
+
+	ids, _ := ClaudeCode{}.ListModels(context.Background(), config.ProviderConfig{})
+	if len(ids) == 0 || ids[0] != "default" {
+		t.Errorf("fallback list = %v, want the static catalog", ids)
 	}
 }
 

@@ -83,8 +83,14 @@ ClaudeCode{}}`; Vertex is `DefaultProviderID()`. All three implement
   history in memory, so cross-process `/resume` replays the transcript as
   one context message rather than using native `--resume`. The child is
   killed through the `io.Closer` capability (`engine.CloseModel`, forwarded
-  by `retryingModel`). Seam: `ccDial` (swap for a scripted `ccConn` in
-  tests — no process). Known v1 limits: the system prompt is captured at
+  by `retryingModel`). `ListModels` forks a short-lived child, reads the
+  account's models out of the `initialize` control response's `models`
+  array (`probeClaudeCodeModels`), and caches each model's live metadata
+  (`cacheClaudeCodeMeta`, layered by `ModelMetaFor` through
+  `mergeProviderNative`); it falls back to the static catalog on a probe
+  failure so the picker is never empty. Seam: `ccDial` (swap for a
+  scripted `ccConn` in tests — no process). Known v1 limits: the system
+  prompt is captured at
   spawn (a mid-session change — only workflow state blocks — is not
   restarted; each workflow step gets a fresh child anyway); tab-title and
   workflow-step children are closed by their run, chat/session children by

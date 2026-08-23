@@ -97,7 +97,7 @@ type ccStreamEvent struct {
 		Type     string `json:"type"`
 		Text     string `json:"text,omitempty"`
 		Thinking string `json:"thinking,omitempty"`
-	} `json:"delta,omitempty"`
+	} `json:"delta"`
 }
 
 type ccUsage struct {
@@ -138,6 +138,28 @@ type ccImageSource struct {
 	Type      string `json:"type"`       // "base64"
 	MediaType string `json:"media_type"` // e.g. image/png
 	Data      string `json:"data"`       // base64
+}
+
+// ccInitModelInfo is one entry in the initialize control response's `models`
+// array — the account's selectable models. `value` is what `--model` takes;
+// the rest drives the picker's detail pane.
+type ccInitModelInfo struct {
+	Value                 string   `json:"value"`
+	ResolvedModel         string   `json:"resolvedModel,omitempty"`
+	DisplayName           string   `json:"displayName,omitempty"`
+	Description           string   `json:"description,omitempty"`
+	SupportsEffort        bool     `json:"supportsEffort,omitempty"`
+	SupportedEffortLevels []string `json:"supportedEffortLevels,omitempty"`
+}
+
+// ccInitResponseWrap decodes the `response` field of the initialize
+// control_response: {subtype, request_id, response:{models, …}}.
+type ccInitResponseWrap struct {
+	Subtype   string `json:"subtype"`
+	RequestID string `json:"request_id"`
+	Response  struct {
+		Models []ccInitModelInfo `json:"models"`
+	} `json:"response"`
 }
 
 // ccControlEnvelope is a control frame ask writes: the initialize request and
