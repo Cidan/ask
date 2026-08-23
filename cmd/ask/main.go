@@ -100,7 +100,7 @@ func newTab(id int, cfg askConfig) (*model, error) {
 		toolOutputMode:        parseToolOutputMode(cfg.UI.ToolOutput),
 		skipAllPermissions:    cfg.UI.SkipAllPermissions != nil && *cfg.UI.SkipAllPermissions,
 		gateTodosBeforeMutate: cfg.UI.GateTodosBeforeMutate != nil && *cfg.UI.GateTodosBeforeMutate,
-		worktree:              cfg.UI.Worktree != nil && *cfg.UI.Worktree,
+		worktree:              worktreeEnabled(cfg, cwd),
 		historyIdx:            -1,
 		shellOutIdx:           -1,
 		shellHistoryIdx:       -1,
@@ -291,7 +291,7 @@ func main() {
 	// every other production write site, even though main runs
 	// before any goroutine fires.
 	_ = withConfigLock(func() error { return saveConfig(cfg) })
-	if cfg.UI.Worktree != nil && *cfg.UI.Worktree {
+	if startCwd, err := os.Getwd(); err == nil && worktreeEnabled(cfg, startCwd) {
 		ensureWorktreeGitignore()
 	}
 	pruneWorktrees()

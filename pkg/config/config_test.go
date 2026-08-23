@@ -137,6 +137,86 @@ func TestConfig_ProjectSettings(t *testing.T) {
 	}
 }
 
+func TestWorktreeEnabled_ProjectOverridesGlobal(t *testing.T) {
+	on, off := true, false
+	projectDir := filepath.Join(t.TempDir(), "proj")
+	_ = os.MkdirAll(filepath.Join(projectDir, ".git"), 0o755)
+
+	withProject := func(global, project *bool) Config {
+		cfg := Config{UI: UIConfig{Worktree: global}}
+		if project != nil {
+			cfg = UpsertProjectConfig(cfg, projectDir, ProjectConfig{Worktree: project})
+		}
+		return cfg
+	}
+	cases := []struct {
+		name            string
+		global, project *bool
+		want            bool
+	}{
+		{"both unset", nil, nil, false},
+		{"global on, no override", &on, nil, true},
+		{"global off, no override", &off, nil, false},
+		{"global on, project off", &on, &off, false},
+		{"global off, project on", &off, &on, true},
+		{"global unset, project on", nil, &on, true},
+		{"global unset, project off", nil, &off, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := WorktreeEnabled(withProject(tc.global, tc.project), projectDir); got != tc.want {
+				t.Fatalf("WorktreeEnabled=%v want %v", got, tc.want)
+			}
+		})
+	}
+
+	// A worktree cwd resolves to the main checkout's project key, so
+	// the override is honoured from inside .claude/worktrees/<name>.
+	wt := filepath.Join(projectDir, ".claude", "worktrees", "swift-fox")
+	_ = os.MkdirAll(wt, 0o755)
+	_ = os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: ../../../.git/worktrees/swift-fox\n"), 0o644)
+	if !WorktreeEnabled(withProject(&off, &on), wt) {
+		t.Fatal("project override should apply from inside a worktree cwd")
+	}
+
+	// Empty cwd has no project block: global wins.
+	if !WorktreeEnabled(withProject(&on, &off), "") {
+		t.Fatal("empty cwd should fall back to the global flag")
+	}
+}
+
+func TestProjectConfig_WorktreeOverrideRoundTripsAndPrunes(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	projectDir := filepath.Join(t.TempDir(), "proj")
+	_ = os.MkdirAll(projectDir, 0o755)
+
+	off := false
+	if IsProjectConfigEmpty(ProjectConfig{Worktree: &off}) {
+		t.Fatal("a worktree override must keep the project block alive")
+	}
+	if err := SaveProject(projectDir, ProjectConfig{Worktree: &off}); err != nil {
+		t.Fatalf("SaveProject: %v", err)
+	}
+	loaded, err := LoadProject(projectDir)
+	if err != nil {
+		t.Fatalf("LoadProject: %v", err)
+	}
+	if loaded.Worktree == nil || *loaded.Worktree {
+		t.Fatalf("override did not round-trip: %+v", loaded.Worktree)
+	}
+
+	if err := SaveProject(projectDir, ProjectConfig{}); err != nil {
+		t.Fatalf("SaveProject clear: %v", err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := cfg.Projects[ProjectKey(projectDir)]; ok {
+		t.Fatal("clearing the override should prune the empty project block")
+	}
+}
+
 func TestWorkflowSession_UnmarshalBothCasings(t *testing.T) {
 	camelJSON := []byte(`{
 		"workflow": "ship",

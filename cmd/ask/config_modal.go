@@ -52,10 +52,6 @@ func (m model) globalConfigItems() []configItem {
 	if m.skipAllPermissions {
 		skipPerms = "on"
 	}
-	worktree := "off"
-	if m.worktree {
-		worktree = "on"
-	}
 	gateTodos := "off"
 	if m.gateTodosBeforeMutate {
 		gateTodos = "on"
@@ -72,6 +68,10 @@ func (m model) globalConfigItems() []configItem {
 	webSearch := "off"
 	if resolveBraveAPIKey(cfg.WebSearch) != "" {
 		webSearch = "on"
+	}
+	worktree := onOff(cfg.UI.Worktree != nil && *cfg.UI.Worktree)
+	if pv := loadProjectConfig(cfg, m.cwd).Worktree; pv != nil {
+		worktree += " (project: " + onOff(*pv) + ")"
 	}
 	items := []configItem{
 		{"Quiet Mode", quiet, "quiet"},
@@ -353,21 +353,17 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 		m.killProc()
 		return m, nil
 	case "worktree":
-		m.worktree = !m.worktree
-		v := m.worktree
+		var saved askConfig
 		if err := withConfigLock(func() error {
 			cfg, _ := loadConfig()
+			v := cfg.UI.Worktree == nil || !*cfg.UI.Worktree
 			cfg.UI.Worktree = &v
+			saved = cfg
 			return saveConfig(cfg)
 		}); err != nil {
 			debugLog("saveConfig err: %v", err)
 		}
-		if m.worktree {
-			ensureWorktreeGitignore()
-		} else {
-			m.worktreeName = ""
-		}
-		m.killProc()
+		m = m.applyEffectiveWorktree(saved)
 		return m, nil
 	case "gateTodosBeforeMutate":
 		m.gateTodosBeforeMutate = !m.gateTodosBeforeMutate
@@ -404,6 +400,32 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+func onOff(v bool) string {
+	if v {
+		return "on"
+	}
+	return "off"
+}
+
+// applyEffectiveWorktree re-derives the tab's worktree flag from the
+// saved config after the global or project toggle moved. A change
+// that leaves the effective value alone (a global flip shadowed by a
+// project override) must not restart the session.
+func (m model) applyEffectiveWorktree(cfg askConfig) model {
+	next := worktreeEnabled(cfg, m.cwd)
+	if next == m.worktree {
+		return m
+	}
+	m.worktree = next
+	if next {
+		ensureWorktreeGitignore()
+	} else {
+		m.worktreeName = ""
+	}
+	m.killProc()
+	return m
 }
 
 // filteredGlobalConfigItems applies the Global Options filter

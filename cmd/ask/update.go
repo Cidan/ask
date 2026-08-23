@@ -1209,6 +1209,10 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			if d.newCwd != "" && d.newCwd != m.cwd {
 				if err := os.Chdir(d.newCwd); err == nil {
 					m.cwd = d.newCwd
+					// The live session keeps its worktree; only the
+					// flag for the next fresh session follows the cwd.
+					cfg, _ := loadConfig()
+					m.worktree = worktreeEnabled(cfg, m.cwd)
 					m.refreshPrompt()
 					m.pending = nil
 					m.refreshPathMatches()

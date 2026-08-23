@@ -83,6 +83,10 @@ func isProjectConfigEmpty(pc projectConfig) bool {
 	return config.IsProjectConfigEmpty(pc)
 }
 
+func worktreeEnabled(cfg askConfig, cwd string) bool {
+	return config.WorktreeEnabled(cfg, cwd)
+}
+
 func agentRetryOptions(cfg askConfig) (maxRetries int, initialDelay time.Duration, backoffFactor float64) {
 	return config.AgentRetryOptions(cfg)
 }

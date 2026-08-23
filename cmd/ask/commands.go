@@ -43,6 +43,8 @@ func (m model) doCd(target string) (tea.Model, tea.Cmd) {
 	m.sessionID = ""
 	m.sessionMinted = false
 	m.history = nil
+	cfg, _ := loadConfig()
+	m = m.applyEffectiveWorktree(cfg)
 	m.refreshPrompt()
 	m.appendHistory(outputStyle.Render(
 		promptStyle.Render("✓ cd "+abs) + "  " + dimStyle.Render("(session cleared)"),

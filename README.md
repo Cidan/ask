@@ -325,7 +325,7 @@ every change writes immediately.
 | Render Diffs | on | Show `edit` / `write` results as inline colored diffs |
 | Tool Output | short | `short` shows each tool call as the model's one-line description; `full` adds the parameters and output; `off` hides tool calls |
 | Skip All Permissions | off | Bypass the approval modal for every tool call (restarts the session) |
-| Worktree | off | Run each session inside an isolated git worktree under `.claude/worktrees/` (adds it to `.gitignore`) |
+| Worktree | off | Run each session inside an isolated git worktree under `.claude/worktrees/` (adds it to `.gitignore`); Project Options can override this per project |
 | Gate Todos Before Mutate | off | Refuse `edit` / `write` until the agent has posted a todo list, and make it check the project's workflows first |
 | Theme | default | Live-preview picker over 16 palettes |
 | Default Provider | vertex | Provider for new sessions |
@@ -334,8 +334,10 @@ every change writes immediately.
 | Keybindings... | | Remap any global shortcut |
 
 Project Options (same modal) hold the issue provider, the GitHub MCP
-endpoint and PAT, the Linear endpoint, API key, and team key, and the
-project's user-scope workflows. Other keys the file stores:
+endpoint and PAT, the Linear endpoint, API key, and team key, a
+Worktree override (inherit / on / off, shadowing the global row for
+this project), and the project's user-scope workflows. Other keys the
+file stores:
 `providers.<id>.model` (last pick per provider), `recentModels`,
 `keybindings`, `mcpServers`, `effort`, `ui.retry` (`maxRetries`,
 `initialDelayMs`, `backoffFactor` for the agent's retry on transient
