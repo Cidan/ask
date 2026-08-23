@@ -4,11 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 )
 
 const AskLockPrefix = "ask:"
-const jjWorkspaceLockFile = "ask-workspace-lock"
 
 type WorkspaceBackend int
 
@@ -16,11 +14,6 @@ const (
 	WorkspaceBackendNone WorkspaceBackend = iota
 	WorkspaceBackendGit
 	WorkspaceBackendJJ
-)
-
-var (
-	worktreeNameMu        sync.Mutex
-	reservedWorktreeNames = map[string]map[string]struct{}{}
 )
 
 func InGitCheckoutAt(cwd string) bool {
@@ -120,7 +113,7 @@ func EnsureWorktreeGitignore(cwd string) {
 	if err != nil && !os.IsNotExist(err) {
 		return
 	}
-	if gitignoreCoversWorktrees(string(existing)) {
+	if GitignoreCoversWorktrees(string(existing)) {
 		return
 	}
 	next := string(existing)
@@ -131,7 +124,9 @@ func EnsureWorktreeGitignore(cwd string) {
 	_ = os.WriteFile(path, []byte(next), 0o644)
 }
 
-func gitignoreCoversWorktrees(contents string) bool {
+// GitignoreCoversWorktrees reports whether a .gitignore body already ignores
+// the .claude/worktrees/ tree (directly or via a broader .claude rule).
+func GitignoreCoversWorktrees(contents string) bool {
 	for _, raw := range strings.Split(contents, "\n") {
 		l := strings.TrimSpace(raw)
 		if l == "" || strings.HasPrefix(l, "#") || strings.HasPrefix(l, "!") {

@@ -1,253 +1,84 @@
 package main
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
 	"strings"
+
+	"github.com/Cidan/ask/pkg/workflow"
 )
 
-// workflow_store.go is the three-scope persistence layer for workflow
-// definitions:
+// workflow_store.go is a thin adapter over the canonical three-scope
+// workflow store in pkg/workflow. The TUI's currency is config.WorkflowDef
+// (aliased as workflowDef); pkg/workflow deals in workflow.Def. Every
+// function here converts at the boundary and delegates the real work —
+// file IO, ask.json persistence, dir sync, scope resolution — to the
+// package the agent-facing workflow_* tools already use, so there is a
+// single store implementation shared by the builder UI and the agent.
 //
-//   - user scope: projectConfig.Workflows.Items inside
-//     ~/.config/ask/ask.json (machine-local, the pre-scope location).
-//   - repo scope: one JSON file per workflow under
-//     <projectRoot>/.ask/workflows/, committed to the repo so the
-//     whole team shares them.
-//   - global scope: one JSON file per workflow under
-//     ~/.config/ask/workflows/ (machine-local, visible from every
-//     project — a personal toolbox that follows the user between
-//     checkout roots).
-//
-// Every read merges the three scopes (global first — personal-wins, then
-// repo project-wins, then user); every write routes by the def's Scope
-// tag. Names are unique within a scope; the same name MAY exist in
-// multiple scopes, in which case name-only resolution prefers global
-// (the most personal option) and the mutating tool surface demands an
-// explicit scope (resolveWorkflowByName).
-//
-// All mutations serialise through withConfigLock — the user scope
-// needs it for the load → mutate → save cycle on ask.json, and
-// running the repo-dir + global-dir syncs under the same lock means a
-// concurrent builder commit and MCP workflow_edit can't interleave
-// file writes.
+// The three scopes (see pkg/workflow/store.go for the full contract):
+//   - user:   projectConfig.Workflows.Items in ~/.config/ask/ask.json
+//   - repo:   one JSON file per workflow under <root>/.ask/workflows/
+//   - global: one JSON file per workflow under ~/.config/ask/workflows/
 
-// workflowsRepoDirName is the repo-local directory, relative to the
-// project root.
-const workflowsRepoDirName = ".ask/workflows"
+// errWorkflowAmbiguous is returned by resolveWorkflowByName when the name
+// exists in multiple scopes and the caller didn't pick one.
+var errWorkflowAmbiguous = workflow.ErrWorkflowAmbiguous
 
-// workflowsGlobalDirName is the machine-local "global" directory name,
-// relative to the user's config root (~/.config/ask). Same basename as
-// the repo dir, different parent — the parent location IS the scope.
-const workflowsGlobalDirName = "workflows"
-
-// workflowsRepoDir returns the absolute repo-local workflows dir for
-// cwd. Empty when cwd is empty.
-func workflowsRepoDir(cwd string) string {
-	root := projectRoot(cwd)
-	if root == "" {
-		return ""
+func toPkgWorkflowDefs(items []workflowDef) []workflow.Def {
+	if items == nil {
+		return nil
 	}
-	return filepath.Join(root, filepath.FromSlash(workflowsRepoDirName))
+	out := make([]workflow.Def, len(items))
+	for i, w := range items {
+		out[i] = workflow.ConfigDefToDef(w)
+	}
+	return out
 }
 
-// workflowsGlobalDir returns the absolute global workflows dir, under
-// ~/.config/ask/workflows/. Empty when home is empty so test fixtures
-// that pin HOME still degrade cleanly (load/sync become no-ops on the
-// same pattern as the repo dir under an empty cwd).
-func workflowsGlobalDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
+func fromPkgWorkflowDefs(defs []workflow.Def) []workflowDef {
+	if defs == nil {
+		return nil
 	}
-	return filepath.Join(home, ".config", "ask", workflowsGlobalDirName)
+	out := make([]workflowDef, len(defs))
+	for i, d := range defs {
+		out[i] = workflow.DefToConfigDef(d)
+	}
+	return out
 }
 
-// normalizeWorkflowScope maps "" to user (the pre-scope default) and
-// validates the rest. Returns an error for anything else so tool
-// callers get a clear message instead of a silent fallback.
+// workflowsRepoDir returns the absolute repo-local workflows dir for cwd.
+func workflowsRepoDir(cwd string) string { return workflow.RepoDir(cwd) }
+
+// workflowsGlobalDir returns the absolute global workflows dir under
+// ~/.config/ask/workflows/.
+func workflowsGlobalDir() string { return workflow.GlobalDir() }
+
+// normalizeWorkflowScope maps "" to user and validates the rest.
 func normalizeWorkflowScope(scope string) (string, error) {
-	switch strings.TrimSpace(scope) {
-	case "", workflowScopeUser:
-		return workflowScopeUser, nil
-	case workflowScopeRepo:
-		return workflowScopeRepo, nil
-	case workflowScopeGlobal:
-		return workflowScopeGlobal, nil
-	}
-	return "", fmt.Errorf("unknown scope %q (use %q, %q, or %q)", scope, workflowScopeUser, workflowScopeRepo, workflowScopeGlobal)
+	s, err := workflow.NormalizeScope(workflow.Scope(scope))
+	return string(s), err
 }
 
-// workflowFileName maps a workflow name onto a filesystem-safe
-// filename stem. Runes outside [a-zA-Z0-9._-] become '-'; runs
-// collapse; empty results fall back to "workflow".
-func workflowFileName(name string) string {
-	var b strings.Builder
-	lastDash := false
-	for _, r := range name {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
-			b.WriteRune(r)
-			lastDash = r == '-'
-		default:
-			if !lastDash {
-				b.WriteByte('-')
-				lastDash = true
-			}
-		}
-	}
-	stem := strings.Trim(b.String(), "-.")
-	if stem == "" {
-		stem = "workflow"
-	}
-	return stem
-}
+// workflowFileName maps a workflow name onto a filesystem-safe filename stem.
+func workflowFileName(name string) string { return workflow.FileName(name) }
 
-// loadRepoWorkflows reads every *.json under the repo-local dir,
-// skipping files that don't parse or carry an empty name (debugLog
-// only — a malformed committed file must not take the feature down).
-// Duplicate names within the dir keep the first (filename order) and
-// skip the rest. Results are tagged Scope=repo and sorted by name so
-// listings are stable regardless of directory iteration order.
 func loadRepoWorkflows(cwd string) []workflowDef {
-	dir := workflowsRepoDir(cwd)
-	if dir == "" {
-		return nil
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		names = append(names, e.Name())
-	}
-	sort.Strings(names)
-	seen := map[string]bool{}
-	var out []workflowDef
-	for _, fname := range names {
-		path := filepath.Join(dir, fname)
-		data, err := os.ReadFile(path)
-		if err != nil {
-			debugLog("repo workflow %s: read: %v", path, err)
-			continue
-		}
-		var def workflowDef
-		if err := json.Unmarshal(data, &def); err != nil {
-			debugLog("repo workflow %s: parse: %v", path, err)
-			continue
-		}
-		def.Name = strings.TrimSpace(def.Name)
-		if def.Name == "" {
-			debugLog("repo workflow %s: skipped, name is required", path)
-			continue
-		}
-		if seen[def.Name] {
-			debugLog("repo workflow %s: skipped, duplicate name %q", path, def.Name)
-			continue
-		}
-		seen[def.Name] = true
-		def.Scope = workflowScopeRepo
-		out = append(out, def)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
+	return fromPkgWorkflowDefs(workflow.LoadFileWorkflows(workflow.RepoDir(cwd), workflow.ScopeRepo))
 }
 
-// loadGlobalWorkflows reads every *.json under ~/.config/ask/workflows/,
-// skipping files that don't parse or carry an empty name. Mirrors
-// loadRepoWorkflows: a malformed or hand-edited file is debugLog'd and
-// skipped, never fatal. Duplicate names within the dir keep the first
-// (filename order) and skip the rest. Results are tagged Scope=global
-// and sorted by name.
 func loadGlobalWorkflows() []workflowDef {
-	dir := workflowsGlobalDir()
-	if dir == "" {
-		return nil
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		names = append(names, e.Name())
-	}
-	sort.Strings(names)
-	seen := map[string]bool{}
-	var out []workflowDef
-	for _, fname := range names {
-		path := filepath.Join(dir, fname)
-		data, err := os.ReadFile(path)
-		if err != nil {
-			debugLog("global workflow %s: read: %v", path, err)
-			continue
-		}
-		var def workflowDef
-		if err := json.Unmarshal(data, &def); err != nil {
-			debugLog("global workflow %s: parse: %v", path, err)
-			continue
-		}
-		def.Name = strings.TrimSpace(def.Name)
-		if def.Name == "" {
-			debugLog("global workflow %s: skipped, name is required", path)
-			continue
-		}
-		if seen[def.Name] {
-			debugLog("global workflow %s: skipped, duplicate name %q", path, def.Name)
-			continue
-		}
-		seen[def.Name] = true
-		def.Scope = workflowScopeGlobal
-		out = append(out, def)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
+	return fromPkgWorkflowDefs(workflow.LoadFileWorkflows(workflow.GlobalDir(), workflow.ScopeGlobal))
 }
 
-// loadUserWorkflows reads the user-scope list from ask.json, tagged
-// Scope=user, in config order. The error surfaces a broken ask.json
-// to the tool layer; UI listing paths drop it (an unreadable config
-// degrades to "no user workflows" rather than a dead screen).
-func loadUserWorkflows(cwd string) ([]workflowDef, error) {
-	cfg, err := loadConfig()
-	if err != nil {
-		return nil, err
-	}
-	pc := loadProjectConfig(cfg, cwd)
-	out := make([]workflowDef, 0, len(pc.Workflows.Items))
-	for _, w := range pc.Workflows.Items {
-		w.Scope = workflowScopeUser
-		out = append(out, w)
-	}
-	return out, nil
-}
-
-// listAllWorkflows merges the three scopes: global first (the most
-// personal option leads), then repo (project-wins, same as the
-// pre-global convention), then user. Each scope keeps its own
-// scope-stable order; resolveWorkflowByName / findWorkflow walk the
-// merged list in this order so a name present in multiple scopes
-// resolves to global on a name-only lookup.
+// listAllWorkflows merges the three scopes: global first (personal-wins),
+// then repo (project-wins), then user.
 func listAllWorkflows(cwd string) []workflowDef {
-	user, _ := loadUserWorkflows(cwd)
-	return append(append(loadGlobalWorkflows(), loadRepoWorkflows(cwd)...), user...)
+	return fromPkgWorkflowDefs(workflow.ListAll(cwd))
 }
 
-// findWorkflow returns the named workflow in the given scope.
-// scope "" searches global first, then repo, then user (the same
-// personal-wins order listAllWorkflows uses; global beats repo on
-// ambiguity because the global copy is the user's explicit pick).
+// findWorkflow returns the named workflow in the given scope. scope ""
+// walks the merged list (global → repo → user) and returns the first
+// match, so a name present in multiple scopes resolves to global.
 func findWorkflow(cwd, name, scope string) (workflowDef, bool) {
 	for _, w := range listAllWorkflows(cwd) {
 		if w.Name != name {
@@ -260,14 +91,10 @@ func findWorkflow(cwd, name, scope string) (workflowDef, bool) {
 	return workflowDef{}, false
 }
 
-// errWorkflowAmbiguous is returned by resolveWorkflowByName when the
-// name exists in multiple scopes and the caller didn't pick one.
-var errWorkflowAmbiguous = errors.New("workflow exists in multiple scopes; pass scope to pick one")
-
-// resolveWorkflowByName resolves name (+ optional scope) to exactly
-// one workflow. With an explicit scope it's a plain scoped lookup.
-// Without one, a name living in more than one scope is an error —
-// mutating surfaces must never guess which copy to touch.
+// resolveWorkflowByName resolves name (+ optional scope) to exactly one
+// workflow. With an explicit scope it's a plain scoped lookup. Without
+// one, a name living in more than one scope is an error — mutating
+// surfaces must never guess which copy to touch.
 func resolveWorkflowByName(cwd, name, scope string) (workflowDef, error) {
 	if scope != "" {
 		norm, err := normalizeWorkflowScope(scope)
@@ -295,184 +122,30 @@ func resolveWorkflowByName(cwd, name, scope string) (workflowDef, error) {
 	return workflowDef{}, fmt.Errorf("workflow %q: %w", name, errWorkflowAmbiguous)
 }
 
-// saveAllWorkflows persists the full merged list: user-scope defs
-// replace projectConfig.Workflows.Items (in list order), repo-scope
-// defs are synced onto <root>/.ask/workflows/, global-scope defs are
-// synced onto ~/.config/ask/workflows/ — one file per def named after
-// the workflow, files no longer claimed by any def removed. Defs
-// with an empty Scope count as user. Files whose content is already
-// current are left untouched so VCS mtimes don't churn.
-//
-// This is the single write path for the builder UI and the
-// scope-mutation helpers below — both build the desired end state in
-// memory and hand it here, which makes rename/move/copy/delete all
-// the same operation: "make disk look like this".
+// saveAllWorkflows persists the full merged list, routing each def by its
+// Scope tag (user → ask.json, repo/global → their dirs) under the config
+// lock. This is the single write path for the builder UI.
 func saveAllWorkflows(cwd string, items []workflowDef) error {
-	return withConfigLock(func() error {
-		return saveAllWorkflowsLocked(cwd, items)
-	})
+	return workflow.SaveAll(cwd, toPkgWorkflowDefs(items))
 }
 
 // mutateWorkflows runs one read-modify-write cycle against the merged
-// workflow list under the config lock: fn receives the current merged
-// list and returns the desired end state (or an error to abort with
-// nothing written). This is the primitive every workflow mutation
-// (tool cores, copy) goes through so concurrent callers can't
-// interleave their load → mutate → save cycles.
+// workflow list under the config lock.
 func mutateWorkflows(cwd string, fn func(items []workflowDef) ([]workflowDef, error)) error {
-	return withConfigLock(func() error {
-		next, err := fn(listAllWorkflows(cwd))
+	return workflow.MutateWorkflows(cwd, func(defs []workflow.Def) ([]workflow.Def, error) {
+		next, err := fn(fromPkgWorkflowDefs(defs))
 		if err != nil {
-			return err
+			return nil, err
 		}
-		return saveAllWorkflowsLocked(cwd, next)
+		return toPkgWorkflowDefs(next), nil
 	})
 }
 
-// saveAllWorkflowsLocked is saveAllWorkflows without the lock; the
-// caller must hold configFileMu (withConfigLock is not reentrant).
-// Splits the merged list into three scope slices and persists each:
-// user → projectConfig.Workflows.Items in ask.json; repo →
-// <root>/.ask/workflows/; global → ~/.config/ask/workflows/. Defs
-// with an empty Scope count as user. Files whose content is already
-// current are left untouched so VCS mtimes don't churn.
-func saveAllWorkflowsLocked(cwd string, items []workflowDef) error {
-	var user, repo, global []workflowDef
-	for _, w := range items {
-		switch w.Scope {
-		case workflowScopeRepo:
-			repo = append(repo, w)
-		case workflowScopeGlobal:
-			global = append(global, w)
-		default:
-			user = append(user, w)
-		}
-	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	pc := loadProjectConfig(cfg, cwd)
-	if len(user) == 0 {
-		pc.Workflows.Items = nil
-	} else {
-		stored := make([]workflowDef, 0, len(user))
-		for _, w := range user {
-			w.Scope = ""
-			stored = append(stored, w)
-		}
-		pc.Workflows.Items = stored
-	}
-	cfg = upsertProjectConfig(cfg, cwd, pc)
-	if err := saveConfig(cfg); err != nil {
-		return err
-	}
-	if err := syncRepoWorkflowFiles(cwd, repo); err != nil {
-		return err
-	}
-	return syncGlobalWorkflowFiles(global)
-}
-
-// syncRepoWorkflowFiles makes the repo-local dir contain exactly
-// `defs`: one file per def named after the workflow (suffixed -2, -3…
-// when two names sanitize identically), stale files removed. The dir
-// is created on first write and removed when it empties out, so a
-// project that never uses repo workflows never grows a .ask/ tree.
-func syncRepoWorkflowFiles(cwd string, defs []workflowDef) error {
-	dir := workflowsRepoDir(cwd)
-	if dir == "" {
-		if len(defs) > 0 {
-			return errors.New("no project root to store repo workflows under")
-		}
-		return nil
-	}
-	return syncWorkflowFiles(dir, defs, "repo")
-}
-
-// syncGlobalWorkflowFiles mirrors syncRepoWorkflowFiles for the
-// machine-local global dir at ~/.config/ask/workflows/. The dir is
-// created on first write and removed when it empties out, so a user
-// who never creates a global workflow never grows a workflows/ tree.
-func syncGlobalWorkflowFiles(defs []workflowDef) error {
-	dir := workflowsGlobalDir()
-	if dir == "" {
-		if len(defs) > 0 {
-			return errors.New("no home directory to store global workflows under")
-		}
-		return nil
-	}
-	return syncWorkflowFiles(dir, defs, "global")
-}
-
-// syncWorkflowFiles is the shared "make `dir` contain exactly `defs`"
-// body used by both syncRepoWorkflowFiles and syncGlobalWorkflowFiles.
-// `label` is the human-readable scope name used in debugLog only —
-// file paths come from `dir` directly. One file per def named after
-// the workflow (suffixed -2, -3… when two names sanitize identically);
-// stale files removed. The dir is created on first write and removed
-// when it empties out.
-func syncWorkflowFiles(dir string, defs []workflowDef, label string) error {
-	claimed := map[string]bool{}
-	if len(defs) > 0 {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("mkdir %s: %w", dir, err)
-		}
-	}
-	for _, def := range defs {
-		stem := workflowFileName(def.Name)
-		fname := stem + ".json"
-		for i := 2; claimed[fname]; i++ {
-			fname = fmt.Sprintf("%s-%d.json", stem, i)
-		}
-		claimed[fname] = true
-		def.Scope = ""
-		data, err := json.MarshalIndent(def, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal workflow %q: %w", def.Name, err)
-		}
-		data = append(data, '\n')
-		path := filepath.Join(dir, fname)
-		if cur, err := os.ReadFile(path); err == nil && string(cur) == string(data) {
-			continue
-		}
-		if err := os.WriteFile(path, data, 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", path, err)
-		}
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	remaining := 0
-	for _, e := range entries {
-		if e.IsDir() {
-			remaining++
-			continue
-		}
-		if strings.HasSuffix(e.Name(), ".json") && !claimed[e.Name()] {
-			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
-				return fmt.Errorf("remove stale %s: %w", e.Name(), err)
-			}
-			continue
-		}
-		remaining++
-	}
-	if remaining == 0 && len(claimed) == 0 {
-		_ = os.Remove(dir) // best-effort tidy; fails when non-empty
-	}
-	_ = label // reserved for future debugLog enrichment
-	return nil
-}
-
-// copyWorkflowDef copies the named workflow into toScope under
-// newName (empty newName keeps the original name). fromScope ""
-// resolves like resolveWorkflowByName (explicit on ambiguity).
-// Errors when the target scope already has a workflow by the target
-// name — the caller resolves conflicts by passing a different
-// newName (tools) or pre-computing a unique one (builder UI).
+// copyWorkflowDef copies the named workflow into toScope under newName
+// (empty newName keeps the original name). fromScope "" resolves like
+// resolveWorkflowByName (explicit on ambiguity). Errors when the target
+// scope already holds the target name — the caller resolves conflicts by
+// passing a different newName.
 func copyWorkflowDef(cwd, name, fromScope, toScope, newName string) (workflowDef, error) {
 	target, err := normalizeWorkflowScope(toScope)
 	if err != nil {
@@ -508,8 +181,8 @@ func copyWorkflowDef(cwd, name, fromScope, toScope, newName string) (workflowDef
 	return dup, nil
 }
 
-// cloneWorkflowSteps deep-copies a step tree so a copied workflow
-// never shares loop inner-step slices with its source.
+// cloneWorkflowSteps deep-copies a step tree so a copied workflow never
+// shares loop inner-step slices with its source.
 func cloneWorkflowSteps(in []workflowStep) []workflowStep {
 	if in == nil {
 		return nil
@@ -522,9 +195,8 @@ func cloneWorkflowSteps(in []workflowStep) []workflowStep {
 	return out
 }
 
-// workflowScopeTag is the short UI label for a scope
-// ("user"/"repo"/"global"). Defs that predate scoping (empty Scope)
-// read as user.
+// workflowScopeTag is the short UI label for a scope. Defs that predate
+// scoping (empty Scope) read as user.
 func workflowScopeTag(scope string) string {
 	switch scope {
 	case workflowScopeRepo:

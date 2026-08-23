@@ -3,11 +3,11 @@ package main
 import (
 	"fmt"
 	"strings"
-	"sync"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 	xansi "github.com/charmbracelet/x/ansi"
+
+	"github.com/Cidan/ask/pkg/workflow"
 )
 
 // Workflow status constants. Empty string is "no record" — used by
@@ -15,9 +15,9 @@ import (
 // glyph. Only `done` and `failed` ever land on disk; `working` is
 // process-local because there's nothing to resume across restarts.
 const (
-	workflowStatusWorking = "working"
-	workflowStatusDone    = "done"
-	workflowStatusFailed  = "failed"
+	workflowStatusWorking = workflow.StatusWorking
+	workflowStatusDone    = workflow.StatusDone
+	workflowStatusFailed  = workflow.StatusFailed
 )
 
 // workflowStatusChangedMsg is broadcast by the runtime tracker every
@@ -31,245 +31,27 @@ type workflowStatusChangedMsg struct {
 	status   string
 }
 
-// workflowTrackerEntry is one in-memory record for an issue's
-// workflow. `working` entries carry the spawning TabID so a second
-// `f` press on the same issue can locate the live tab and focus it
-// rather than spawning a duplicate. Terminal statuses leave TabID
-// at zero — the tab they ran in may already be closed.
-type workflowTrackerEntry struct {
-	Status    string
-	TabID     int
-	Workflow  string
-	StepIndex int
-	StartedAt time.Time
-	UpdatedAt time.Time
+// workflowTracker returns the process-wide workflow runtime tracker.
+// The tracker itself — its in-memory entry map, disk-session hydration,
+// and status transitions — lives in pkg/workflow (workflow.GlobalTracker),
+// shared with the agent-facing workflow run path (see workflow_graph.go
+// handing the same GlobalTracker to workflow.NewProgress). This is a thin
+// accessor so the TUI reads and writes the SAME tracker the runner does,
+// instead of a second in-memory copy the UI never saw. Its status
+// listener is wired to broadcastWorkflowStatus in init() so every
+// transition — whether from the tab lifecycle (tabs.go) or the runner's
+// progress adapter — repaints live screens.
+func workflowTracker() *workflow.Tracker { return workflow.GlobalTracker() }
+
+func init() {
+	workflow.GlobalTracker().SetListener(broadcastWorkflowStatus)
 }
 
-// workflowTrackerHandle is the singleton state. All mutating methods
-// serialise through `mu` so concurrent kanban renders never tear
-// against runtime transitions. Reads through `lookup` populate the
-// cache on first hit so subsequent renders avoid the disk round-trip.
-type workflowTrackerHandle struct {
-	mu      sync.Mutex
-	entries map[string]workflowTrackerEntry
-}
-
-var workflowTrackerSingleton = &workflowTrackerHandle{
-	entries: make(map[string]workflowTrackerEntry),
-}
-
-// workflowTracker returns the package-wide singleton. The runtime
-// tracker is intentionally a singleton (not a per-tab field): a
-// single issue can only be the focus of one workflow tab at a time,
-// and the kanban needs a flat lookup that doesn't care which tab is
-// asking.
-func workflowTracker() *workflowTrackerHandle { return workflowTrackerSingleton }
-
-// resetWorkflowTrackerForTest wipes the singleton in-memory map.
-// Tests use this to start from a clean slate without process restart.
-// Production code never calls this.
+// resetWorkflowTrackerForTest wipes the shared tracker's in-memory map.
+// Tests use this to start from a clean slate without a process restart;
+// production code never calls it.
 func resetWorkflowTrackerForTest() {
-	h := workflowTrackerSingleton
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.entries = map[string]workflowTrackerEntry{}
-}
-
-// lookup returns the runtime entry for key, hydrating from disk on
-// the first miss so subsequent renders are O(1). cwd is the project
-// root used to find the matching projectConfig.Workflows.Sessions
-// entry. ok=false when neither memory nor disk has a record.
-func (h *workflowTrackerHandle) lookup(cwd, key string) (workflowTrackerEntry, bool) {
-	h.mu.Lock()
-	if e, ok := h.entries[key]; ok {
-		h.mu.Unlock()
-		return e, true
-	}
-	h.mu.Unlock()
-	cfg, err := loadConfig()
-	if err != nil {
-		return workflowTrackerEntry{}, false
-	}
-	pc := loadProjectConfig(cfg, cwd)
-	sess, ok := pc.Workflows.Sessions[key]
-	if !ok {
-		return workflowTrackerEntry{}, false
-	}
-	e := workflowTrackerEntry{
-		Status:    sess.Status,
-		Workflow:  sess.Workflow,
-		StepIndex: sess.StepIndex,
-		StartedAt: sess.StartedAt,
-		UpdatedAt: sess.UpdatedAt,
-	}
-	h.mu.Lock()
-	h.entries[key] = e
-	h.mu.Unlock()
-	return e, true
-}
-
-// markWorking flags the issue as in-flight in tab `tabID` running
-// `workflow`. Drops any previously-persisted terminal record so a
-// re-run isn't visually shadowed by an old icon. Broadcasts the
-// transition so live screens repaint.
-func (h *workflowTrackerHandle) markWorking(cwd, key, workflow string, tabID int) {
-	now := time.Now().UTC()
-	h.mu.Lock()
-	h.entries[key] = workflowTrackerEntry{
-		Status:    workflowStatusWorking,
-		TabID:     tabID,
-		Workflow:  workflow,
-		StepIndex: 0,
-		StartedAt: now,
-		UpdatedAt: now,
-	}
-	h.mu.Unlock()
-	h.deleteDiskSession(cwd, key)
-	broadcastWorkflowStatus(key, workflowStatusWorking)
-}
-
-// markStep advances the in-memory step index without changing status.
-// Used by the step runner each time a step boundary is crossed so the
-// banner has a fresh value. Re-broadcasts the same status so any
-// per-step badges (future feature) refresh too.
-func (h *workflowTrackerHandle) markStep(key string, stepIdx int) {
-	h.mu.Lock()
-	e, ok := h.entries[key]
-	if !ok {
-		h.mu.Unlock()
-		return
-	}
-	e.StepIndex = stepIdx
-	e.UpdatedAt = time.Now().UTC()
-	h.entries[key] = e
-	status := e.Status
-	h.mu.Unlock()
-	broadcastWorkflowStatus(key, status)
-}
-
-// markFinal records a terminal status and persists it. status MUST be
-// workflowStatusDone or workflowStatusFailed; any other value is a
-// silent no-op. Preserves StartedAt across the working→terminal
-// transition so the disk record reflects total run duration.
-func (h *workflowTrackerHandle) markFinal(cwd, key, workflow, status string, stepIdx int) {
-	if status != workflowStatusDone && status != workflowStatusFailed {
-		return
-	}
-	now := time.Now().UTC()
-	h.mu.Lock()
-	startedAt := now
-	if prev, ok := h.entries[key]; ok && !prev.StartedAt.IsZero() {
-		startedAt = prev.StartedAt
-	}
-	h.entries[key] = workflowTrackerEntry{
-		Status:    status,
-		Workflow:  workflow,
-		StepIndex: stepIdx,
-		StartedAt: startedAt,
-		UpdatedAt: now,
-	}
-	h.mu.Unlock()
-	h.upsertDiskSession(cwd, key, workflowSession{
-		Workflow:  workflow,
-		StepIndex: stepIdx,
-		Status:    status,
-		StartedAt: startedAt,
-		UpdatedAt: now,
-	})
-	broadcastWorkflowStatus(key, status)
-}
-
-// clear drops the in-memory entry without touching disk. Used when
-// the user backs out of a freshly-spawned tab before any step ran —
-// e.g. closing the tab while it's still showing the picker.
-func (h *workflowTrackerHandle) clear(key string) {
-	h.mu.Lock()
-	_, had := h.entries[key]
-	delete(h.entries, key)
-	h.mu.Unlock()
-	if had {
-		broadcastWorkflowStatus(key, "")
-	}
-}
-
-// activeTabFor returns (tabID, true) when `key` has an in-memory
-// working entry. Used by the `f` press path to focus an existing
-// workflow tab instead of spawning a duplicate. (0, false) when no
-// live workflow is running for the issue.
-func (h *workflowTrackerHandle) activeTabFor(key string) (int, bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	e, ok := h.entries[key]
-	if !ok || e.Status != workflowStatusWorking {
-		return 0, false
-	}
-	return e.TabID, true
-}
-
-// activeWorkflowNames returns the set of workflow names that have at
-// least one running session. The builder screen uses this to gate
-// destructive edits: rename/delete on an in-flight workflow is
-// blocked until the run finishes.
-func (h *workflowTrackerHandle) activeWorkflowNames() map[string]struct{} {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	out := make(map[string]struct{})
-	for _, e := range h.entries {
-		if e.Status == workflowStatusWorking && e.Workflow != "" {
-			out[e.Workflow] = struct{}{}
-		}
-	}
-	return out
-}
-
-// upsertDiskSession persists `sess` under projectConfig.Workflows.Sessions
-// for cwd. Errors land in debugLog only — losing a status record is
-// preferable to crashing the runtime. Held under configFileMu so a
-// concurrent /workflows builder commit or MCP workflow_edit call can't
-// race the load → mutate → save chain and lose either side's update.
-func (h *workflowTrackerHandle) upsertDiskSession(cwd, key string, sess workflowSession) {
-	err := withConfigLock(func() error {
-		cfg, err := loadConfig()
-		if err != nil {
-			return fmt.Errorf("load: %w", err)
-		}
-		pc := loadProjectConfig(cfg, cwd)
-		if pc.Workflows.Sessions == nil {
-			pc.Workflows.Sessions = make(map[string]workflowSession)
-		}
-		pc.Workflows.Sessions[key] = sess
-		cfg = upsertProjectConfig(cfg, cwd, pc)
-		return saveConfig(cfg)
-	})
-	if err != nil {
-		debugLog("workflowTracker upsert: %v", err)
-	}
-}
-
-// deleteDiskSession removes any persisted record for key. Called from
-// markWorking so a fresh run doesn't render the icon for a stale
-// terminal state from a previous attempt. Held under configFileMu for
-// the same reason as upsertDiskSession.
-func (h *workflowTrackerHandle) deleteDiskSession(cwd, key string) {
-	err := withConfigLock(func() error {
-		cfg, err := loadConfig()
-		if err != nil {
-			return err
-		}
-		pc := loadProjectConfig(cfg, cwd)
-		if _, ok := pc.Workflows.Sessions[key]; !ok {
-			return nil
-		}
-		delete(pc.Workflows.Sessions, key)
-		if len(pc.Workflows.Sessions) == 0 {
-			pc.Workflows.Sessions = nil
-		}
-		cfg = upsertProjectConfig(cfg, cwd, pc)
-		return saveConfig(cfg)
-	})
-	if err != nil {
-		debugLog("workflowTracker delete: %v", err)
-	}
+	workflow.GlobalTracker().ResetForTest()
 }
 
 // broadcastWorkflowStatus delivers a workflowStatusChangedMsg to the
@@ -329,7 +111,7 @@ func workflowStatusForIssue(s *issuesState, prefix string, hasPrefix bool, n int
 		return ""
 	}
 	key := prefix + itoaInt(n)
-	e, ok := workflowTracker().lookup(s.cwd, key)
+	e, ok := workflowTracker().Lookup(s.cwd, key)
 	if !ok {
 		return ""
 	}

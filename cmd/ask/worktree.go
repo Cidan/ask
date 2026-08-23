@@ -12,20 +12,30 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+
+	"github.com/Cidan/ask/pkg/config"
 )
+
+// workspaceBackend and the detection / validation / gitignore helpers below
+// are thin aliases over the canonical implementations in pkg/config
+// (config.WorktreeBackendAt, ValidateAskCwd, EnsureWorktreeGitignore, …). The
+// lock / prune / create / jj-workspace machinery in the rest of this file is
+// TUI-only and builds on these aliases; keeping them lets that machinery — and
+// every TUI call site — stay unchanged while the shared detection logic lives
+// in one place.
 
 // askLockPrefix tags worktree/workspace locks ask owns. The suffix is the ask
 // PID so prune can tell its own / other live / stale locks apart.
-const askLockPrefix = "ask:"
+const askLockPrefix = config.AskLockPrefix
 
 const jjWorkspaceLockFile = "ask-workspace-lock"
 
-type workspaceBackend int
+type workspaceBackend = config.WorkspaceBackend
 
 const (
-	workspaceBackendNone workspaceBackend = iota
-	workspaceBackendGit
-	workspaceBackendJJ
+	workspaceBackendNone = config.WorkspaceBackendNone
+	workspaceBackendGit  = config.WorkspaceBackendGit
+	workspaceBackendJJ   = config.WorkspaceBackendJJ
 )
 
 var (
@@ -33,71 +43,22 @@ var (
 	reservedWorktreeNames = map[string]map[string]struct{}{}
 )
 
-// ensureWorktreeGitignore makes sure the repo at cwd ignores
-// `.claude/worktrees/`, the parent of every ask-managed workspace. JJ honors
-// `.gitignore` files too, so this applies to both git and jujutsu checkouts.
-// No-op when cwd is not itself a repo root (we don't walk upward) or when a
-// rule already covers the path.
+// ensureWorktreeGitignore makes sure the repo at the current working directory
+// ignores `.claude/worktrees/`. Delegates to config.EnsureWorktreeGitignore;
+// no-op when cwd is not itself a repo root or a rule already covers the path.
 func ensureWorktreeGitignore() {
-	if worktreeBackendAt(getwdOrEmpty()) == workspaceBackendNone {
-		return
-	}
-	path := ".gitignore"
-	existing, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		debugLog("worktree gitignore read %s: %v", path, err)
-		return
-	}
-	if gitignoreCoversWorktrees(string(existing)) {
-		return
-	}
-	next := string(existing)
-	if len(next) > 0 && !strings.HasSuffix(next, "\n") {
-		next += "\n"
-	}
-	next += ".claude/worktrees/\n"
-	if err := os.WriteFile(path, []byte(next), 0o644); err != nil {
-		debugLog("worktree gitignore write %s: %v", path, err)
-		return
-	}
-	debugLog("worktree gitignore added .claude/worktrees/ to %s", path)
+	config.EnsureWorktreeGitignore(getwdOrEmpty())
 }
 
 // inGitCheckout returns true when cwd itself contains `.git` (directory in a
 // normal checkout, regular file in a worktree / submodule).
-func inGitCheckout() bool {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return false
-	}
-	return inGitCheckoutAt(cwd)
-}
+func inGitCheckout() bool { return config.InGitCheckout() }
 
-func inGitCheckoutAt(cwd string) bool {
-	if cwd == "" {
-		return false
-	}
-	_, err := os.Stat(filepath.Join(cwd, ".git"))
-	return err == nil
-}
+func inGitCheckoutAt(cwd string) bool { return config.InGitCheckoutAt(cwd) }
 
-func inJujutsuCheckoutAt(cwd string) bool {
-	if cwd == "" {
-		return false
-	}
-	info, err := os.Stat(filepath.Join(cwd, ".jj"))
-	return err == nil && info.IsDir()
-}
+func inJujutsuCheckoutAt(cwd string) bool { return config.InJujutsuCheckoutAt(cwd) }
 
-func worktreeBackendAt(cwd string) workspaceBackend {
-	if inJujutsuCheckoutAt(cwd) {
-		return workspaceBackendJJ
-	}
-	if inGitCheckoutAt(cwd) {
-		return workspaceBackendGit
-	}
-	return workspaceBackendNone
-}
+func worktreeBackendAt(cwd string) workspaceBackend { return config.WorktreeBackendAt(cwd) }
 
 func getwdOrEmpty() string {
 	cwd, err := os.Getwd()
@@ -109,76 +70,16 @@ func getwdOrEmpty() string {
 
 // worktreeNameFromCwd returns the worktree directory name when cwd is inside
 // a `.claude/worktrees/<name>/...` subtree, otherwise "".
-func worktreeNameFromCwd(cwd string) string {
-	sep := string(os.PathSeparator)
-	marker := sep + ".claude" + sep + "worktrees" + sep
-	_, rest, ok := strings.Cut(cwd, marker)
-	if !ok {
-		return ""
-	}
-	if name, _, ok := strings.Cut(rest, sep); ok {
-		return name
-	}
-	return rest
-}
+func worktreeNameFromCwd(cwd string) string { return config.WorktreeNameFromCwd(cwd) }
 
-// askCwdInvalidErr describes the chat-facing reason ask refuses to
-// start an LLM session in the current cwd. Empty Msg means cwd is OK.
-// WorktreeName is set when cwd is itself an ask-managed worktree, so
-// the error string includes the /resume hint for that worktree.
-type askCwdInvalidErr struct {
-	Msg          string
-	WorktreeName string
-}
+// askCwdInvalidErr describes the chat-facing reason ask refuses to start an LLM
+// session in the current cwd (empty Msg means OK; WorktreeName is set when cwd
+// is itself an ask-managed worktree). Canonical type + rules live in pkg/config.
+type askCwdInvalidErr = config.AskCwdInvalidErr
 
-// validateAskCwd reports whether ask's own cwd is a valid place to
-// start or resume an LLM session.
-//
-// Rules:
-//   - Empty cwd → OK (caller hasn't initialised yet).
-//   - cwd is inside an ask-managed worktree (.claude/worktrees/<name>)
-//     → REFUSE with the worktree-specific message naming <name>.
-//   - cwd is itself a git/jj checkout root → OK.
-//   - cwd is inside a git/jj checkout but not at its root → REFUSE.
-//   - cwd is outside any checkout → OK.
-func validateAskCwd(cwd string) askCwdInvalidErr {
-	if cwd == "" {
-		return askCwdInvalidErr{}
-	}
-	if name := worktreeNameFromCwd(cwd); name != "" {
-		return askCwdInvalidErr{
-			Msg: "Ask's current working directory can not be a subdirectory of a git checkout and must be the checkout's root.\n\n" +
-				"To resume a worktree session, you must type /resume and pick the session that previously held the worktree " + name + ".",
-			WorktreeName: name,
-		}
-	}
-	if worktreeBackendAt(cwd) != workspaceBackendNone {
-		return askCwdInvalidErr{}
-	}
-	if findEnclosingCheckout(cwd) != "" {
-		return askCwdInvalidErr{
-			Msg: "Ask's current working directory can not be a subdirectory of a git checkout and must be the checkout's root.",
-		}
-	}
-	return askCwdInvalidErr{}
-}
-
-// findEnclosingCheckout walks up from cwd looking for an ancestor
-// that is itself a git or jj checkout root. Returns the first such
-// directory or "" when cwd has no enclosing checkout.
-func findEnclosingCheckout(cwd string) string {
-	cur := cwd
-	for {
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return ""
-		}
-		cur = parent
-		if worktreeBackendAt(cur) != workspaceBackendNone {
-			return cur
-		}
-	}
-}
+// validateAskCwd reports whether ask's own cwd is a valid place to start or
+// resume an LLM session; see config.ValidateAskCwd for the rules.
+func validateAskCwd(cwd string) askCwdInvalidErr { return config.ValidateAskCwd(cwd) }
 
 // validateExecutorCwd is the last-line guard before we hand a cwd to
 // claude/codex. When worktree mode is enabled and the project root is
@@ -788,27 +689,4 @@ func ensureResumeWorktree(resumeCwd string) error {
 	default:
 		return nil
 	}
-}
-
-func gitignoreCoversWorktrees(contents string) bool {
-	for _, raw := range strings.Split(contents, "\n") {
-		l := strings.TrimSpace(raw)
-		if l == "" || strings.HasPrefix(l, "#") || strings.HasPrefix(l, "!") {
-			continue
-		}
-		l = strings.TrimPrefix(l, "/")
-		for changed := true; changed; {
-			changed = false
-			for _, suf := range []string{"/**", "/*", "/"} {
-				if strings.HasSuffix(l, suf) {
-					l = strings.TrimSuffix(l, suf)
-					changed = true
-				}
-			}
-		}
-		if l == ".claude" || l == ".claude/worktrees" {
-			return true
-		}
-	}
-	return false
 }

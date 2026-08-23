@@ -432,7 +432,7 @@ func (a app) supplantWorkflow(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
 		t.fc.vbFP = ""
 	}
 	a.sidebarFocus = false
-	workflowTracker().markWorking(req.Cwd, req.Source.Key(), req.Workflow.Name, t.id)
+	workflowTracker().MarkWorking(req.Cwd, req.Source.Key(), req.Workflow.Name, t.id)
 	if idx != a.active {
 		if tm, ok := a.focusTab(idx); ok {
 			a = tm
@@ -502,7 +502,7 @@ func (a app) closeTab(tabID int) (tea.Model, tea.Cmd) {
 	// (workflowRun.done / .failed flipped) leaves the disk record
 	// alone.
 	if t.workflowRun != nil && !t.workflowRun.done && !t.workflowRun.failed {
-		workflowTracker().markFinal(
+		workflowTracker().MarkFinal(
 			t.cwd,
 			t.workflowRun.Source.Key(),
 			t.workflowRun.Workflow.Name,

@@ -1,8 +1,6 @@
 package workflow
 
 import (
-	"fmt"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -206,6 +204,12 @@ func (t *Tracker) ActiveWorkflowNames() map[string]struct{} {
 	return out
 }
 
+// upsertDiskSession persists sess under the project's canonical config
+// key (config.ProjectKey/ProjectRoot) — the SAME key Lookup reads from,
+// so the terminal-status record round-trips across restarts. Keyed via
+// LoadProjectConfig/UpsertProjectConfig rather than a raw filepath.Abs so
+// a session written from a subdir of a checkout lands under the same
+// project bag every other config surface uses.
 func (t *Tracker) upsertDiskSession(cwd, key string, sess config.WorkflowSession) {
 	if cwd == "" {
 		return
@@ -213,21 +217,14 @@ func (t *Tracker) upsertDiskSession(cwd, key string, sess config.WorkflowSession
 	_ = config.WithConfigLock(func() error {
 		cfg, err := config.Load()
 		if err != nil {
-			return fmt.Errorf("load config: %w", err)
+			return err
 		}
-		if cfg.Projects == nil {
-			cfg.Projects = make(map[string]config.ProjectConfig)
-		}
-		canonical, err := filepath.Abs(cwd)
-		if err != nil {
-			canonical = cwd
-		}
-		pc := cfg.Projects[canonical]
+		pc := config.LoadProjectConfig(cfg, cwd)
 		if pc.Workflows.Sessions == nil {
 			pc.Workflows.Sessions = make(map[string]config.WorkflowSession)
 		}
 		pc.Workflows.Sessions[key] = sess
-		cfg.Projects[canonical] = pc
+		cfg = config.UpsertProjectConfig(cfg, cwd, pc)
 		return config.Save(cfg)
 	})
 }
@@ -241,25 +238,15 @@ func (t *Tracker) deleteDiskSession(cwd, key string) {
 		if err != nil {
 			return err
 		}
-		if cfg.Projects == nil {
-			return nil
-		}
-		canonical, err := filepath.Abs(cwd)
-		if err != nil {
-			canonical = cwd
-		}
-		pc, ok := cfg.Projects[canonical]
-		if !ok || pc.Workflows.Sessions == nil {
-			return nil
-		}
-		if _, exists := pc.Workflows.Sessions[key]; !exists {
+		pc := config.LoadProjectConfig(cfg, cwd)
+		if _, ok := pc.Workflows.Sessions[key]; !ok {
 			return nil
 		}
 		delete(pc.Workflows.Sessions, key)
 		if len(pc.Workflows.Sessions) == 0 {
 			pc.Workflows.Sessions = nil
 		}
-		cfg.Projects[canonical] = pc
+		cfg = config.UpsertProjectConfig(cfg, cwd, pc)
 		return config.Save(cfg)
 	})
 }

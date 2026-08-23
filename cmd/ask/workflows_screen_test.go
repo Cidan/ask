@@ -218,7 +218,7 @@ func TestWorkflowsBuilder_DeleteBlockedWhileRunning(t *testing.T) {
 	if err := saveConfig(cfg); err != nil {
 		t.Fatalf("saveConfig: %v", err)
 	}
-	workflowTracker().markWorking(cwd, "github:ow/r#1", "wf", 7)
+	workflowTracker().MarkWorking(cwd, "github:ow/r#1", "wf", 7)
 
 	m := newTestModel(t, newFakeProvider())
 	m.cwd = cwd
@@ -811,7 +811,7 @@ func TestWorkflowsBuilder_MoveScopeConflictRenames(t *testing.T) {
 // guard on `s` — a mid-run identity change could strand the tracker.
 func TestWorkflowsBuilder_MoveScopeBlockedWhileRunning(t *testing.T) {
 	m, cwd := seedWorkflowsBuilder(t, []workflowDef{{Name: "busy"}})
-	workflowTracker().markWorking(cwd, "k", "busy", 1)
+	workflowTracker().MarkWorking(cwd, "k", "busy", 1)
 	t.Cleanup(resetWorkflowTrackerForTest)
 	m.workflowsBuilder.focus = workflowsBuilderFocusLeft
 	m1, _, _ := workflowsScreen{}.updateKey(m, tea.KeyPressMsg{Code: 's'})
@@ -878,7 +878,7 @@ func TestWorkflowsBuilder_CopyCycleHitsGlobal(t *testing.T) {
 // on-disk file, so the same guard applies.
 func TestWorkflowsBuilder_MoveToGlobalBlockedWhileRunning(t *testing.T) {
 	m, cwd := seedWorkflowsBuilder(t, []workflowDef{{Name: "busy", Scope: workflowScopeRepo}})
-	workflowTracker().markWorking(cwd, "k", "busy", 1)
+	workflowTracker().MarkWorking(cwd, "k", "busy", 1)
 	t.Cleanup(resetWorkflowTrackerForTest)
 	m.workflowsBuilder.focus = workflowsBuilderFocusLeft
 	// Refresh items so the builder sees the repo-scope seed.

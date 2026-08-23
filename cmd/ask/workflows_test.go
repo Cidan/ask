@@ -58,10 +58,10 @@ func TestWorkflowTracker_MarkWorking_InMemoryOnly(t *testing.T) {
 	cwd := isolateHome(t)
 	resetWorkflowTrackerForTest()
 	const key = "github:owner/repo#1"
-	workflowTracker().markWorking(cwd, key, "fix-and-review", 7)
+	workflowTracker().MarkWorking(cwd, key, "fix-and-review", 7)
 
 	// In-memory: working with tabID 7.
-	tabID, alive := workflowTracker().activeTabFor(key)
+	tabID, alive := workflowTracker().ActiveTabFor(key)
 	if !alive || tabID != 7 {
 		t.Fatalf("activeTabFor: alive=%v tabID=%d, want true,7", alive, tabID)
 	}
@@ -82,10 +82,10 @@ func TestWorkflowTracker_MarkFinal_WritesDoneToDisk(t *testing.T) {
 	cwd := isolateHome(t)
 	resetWorkflowTrackerForTest()
 	const key = "github:owner/repo#9"
-	workflowTracker().markWorking(cwd, key, "wf", 3)
-	workflowTracker().markFinal(cwd, key, "wf", workflowStatusDone, 1)
+	workflowTracker().MarkWorking(cwd, key, "wf", 3)
+	workflowTracker().MarkFinal(cwd, key, "wf", workflowStatusDone, 1)
 
-	if _, alive := workflowTracker().activeTabFor(key); alive {
+	if _, alive := workflowTracker().ActiveTabFor(key); alive {
 		t.Errorf("activeTabFor should be false after markFinal")
 	}
 	cfg, _ := loadConfig()
@@ -116,11 +116,11 @@ func TestWorkflowTracker_MarkWorking_DropsStaleDoneRecord(t *testing.T) {
 	cwd := isolateHome(t)
 	resetWorkflowTrackerForTest()
 	const key = "github:owner/repo#7"
-	workflowTracker().markWorking(cwd, key, "wf", 1)
-	workflowTracker().markFinal(cwd, key, "wf", workflowStatusDone, 0)
+	workflowTracker().MarkWorking(cwd, key, "wf", 1)
+	workflowTracker().MarkFinal(cwd, key, "wf", workflowStatusDone, 0)
 	resetWorkflowTrackerForTest()
 	// Start a new run; on-disk done should evaporate.
-	workflowTracker().markWorking(cwd, key, "wf", 2)
+	workflowTracker().MarkWorking(cwd, key, "wf", 2)
 	cfg, _ := loadConfig()
 	pc := loadProjectConfig(cfg, cwd)
 	if _, ok := pc.Workflows.Sessions[key]; ok {
@@ -147,7 +147,7 @@ func TestWorkflowTracker_Lookup_FallsBackToDisk(t *testing.T) {
 	if err := saveConfig(cfg); err != nil {
 		t.Fatalf("saveConfig: %v", err)
 	}
-	e, ok := workflowTracker().lookup(cwd, key)
+	e, ok := workflowTracker().Lookup(cwd, key)
 	if !ok {
 		t.Fatalf("lookup should hydrate from disk")
 	}
@@ -163,10 +163,10 @@ func TestWorkflowTracker_Clear_DropsInMemoryOnly(t *testing.T) {
 	cwd := isolateHome(t)
 	resetWorkflowTrackerForTest()
 	const key = "github:owner/repo#11"
-	workflowTracker().markFinal(cwd, key, "wf", workflowStatusDone, 0)
+	workflowTracker().MarkFinal(cwd, key, "wf", workflowStatusDone, 0)
 	resetWorkflowTrackerForTest() // simulate a fresh process
 	// Disk record persists; in-memory clear() doesn't change disk.
-	workflowTracker().clear(key)
+	workflowTracker().Clear(key)
 	cfg, _ := loadConfig()
 	pc := loadProjectConfig(cfg, cwd)
 	if _, ok := pc.Workflows.Sessions[key]; !ok {
@@ -181,9 +181,9 @@ func TestWorkflowTracker_Clear_DropsInMemoryOnly(t *testing.T) {
 func TestWorkflowTracker_ActiveWorkflowNames_OnlyWorking(t *testing.T) {
 	cwd := isolateHome(t)
 	resetWorkflowTrackerForTest()
-	workflowTracker().markFinal(cwd, "key:done", "finished", workflowStatusDone, 0)
-	workflowTracker().markWorking(cwd, "key:working", "running", 1)
-	got := workflowTracker().activeWorkflowNames()
+	workflowTracker().MarkFinal(cwd, "key:done", "finished", workflowStatusDone, 0)
+	workflowTracker().MarkWorking(cwd, "key:working", "running", 1)
+	got := workflowTracker().ActiveWorkflowNames()
 	if _, ok := got["finished"]; ok {
 		t.Errorf("done workflow should not appear in activeWorkflowNames")
 	}

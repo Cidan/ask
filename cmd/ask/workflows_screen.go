@@ -539,7 +539,7 @@ func (b *workflowsBuilderState) runningGuard() string {
 		return ""
 	}
 	name := b.items[wIdx].Name
-	active := workflowTracker().activeWorkflowNames()
+	active := workflowTracker().ActiveWorkflowNames()
 	if _, running := active[name]; running {
 		return "blocked: workflow is running"
 	}

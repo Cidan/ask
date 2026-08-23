@@ -450,16 +450,9 @@ func TestWorkflowsGlobalDir_NonHome(t *testing.T) {
 	if got := workflowsGlobalDir(); got != "" {
 		t.Errorf("empty HOME should yield empty dir; got %q", got)
 	}
-	// loadGlobalWorkflows/syncGlobalWorkflowFiles degrade cleanly
-	// when the dir is empty.
+	// loadGlobalWorkflows degrades cleanly when the dir is empty.
 	if got := loadGlobalWorkflows(); got != nil {
 		t.Errorf("loadGlobalWorkflows on empty dir should return nil; got %+v", got)
-	}
-	if err := syncGlobalWorkflowFiles([]workflowDef{{Name: "x", Scope: workflowScopeGlobal}}); err == nil {
-		t.Error("syncGlobalWorkflowFiles with defs but empty dir should error")
-	}
-	if err := syncGlobalWorkflowFiles(nil); err != nil {
-		t.Errorf("syncGlobalWorkflowFiles with no defs and empty dir should be a no-op; got %v", err)
 	}
 }
 

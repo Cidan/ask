@@ -117,7 +117,7 @@ func TestF_AlreadyRunningFocusesExistingTab(t *testing.T) {
 	m.issues.view = kv
 
 	const liveTabID = 42
-	workflowTracker().markWorking(cwd, "github:ow/r#5", "wf", liveTabID)
+	workflowTracker().MarkWorking(cwd, "github:ow/r#5", "wf", liveTabID)
 
 	m2, cmd, handled := issuesScreen{}.updateKey(m, tea.KeyPressMsg{Code: 'f'})
 	if !handled {

@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/Cidan/ask/pkg/config"
 )
 
 func TestGitignoreCoversWorktrees(t *testing.T) {
@@ -26,7 +28,7 @@ func TestGitignoreCoversWorktrees(t *testing.T) {
 		{"empty", "", false},
 	}
 	for _, c := range cases {
-		if got := gitignoreCoversWorktrees(c.contents); got != c.want {
+		if got := config.GitignoreCoversWorktrees(c.contents); got != c.want {
 			t.Errorf("%s: got %v want %v (contents=%q)", c.name, got, c.want, c.contents)
 		}
 	}

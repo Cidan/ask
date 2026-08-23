@@ -458,7 +458,7 @@ func TestWorkflowSupplantsTabInSidebarMode(t *testing.T) {
 		t.Errorf("screen = %v, want ask", t0.screen)
 	}
 	// The tracker knows the run is working on this tab.
-	if tabID, ok := workflowTracker().activeTabFor(msg.Source.Key()); !ok || tabID != t0.id {
+	if tabID, ok := workflowTracker().ActiveTabFor(msg.Source.Key()); !ok || tabID != t0.id {
 		t.Errorf("tracker activeTabFor = %d/%v", tabID, ok)
 	}
 	// The returned cmd kicks the workflow on the Coordinator.

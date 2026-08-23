@@ -1325,7 +1325,7 @@ func (m model) dispatchIssueWorkflow(screen screenID) (model, tea.Cmd, bool) {
 	if err != nil {
 		return m, m.toast.show("could not resolve " + s.titleLower() + " ref: " + err.Error()), true
 	}
-	if tabID, alive := workflowTracker().activeTabFor(ref.Key()); alive {
+	if tabID, alive := workflowTracker().ActiveTabFor(ref.Key()); alive {
 		// A workflow run is already in flight for this issue. Focus
 		// the existing tab rather than spawn a duplicate — same
 		// `f` lift on the same issue should always land on the
