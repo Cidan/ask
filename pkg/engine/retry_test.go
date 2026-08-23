@@ -174,3 +174,30 @@ func TestRetryBackoff_CapsAtMax(t *testing.T) {
 		t.Fatalf("attempt 20 = %v, want cap %v", d, retryMaxDelay)
 	}
 }
+
+// closableModel records whether Close was called, verifying the io.Closer
+// capability is forwarded through the retry decorator and CloseModel.
+type closableModel struct {
+	scriptedModel
+	closed bool
+}
+
+func (m *closableModel) Close() error { m.closed = true; return nil }
+
+func TestCloseModel_ForwardsThroughRetryDecorator(t *testing.T) {
+	inner := &closableModel{}
+	wrapped := newRetryingModel(inner, time.Millisecond, 2)
+	if err := CloseModel(wrapped); err != nil {
+		t.Fatalf("CloseModel: %v", err)
+	}
+	if !inner.closed {
+		t.Error("Close must reach the wrapped model through retryingModel")
+	}
+}
+
+func TestCloseModel_NoOpForPlainModel(t *testing.T) {
+	// A model with no Close must not panic and must return nil.
+	if err := CloseModel(&scriptedModel{}); err != nil {
+		t.Errorf("CloseModel on a non-closer = %v, want nil", err)
+	}
+}

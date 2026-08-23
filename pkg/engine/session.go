@@ -148,6 +148,9 @@ func (s *Session) Close() {
 	s.closeOnce.Do(func() {
 		close(s.closed)
 		s.InterruptTurn()
+		if s.llm != nil {
+			_ = CloseModel(s.llm)
+		}
 	})
 }
 

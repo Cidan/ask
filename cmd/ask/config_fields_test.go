@@ -45,8 +45,15 @@ func TestGlobalConfigItems_ProviderRowsComeFromRegistry(t *testing.T) {
 		if !ok {
 			t.Fatalf("missing /config row for provider %q: %v", p.ID(), rowIDs(items))
 		}
-		if row.name != p.DisplayName()+"..." || row.key != "off" {
-			t.Errorf("%s row = %+v, want %q / off", p.ID(), row, p.DisplayName()+"...")
+		// A provider with no config reads "off" unless it is already
+		// configured from the environment — Claude Code is configured
+		// whenever the `claude` binary is on PATH, so derive the expectation.
+		want := "off"
+		if p.Configured(providerConfig{}) {
+			want = "on"
+		}
+		if row.name != p.DisplayName()+"..." || row.key != want {
+			t.Errorf("%s row = %+v, want %q / %s", p.ID(), row, p.DisplayName()+"...", want)
 		}
 	}
 	if _, ok := byID["webSearch"]; !ok {

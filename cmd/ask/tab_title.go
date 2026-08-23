@@ -51,6 +51,9 @@ var generateTabTitleText = func(providerID, modelID, prompt string) (string, Tok
 	if err != nil {
 		return "", TokenUsage{}, err
 	}
+	// One-shot: a subprocess-backed provider forks a child for this single
+	// call, so close it when the title is done.
+	defer engine.CloseModel(llm)
 	req := &adkmodel.LLMRequest{
 		Model: modelID,
 		Contents: []*genai.Content{

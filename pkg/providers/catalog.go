@@ -132,6 +132,23 @@ var defaultOpenRouterModels = []ModelInfo{
 	},
 }
 
+// defaultClaudeCodeModels are the aliases the `claude` CLI accepts, plus their
+// 1M-context variants. The CLI resolves an alias to the current model; the
+// per-session result frame's modelUsage carries the authoritative limits, so
+// these are the offline floor for the picker.
+var defaultClaudeCodeModels = []ModelInfo{
+	{ID: "default", Name: "Default (recommended)", ContextWindow: 1_000_000, DefaultMaxTokens: 64_000, SupportsImages: true, ReasoningLevels: ClaudeCodeEffortOptions},
+	{ID: "fable", Name: "Fable 5", ContextWindow: 200_000, DefaultMaxTokens: 64_000, SupportsImages: true, ReasoningLevels: ClaudeCodeEffortOptions},
+	{ID: "opus", Name: "Opus 5", ContextWindow: 200_000, DefaultMaxTokens: 64_000, SupportsImages: true, ReasoningLevels: ClaudeCodeEffortOptions},
+	{ID: "opus[1m]", Name: "Opus 5 (1M context)", ContextWindow: 1_000_000, DefaultMaxTokens: 64_000, SupportsImages: true, ReasoningLevels: ClaudeCodeEffortOptions},
+	{ID: "sonnet", Name: "Sonnet 5", ContextWindow: 200_000, DefaultMaxTokens: 64_000, SupportsImages: true, ReasoningLevels: ClaudeCodeEffortOptions},
+	{ID: "sonnet[1m]", Name: "Sonnet 5 (1M context)", ContextWindow: 1_000_000, DefaultMaxTokens: 64_000, SupportsImages: true, ReasoningLevels: ClaudeCodeEffortOptions},
+	{ID: "haiku", Name: "Haiku 4.5", ContextWindow: 200_000, DefaultMaxTokens: 32_000, SupportsImages: true, ReasoningLevels: ClaudeCodeEffortOptions},
+}
+
+// ClaudeCodeModelOptions are the catalog ids the picker shows for Claude Code.
+var ClaudeCodeModelOptions = CatalogModelIDs(ClaudeCodeProviderID)
+
 // NormalizeModelID trims provider prefixes ("vertex/", "publishers/google/models/", "models/")
 // to ensure model identifiers match registered catalog IDs.
 func NormalizeModelID(modelID string) string {
@@ -198,6 +215,8 @@ func CatalogModel(provider string, modelID string) (ModelInfo, bool) {
 		models = defaultOpenRouterModels
 	case VertexProviderID:
 		models = defaultVertexModels
+	case ClaudeCodeProviderID:
+		models = defaultClaudeCodeModels
 	default:
 		return ModelInfo{}, false
 	}
@@ -211,15 +230,17 @@ func CatalogModel(provider string, modelID string) (ModelInfo, bool) {
 
 // CatalogModelIDs returns the provider's model ids in catalog order.
 func CatalogModelIDs(provider string) []string {
-	if provider == OpenRouterProviderID {
-		ids := make([]string, len(defaultOpenRouterModels))
-		for i, m := range defaultOpenRouterModels {
-			ids[i] = m.ID
-		}
-		return ids
+	var models []ModelInfo
+	switch provider {
+	case OpenRouterProviderID:
+		models = defaultOpenRouterModels
+	case ClaudeCodeProviderID:
+		models = defaultClaudeCodeModels
+	default:
+		models = defaultVertexModels
 	}
-	ids := make([]string, len(defaultVertexModels))
-	for i, m := range defaultVertexModels {
+	ids := make([]string, len(models))
+	for i, m := range models {
 		ids[i] = m.ID
 	}
 	return ids

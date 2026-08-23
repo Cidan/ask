@@ -58,6 +58,7 @@ func (c *Coordinator) runWorkflowGraph(ctx context.Context, cwd string, tabID in
 		listener.OnWorkflowFailed(tabID, err.Error())
 		return nil, err
 	}
+	defer compiled.Close() // release per-step models (Claude Code children)
 	graphAgent, err := engine.WorkflowGraphAgent(def.Name, compiled)
 	if err != nil {
 		listener.OnWorkflowFailed(tabID, err.Error())

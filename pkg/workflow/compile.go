@@ -81,6 +81,25 @@ type Compiled struct {
 	// name) to its metadata. Inner loop agents map to their
 	// containing loop step index.
 	AgentInfo map[string]StepAgentInfo
+	// Models are the per-step models built at compile time. Close releases
+	// them after the run — a subprocess-backed provider (Claude Code) forks
+	// a child per step that must be terminated.
+	Models []model.LLM
+}
+
+// Close releases every per-step model. It is safe to call on a nil Compiled
+// and after a partial compile.
+func (c *Compiled) Close() error {
+	if c == nil {
+		return nil
+	}
+	for _, m := range c.Models {
+		if closer, ok := m.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	}
+	c.Models = nil
+	return nil
 }
 
 // StepIndex resolves an event author to a top-level step index.
@@ -212,6 +231,7 @@ func buildStepAgent(ctx context.Context, cfg WorkflowAgentConfig, step Step, ste
 	if err != nil {
 		return nil, fmt.Errorf("workflow compile: model for step %q: %w", step.Name, err)
 	}
+	out.Models = append(out.Models, llm)
 
 	role := StepRole{InLoop: loop != nil, IsFinal: isFinal}
 	if loop != nil {

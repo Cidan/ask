@@ -63,13 +63,13 @@ func withRegistry(t *testing.T, provs ...Provider) {
 
 func TestRegistry_BuiltinOrderAndLookup(t *testing.T) {
 	all := All()
-	if len(all) != 2 || all[0].ID() != VertexProviderID || all[1].ID() != OpenRouterProviderID {
+	if len(all) != 3 || all[0].ID() != VertexProviderID || all[1].ID() != OpenRouterProviderID || all[2].ID() != ClaudeCodeProviderID {
 		t.Fatalf("builtin registry = %v", ids(all))
 	}
 	if DefaultProviderID() != VertexProviderID {
 		t.Errorf("default provider = %q want vertex", DefaultProviderID())
 	}
-	for _, id := range []string{VertexProviderID, OpenRouterProviderID} {
+	for _, id := range []string{VertexProviderID, OpenRouterProviderID, ClaudeCodeProviderID} {
 		p, ok := Get(id)
 		if !ok || p.ID() != id || p.DisplayName() == "" || p.DefaultModel() == "" {
 			t.Errorf("Get(%q) = %v, %v", id, p, ok)

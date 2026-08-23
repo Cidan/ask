@@ -40,6 +40,7 @@ var (
 var modelsDevProviderIDs = map[string]string{
 	VertexProviderID:     "google-vertex",
 	OpenRouterProviderID: "openrouter",
+	ClaudeCodeProviderID: "anthropic",
 }
 
 type modelsDevModel struct {

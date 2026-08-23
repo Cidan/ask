@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"io"
 	"iter"
 	"strings"
 	"time"
@@ -40,6 +41,15 @@ func newRetryingModel(inner model.LLM, initialDelay time.Duration, backoff float
 }
 
 func (r *retryingModel) Name() string { return r.inner.Name() }
+
+// Close forwards to the wrapped model so a subprocess-backed provider's child
+// is terminated when the caller closes the model it got from ModelBuilder.
+func (r *retryingModel) Close() error {
+	if c, ok := r.inner.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
+}
 
 func (r *retryingModel) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {

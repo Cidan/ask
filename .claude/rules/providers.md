@@ -40,8 +40,9 @@ the registry; nothing outside `pkg/providers` may name a provider.
 
 ## Providers today
 
-`builtin` in provider.go is `[]Provider{Vertex{}, OpenRouter{}}`; Vertex
-is `DefaultProviderID()`. Both implement `ModelLister`.
+`builtin` in provider.go is `[]Provider{Vertex{}, OpenRouter{},
+ClaudeCode{}}`; Vertex is `DefaultProviderID()`. All three implement
+`ModelLister`.
 
 - **Vertex** (`vertex.go`): Gemini through ADK's `gemini.NewModel` with
   `genai.BackendVertexAI`. Settings `project` (env `GOOGLE_CLOUD_PROJECT`,
@@ -61,6 +62,33 @@ is `DefaultProviderID()`. Both implement `ModelLister`.
   capabilities and the reasoning encoder. Any future OpenAI-protocol
   provider is another thin config over `OpenAICompatConfig` — do not
   write a second Chat Completions translator.
+- **Claude Code** (`claudecode.go`, `claudecode_wire.go`,
+  `claudecode_child.go`, `claudecode_model.go`): forks `claude -p` in
+  stream-json mode and runs it with ask's tools, not Claude's. Not the
+  Anthropic API — a subprocess. Setting `binary` (env `ASK_CLAUDE_BIN`,
+  default `claude`); no `Secret` field — auth lives in the binary
+  (Claude subscription login, or `ANTHROPIC_API_KEY` in the child's env,
+  which passes through). `Configured` = the binary resolves on PATH.
+  `BuildModel` returns `claudeCodeModel`, a `model.LLM` that spawns one
+  child on the first `GenerateContent` and runs it in lock-step with
+  ADK's function-call loop. Invariants: `--tools ""` strips every
+  built-in (AskUserQuestion included); ask is an sdk-type MCP server over
+  the child's stdio (`--mcp-config … --strict-mcp-config --allowedTools
+  mcp__ask`), so every `tools/call` is answered by ADK executing ask's
+  tool and the reply riding the next `GenerateContent`'s
+  `FunctionResponse`; Claude's own CLAUDE.md/auto-memory/skills are
+  switched off (`--setting-sources "" --settings
+  '{"autoMemoryEnabled":false}'`) so only ask's `BuildSystemPrompt`
+  reaches the model; the child runs `--no-session-persistence` and holds
+  history in memory, so cross-process `/resume` replays the transcript as
+  one context message rather than using native `--resume`. The child is
+  killed through the `io.Closer` capability (`engine.CloseModel`, forwarded
+  by `retryingModel`). Seam: `ccDial` (swap for a scripted `ccConn` in
+  tests — no process). Known v1 limits: the system prompt is captured at
+  spawn (a mid-session change — only workflow state blocks — is not
+  restarted; each workflow step gets a fresh child anyway); tab-title and
+  workflow-step children are closed by their run, chat/session children by
+  `Session.Close`.
 
 ## Retry
 

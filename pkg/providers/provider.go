@@ -123,7 +123,7 @@ var (
 
 // builtin is the registration order. The first entry is the default
 // provider for an empty config.
-var builtin = []Provider{Vertex{}, OpenRouter{}}
+var builtin = []Provider{Vertex{}, OpenRouter{}, ClaudeCode{}}
 
 func init() {
 	for _, p := range builtin {

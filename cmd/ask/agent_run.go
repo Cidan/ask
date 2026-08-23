@@ -133,6 +133,9 @@ func (s *agentSession) shutdown() {
 	s.closeOnce.Do(func() {
 		close(s.closed)
 		s.interruptTurn()
+		if s.model != nil {
+			_ = engine.CloseModel(s.model)
+		}
 	})
 }
 
