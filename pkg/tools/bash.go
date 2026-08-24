@@ -190,7 +190,7 @@ func (m *JobManager) KillAll() {
 	}
 }
 
-const BashToolDescription = `Run a shell command in the working directory and return its combined stdout/stderr (interleaved, truncated middle-out past 30000 chars). Standard noisy command output is automatically compressed to save tokens; set disable_token_savings to true if you strictly need raw uncompressed output. Commands run in independent shells — no state persists between calls, so prefer absolute paths over cd. Set run_in_background for servers and long builds, then poll with job_output and stop with job_kill. Quote paths containing spaces.`
+const BashToolDescription = `Run a shell command in the working directory and return its combined stdout/stderr (interleaved, truncated middle-out past 30000 chars). Output is automatically filtered to save tokens: progress/bookkeeping noise is stripped, and commands whose output is noise when they succeed (make, go build, cargo build, docker build, and similar) collapse to a one-line summary like "make: ok" on success while still showing the full error on failure. When filtering was lossy the untouched output is written to a file named in the result's raw_path field (read it to recover anything dropped). Set disable_token_savings to true if you strictly need the raw uncompressed output for a single command. Commands run in independent shells — no state persists between calls, so prefer absolute paths over cd. Set run_in_background for servers and long builds, then poll with job_output and stop with job_kill. Quote paths containing spaces.`
 
 type BashParams struct {
 	Command             string `json:"command" jsonschema:"the shell command to execute"`

@@ -5,36 +5,55 @@ import (
 	"testing"
 )
 
-func TestRules_MakeOnEmpty(t *testing.T) {
-	raw := "make[1]: Entering directory '/x'\nmake[1]: Nothing to be done for 'all'.\nmake[1]: Leaving directory '/x'\n"
-	out, _ := Apply("make all", raw, 0)
-	if out != "make: nothing to do\n" {
-		t.Fatalf("make on_empty = %q", out)
+// make is pass/fail: any successful build collapses to "make: ok".
+func TestRules_MakePassFailSuccess(t *testing.T) {
+	raw := strings.Join([]string{
+		"Building llama.cpp static libraries...",
+		"[  5%] Building CXX object foo.o",
+		"[100%] Built target llama",
+		"gmake[1]: Leaving directory '/x'",
+		"go build -o bin/ask ./cmd/ask",
+	}, "\n") + "\n"
+	out, saved := Apply("make build", raw, 0)
+	if out != "make: ok\n" {
+		t.Fatalf("make success = %q, want 'make: ok'", out)
+	}
+	if saved <= 0 {
+		t.Errorf("expected savings, got %d", saved)
 	}
 }
 
-func TestRules_CargoStripsCompiling(t *testing.T) {
+// A failed make strips the cmake progress/probe noise but keeps the error.
+func TestRules_MakePassFailFailure(t *testing.T) {
+	raw := strings.Join([]string{
+		"[ 12%] Building CXX object foo.o",
+		"-- Detecting C compiler ABI info",
+		"src/foo.c:9:2: error: undefined reference to `bar'",
+		"gmake[1]: *** [Makefile:5: all] Error 1",
+	}, "\n") + "\n"
+	out, _ := Apply("make build", raw, 2)
+	if strings.Contains(out, "12%") || strings.Contains(out, "Detecting C compiler") {
+		t.Errorf("progress/probe noise survived on failure: %q", out)
+	}
+	if !strings.Contains(out, "error: undefined reference") || !strings.Contains(out, "Error 1") {
+		t.Errorf("failure detail dropped: %q", out)
+	}
+}
+
+// cargo build is pass/fail: a clean build collapses to "cargo: ok".
+func TestRules_CargoBuildPassFail(t *testing.T) {
 	raw := strings.Join([]string{
 		"   Compiling libc v0.2.0",
-		"   Compiling serde v1.0.0",
 		"    Updating crates.io index",
-		"warning: unused variable: `x`",
 		"    Finished dev [unoptimized] target(s) in 3.21s",
 	}, "\n") + "\n"
-	out, _ := Apply("cargo build", raw, 0)
-	if strings.Contains(out, "Compiling") || strings.Contains(out, "Updating") {
-		t.Errorf("cargo noise survived: %q", out)
-	}
-	if !strings.Contains(out, "warning: unused variable") {
-		t.Errorf("cargo warning dropped: %q", out)
-	}
-	if !strings.Contains(out, "Finished dev") {
-		t.Errorf("cargo Finished line dropped: %q", out)
+	if out, _ := Apply("cargo build", raw, 0); out != "cargo: ok\n" {
+		t.Fatalf("cargo build success = %q, want 'cargo: ok'", out)
 	}
 }
 
-// A cargo build error survives (strip-only never touches error lines).
-func TestRules_CargoErrorSurvives(t *testing.T) {
+// A cargo build error survives, with the Compiling chatter stripped.
+func TestRules_CargoBuildErrorSurvives(t *testing.T) {
 	raw := "   Compiling app v0.1.0\nerror[E0308]: mismatched types\n  --> src/main.rs:2:5\n"
 	out, _ := Apply("cargo build", raw, 101)
 	if !strings.Contains(out, "error[E0308]: mismatched types") {
@@ -42,6 +61,13 @@ func TestRules_CargoErrorSurvives(t *testing.T) {
 	}
 	if strings.Contains(out, "Compiling") {
 		t.Errorf("cargo noise survived on failure: %q", out)
+	}
+}
+
+// cargo run is not a build — the program's output passes through.
+func TestRules_CargoRunPassesThrough(t *testing.T) {
+	if out, _ := Apply("cargo run", "hello from rust\n", 0); out != "hello from rust\n" {
+		t.Errorf("cargo run should pass through, got %q", out)
 	}
 }
 
@@ -69,19 +95,32 @@ func TestRules_PipViaPythonM(t *testing.T) {
 	}
 }
 
-func TestRules_GradleStripsUpToDate(t *testing.T) {
+// A gradle build that prints BUILD SUCCESSFUL collapses to "gradle: ok".
+func TestRules_GradleBuildSuccessCollapses(t *testing.T) {
 	raw := strings.Join([]string{
 		"> Task :compileJava UP-TO-DATE",
-		"> Task :processResources NO-SOURCE",
 		"> Task :test",
 		"BUILD SUCCESSFUL in 2s",
 	}, "\n") + "\n"
-	out, _ := Apply("./gradlew build", raw, 0)
-	if strings.Contains(out, "UP-TO-DATE") || strings.Contains(out, "NO-SOURCE") {
-		t.Errorf("gradle noise survived: %q", out)
+	if out, _ := Apply("./gradlew build", raw, 0); out != "gradle: ok\n" {
+		t.Fatalf("gradle success = %q, want 'gradle: ok'", out)
 	}
-	if !strings.Contains(out, "> Task :test") || !strings.Contains(out, "BUILD SUCCESSFUL") {
-		t.Errorf("gradle signal dropped: %q", out)
+}
+
+// A long-running gradle task with no BUILD SUCCESSFUL is not collapsed — its
+// output (minus the UP-TO-DATE/SKIPPED chatter) passes through.
+func TestRules_GradleRunNotCollapsed(t *testing.T) {
+	raw := strings.Join([]string{
+		"> Task :compileJava UP-TO-DATE",
+		"> Task :bootRun",
+		"Tomcat started on port 8080",
+	}, "\n") + "\n"
+	out, _ := Apply("./gradlew bootRun", raw, 0)
+	if strings.Contains(out, "UP-TO-DATE") {
+		t.Errorf("gradle chatter survived: %q", out)
+	}
+	if !strings.Contains(out, "Tomcat started on port 8080") {
+		t.Errorf("gradle run output was swallowed: %q", out)
 	}
 }
 
@@ -168,27 +207,36 @@ func TestRules_MypySuccessCollapses(t *testing.T) {
 	}
 }
 
-func TestRules_BazelStripsProgress(t *testing.T) {
-	raw := strings.Join([]string{
-		"Loading: 0 packages loaded",
+// bazel build is pass/fail: "bazel: ok" on success, error + stripped
+// progress on failure.
+func TestRules_BazelBuildPassFail(t *testing.T) {
+	ok := "Loading: 0 packages loaded\n[100 / 200] Compiling bar.cc\nINFO: Build completed successfully\n"
+	if out, _ := Apply("bazel build //...", ok, 0); out != "bazel: ok\n" {
+		t.Fatalf("bazel build success = %q, want 'bazel: ok'", out)
+	}
+	fail := strings.Join([]string{
 		"Analyzing: 2 targets",
 		"[1,234 / 5,678] Compiling foo.cc",
 		"ERROR: missing input file //x:y",
-		"INFO: Elapsed time: 3.2s",
 	}, "\n") + "\n"
-	out, _ := Apply("bazel build //...", raw, 1)
-	// KeepOnError: a failed bazel run is preserved verbatim.
-	if out != raw {
-		t.Errorf("failed bazel not preserved: %q", out)
+	out, _ := Apply("bazel build //...", fail, 1)
+	if strings.Contains(out, "[1,234 / 5,678]") || strings.Contains(out, "Analyzing:") {
+		t.Errorf("bazel progress survived on failure: %q", out)
 	}
-	// A successful run strips progress/loading noise.
-	ok := "Loading: 0 packages loaded\n[100 / 200] Compiling bar.cc\nINFO: Build completed successfully\n"
-	out2, _ := Apply("bazel build //...", ok, 0)
-	if strings.Contains(out2, "Loading:") || strings.Contains(out2, "[100 / 200]") {
-		t.Errorf("bazel progress survived: %q", out2)
+	if !strings.Contains(out, "ERROR: missing input file") {
+		t.Errorf("bazel error dropped: %q", out)
 	}
-	if !strings.Contains(out2, "Build completed successfully") {
-		t.Errorf("bazel result dropped: %q", out2)
+}
+
+// bazel test (not build) keeps its output via the generic bazel rule.
+func TestRules_BazelTestKeepsResults(t *testing.T) {
+	raw := "[10 / 20] Testing //x:y\n//x:y PASSED in 0.5s\nExecuted 1 out of 1 test: 1 test passes.\n"
+	out, _ := Apply("bazel test //x:y", raw, 0)
+	if strings.Contains(out, "[10 / 20]") {
+		t.Errorf("bazel test progress survived: %q", out)
+	}
+	if !strings.Contains(out, "1 test passes") {
+		t.Errorf("bazel test result dropped: %q", out)
 	}
 }
 
@@ -208,21 +256,20 @@ func TestRules_TerraformStripsRefresh(t *testing.T) {
 	}
 }
 
-func TestRules_DockerBuildKeepsLogsDropsBookkeeping(t *testing.T) {
-	raw := strings.Join([]string{
+// docker build is pass/fail: "docker build: ok" on success, full log on
+// failure (KeepOnError).
+func TestRules_DockerBuildPassFail(t *testing.T) {
+	ok := strings.Join([]string{
 		"#8 [internal] load build context",
-		"#8 DONE 0.1s",
 		"#10 [builder 3/5] RUN go build ./...",
-		"#10 12.34 building the app",
 		"#10 DONE 13.0s",
 		"#14 exporting to image",
-		"#14 sha256:abc123",
 	}, "\n") + "\n"
-	out, _ := Apply("docker build -t app .", raw, 0)
-	if !strings.Contains(out, "RUN go build") || !strings.Contains(out, "building the app") {
-		t.Errorf("docker build logs dropped: %q", out)
+	if out, _ := Apply("docker build -t app .", ok, 0); out != "docker build: ok\n" {
+		t.Fatalf("docker build success = %q, want 'docker build: ok'", out)
 	}
-	if strings.Contains(out, "DONE") || strings.Contains(out, "sha256:") || strings.Contains(out, "[internal]") {
-		t.Errorf("docker bookkeeping survived: %q", out)
+	fail := "#10 [builder] RUN make\n#10 12.3 make: *** No rule to make target\n#10 ERROR: process did not complete\n"
+	if out, _ := Apply("docker build .", fail, 1); out != fail {
+		t.Errorf("failed docker build not preserved verbatim: %q", out)
 	}
 }

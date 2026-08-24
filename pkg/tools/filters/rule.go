@@ -24,6 +24,13 @@ type Rule struct {
 	Keep []*regexp.Regexp
 	// Replace applies regex substitutions before line filtering.
 	Replace []Replacement
+	// PassFail turns the command into a binary result: on success (exit 0)
+	// the whole output collapses to a single "ok" line (OnEmpty if set, else
+	// "<name>: ok") regardless of content; on failure it falls through to the
+	// normal strip/keep pipeline (or raw, with KeepOnError) so the error is
+	// still shown. For commands whose successful output is pure noise
+	// (builds, formatters) and only the exit code matters.
+	PassFail bool
 	// Summarize collapses the whole output to Message when Pattern matches
 	// AND the command succeeded (exit 0). This is the success-detection
 	// short-circuit ("BUILD SUCCESSFUL" → "gradle: ok"); it never fires on a
@@ -85,6 +92,12 @@ func normalizedCommand(fields []string) string {
 func (r Rule) apply(raw string, exit int) string {
 	if r.KeepOnError && exit != 0 {
 		return raw
+	}
+	if r.PassFail && exit == 0 {
+		if r.OnEmpty != "" {
+			return r.OnEmpty
+		}
+		return r.Name + ": ok"
 	}
 
 	text := raw

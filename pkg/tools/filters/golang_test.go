@@ -113,11 +113,30 @@ func TestGo_TextModeCompileErrorPreserved(t *testing.T) {
 	}
 }
 
-// Non-test subcommands only strip module-download noise.
-func TestGo_NonTestStripsDownloads(t *testing.T) {
-	raw := "go: downloading example.com/m v1.2.3\nbuilt ok\n"
-	out, _ := Apply("go build ./...", raw, 0)
-	if out != "built ok\n" {
-		t.Errorf("download strip failed: %q", out)
+// go build is pass/fail: success collapses to "go: ok", a failure keeps the
+// compile error with download chatter stripped.
+func TestGo_BuildPassFail(t *testing.T) {
+	if out, _ := Apply("go build ./...", "go: downloading example.com/m v1.2.3\n", 0); out != "go: ok\n" {
+		t.Errorf("go build success = %q, want 'go: ok'", out)
+	}
+	fail := "go: downloading example.com/m v1.2.3\n# pkg\n./foo.go:3:2: undefined: Bar\n"
+	out, _ := Apply("go build ./...", fail, 2)
+	if strings.Contains(out, "downloading") || !strings.Contains(out, "undefined: Bar") {
+		t.Errorf("go build failure = %q", out)
+	}
+}
+
+// go run is not filtered as a build — the program's output passes through.
+func TestGo_RunPassesThrough(t *testing.T) {
+	if out, _ := Apply("go run ./cmd/x", "hello from program\n", 0); out != "hello from program\n" {
+		t.Errorf("go run should pass through, got %q", out)
+	}
+}
+
+// go mod keeps everything but download chatter.
+func TestGo_ModStripsDownloads(t *testing.T) {
+	out, _ := Apply("go mod download", "go: downloading example.com/m v1.2.3\nall good\n", 0)
+	if out != "all good\n" {
+		t.Errorf("go mod = %q", out)
 	}
 }
