@@ -107,18 +107,6 @@ func providerConfigSummary(cfg askConfig, p providers.Provider) string {
 	return "off"
 }
 
-func (m model) refreshHistoryCmd() tea.Cmd {
-	if m.busy() || m.sessionID == "" {
-		return nil
-	}
-	return loadHistoryCmd(m.id, m.provider, m.sessionID, m.virtualSessionID,
-		HistoryOpts{
-			RenderDiffs: m.renderDiffs,
-			ToolOutput:  m.toolOutputMode,
-			QuietMode:   m.quietMode,
-		}, true)
-}
-
 func (m model) startConfigModal() model {
 	(&m).clearSelection()
 	m.mode = modeConfig
@@ -302,7 +290,8 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 		}); err != nil {
 			debugLog("saveConfig err: %v", err)
 		}
-		return m, m.refreshHistoryCmd()
+		(&m).refreshHistory()
+		return m, nil
 	case "cursorBlink":
 		m.cursorBlink = !m.cursorBlink
 		applyCursorBlink(&m.input, m.cursorBlink)
@@ -328,7 +317,8 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 		}); err != nil {
 			debugLog("saveConfig err: %v", err)
 		}
-		return m, m.refreshHistoryCmd()
+		(&m).refreshHistory()
+		return m, nil
 	case "toolOutput":
 		m.toolOutputMode = nextToolOutputMode(m.toolOutputMode)
 		mode := string(m.toolOutputMode)
@@ -339,7 +329,8 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 		}); err != nil {
 			debugLog("saveConfig err: %v", err)
 		}
-		return m, m.refreshHistoryCmd()
+		(&m).refreshHistory()
+		return m, nil
 	case "skipAllPermissions":
 		m.skipAllPermissions = !m.skipAllPermissions
 		v := m.skipAllPermissions
@@ -714,7 +705,8 @@ func (m model) updateThemePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			debugLog("saveConfig err: %v", err)
 		}
 		m = m.closeThemePicker()
-		return m, m.refreshHistoryCmd()
+		(&m).refreshHistory()
+		return m, nil
 	}
 	return m, nil
 }

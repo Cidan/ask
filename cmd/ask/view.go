@@ -593,21 +593,21 @@ func (m model) renderResponse(raw string) string {
 
 func (m *model) appendHistory(entry string) {
 	m.responseActive = false
-	m.history = append(m.history, historyEntry{kind: histPrerendered, text: entry})
+	m.pushTranscript(transcriptItem{kind: trPrerendered, text: entry})
 }
 
 func (m *model) appendResponse(raw string) {
-	m.history = append(m.history, historyEntry{kind: histResponse, text: raw})
+	m.pushTranscript(transcriptItem{kind: trAssistant, text: raw})
 }
 
 func (m *model) appendUser(text string) {
 	m.responseActive = false
-	m.history = append(m.history, historyEntry{kind: histUser, text: text})
+	m.pushTranscript(transcriptItem{kind: trUser, text: text})
 }
 
 func (m *model) appendUserQueued(text string) {
 	m.responseActive = false
-	m.history = append(m.history, historyEntry{kind: histUserQueued, text: text})
+	m.pushTranscript(transcriptItem{kind: trUserQueued, text: text})
 }
 
 func (m *model) refreshPrompt() {

@@ -111,40 +111,6 @@ func nextToolOutputMode(cur toolOutputMode) toolOutputMode {
 	return defaultToolOutputMode
 }
 
-// shouldRenderToolCall decides whether a tool call goes into history.
-// Quiet mode and "off" suppress everything; in any other mode the call
-// header always renders so the user knows something fired. Background
-// calls render too (as their command/inputs are still useful) — only
-// the result ack is gated on full mode in shouldRenderToolResult.
-func (m model) shouldRenderToolCall(_ toolCallMsg) bool {
-	if m.workflowRun != nil {
-		// Workflow tabs render the clean per-step summary list, not the
-		// raw transcript — no tool calls.
-		return false
-	}
-	if m.quietMode || m.toolOutputMode == toolOutputOff {
-		return false
-	}
-	return true
-}
-
-// shouldRenderToolResult decides whether a tool result goes into
-// history. Background results are silenced in non-full modes — their
-// payload is only the launch ack ("Command running in background with
-// ID: …") and the actual completion arrives via task_notification.
-func (m model) shouldRenderToolResult(msg toolResultMsg) bool {
-	if m.workflowRun != nil {
-		return false
-	}
-	if m.quietMode || m.toolOutputMode == toolOutputOff {
-		return false
-	}
-	if msg.background && m.toolOutputMode != toolOutputFull {
-		return false
-	}
-	return true
-}
-
 // toolPhraseFieldDoc is the schema doc every native tool's
 // "description" param carries (struct tags repeat it verbatim; the
 // bridge adapter injects it into generated schemas). One sentence,

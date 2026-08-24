@@ -72,10 +72,10 @@ func TestEncodeClaudeProjectDir(t *testing.T) {
 
 func TestLoadHistoryCmd_DelegatesToProvider(t *testing.T) {
 	fp := newFakeProvider()
-	fp.loadHistoryFn = func(id string, opts HistoryOpts) ([]historyEntry, error) {
-		return []historyEntry{{kind: histResponse, text: id}}, nil
+	fp.loadHistoryFn = func(id string) ([]transcriptItem, error) {
+		return []transcriptItem{{kind: trAssistant, text: id}}, nil
 	}
-	cmd := loadHistoryCmd(7, fp, "my-session", "", HistoryOpts{}, false)
+	cmd := loadHistoryCmd(7, fp, "my-session", "", false)
 	msg := cmd()
 	h, ok := msg.(historyLoadedMsg)
 	if !ok {
@@ -84,7 +84,7 @@ func TestLoadHistoryCmd_DelegatesToProvider(t *testing.T) {
 	if h.tabID != 7 {
 		t.Errorf("tabID=%d want 7", h.tabID)
 	}
-	if h.sessionID != "my-session" || len(h.entries) != 1 {
+	if h.sessionID != "my-session" || len(h.transcript) != 1 {
 		t.Errorf("wrong payload: %+v", h)
 	}
 }
@@ -167,10 +167,10 @@ func TestLoadSessionsCmd_SortsNewestFirst(t *testing.T) {
 // Sanity check that historyLoadedMsg carries err when provider errors out.
 func TestLoadHistoryCmd_PropagatesError(t *testing.T) {
 	fp := newFakeProvider()
-	fp.loadHistoryFn = func(id string, opts HistoryOpts) ([]historyEntry, error) {
+	fp.loadHistoryFn = func(id string) ([]transcriptItem, error) {
 		return nil, errMarker{}
 	}
-	msg := loadHistoryCmd(3, fp, "sid", "", HistoryOpts{}, true)()
+	msg := loadHistoryCmd(3, fp, "sid", "", true)()
 	h := msg.(historyLoadedMsg)
 	if h.tabID != 3 {
 		t.Errorf("tabID=%d want 3", h.tabID)
@@ -205,7 +205,7 @@ func TestLoadSessionsCmd_ReturnsError(t *testing.T) {
 
 func TestLoadHistoryCmd_ReturnsTeaCmd(t *testing.T) {
 	fp := newFakeProvider()
-	var _ tea.Cmd = loadHistoryCmd(1, fp, "sid", "", HistoryOpts{}, false)
+	var _ tea.Cmd = loadHistoryCmd(1, fp, "sid", "", false)
 }
 
 type errMarker struct{}

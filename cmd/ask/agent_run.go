@@ -527,13 +527,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 					}
 					s.emit(streamStatusMsg{status: "thinking…"})
 				} else if part.Text != "" {
-					if event.LLMResponse.Partial {
-						finalResponseText.WriteString(part.Text)
-						s.emit(assistantTextMsg{text: part.Text})
-					} else {
-						finalResponseText.WriteString(part.Text)
-						s.emit(assistantTextMsg{text: part.Text})
-					}
+					s.emit(assistantTextMsg{text: part.Text})
 				}
 				if part.FunctionCall != nil {
 					inputMap := part.FunctionCall.Args
@@ -575,6 +569,26 @@ func (s *agentSession) runTurn(turn agentTurn) {
 						isError:    isErr,
 						background: backgroundCalls[part.FunctionResponse.Name],
 					})
+				}
+			}
+
+			// Accumulate the turn's final result text one block per
+			// non-partial event, joined with a newline — matching the
+			// engine's aggregation (session.go) so a preamble and the
+			// answer don't scrunch together in providerResult.Result
+			// (workflow step capture, the done message).
+			if !event.LLMResponse.Partial {
+				var blockText strings.Builder
+				for _, part := range event.LLMResponse.Content.Parts {
+					if part != nil && !part.Thought && part.Text != "" {
+						blockText.WriteString(part.Text)
+					}
+				}
+				if txt := blockText.String(); txt != "" {
+					if finalResponseText.Len() > 0 {
+						finalResponseText.WriteString("\n")
+					}
+					finalResponseText.WriteString(txt)
 				}
 			}
 		}

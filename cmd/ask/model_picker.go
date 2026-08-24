@@ -643,14 +643,11 @@ func (m *model) applyVSProviderSwap(oldProvName string, newProv Provider) tea.Cm
 		m.resumeCwd = ref.Cwd
 		m.worktreeName = worktreeNameFromCwd(ref.Cwd)
 		m.history = nil
-		opts := HistoryOpts{
-			RenderDiffs: m.renderDiffs,
-			ToolOutput:  m.toolOutputMode,
-			QuietMode:   m.quietMode,
-		}
-		return loadHistoryCmd(m.id, newProv, ref.SessionID, vs.ID, opts, false)
+		m.transcript = nil
+		m.responseActive = false
+		return loadHistoryCmd(m.id, newProv, ref.SessionID, vs.ID, false)
 	}
-	turns := neutralTurnsFromHistory(m.history)
+	turns := neutralTurnsFromTranscript(m.transcript)
 	if len(turns) == 0 {
 		return nil
 	}

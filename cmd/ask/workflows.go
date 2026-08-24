@@ -182,18 +182,17 @@ func (m *model) appendWorkflowStepDone(name, provider, mdl, summary string, inde
 	if strings.TrimSpace(summary) == "" {
 		return
 	}
-	m.history = append(m.history, historyEntry{
-		kind:           histWorkflowDone,
+	m.pushTranscript(transcriptItem{
+		kind:           trWorkflowDone,
 		text:           summary,
-		workflowHeader: "",
 		workflowIndent: indent,
 	})
 }
 
 func (m *model) appendWorkflowDone(header, body string, indent int) {
 	m.responseActive = false
-	m.history = append(m.history, historyEntry{
-		kind:           histWorkflowDone,
+	m.pushTranscript(transcriptItem{
+		kind:           trWorkflowDone,
 		text:           body,
 		workflowHeader: header,
 		workflowIndent: indent,

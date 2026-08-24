@@ -53,7 +53,7 @@ type fakeProvider struct {
 	sendFn          func(*providerProc, string, []pendingAttachment) error
 	interruptFn     func(*providerProc) (bool, error)
 	listSessionsFn  func(string) ([]sessionEntry, error)
-	loadHistoryFn   func(string, HistoryOpts) ([]historyEntry, error)
+	loadHistoryFn   func(string) ([]transcriptItem, error)
 	loadSettingsFn  func() ProviderSettings
 	saveSettingsFn  func(ProviderSettings) error
 	materializeFn   func(string, []NeutralTurn) (string, string, error)
@@ -151,12 +151,12 @@ func (f *fakeProvider) ListSessions(cwd string) ([]sessionEntry, error) {
 	return nil, nil
 }
 
-func (f *fakeProvider) LoadHistory(id string, opts HistoryOpts) ([]historyEntry, error) {
+func (f *fakeProvider) LoadHistory(id string) ([]transcriptItem, error) {
 	f.mu.Lock()
 	f.historyCalls = append(f.historyCalls, id)
 	f.mu.Unlock()
 	if f.loadHistoryFn != nil {
-		return f.loadHistoryFn(id, opts)
+		return f.loadHistoryFn(id)
 	}
 	return nil, nil
 }
@@ -307,6 +307,7 @@ func newTestModel(t *testing.T, prov Provider) model {
 		mode:            modeInput,
 		historyIdx:      -1,
 		shellOutIdx:     -1,
+		shellOutTrIdx:   -1,
 		shellHistoryIdx: -1,
 		fc:              &frameCache{},
 	}

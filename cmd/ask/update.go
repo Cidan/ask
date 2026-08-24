@@ -456,8 +456,11 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		m.responseActive = false
-		if m.renderDiffs && !m.quietMode && m.workflowRun == nil {
-			m.appendHistory(renderDiffBlock(msg.filePath, msg.hunks))
+		// Workflow tabs render only the per-step summary list, never the
+		// raw transcript. Every other tab records the diff unconditionally;
+		// whether it shows is a projection decision (renderDiffs && !quiet).
+		if m.workflowRun == nil {
+			m.pushTranscript(transcriptItem{kind: trDiff, filePath: msg.filePath, hunks: msg.hunks})
 		}
 		return m, nil
 
@@ -467,8 +470,13 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		m.statusRevertSeq++
 		m.responseActive = false
-		if m.shouldRenderToolCall(msg) {
-			m.appendHistory(renderToolCallBlock(msg.name, msg.input, m.toolOutputMode))
+		if m.workflowRun == nil {
+			m.pushTranscript(transcriptItem{
+				kind:       trToolCall,
+				toolName:   msg.name,
+				toolInput:  msg.input,
+				background: msg.background,
+			})
 		}
 		return m, nil
 
@@ -479,8 +487,14 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m.statusRevertSeq++
 		seq := m.statusRevertSeq
 		m.responseActive = false
-		if m.shouldRenderToolResult(msg) {
-			m.appendHistory(renderToolResultBlock(msg.output, msg.isError))
+		if m.workflowRun == nil {
+			m.pushTranscript(transcriptItem{
+				kind:       trToolResult,
+				toolName:   msg.name,
+				output:     msg.output,
+				isError:    msg.isError,
+				background: msg.background,
+			})
 		}
 		return m, tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
 			return statusRevertMsg{tabID: msg.tabID, seq: seq}
@@ -520,7 +534,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			stderrTail = strings.TrimSpace(msg.proc.stderr.String())
 		}
 		debugLog("providerExitedMsg err=%v stderrLen=%d", msg.err, len(stderrTail))
-		m.flushTurnBuffer()
 		m.pendingWorkflow = nil
 		m.status = ""
 		m.todos = nil
@@ -601,20 +614,14 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		(&m).workflowAssistantText(msg.text)
 		wasIdle := !m.busy()
 		m.testBusy = true
-		switch {
-		case m.workflowRun != nil:
-			// Workflow tabs show the clean per-step summary list, not the
-			// raw stream — suppress the response text entirely.
-		case m.quietMode:
-			m.turnBuffer = append(m.turnBuffer, msg.text)
-		default:
-			if m.responseActive && len(m.history) > 0 && m.history[len(m.history)-1].kind == histResponse {
-				m.history[len(m.history)-1].text += msg.text
-				invalidateEntryRender(&m.history[len(m.history)-1])
-			} else {
-				m.appendResponse(msg.text)
-				m.responseActive = true
-			}
+		// Workflow tabs show the clean per-step summary list, not the raw
+		// stream, so their assistant text is captured for the step log
+		// above and dropped from the transcript here. Every other tab —
+		// quiet or not — records the block; quiet differs only by hiding
+		// tool items in the projection, so preamble and answer stay
+		// separate instead of scrunching together.
+		if m.workflowRun == nil {
+			m.addAssistantDelta(msg.text)
 		}
 		var cmds []tea.Cmd
 		if wasIdle {
@@ -629,11 +636,15 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
-		for i := len(m.history) - 1; i >= 0; i-- {
-			if m.history[i].kind == histUserQueued {
-				m.history[i].kind = histUser
-				m.history[i].wrappedFor = 0 // force re-render
+		changed := false
+		for i := len(m.transcript) - 1; i >= 0; i-- {
+			if m.transcript[i].kind == trUserQueued {
+				m.transcript[i].kind = trUser
+				changed = true
 			}
+		}
+		if changed {
+			m.projectHistory()
 		}
 		return m, nil
 
@@ -642,7 +653,6 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		m.responseActive = false
-		m.flushTurnBuffer()
 		m.testBusy = false
 		m.status = ""
 		m.todos = nil
@@ -801,16 +811,16 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 				"could not load session history: " + msg.err.Error())))
 			return m, nil
 		}
-		if msg.silent {
-			m.history = msg.entries
-		} else {
-			m.history = append(msg.entries, historyEntry{
-				kind: histPrerendered,
+		m.transcript = msg.transcript
+		m.responseActive = false
+		if !msg.silent {
+			m.transcript = append(m.transcript, transcriptItem{
+				kind: trPrerendered,
 				text: outputStyle.Render(promptStyle.Render(
 					fmt.Sprintf("✓ resumed session %s", short(m.sessionID)))),
 			})
 		}
-		m.lastContentFP = ""
+		m.projectHistory()
 		m.layout()
 		m.chat.GotoBottom()
 		return m, nil
@@ -825,17 +835,23 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m.testBusy = false
 		m.status = ""
 		if msg.err != nil {
+			if msg.transcript != nil {
+				m.transcript = msg.transcript
+				m.responseActive = false
+				m.projectHistory()
+			}
 			m.appendHistory(outputStyle.Render(errStyle.Render(
 				"translate: " + msg.err.Error())))
-			if msg.entries != nil {
-				m.history = msg.entries
-			}
 			return m, nil
 		}
 		m.sessionID = msg.nativeSessionID
 		m.resumeCwd = msg.nativeCwd
-		if msg.entries != nil {
-			m.history = msg.entries
+		if msg.transcript != nil {
+			m.transcript = msg.transcript
+			m.responseActive = false
+			m.projectHistory()
+			m.layout()
+			m.chat.GotoBottom()
 		}
 		return m, nil
 
@@ -1200,15 +1216,22 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 				}
 				e.text += joined
 				invalidateEntryRender(e)
+				// Keep the source-of-truth item in lockstep so a mode
+				// reprojection mid-stream rebuilds the shell entry intact.
+				if m.shellOutTrIdx >= 0 && m.shellOutTrIdx < len(m.transcript) {
+					m.transcript[m.shellOutTrIdx].text = e.text
+				}
 			} else {
 				m.appendHistory(joined)
 				m.shellOutIdx = len(m.history) - 1
+				m.shellOutTrIdx = len(m.transcript) - 1
 			}
 			m.lastContentFP = ""
 		}
 		if msg.done != nil {
 			d := *msg.done
 			m.shellOutIdx = -1
+			m.shellOutTrIdx = -1
 			m.shellCh = nil
 			m.shellProc = nil
 			if d.newCwd != "" && d.newCwd != m.cwd {
@@ -1989,6 +2012,8 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 	m.virtualSessionID = vs.ID
 	m.mode = modeInput
 	m.history = nil
+	m.transcript = nil
+	m.responseActive = false
 	m.addedDirs = append([]string(nil), vs.AddedDirs...)
 	// The tab now hosts a different conversation: restart the spend
 	// meter. Historical spend isn't persisted, so a resumed session
@@ -2003,11 +2028,6 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 	}
 
 	providerID := m.provider.ID()
-	opts := HistoryOpts{
-		RenderDiffs: m.renderDiffs,
-		ToolOutput:  m.toolOutputMode,
-		QuietMode:   m.quietMode,
-	}
 	// Reuse the cached native id only when the current provider was
 	// also the last writer (or no last-writer recorded, treated as
 	// benign). A stale mapping — one provider's id cached before
@@ -2027,7 +2047,7 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 		m.worktreeName = worktreeNameFromCwd(ref.Cwd)
 		m.appendHistory(outputStyle.Render(dimStyle.Render(
 			fmt.Sprintf("loading session %s…", short(vs.ID)))))
-		return m, loadHistoryCmd(m.id, m.provider, ref.SessionID, vs.ID, opts, false)
+		return m, loadHistoryCmd(m.id, m.provider, ref.SessionID, vs.ID, false)
 	}
 
 	// Translate from VS.LastProvider (or a registry-order fallback
@@ -2067,7 +2087,6 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 		nativeCwd:       nativeCwdForUpsert(m.cwd, worktreeName),
 		source:          sourceProv,
 		sourceSessionID: sourceRef.SessionID,
-		opts:            opts,
 	})
 }
 
@@ -2142,6 +2161,8 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		m.worktreeName = ""
 		m.virtualSessionID = ""
 		m.history = nil
+		m.transcript = nil
+		m.responseActive = false
 		m.addedDirs = nil
 		m.pendingWorkflow = nil
 		m.tabTitle = ""

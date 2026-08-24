@@ -264,20 +264,19 @@ type translateVSReq struct {
 	source          Provider
 	sourceSessionID string
 	directTurns     []NeutralTurn
-	opts            HistoryOpts
 }
 
 // virtualSessionMaterializedMsg lands on Update when translateVSCmd
 // finishes: nativeSessionID/nativeCwd point at the newly-written
-// native session file the target provider can resume; entries
-// carries the source's rendered history for the UI when the source
+// native session file the target provider can resume; transcript
+// carries the source's faithful transcript for the UI when the source
 // path was used; err != nil means translation failed.
 type virtualSessionMaterializedMsg struct {
 	tabID           int
 	vsID            string
 	nativeSessionID string
 	nativeCwd       string
-	entries         []historyEntry
+	transcript      []transcriptItem
 	err             error
 }
 
@@ -290,21 +289,21 @@ type virtualSessionMaterializedMsg struct {
 func translateVSCmd(req translateVSReq) tea.Cmd {
 	return func() tea.Msg {
 		turns := req.directTurns
-		var entries []historyEntry
+		var transcript []transcriptItem
 		if req.source != nil && req.sourceSessionID != "" {
-			loaded, err := req.source.LoadHistory(req.sourceSessionID, req.opts)
+			loaded, err := req.source.LoadHistory(req.sourceSessionID)
 			if err != nil {
 				return virtualSessionMaterializedMsg{tabID: req.tabID, vsID: req.vsID, err: err}
 			}
-			entries = loaded
-			turns = neutralTurnsFromHistory(loaded)
+			transcript = loaded
+			turns = neutralTurnsFromTranscript(loaded)
 		}
 		if len(turns) == 0 {
 			return virtualSessionMaterializedMsg{
-				tabID:   req.tabID,
-				vsID:    req.vsID,
-				entries: entries,
-				err:     errors.New("no prior turns to translate"),
+				tabID:      req.tabID,
+				vsID:       req.vsID,
+				transcript: transcript,
+				err:        errors.New("no prior turns to translate"),
 			}
 		}
 		nativeCwd := req.nativeCwd
@@ -313,7 +312,7 @@ func translateVSCmd(req translateVSReq) tea.Cmd {
 		}
 		newID, nativeCwd, err := req.target.Materialize(nativeCwd, turns)
 		if err != nil {
-			return virtualSessionMaterializedMsg{tabID: req.tabID, vsID: req.vsID, entries: entries, err: err}
+			return virtualSessionMaterializedMsg{tabID: req.tabID, vsID: req.vsID, transcript: transcript, err: err}
 		}
 		_ = mutateVirtualSessions(func(store *virtualSessionStore) error {
 			upsertVirtualSession(store, req.vsID, req.workspace,
@@ -325,7 +324,7 @@ func translateVSCmd(req translateVSReq) tea.Cmd {
 			vsID:            req.vsID,
 			nativeSessionID: newID,
 			nativeCwd:       nativeCwd,
-			entries:         entries,
+			transcript:      transcript,
 		}
 	}
 }
@@ -472,30 +471,6 @@ func (m *model) persistAddedDirs() {
 type NeutralTurn struct {
 	Role string // "user" | "assistant"
 	Text string
-}
-
-// neutralTurnsFromHistory flattens a UI history slice to the
-// provider-neutral completed-turn list. histPrerendered entries (tool
-// blocks, diff blocks, errors) are deliberately skipped — they're noise
-// when seeding the target provider with conversational context and the
-// tools aren't portable across provider schemas anyway. A trailing user
-// turn without an assistant response is also skipped: it represents an
-// in-flight or failed provider turn, not stable history a target provider
-// can safely resume from.
-func neutralTurnsFromHistory(history []historyEntry) []NeutralTurn {
-	out := make([]NeutralTurn, 0, len(history))
-	for _, e := range history {
-		switch e.kind {
-		case histUser:
-			out = append(out, NeutralTurn{Role: "user", Text: e.text})
-		case histResponse:
-			out = append(out, NeutralTurn{Role: "assistant", Text: e.text})
-		}
-	}
-	for len(out) > 0 && out[len(out)-1].Role == "user" {
-		out = out[:len(out)-1]
-	}
-	return out
 }
 
 // mutateVirtualSessions serializes load-modify-save against

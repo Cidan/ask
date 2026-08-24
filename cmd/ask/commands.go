@@ -43,6 +43,8 @@ func (m model) doCd(target string) (tea.Model, tea.Cmd) {
 	m.sessionID = ""
 	m.sessionMinted = false
 	m.history = nil
+	m.transcript = nil
+	m.responseActive = false
 	cfg, _ := loadConfig()
 	m = m.applyEffectiveWorktree(cfg)
 	m.refreshPrompt()

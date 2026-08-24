@@ -172,7 +172,9 @@ TUI also reads `env.PendingFinishData` as a backup before `Finish`.
   a `▸ name (provider/model)` header at `WorkflowStepStartedMsg`, the
   summary at `WorkflowStepDoneMsg`, `⟳ loop …` notes, and `✗ workflow
   failed: …` on failure. Assistant text, tool calls, tool results, and
-  diffs are suppressed (`shouldRenderToolCall` and friends). Tab titling
+  diffs are suppressed: while `m.workflowRun != nil` the arrival
+  handlers simply don't push those items into `m.transcript` (the
+  source of truth that `projectHistory` renders from). Tab titling
   is skipped.
 - `workflowTabHandleKey`: `ActionTabClose` closes; scroll keys reach the
   viewport; Enter on a finished run restores the snapshot
