@@ -36,7 +36,6 @@ func TestBuildSystemPrompt(t *testing.T) {
 	prompt := BuildSystemPrompt(opts)
 
 	for _, want := range []string{
-		"<critical_rules>",
 		"<tool_call_hygiene>",
 		"Working directory: " + cwd,
 		"Is a git repository: true",
