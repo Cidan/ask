@@ -48,7 +48,19 @@ func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, gateTodosBefor
 		defer func() {
 			agentSendToProgram(ClearWorkflowStateMsg{TabID: tabID})
 		}()
-		reply, err := globalCoordinator.RunWorkflow(ctx, tabID, fromPkgWorkflowDef(def), wfSrc)
+		// This runs inside the live chat session, whose cwd is already the
+		// tab's worktree (or the root when worktree mode is off). Reuse it
+		// so the run's changes land where the conversation is working.
+		root := projectRoot(cwd)
+		wtName := worktreeNameFromCwd(cwd)
+		wtOn := wtName != ""
+		if !wtOn {
+			if cfg, err := loadConfig(); err == nil {
+				wtOn = worktreeEnabled(cfg, root)
+			}
+		}
+		wt := workflowWorktree{root: root, name: wtName, on: wtOn}
+		reply, err := globalCoordinator.RunWorkflow(ctx, tabID, wt, fromPkgWorkflowDef(def), wfSrc)
 		if err != nil {
 			return "", err
 		}

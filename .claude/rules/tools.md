@@ -149,9 +149,46 @@ round-trip first would be pure overhead).
   (optionally waiting up to 30s) and `job_kill` (SIGKILL to the group)
   manage it. `BgTaskStartedEvent` / `BgTaskEndedEvent` drive the UI.
   The `task` tool's background mode rides the same manager.
-- Output passes through `ApplyBashFilter` (ANSI strip, known-noise
-  line removal) unless `disable_token_savings`; savings are tallied in
-  `~/.config/ask/savings.json` (`RecordSavings`).
+- Output passes through `ApplyBashFilter(command, raw, exitCode)`
+  unless `disable_token_savings`; savings are tallied in
+  `~/.config/ask/savings.json` (`RecordSavings(base, rawTokens,
+  savedTokens)`, keyed by `ExtractBaseCommand`; `LoadSavings` reads it
+  back, `/savings` opens an interactive overlay — a two-level tree grouped
+  by base command (go, git, make…) with a RUNS/SAVED/%/IMPACT column
+  grid and a fixed-width rtk-gain-style impact bar,
+  Enter/→ to expand a base into its subcommands, ← to collapse,
+  type-to-filter (auto-expands matches), Tab to sort by saved/runs/name
+  (`modeSavings`, `cmd/ask/savings_screen.go`, composited in `tabs.go`
+  like the model picker; bars scale to the largest base's saving;
+  `savings_view.go` holds the token/percent formatters). It delegates to
+  the **filter registry**
+  (`pkg/tools/filters`): an ordered list of command-aware compressors —
+  hand-written aggregators (`go` test NDJSON→summary + text RUN/PASS
+  strip, `git` status→porcelain / log→short-sha / large-diff→per-file
+  stats / transport noise, `pytest` success-collapse + failures-only,
+  npm-family install noise) first, then the declarative `ruleTable`
+  (`rules.go`: `make`, `cargo`/`cargo test`, `jstest` (vitest/jest),
+  `gradle`, `pip`, `uv`, `poetry`, `bundle`, `mypy`, `ruff`, `cmake`,
+  `bazel`, `terraform`, `docker build` — each a `Rule` of
+  strip/keep/replace/summarize/cap patterns, RTK's TOML model in Go),
+  then the universal fallback (ANSI strip, blank squeeze,
+  consecutive-run dedup `(xN)`, middle-out cap at `filters.MaxLines`).
+  `exitCode` steers verbosity: a success may collapse to a summary line,
+  a failure preserves detail, and an unmodeled failure passes through
+  raw (a running background job reads as exit `-1` so a partial stream
+  is never collapsed); `Summarize` fires only on exit 0. `BaseCommand`
+  is the one command parser both the registry and the ledger key agree
+  on. New long-tail commands are a new `Rule` in `rules.go`; complex
+  aggregation is a new `Filter` in its own file, registered ahead of the
+  rules.
+- **Raw-output recovery** (`pkg/tools/spill.go`): when filtering is lossy
+  and the raw exceeds `SpillThreshold` (30 KB) it spills to
+  `$TMPDIR/ask-spill/` (`SpillRaw`; `ASK_SPILL_DIR` overrides for tests;
+  pruned after 7 days). `BashResult`/`JobOutputResult` carry
+  `raw_path`/`raw_lines` (`MaybeSpill` / `spillIfLossy`), and the read
+  tool's offset/limit continuation pages the untouched bytes back. It is
+  the recovery path, so it runs even under `disable_token_savings` when
+  the middle-out cap dropped content.
 - `sudo` must be invoked as `sudo -A` (`ValidateSudoCommand`). The
   tool exports `SUDO_ASKPASS=<ask binary>` plus `ASK_SUDO_SOCKET` /
   `ASK_SUDO_TOKEN` / `ASK_SUDO_TABID`; `ask` run as the askpass helper

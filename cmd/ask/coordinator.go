@@ -302,9 +302,21 @@ func (l tuiWorkflowListener) OnNote(tabID int, text string) {
 	})
 }
 
+// workflowWorktree carries the origin tab's worktree context into a
+// workflow run. A workflow supplants its tab (or runs inside the live
+// chat session), so it must land in the same isolated worktree the tab
+// was using — never the project root. name reuses an existing worktree;
+// an empty name with on=true and a repo backend creates a fresh one, the
+// same rule prepareProviderSession applies to a chat turn.
+type workflowWorktree struct {
+	root string // project root (never a worktree path)
+	name string // worktree to reuse; "" means create when on
+	on   bool   // worktree mode enabled for the tab
+}
+
 // RunWorkflow compiles the definition to an ADK workflow graph and drives
 // it to completion in the background.
-func (c *Coordinator) RunWorkflow(ctx context.Context, tabID int, def workflowDef, src workflowSource) (finalizedPlanReply, error) {
+func (c *Coordinator) RunWorkflow(ctx context.Context, tabID int, wt workflowWorktree, def workflowDef, src workflowSource) (finalizedPlanReply, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -330,15 +342,27 @@ func (c *Coordinator) RunWorkflow(ctx context.Context, tabID int, def workflowDe
 		}
 	}()
 
-	rootCwd := ""
-	if parentSession != nil {
-		rootCwd = projectRoot(parentSession.args.Cwd)
-	} else {
-		rootCwd = projectRoot("")
+	listener := tuiWorkflowListener{tabID: tabID}
+
+	// Reuse the tab's worktree — or create one when worktree mode is on but
+	// the tab has none yet — exactly as Dispatch does for a chat turn.
+	// Without this the run writes into the project root, defeating worktree
+	// isolation for the most mutation-heavy path there is.
+	runArgs, name, err := prepareProviderSessionAt(
+		ProviderSessionArgs{Cwd: wt.root, Worktree: wt.on, WorktreeName: wt.name},
+		wt.name, wt.root)
+	if err != nil {
+		listener.OnWorkflowFailed(tabID, err.Error())
+		return finalizedPlanReply{}, err
+	}
+	// A worktree freshly created for this run (the tab had none) must reach
+	// the tab so the restored chat session adopts it and the [🌳] chip
+	// shows; a reused worktree is already the tab's.
+	if name != "" && name != wt.name {
+		agentSendToProgram(injectTabID(providerCwdMsg{cwd: runArgs.Cwd}, tabID))
 	}
 
-	listener := tuiWorkflowListener{tabID: tabID}
-	runState, err := c.runWorkflowGraph(ctx, rootCwd, tabID, toPkgWorkflowDef(def), src, listener)
+	runState, err := c.runWorkflowGraph(ctx, runArgs.Cwd, tabID, toPkgWorkflowDef(def), src, listener)
 	if err != nil {
 		return finalizedPlanReply{}, err
 	}

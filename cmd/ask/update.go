@@ -345,6 +345,11 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			lockWorktree(name)
 		}
 		m.worktreeName = name
+		// A worktree created for a supplanting workflow run must survive the
+		// restore, or the resumed chat would abandon the run's changes.
+		if name != "" && m.workflowRun != nil && m.workflowRun.supplanted != nil {
+			m.workflowRun.supplanted.worktreeName = name
+		}
 		m.lastContentFP = ""
 		return m, nil
 
@@ -1252,6 +1257,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m.updateModelPicker(msg)
 		case modeSkillsBrowser:
 			return m.updateSkillsBrowser(msg)
+		case modeSavings:
+			return m.updateSavings(msg)
 		case modeFinalizedPlan:
 			return m.updateFinalizedPlan(msg)
 		case modeSudoPassword:
@@ -2099,7 +2106,7 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 	cmd, _, _ := strings.Cut(line, " ")
 	if invalid := validateAskCwd(m.cwd); invalid.Msg != "" {
 		switch cmd {
-		case "/resume", "/new", "/clear", "/effort", "/config", "/workflows", "/skills":
+		case "/resume", "/new", "/clear", "/effort", "/config", "/workflows", "/skills", "/savings":
 			// Pure UI commands are still safe to run when ask's cwd
 			// is invalid — they don't start a session. Blocking them
 			// would also strand the user without a way to fix things
@@ -2159,6 +2166,8 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 	case "/skills":
 		_, args, _ := strings.Cut(line, " ")
 		return m.handleSkillsCommand(strings.TrimSpace(args))
+	case "/savings":
+		return m.openSavings(), nil
 	case "/workflows":
 		// /workflows opens the builder. Same flow as Ctrl+W: drop
 		// any in-flight issues query so re-entry to the issues
