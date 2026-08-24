@@ -10,38 +10,23 @@ import (
 // GoFilter handles the `go` toolchain. `go test` gets the full treatment:
 // a `-json` event stream is aggregated into a per-package pass/fail/skip
 // summary with failing-test output kept verbatim, and human text mode
-// drops the RUN/PASS chatter while keeping ok/FAIL lines. Every other `go`
-// subcommand keeps only the module-download noise strip.
+// drops the RUN/PASS chatter while keeping ok/FAIL lines. It handles only
+// `go test`; the other `go` subcommands are declarative rules (rules.go:
+// go build/vet → pass/fail, go mod/get → download strip, go run →
+// passthrough), so subcommand behavior lives in one place.
 type GoFilter struct{}
 
 func (GoFilter) Name() string { return "go" }
 
 func (GoFilter) Match(fields []string) bool {
-	return len(fields) >= 2 && progOf(fields[0]) == "go"
+	return len(fields) >= 2 && progOf(fields[0]) == "go" && fields[1] == "test"
 }
 
 func (GoFilter) Filter(fields []string, raw string, exit int) string {
-	if len(fields) >= 2 && fields[1] == "test" {
-		if events, ok := parseGoTestJSON(raw); ok {
-			return renderGoTest(events, exit, raw)
-		}
-		return filterGoTestText(raw, exit)
+	if events, ok := parseGoTestJSON(raw); ok {
+		return renderGoTest(events, exit, raw)
 	}
-	return stripGoDownloads(raw)
-}
-
-// stripGoDownloads removes `go: downloading …` module-fetch chatter, which
-// says nothing about the command's outcome.
-func stripGoDownloads(raw string) string {
-	lines := SplitLines(raw)
-	out := lines[:0]
-	for _, l := range lines {
-		if strings.HasPrefix(strings.TrimSpace(l), "go: downloading") {
-			continue
-		}
-		out = append(out, l)
-	}
-	return strings.Join(out, "\n")
+	return filterGoTestText(raw, exit)
 }
 
 var goTextNoise = []string{"=== RUN", "=== PAUSE", "=== CONT", "=== NAME", "--- PASS"}

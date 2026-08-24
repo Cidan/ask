@@ -83,18 +83,35 @@ func TestNormalizedCommand(t *testing.T) {
 	}
 }
 
-// A rule reaches output only through the registry: ensure a real command
-// routes to its rule via Apply.
+// A rule reaches output only through the registry: a real make command
+// routes to its (pass/fail) rule via Apply and collapses on success.
 func TestApply_RoutesToRule(t *testing.T) {
 	raw := "make[1]: Entering directory '/x'\ngcc -O2 foo.c\nmake[1]: Leaving directory '/x'\n"
 	out, saved := Apply("make -j4 all", raw, 0)
-	if out != "gcc -O2 foo.c\n" {
+	if out != "make: ok\n" {
 		t.Fatalf("make rule out = %q", out)
 	}
 	if saved <= 0 {
 		t.Errorf("expected savings, got %d", saved)
 	}
-	if strings.Contains(out, "Entering directory") {
-		t.Errorf("make noise survived: %q", out)
+}
+
+// PassFail: success collapses to an ok line (OnEmpty when set, else
+// "<name>: ok"); failure runs the normal strip pipeline so the error shows.
+func TestRule_PassFail(t *testing.T) {
+	r := Rule{Name: "make", PassFail: true, Strip: []*regexp.Regexp{re(`^\[\s*\d+%\]`)}}
+	if got := r.apply("lots\nof\nbuild\nnoise\n", 0); got != "make: ok" {
+		t.Errorf("success = %q, want 'make: ok'", got)
+	}
+	// Failure keeps the error and still strips progress noise.
+	fail := "[ 50%] Building foo.o\nsrc/foo.c:3: error: boom\n"
+	got := r.apply(fail, 2)
+	if strings.Contains(got, "50%") || !strings.Contains(got, "error: boom") {
+		t.Errorf("failure path = %q, want progress stripped + error kept", got)
+	}
+	// A custom ok message via OnEmpty.
+	r2 := Rule{Name: "x", PassFail: true, OnEmpty: "all good"}
+	if got := r2.apply("whatever\n", 0); got != "all good" {
+		t.Errorf("OnEmpty message = %q", got)
 	}
 }

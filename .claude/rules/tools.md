@@ -163,14 +163,21 @@ round-trip first would be pure overhead).
   `savings_view.go` holds the token/percent formatters). It delegates to
   the **filter registry**
   (`pkg/tools/filters`): an ordered list of command-aware compressors —
-  hand-written aggregators (`go` test NDJSON→summary + text RUN/PASS
-  strip, `git` status→porcelain / log→short-sha / large-diff→per-file
-  stats / transport noise, `pytest` success-collapse + failures-only,
-  npm-family install noise) first, then the declarative `ruleTable`
-  (`rules.go`: `make`, `cargo`/`cargo test`, `jstest` (vitest/jest),
-  `gradle`, `pip`, `uv`, `poetry`, `bundle`, `mypy`, `ruff`, `cmake`,
-  `bazel`, `terraform`, `docker build` — each a `Rule` of
-  strip/keep/replace/summarize/cap patterns, RTK's TOML model in Go),
+  hand-written aggregators (`go test` NDJSON→summary + text RUN/PASS strip
+  — `GoFilter` claims only `go test`; `git` status→porcelain /
+  log→short-sha / large-diff→per-file stats / transport noise, `pytest`
+  success-collapse + failures-only, npm-family install noise) first, then
+  the declarative `ruleTable` (`rules.go`: `make`, `go build`/`vet`
+  (pass/fail) + `go mod`/`get` (strip) + `go run` (passthrough),
+  `cargo build`/`cargo test`, `jstest` (vitest/jest), `gradle`, `pip`,
+  `uv`, `poetry`, `bundle`, `mypy`, `ruff`, `cmake`, `bazel`/`bazel build`,
+  `dotnet build`, `terraform`, `docker build` — each a `Rule` of
+  strip/keep/replace/summarize/cap patterns, RTK's TOML model in Go; a
+  `Rule` may set `PassFail` so a success collapses to one "ok" line and a
+  failure still shows the filtered error. Granularity is just the `Command`
+  regex — `^make\b` is whole-program pass/fail, `^go\s+build\b` is one
+  subcommand; a hand-written filter must claim only its specialty (e.g.
+  `go test`) so subcommand rules aren't shadowed),
   then the universal fallback (ANSI strip, blank squeeze,
   consecutive-run dedup `(xN)`, middle-out cap at `filters.MaxLines`).
   `exitCode` steers verbosity: a success may collapse to a summary line,

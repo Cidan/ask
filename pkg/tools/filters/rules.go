@@ -7,21 +7,46 @@ import "regexp"
 func re(pattern string) *regexp.Regexp { return regexp.MustCompile(pattern) }
 
 // ruleTable is the declarative long-tail of command filters — ask's own
-// take on RTK's src/filters/*.toml. Every rule here is strip-only (it
-// removes progress/bookkeeping noise, never error lines), so failures pass
-// through intact without needing KeepOnError; the exceptions set it
-// explicitly. Complex aggregators (go test, git, pytest) are hand-written
-// filters, not rules, and are registered ahead of these.
+// take on RTK's src/filters/*.toml. Most rules are strip-only (they remove
+// progress/bookkeeping noise, never error lines, so failures pass through
+// intact); build commands whose output is pure noise when they succeed set
+// PassFail (collapse to "<name>: ok" on exit 0, filtered error on failure).
+// Granularity is just the Command regex: `^make\b` is whole-program
+// pass/fail, `^go\s+build\b` is one subcommand. Complex aggregators (go
+// test, git, pytest) are hand-written filters registered ahead of these.
 var ruleTable = []Rule{
 	{
-		Name:    "make",
-		Command: re(`^(make|gmake)\b`),
+		// make is treated as pass/fail: a successful build collapses to
+		// "make: ok" (the recipe output is pure noise when it works). A
+		// failed build falls through to the strip pipeline, which clears the
+		// directory chatter and cmake progress so the error is easy to find.
+		Name:     "make",
+		Command:  re(`^(make|gmake)\b`),
+		PassFail: true,
 		Strip: []*regexp.Regexp{
-			re(`^(make|gmake)\[\d+\]:`),          // Entering/Leaving directory
+			re(`^(make|gmake)\[\d+\]: (Entering|Leaving) directory`), // not the "*** Error" line
 			re(`^(make|gmake): Nothing to be done`),
 			re(`^(make|gmake): '.*' is up to date`),
+			re(`^\[\s*\d+%\]`), // cmake progress: [ 12%] Building…
+			re(`^-- `),         // cmake configure probes
 		},
-		OnEmpty: "make: nothing to do",
+	},
+	{
+		// go build/vet/install/generate are pass/fail: silent on success
+		// (an empty result already), and on failure the compile errors show
+		// with only download chatter stripped. go test is GoFilter; go run
+		// and go tool fall through to the universal passthrough.
+		Name:     "go-build",
+		Command:  re(`^go\s+(build|vet|install|generate)\b`),
+		PassFail: true,
+		OnEmpty:  "go: ok",
+		Strip:    []*regexp.Regexp{re(`^go: downloading`)},
+	},
+	{
+		// go module plumbing: keep everything but the download chatter.
+		Name:    "go-mod",
+		Command: re(`^go\s+(mod|get|work)\b`),
+		Strip:   []*regexp.Regexp{re(`^go: downloading`)},
 	},
 	{
 		// cargo test: strip the build noise and every passing/ignored test
@@ -38,20 +63,18 @@ var ruleTable = []Rule{
 		},
 	},
 	{
-		// cargo indents its status words (`   Compiling foo`); require the
-		// leading whitespace so a program's own "Compiling…" at column zero
-		// (under `cargo run`) is never mistaken for cargo noise.
-		Name:    "cargo",
-		Command: re(`^cargo\b`),
+		// cargo build/check are pass/fail: "cargo: ok" on success, the
+		// compiler errors on failure (with the Compiling/Updating status
+		// chatter stripped). cargo run/clippy/etc fall through to the
+		// universal passthrough so their output is kept. The strip patterns
+		// require leading whitespace so a program's own "Compiling…" at
+		// column zero is never mistaken for cargo status.
+		Name:     "cargo-build",
+		Command:  re(`^cargo\s+(build|check|b|c)\b`),
+		PassFail: true,
+		OnEmpty:  "cargo: ok",
 		Strip: []*regexp.Regexp{
-			re(`^\s+Compiling `),
-			re(`^\s+Updating `),
-			re(`^\s+Downloading `),
-			re(`^\s+Downloaded `),
-			re(`^\s+Blocking `),
-			re(`^\s+Locking `),
-			re(`^\s+Adding `),
-			re(`^\s+Installing `),
+			re(`^\s+(Compiling|Updating|Downloading|Downloaded|Blocking|Locking|Adding|Installing) `),
 		},
 	},
 	{
@@ -68,8 +91,13 @@ var ruleTable = []Rule{
 		},
 	},
 	{
-		Name:    "gradle",
-		Command: re(`^(gradle|gradlew)\b`),
+		// gradle collapses to "gradle: ok" only when it prints BUILD
+		// SUCCESSFUL (Summarize, not PassFail) — a long-running task like
+		// `gradle bootRun` never prints it, so its output is never swallowed.
+		// The strips clean up an ordinary build that isn't collapsed.
+		Name:      "gradle",
+		Command:   re(`^(gradle|gradlew|\./gradlew)\b`),
+		Summarize: []OutputMatch{{Pattern: re(`(?m)^BUILD SUCCESSFUL`), Message: "gradle: ok"}},
 		Strip: []*regexp.Regexp{
 			re(`^> Task :.*\b(UP-TO-DATE|SKIPPED|NO-SOURCE|FROM-CACHE)\s*$`),
 			re(`^Download(ing)? https?://`),
@@ -139,11 +167,41 @@ var ruleTable = []Rule{
 		Summarize: []OutputMatch{{Pattern: re(`(?m)^All checks passed!`), Message: "ruff: ok"}},
 	},
 	{
-		// cmake configure prints a long run of `-- Detecting …` / `-- Check …`
-		// probe lines; strip them, keep warnings/errors and the summary.
-		Name:    "cmake",
-		Command: re(`^cmake\b`),
-		Strip:   []*regexp.Regexp{re(`^-- `)},
+		// cmake configure/build output is noise when it works → "cmake: ok".
+		// On failure the `-- Detecting…` / `[N%]` progress is stripped so the
+		// CMake Error stands out.
+		Name:     "cmake",
+		Command:  re(`^cmake\b`),
+		PassFail: true,
+		Strip:    []*regexp.Regexp{re(`^-- `), re(`^\[\s*\d+%\]`)},
+	},
+	{
+		// bazel build is pass/fail → "bazel: ok"; on failure the progress
+		// counters and phases are stripped so the error stands out. Must
+		// precede the generic bazel rule (test/run keep their output).
+		Name:     "bazel-build",
+		Command:  re(`^bazel\s+build\b`),
+		PassFail: true,
+		OnEmpty:  "bazel: ok",
+		Strip: []*regexp.Regexp{
+			re(`^\s*\[[\d,]+ / [\d,]+\]`),
+			re(`^(Loading|Analyzing|Computing): `),
+			re(`^INFO: (Analyzed|From |Found \d+ target|Elapsed|Invocation ID|Streaming build)`),
+		},
+	},
+	{
+		// dotnet build/publish/restore are pass/fail → "dotnet: ok"; on
+		// failure the restore/build chatter is stripped. dotnet run/test fall
+		// through to their own handling / passthrough.
+		Name:     "dotnet-build",
+		Command:  re(`^dotnet\s+(build|publish|restore|msbuild|pack)\b`),
+		PassFail: true,
+		OnEmpty:  "dotnet: ok",
+		Strip: []*regexp.Regexp{
+			re(`^\s*Determining projects to restore`),
+			re(`^\s*Restored `),
+			re(`^\s*[0-9]+ Warning\(s\)$`),
+		},
 	},
 	{
 		// bazel's `[1,234 / 5,678] …` progress counters and loading/analyzing
@@ -171,18 +229,14 @@ var ruleTable = []Rule{
 		},
 	},
 	{
-		// docker build's BuildKit output interleaves real step logs
-		// (`#N 12.3 <output>`) with bookkeeping (`#N DONE`, `#N CACHED`,
-		// layer sha256 lines). Strip only the bookkeeping; keep the logs.
-		// A failed build keeps everything.
+		// docker build is pass/fail: "docker build: ok" on success (the whole
+		// BuildKit log is noise when it works), and the full log verbatim on
+		// failure (KeepOnError) so the failing step is fully visible.
 		Name:        "docker-build",
 		Command:     re(`^docker\s+(build|buildx\s+build)\b`),
+		PassFail:    true,
+		OnEmpty:     "docker build: ok",
 		KeepOnError: true,
-		Strip: []*regexp.Regexp{
-			re(`^#\d+ (DONE|CACHED|extracting|transferring|resolve|naming|exporting|writing|preparing|sealing|load )`),
-			re(`^#\d+ sha256:`),
-			re(`^#\d+ \[internal\]`),
-		},
 	},
 }
 
