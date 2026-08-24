@@ -183,7 +183,14 @@ func (m *model) contentFingerprint() string {
 			loadingFrame = s.loadingFrame + 1
 		}
 	}
-	return fmt.Sprintf("%d|%d|%d|%d|%d|%d", len(m.history), m.width, shellLen, int(m.screen), issueCursor, loadingFrame)
+	// While any tool call is in flight, fold the spinner frame in so the
+	// viewport cache misses each tick and the in-flight ▸ glyph repaints
+	// through its hue cycle — same trick the issues loader uses above.
+	inflightPhase := 0
+	if m.inflightToolCount > 0 {
+		inflightPhase = m.eqFrame + 1
+	}
+	return fmt.Sprintf("%d|%d|%d|%d|%d|%d|%d", len(m.history), m.width, shellLen, int(m.screen), issueCursor, loadingFrame, inflightPhase)
 }
 
 // estimateEntryLines returns the wrapped line count of entry idx
@@ -235,6 +242,17 @@ func (m *model) ensureEntryWrapped(idx, width int) {
 		return
 	}
 	e := &m.history[idx]
+	// An in-flight tool call re-renders its header every frame so the ▸
+	// glyph pulses through inflightToolGlyphStyle. Bypass the wrap cache
+	// entirely for it — contentFingerprint's inflight term guarantees this
+	// path runs each spinner tick, and it costs one restyled line.
+	if e.kind == histToolCall && e.toolInflight {
+		e.rendered = renderToolCallBlockStyled(e.toolName, e.toolInput, m.toolOutputMode,
+			inflightToolGlyphStyle(float64(time.Now().UnixNano())/1e9))
+		e.wrapped = wrapStyledLines(e.rendered, width)
+		e.wrappedFor = width
+		return
+	}
 	if e.wrappedFor != width {
 		switch e.kind {
 		case histResponse, histUser, histUserQueued, histWorkflowDone, histDiff:

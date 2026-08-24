@@ -286,6 +286,17 @@ type historyEntry struct {
 	filePath string
 	hunks    []diff.Hunk
 
+	// Tool-call animation state (histToolCall only). toolName/toolInput let
+	// ensureEntryWrapped re-render the ▸ glyph with a live, hue-rotated color
+	// each frame while toolInflight is set, so the arrow pulses while the
+	// call runs. When the result lands, settleToolCall clears toolInflight
+	// and re-bakes the header with the resting glyph color — red when
+	// toolErrored, the normal accent otherwise.
+	toolName     string
+	toolInput    map[string]any
+	toolInflight bool
+	toolErrored  bool
+
 	// wrapped is the soft-wrapped slice of rendered lines for the
 	// width recorded in wrappedFor. It is the only thing chatView
 	// reads when slicing the visible window: caching it per entry
@@ -494,6 +505,12 @@ type model struct {
 	statusRevertSeq int
 	eqHeights       [7]int
 	eqFrame         int
+
+	// inflightToolCount is how many histToolCall entries are currently
+	// awaiting their result. While it is >0, contentFingerprint mixes in the
+	// spinner frame so the viewport repaints each tick and the in-flight ▸
+	// glyphs pulse; settleToolCall drops it back to zero as results arrive.
+	inflightToolCount int
 
 	// Preserved solely for backward-compatibility in tests.
 	// Unused and unreferenced in the main application code.

@@ -2,7 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
+
+	lipgloss "charm.land/lipgloss/v2"
 )
 
 // Shared helpers for the "Tool Output" config tri-state: one gate,
@@ -22,8 +25,11 @@ import (
 //	full  — call header with every input field, and the full (unclamped)
 //	       result body, including the "started background job" ack bash
 //	       emits for run_in_background calls.
-//	short — call header only, plus the clamped result body for foreground
-//	       calls; background-call results are suppressed.
+//	short — one compact line per call: the header only. The result body is
+//	       dropped, with two exceptions that stay one line — read keeps its
+//	       line-count summary, and bash keeps its "exit N" status. Errors
+//	       and every other tool's output are hidden; the ▸ glyph carries
+//	       the pass/fail signal (it lands red on error, see settleToolCall).
 //	off   — render nothing for tool calls or their results, not even
 //	       headers.
 type toolOutputMode string
@@ -32,9 +38,6 @@ const (
 	toolOutputFull  toolOutputMode = "full"
 	toolOutputShort toolOutputMode = "short"
 	toolOutputOff   toolOutputMode = "off"
-
-	toolOutputMaxLines = 20
-	toolOutputMaxChars = 2000
 )
 
 // defaultToolOutputMode is what new installs and unrecognized values
@@ -155,9 +158,21 @@ func toolCallPhrase(input map[string]any) string {
 // duplicate the header). Non-string inputs are JSON-encoded so arrays
 // and nested maps remain legible.
 func renderToolCallBlock(name string, input map[string]any, mode toolOutputMode) string {
+	return renderToolCallBlockStyled(name, input, mode, diffPathStyle)
+}
+
+// renderToolCallBlockStyled is renderToolCallBlock with the "▸ name" glyph
+// drawn in a caller-supplied style instead of the resting diffPathStyle.
+// The projection bakes the resting color; the in-flight animation
+// (ensureEntryWrapped) re-invokes this each frame with a hue-rotated style
+// so the arrow pulses while the call runs, and settleToolCall re-bakes it
+// with restingToolGlyphStyle (red on error) once the result lands. Only the
+// glyph unit is restyled — the primary/phrase and any input rows keep the
+// dim context style.
+func renderToolCallBlockStyled(name string, input map[string]any, mode toolOutputMode, glyphStyle lipgloss.Style) string {
 	phrase := toolCallPhrase(input)
 	primary := toolPrimaryArg(name, input)
-	header := diffPathStyle.Render("▸ " + nonEmpty(name, "tool"))
+	header := glyphStyle.Render("▸ " + nonEmpty(name, "tool"))
 	switch {
 	case primary != "":
 		// Concrete argument (the file, the command, the query) beats the
@@ -181,6 +196,41 @@ func renderToolCallBlock(name string, input map[string]any, mode toolOutputMode)
 		lines = append(lines, outputStyle.Render(diffContextStyle.Render("    "+k+": "+formatToolInputValue(input[k]))))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// inflightGlyphPeriod is how long, in seconds, the ▸ glyph takes to make
+// one full hue rotation while a tool call is in flight. The viewport
+// repaints at the spinner's 60fps while any call runs (see
+// contentFingerprint), so the arrow reads as a smooth rainbow at that rate.
+const inflightGlyphPeriod = 1.5
+
+// inflightGlyphHex returns the color the ▸ glyph pulses through at time t
+// (seconds). Hue rotates a full turn every inflightGlyphPeriod; saturation
+// and value match the EQ meter's palette so the two animations feel of a
+// piece.
+func inflightGlyphHex(t float64) string {
+	hue := math.Mod(t/inflightGlyphPeriod, 1.0)
+	if hue < 0 {
+		hue += 1.0
+	}
+	return hsvToHex(hue*360.0, 0.75, 0.58)
+}
+
+// inflightToolGlyphStyle is the animated glyph style for time t (seconds),
+// bold to match the resting diffPathStyle weight.
+func inflightToolGlyphStyle(t float64) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(inflightGlyphHex(t))).Bold(true)
+}
+
+// restingToolGlyphStyle is the color the ▸ glyph settles on when a call
+// finishes: the normal accent (diffPathStyle) on success, red on error so a
+// failed call is visible at a glance even in short mode where its body is
+// hidden.
+func restingToolGlyphStyle(errored bool) lipgloss.Style {
+	if errored {
+		return errStyle.Bold(true)
+	}
+	return diffPathStyle
 }
 
 // toolPrimaryArg returns the single highest-signal argument to show in a
@@ -251,16 +301,6 @@ func renderToolResultBlock(name, output string, isError bool, exitCode int, hasE
 	return renderGenericResult(output, isError, mode)
 }
 
-// clampBody trims a result body for display. In full ("audit") mode it
-// returns the whole thing; otherwise it clips to the line/char caps and
-// reports how many lines were dropped.
-func clampBody(output string, mode toolOutputMode) (string, int) {
-	if mode == toolOutputFull {
-		return strings.TrimRight(output, "\n"), 0
-	}
-	return clampToolOutput(output)
-}
-
 // renderReadResult collapses a read to a one-line summary — the line
 // count, or the tool's own parenthetical notice ("(empty file)",
 // "(no lines at offset …)"). The file itself is on the call header; the
@@ -279,9 +319,10 @@ func renderReadResult(output string) string {
 	return outputStyle.Render(diffContextStyle.Render("  " + summary))
 }
 
-// renderBashResult shows the exit code (green for 0, red otherwise) and a
-// clipped tail of combined output. Background launches and still-running
-// polls carry no exit code, so they render just their output line.
+// renderBashResult shows the exit code (green for 0, red otherwise). In full
+// mode the combined output follows, unclipped; in short mode the exit line
+// stands alone. Background launches and still-running polls carry no exit
+// code, so short mode renders nothing for them and their header stands alone.
 func renderBashResult(output string, exitCode int, hasExitCode bool, mode toolOutputMode) string {
 	var rows []string
 	if hasExitCode {
@@ -291,22 +332,29 @@ func renderBashResult(output string, exitCode int, hasExitCode bool, mode toolOu
 		}
 		rows = append(rows, outputStyle.Render(st.Render("  exit "+itoa(exitCode))))
 	}
-	body, trimmed := clampBody(output, mode)
+	// Short mode stays one line: the exit status, never the output body.
+	if mode != toolOutputFull {
+		return strings.Join(rows, "\n")
+	}
+	body := strings.TrimRight(output, "\n")
 	if strings.TrimSpace(body) != "" {
 		for _, ln := range strings.Split(body, "\n") {
 			rows = append(rows, outputStyle.Render(diffContextStyle.Render("  "+ln)))
-		}
-		if trimmed > 0 {
-			rows = append(rows, outputStyle.Render(diffContextStyle.Render("  (… "+pluralLines(trimmed)+" omitted)")))
 		}
 	}
 	return strings.Join(rows, "\n")
 }
 
-// renderGenericResult is the fallback body: the clipped output, one row
-// per line, in the error style when the call failed.
+// renderGenericResult is the fallback body for every non-read/bash/edit tool
+// and for every error. In full mode it renders the whole output one row per
+// line (error style when the call failed); in short mode it renders nothing —
+// the header alone stands, and a failed call is signalled by the glyph
+// landing red (settleToolCall). Returns "" so the projection drops the entry.
 func renderGenericResult(output string, isError bool, mode toolOutputMode) string {
-	body, trimmedLines := clampBody(output, mode)
+	if mode != toolOutputFull {
+		return ""
+	}
+	body := strings.TrimRight(output, "\n")
 	var rows []string
 	for _, ln := range strings.Split(body, "\n") {
 		styled := diffContextStyle.Render("  " + ln)
@@ -315,26 +363,7 @@ func renderGenericResult(output string, isError bool, mode toolOutputMode) strin
 		}
 		rows = append(rows, outputStyle.Render(styled))
 	}
-	if trimmedLines > 0 {
-		rows = append(rows, outputStyle.Render(diffContextStyle.Render(
-			"  (… "+pluralLines(trimmedLines)+" omitted)")))
-	}
 	return strings.Join(rows, "\n")
-}
-
-// clampToolOutput trims output to toolOutputMaxLines + toolOutputMaxChars.
-// Returns the kept body plus the number of lines trimmed off so the
-// caller can append a summary.
-func clampToolOutput(s string) (string, int) {
-	s = strings.TrimRight(s, "\n")
-	if len(s) > toolOutputMaxChars {
-		s = s[:toolOutputMaxChars]
-	}
-	lines := strings.Split(s, "\n")
-	if len(lines) <= toolOutputMaxLines {
-		return s, 0
-	}
-	return strings.Join(lines[:toolOutputMaxLines], "\n"), len(lines) - toolOutputMaxLines
 }
 
 // formatToolInputValue stringifies one tool-input value. Short strings
@@ -406,13 +435,6 @@ func nonEmpty(s, fallback string) string {
 		return fallback
 	}
 	return s
-}
-
-func pluralLines(n int) string {
-	if n == 1 {
-		return "1 more line"
-	}
-	return itoa(n) + " more lines"
 }
 
 func pluralReadLines(n int) string {

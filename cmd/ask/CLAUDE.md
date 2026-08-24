@@ -59,9 +59,11 @@ tool surface → `.claude/rules/tools.md`, workflow graph →
   on/off). Tool activity projects to three grouped kinds — `histToolCall`
   (per-tool header from the call input; see `renderToolCallBlock` /
   `toolPrimaryArg`), `histToolResult` (per-tool body from
-  `renderToolResultBlock`: read → line count, bash → `exit N` + output,
-  edit/write → suppressed since the diff carries it, generic → clamped),
-  and `histDiff` (structured hunks, solid red/green backgrounds rendered
+  `renderToolResultBlock`, and mode-dependent: **short** keeps the header
+  to one line — read → line count, bash → `exit N` only, edit/write and
+  every other tool (including errors) → nothing (the `▸` glyph carries the
+  pass/fail signal); **full** adds the whole unclamped body), and `histDiff`
+  (structured hunks, solid red/green backgrounds rendered
   at width in `renderDiffBlock`, hardcoded to bypass the theme). A tool
   call, its diff, and its result render as one tight block: `model.gapAfter`
   drops the blank separator row between adjacent members of a group. Arrival handlers `pushTranscript` (append + incremental
@@ -71,6 +73,16 @@ tool surface → `.claude/rules/tools.md`, workflow graph →
   cross-provider swap load the transcript and project through the same
   path, so replay can't drift from live. `m.history` is the persistent
   backing store view.go mutates in place; never rebuild it per frame.
+- In-flight tool glyph: a `toolCallMsg` marks its `histToolCall` entry
+  `toolInflight` and bumps `m.inflightToolCount`; the matching
+  `toolResultMsg` calls `settleToolCall` (FIFO by tool name — the live
+  path carries no tool-use id) to clear it and re-bake the header with its
+  resting glyph color (`restingToolGlyphStyle`: accent, or red when the
+  result errored). While `inflightToolCount > 0`, `contentFingerprint`
+  folds in the spinner frame so the viewport cache misses each 60fps tick,
+  and `ensureEntryWrapped` re-renders in-flight `histToolCall` entries
+  through `inflightToolGlyphStyle(now)` so the `▸` pulses (the one
+  sanctioned per-frame re-render of a history entry, bounded to one line).
 - Stick-to-bottom: `layout()` reads `m.chat.AtBottom()` BEFORE
   `SetWidth`/`SetHeight`/`refreshChatTotals`, then `GotoBottom()` only
   if it was true. Reversing this leaves a resize off the bottom.
@@ -80,8 +92,8 @@ tool surface → `.claude/rules/tools.md`, workflow graph →
   order (viewport, pending, todos, spinner, chip, input). Change both.
 - Frame cache `frameCache{vpFP, vpView, vbFP, vbWithBar}` on `m.fc` is
   keyed by `contentFingerprint()` = `len(history) | width | shell
-  output length | screen | issues cursor | loading frame`. A body
-  change that touches none of those terms must clear
+  output length | screen | issues cursor | loading frame | inflight
+  pulse`. A body change that touches none of those terms must clear
   `m.lastContentFP` and `fc.vpFP`/`fc.vbFP`. Shell mode appends to one
   entry in place — hence its length in the key.
 - The scrollbar is column `m.width-1`; content is laid out at
