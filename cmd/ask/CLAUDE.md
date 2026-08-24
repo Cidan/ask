@@ -49,6 +49,19 @@ tool surface → `.claude/rules/tools.md`, workflow graph →
   The per-entry cache is `historyEntry.wrapped`/`wrappedFor`; a width
   change re-renders glamour for response/user entries and re-wraps
   prerendered ones. Never render in per-frame paths.
+- The source of truth is `m.transcript []transcriptItem` (transcript.go):
+  one typed, mode-independent item per user message, assistant block,
+  tool call/result, diff, workflow summary, or prerendered banner.
+  `m.history` is a *projection* of it: `projectItem`/`projectHistory`
+  apply the view modes (quiet hides tool+diff items and shows assistant
+  blocks live as separate entries; tool-output full/short/off; diffs
+  on/off). Arrival handlers `pushTranscript` (append + incremental
+  project, preserving caches); mode toggles call `refreshHistory`
+  (synchronous full re-project, so toggles are retroactive over the
+  whole history — nothing is dropped at arrival time). `/resume` and
+  cross-provider swap load the transcript and project through the same
+  path, so replay can't drift from live. `m.history` is the persistent
+  backing store view.go mutates in place; never rebuild it per frame.
 - Stick-to-bottom: `layout()` reads `m.chat.AtBottom()` BEFORE
   `SetWidth`/`SetHeight`/`refreshChatTotals`, then `GotoBottom()` only
   if it was true. Reversing this leaves a resize off the bottom.
@@ -151,9 +164,11 @@ lockstep (`.claude/rules/issues.md`).
   `unwrapInvokeToolCall`). Loop detection: `agentLoopWindow` 10,
   `agentLoopMaxRepeats` 5.
 - agent_session.go `agentSessionStore` wraps the engine session store:
-  `~/.config/ask/agent-sessions/<provider>/`, `list`, `loadHistory`
-  (replay into `historyEntry`s), `materialize` (seed a transcript from
-  `NeutralTurn`s on a cross-provider swap). virtual_session.go: a
+  `~/.config/ask/agent-sessions/<provider>/`, `list`, `loadTranscript`
+  (replay events into the faithful, mode-independent `[]transcriptItem`
+  that the tab projects), `materialize` (seed a transcript from
+  `NeutralTurn`s on a cross-provider swap). See transcript.go for the
+  transcript/projection model. virtual_session.go: a
   `VirtualSession` (`~/.config/ask/sessions.json`) is one conversation
   mapped to per-provider native ids; `/resume` lists them per workspace,
   `recordVirtualSession` upserts after a turn, `Title` is the tab
@@ -274,8 +289,9 @@ lockstep (`.claude/rules/issues.md`).
 ## File map
 
 - App, tabs, layout: main.go, tabs.go, types.go, update.go, view.go,
-  chatview.go, screens.go, sidebar.go, keymap.go, themes.go, toast.go,
-  selection.go, list_nav.go, util.go, debug.go, aliases.go.
+  transcript.go, chatview.go, screens.go, sidebar.go, keymap.go,
+  themes.go, toast.go, selection.go, list_nav.go, util.go, debug.go,
+  aliases.go.
 - Chat and input: commands.go, paths.go, slashdescs.go, shell.go,
   clipboard.go, kitty.go, kitty_diacritics.go, tool_output.go,
   tab_title.go, usage.go.

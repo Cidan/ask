@@ -67,20 +67,24 @@ func (st *agentSessionStore) list(cwd string) ([]sessionEntry, error) {
 	return entries, nil
 }
 
-func (st *agentSessionStore) loadHistory(id string, opts HistoryOpts) ([]historyEntry, error) {
+func (st *agentSessionStore) loadTranscript(id string) ([]transcriptItem, error) {
 	file, err := st.load(id)
 	if err != nil {
 		return nil, err
 	}
-	return LoadHistoryEntriesFromEvents(file.Events, opts)
+	return loadTranscriptFromEvents(file.Events)
 }
 
-// LoadHistoryEntriesFromEvents maps a slice of session.Event directly to Bubble Tea historyEntry view models.
-func LoadHistoryEntriesFromEvents(events []*session.Event, opts HistoryOpts) ([]historyEntry, error) {
-	mode := opts.ToolOutput
-	showTools := !opts.QuietMode && mode != toolOutputOff
-	var entries []historyEntry
-	lastAssistantIdx := -1
+// loadTranscriptFromEvents maps a slice of session.Event to the faithful,
+// mode-independent transcript. It keeps every semantic part — user text,
+// each assistant block, tool calls, tool results — in wire order, storing
+// tool payloads raw so the projection can render them at whatever
+// tool-output mode is active. No view mode is applied here and no
+// interim assistant block is collapsed; filtering is entirely the
+// projection's job (projectItem), which is what makes live streaming and
+// /resume replay share a single mapping.
+func loadTranscriptFromEvents(events []*session.Event) ([]transcriptItem, error) {
+	var items []transcriptItem
 
 	for _, e := range events {
 		if e == nil || e.LLMResponse.Content == nil {
@@ -90,19 +94,13 @@ func LoadHistoryEntriesFromEvents(events []*session.Event, opts HistoryOpts) ([]
 		isUser := e.Author == "user" || content.Role == genai.RoleUser
 
 		if isUser {
-			if showTools {
-				for _, p := range content.Parts {
-					if p == nil {
-						continue
-					}
-					if p.FunctionResponse != nil {
-						resStr, isErr := engine.ToolResultText(p.FunctionResponse.Response)
-						entries = append(entries, historyEntry{
-							kind: histPrerendered,
-							text: renderToolResultBlock(resStr, isErr),
-						})
-					}
+			// Tool results (function responses) ride user events in ADK.
+			for _, p := range content.Parts {
+				if p == nil || p.FunctionResponse == nil {
+					continue
 				}
+				resStr, isErr := engine.ToolResultText(p.FunctionResponse.Response)
+				items = append(items, transcriptItem{kind: trToolResult, output: resStr, isError: isErr})
 			}
 
 			var textParts []string
@@ -113,64 +111,51 @@ func LoadHistoryEntriesFromEvents(events []*session.Event, opts HistoryOpts) ([]
 			}
 			fullText := strings.TrimSpace(strings.Join(textParts, ""))
 			if fullText != "" {
-				entries = append(entries, historyEntry{kind: histUser, text: fullText})
-				lastAssistantIdx = -1
+				items = append(items, transcriptItem{kind: trUser, text: fullText})
 			}
-		} else {
-			// Model / Assistant event
-			if showTools {
-				for _, p := range content.Parts {
-					if p == nil {
-						continue
-					}
-					if p.FunctionCall != nil {
-						name := p.FunctionCall.Name
-						input := p.FunctionCall.Args
-						if name == "invoke_tool" {
-							name, input = unwrapInvokeToolCall(input)
-						}
-						entries = append(entries, historyEntry{
-							kind: histPrerendered,
-							text: renderToolCallBlock(name, input, mode),
-						})
-					}
-				}
-			}
+			continue
+		}
 
-			var nonThoughtTexts []string
-			for _, p := range content.Parts {
-				if p != nil && !p.Thought && p.Text != "" {
-					nonThoughtTexts = append(nonThoughtTexts, p.Text)
-				}
+		// Model / assistant event: tool calls, then the assistant block,
+		// then any tool results carried on the same event.
+		for _, p := range content.Parts {
+			if p == nil || p.FunctionCall == nil {
+				continue
 			}
-			msgText := strings.TrimSpace(strings.Join(nonThoughtTexts, ""))
-			if msgText != "" {
-				if opts.QuietMode && lastAssistantIdx >= 0 {
-					entries[lastAssistantIdx].text = msgText
-					invalidateEntryRender(&entries[lastAssistantIdx])
-				} else {
-					entries = append(entries, historyEntry{kind: histResponse, text: msgText})
-					lastAssistantIdx = len(entries) - 1
-				}
+			name := p.FunctionCall.Name
+			input := p.FunctionCall.Args
+			if name == "invoke_tool" {
+				name, input = unwrapInvokeToolCall(input)
 			}
+			bg, _ := input["run_in_background"].(bool)
+			items = append(items, transcriptItem{
+				kind:       trToolCall,
+				toolName:   name,
+				toolInput:  input,
+				background: bg,
+			})
+		}
 
-			if showTools {
-				for _, p := range content.Parts {
-					if p == nil {
-						continue
-					}
-					if p.FunctionResponse != nil {
-						resStr, isErr := engine.ToolResultText(p.FunctionResponse.Response)
-						entries = append(entries, historyEntry{
-							kind: histPrerendered,
-							text: renderToolResultBlock(resStr, isErr),
-						})
-					}
-				}
+		var nonThoughtTexts []string
+		for _, p := range content.Parts {
+			if p != nil && !p.Thought && p.Text != "" {
+				nonThoughtTexts = append(nonThoughtTexts, p.Text)
 			}
 		}
+		msgText := strings.TrimSpace(strings.Join(nonThoughtTexts, ""))
+		if msgText != "" {
+			items = append(items, transcriptItem{kind: trAssistant, text: msgText})
+		}
+
+		for _, p := range content.Parts {
+			if p == nil || p.FunctionResponse == nil {
+				continue
+			}
+			resStr, isErr := engine.ToolResultText(p.FunctionResponse.Response)
+			items = append(items, transcriptItem{kind: trToolResult, output: resStr, isError: isErr})
+		}
 	}
-	return entries, nil
+	return items, nil
 }
 
 func (st *agentSessionStore) materialize(workspace string, turns []NeutralTurn) (string, string, error) {

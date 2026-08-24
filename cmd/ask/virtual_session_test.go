@@ -416,8 +416,8 @@ func TestResumeVirtualSession_CurrentProviderMappingUsesNativeID(t *testing.T) {
 	isolateHome(t)
 	p := newFakeProvider()
 	p.id = "claude"
-	p.loadHistoryFn = func(id string, _ HistoryOpts) ([]historyEntry, error) {
-		return []historyEntry{{kind: histUser, text: "loaded-for:" + id}}, nil
+	p.loadHistoryFn = func(id string) ([]transcriptItem, error) {
+		return []transcriptItem{{kind: trUser, text: "loaded-for:" + id}}, nil
 	}
 	withRegisteredProviders(t, p)
 	m := newTestModel(t, p)
@@ -477,10 +477,10 @@ func TestResumeVirtualSession_NoMappingForCurrentProviderTranslatesFromSource(t 
 	isolateHome(t)
 	claude := newFakeProvider()
 	claude.id = "claude"
-	claude.loadHistoryFn = func(id string, _ HistoryOpts) ([]historyEntry, error) {
-		return []historyEntry{
-			{kind: histUser, text: "from-claude:" + id},
-			{kind: histResponse, text: "assistant reply"},
+	claude.loadHistoryFn = func(id string) ([]transcriptItem, error) {
+		return []transcriptItem{
+			{kind: trUser, text: "from-claude:" + id},
+			{kind: trAssistant, text: "assistant reply"},
 		}, nil
 	}
 	codex := newFakeProvider()
@@ -605,8 +605,8 @@ func TestResumeVirtualSession_RoundTripUpsertPersistsCodexNativeID(t *testing.T)
 	isolateHome(t)
 	claude := newFakeProvider()
 	claude.id = "claude"
-	claude.loadHistoryFn = func(_ string, _ HistoryOpts) ([]historyEntry, error) {
-		return []historyEntry{{kind: histUser, text: "hi"}}, nil
+	claude.loadHistoryFn = func(_ string) ([]transcriptItem, error) {
+		return []transcriptItem{{kind: trUser, text: "hi"}}, nil
 	}
 	codex := newFakeProvider()
 	codex.id = "codex"
@@ -680,10 +680,10 @@ func TestResumeVirtualSession_StaleMappingForCurrentProviderTriggersTranslate(t 
 	codex := newFakeProvider()
 	codex.id = "codex"
 	codex.displayName = "Codex"
-	codex.loadHistoryFn = func(_ string, _ HistoryOpts) ([]historyEntry, error) {
-		return []historyEntry{
-			{kind: histUser, text: "question in codex"},
-			{kind: histResponse, text: "codex answered"},
+	codex.loadHistoryFn = func(_ string) ([]transcriptItem, error) {
+		return []transcriptItem{
+			{kind: trUser, text: "question in codex"},
+			{kind: trAssistant, text: "codex answered"},
 		}, nil
 	}
 	var claudeMaterialized bool
@@ -777,9 +777,9 @@ func TestApplyProviderSwitch_StaleMappingTriggersTranslate(t *testing.T) {
 	m := newTestModel(t, pB)
 	m.virtualSessionID = vsID
 	m.cwd = "/ws"
-	m.history = []historyEntry{
-		{kind: histUser, text: "user-B"},
-		{kind: histResponse, text: "assistant-B"},
+	m.transcript = []transcriptItem{
+		{kind: trUser, text: "user-B"},
+		{kind: trAssistant, text: "assistant-B"},
 	}
 	newM, cmd := m.applyProviderModelSwitch(providerRegistry[0], "")
 	mm := newM.(model)
@@ -834,9 +834,9 @@ func TestTranslate_PassesWorktreeCwdToMaterialize(t *testing.T) {
 	m.virtualSessionID = vsID
 	m.cwd = "/ws"
 	m.worktreeName = "ask-fakeA-1"
-	m.history = []historyEntry{
-		{kind: histUser, text: "hi"},
-		{kind: histResponse, text: "hello"},
+	m.transcript = []transcriptItem{
+		{kind: trUser, text: "hi"},
+		{kind: trAssistant, text: "hello"},
 	}
 	newM, cmd := m.applyProviderModelSwitch(providerRegistry[1], "")
 	mm := newM.(model)
@@ -868,17 +868,17 @@ func TestTranslate_PassesWorktreeCwdToMaterialize(t *testing.T) {
 
 // ---- US-011: NeutralTurn extraction ----
 
-func TestNeutralTurnsFromHistory_MapsKindsAndSkipsTools(t *testing.T) {
-	history := []historyEntry{
-		{kind: histUser, text: "hi"},
-		{kind: histPrerendered, text: "[tool call — skipped]"},
-		{kind: histResponse, text: "hello"},
-		{kind: histPrerendered, text: "[tool result — skipped]"},
-		{kind: histUser, text: "more"},
+func TestNeutralTurnsFromTranscript_MapsKindsAndSkipsToolsAndTrailingUser(t *testing.T) {
+	items := []transcriptItem{
+		{kind: trUser, text: "hi"},
+		{kind: trToolCall, toolName: "read"},
+		{kind: trAssistant, text: "hello"},
+		{kind: trToolResult, output: "result"},
+		{kind: trUser, text: "more"},
 	}
-	got := neutralTurnsFromHistory(history)
+	got := neutralTurnsFromTranscript(items)
 	if len(got) != 2 {
-		t.Fatalf("want 2 turns, got %d: %+v", len(got), got)
+		t.Fatalf("want 2 turns (tool items skipped, trailing user trimmed), got %d: %+v", len(got), got)
 	}
 	want := []NeutralTurn{
 		{Role: "user", Text: "hi"},
@@ -916,9 +916,9 @@ func TestApplyProviderSwitch_SkipsErroredTrailingUserTurn(t *testing.T) {
 	m.cwd = "/ws"
 	m.virtualSessionID = vsID
 	m.sessionID = "claude-session"
-	m.history = []historyEntry{
-		{kind: histUser, text: "failed prompt"},
-		{kind: histPrerendered, text: "error: usage limit reached"},
+	m.transcript = []transcriptItem{
+		{kind: trUser, text: "failed prompt"},
+		{kind: trPrerendered, text: "error: usage limit reached"},
 	}
 
 	newM, cmd := m.applyProviderModelSwitch(providerRegistry[1], "")
@@ -962,8 +962,8 @@ func TestApplyProviderSwitch_CrossProviderWithMappingLoadsHistory(t *testing.T) 
 	pB := newFakeProvider()
 	pB.id = "fakeB"
 	pB.displayName = "Fake B"
-	pB.loadHistoryFn = func(id string, _ HistoryOpts) ([]historyEntry, error) {
-		return []historyEntry{{kind: histResponse, text: "loaded-from-B:" + id}}, nil
+	pB.loadHistoryFn = func(id string) ([]transcriptItem, error) {
+		return []transcriptItem{{kind: trAssistant, text: "loaded-from-B:" + id}}, nil
 	}
 	withRegisteredProviders(t, pA, pB)
 
@@ -1021,9 +1021,9 @@ func TestApplyProviderSwitch_CrossProviderWithoutMappingMaterializes(t *testing.
 	m := newTestModel(t, pA)
 	m.virtualSessionID = vsID
 	m.cwd = "/ws"
-	m.history = []historyEntry{
-		{kind: histUser, text: "prior user"},
-		{kind: histResponse, text: "prior assistant"},
+	m.transcript = []transcriptItem{
+		{kind: trUser, text: "prior user"},
+		{kind: trAssistant, text: "prior assistant"},
 	}
 	newM, cmd := m.applyProviderModelSwitch(providerRegistry[1], "")
 	mm := newM.(model)
@@ -1299,9 +1299,9 @@ func TestApplyProviderSwitch_RecoversWorktreeFromVS_OnTranslate(t *testing.T) {
 	m.virtualSessionID = vsID
 	m.cwd = "/ws"
 	m.worktreeName = "" // mimics resume-then-swap before the first fork
-	m.history = []historyEntry{
-		{kind: histUser, text: "user-A"},
-		{kind: histResponse, text: "assistant-A"},
+	m.transcript = []transcriptItem{
+		{kind: trUser, text: "user-A"},
+		{kind: trAssistant, text: "assistant-A"},
 	}
 	newM, cmd := m.applyProviderModelSwitch(providerRegistry[1], "")
 	mm := newM.(model)
@@ -1357,9 +1357,9 @@ func TestApplyProviderSwitch_PrefersLiveWorktreeNameOverVS(t *testing.T) {
 	m.virtualSessionID = vsID
 	m.cwd = "/ws"
 	m.worktreeName = "live-name" // live tab knows where it is
-	m.history = []historyEntry{
-		{kind: histUser, text: "u"},
-		{kind: histResponse, text: "a"},
+	m.transcript = []transcriptItem{
+		{kind: trUser, text: "u"},
+		{kind: trAssistant, text: "a"},
 	}
 	_, cmd := m.applyProviderModelSwitch(providerRegistry[1], "")
 	_ = drainBatch(t, cmd)
@@ -1397,9 +1397,9 @@ func TestApplyProviderSwitch_StaysAtProjectRootWhenNoVSWorktree(t *testing.T) {
 	m.virtualSessionID = vsID
 	m.cwd = "/ws"
 	m.worktreeName = ""
-	m.history = []historyEntry{
-		{kind: histUser, text: "u"},
-		{kind: histResponse, text: "a"},
+	m.transcript = []transcriptItem{
+		{kind: trUser, text: "u"},
+		{kind: trAssistant, text: "a"},
 	}
 	_, cmd := m.applyProviderModelSwitch(providerRegistry[1], "")
 	_ = drainBatch(t, cmd)
@@ -1444,9 +1444,9 @@ func TestApplyProviderSwitch_PrefersLastProviderProjectRootOverStaleWorktree(t *
 	m.virtualSessionID = vsID
 	m.cwd = "/ws"
 	m.worktreeName = ""
-	m.history = []historyEntry{
-		{kind: histUser, text: "u"},
-		{kind: histResponse, text: "a"},
+	m.transcript = []transcriptItem{
+		{kind: trUser, text: "u"},
+		{kind: trAssistant, text: "a"},
 	}
 	_, cmd := m.applyProviderModelSwitch(providerRegistry[2], "")
 	_ = drainBatch(t, cmd)
@@ -1471,8 +1471,8 @@ func TestApplyProviderSwitch_RealignsWorktreeNameOnCachedSwap(t *testing.T) {
 	pB := newFakeProvider()
 	pB.id = "fakeB"
 	pB.displayName = "Fake B"
-	pB.loadHistoryFn = func(id string, _ HistoryOpts) ([]historyEntry, error) {
-		return []historyEntry{{kind: histResponse, text: "from B " + id}}, nil
+	pB.loadHistoryFn = func(id string) ([]transcriptItem, error) {
+		return []transcriptItem{{kind: trAssistant, text: "from B " + id}}, nil
 	}
 	withRegisteredProviders(t, pA, pB)
 
@@ -1507,7 +1507,7 @@ func TestApplyProviderSwitch_ClearsWorktreeNameOnProjectRootCachedSwap(t *testin
 	pB := newFakeProvider()
 	pB.id = "fakeB"
 	pB.displayName = "Fake B"
-	pB.loadHistoryFn = func(_ string, _ HistoryOpts) ([]historyEntry, error) {
+	pB.loadHistoryFn = func(_ string) ([]transcriptItem, error) {
 		return nil, nil
 	}
 	withRegisteredProviders(t, pA, pB)
@@ -1538,7 +1538,7 @@ func TestResumeVirtualSession_RealignsWorktreeNameFromCachedRef(t *testing.T) {
 	isolateHome(t)
 	p := newFakeProvider()
 	p.id = "fakeA"
-	p.loadHistoryFn = func(_ string, _ HistoryOpts) ([]historyEntry, error) {
+	p.loadHistoryFn = func(_ string) ([]transcriptItem, error) {
 		return nil, nil
 	}
 	withRegisteredProviders(t, p)
@@ -1566,7 +1566,7 @@ func TestResumeVirtualSession_ClearsWorktreeNameOnProjectRootRef(t *testing.T) {
 	isolateHome(t)
 	p := newFakeProvider()
 	p.id = "fakeA"
-	p.loadHistoryFn = func(_ string, _ HistoryOpts) ([]historyEntry, error) {
+	p.loadHistoryFn = func(_ string) ([]transcriptItem, error) {
 		return nil, nil
 	}
 	withRegisteredProviders(t, p)
@@ -1597,10 +1597,10 @@ func TestResumeVirtualSession_TranslateRecoversWorktreeFromSourceRef(t *testing.
 	pA := newFakeProvider()
 	pA.id = "fakeA"
 	pA.displayName = "Fake A"
-	pA.loadHistoryFn = func(_ string, _ HistoryOpts) ([]historyEntry, error) {
-		return []historyEntry{
-			{kind: histUser, text: "u"},
-			{kind: histResponse, text: "a"},
+	pA.loadHistoryFn = func(_ string) ([]transcriptItem, error) {
+		return []transcriptItem{
+			{kind: trUser, text: "u"},
+			{kind: trAssistant, text: "a"},
 		}, nil
 	}
 	pB := newFakeProvider()
@@ -1653,10 +1653,10 @@ func TestResumeVirtualSession_TranslateKeepsProjectRootWhenSourceRefIsProjectRoo
 	pA := newFakeProvider()
 	pA.id = "fakeA"
 	pA.displayName = "Fake A"
-	pA.loadHistoryFn = func(_ string, _ HistoryOpts) ([]historyEntry, error) {
-		return []historyEntry{
-			{kind: histUser, text: "u"},
-			{kind: histResponse, text: "a"},
+	pA.loadHistoryFn = func(_ string) ([]transcriptItem, error) {
+		return []transcriptItem{
+			{kind: trUser, text: "u"},
+			{kind: trAssistant, text: "a"},
 		}, nil
 	}
 	pB := newFakeProvider()

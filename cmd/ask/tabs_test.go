@@ -57,7 +57,7 @@ func TestApp_HistoryLoadedStaysOnOwningTab(t *testing.T) {
 		tabID:            a.tabs[0].id,
 		sessionID:        "shared",
 		virtualSessionID: "vs-shared",
-		entries:          []historyEntry{{kind: histUser, text: "owner-only"}},
+		transcript:       []transcriptItem{{kind: trUser, text: "owner-only"}},
 		silent:           true,
 	})
 	a2 := newA.(app)
@@ -239,7 +239,7 @@ func TestApp_VirtualSessionMaterializedStaysOnOwningTab(t *testing.T) {
 		vsID:            "vs-shared",
 		nativeSessionID: "owner-session",
 		nativeCwd:       "/owner",
-		entries:         []historyEntry{{kind: histUser, text: "translated"}},
+		transcript:      []transcriptItem{{kind: trUser, text: "translated"}},
 	})
 	a2 := newA.(app)
 

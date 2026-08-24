@@ -307,7 +307,7 @@ type historyLoadedMsg struct {
 	// a source provider's native id while m.sessionID is still empty,
 	// which would otherwise fail the sessionID gate.
 	virtualSessionID string
-	entries          []historyEntry
+	transcript       []transcriptItem
 	err              error
 	silent           bool
 }
@@ -534,11 +534,17 @@ type model struct {
 	closeTabConfirming bool
 	closeTabChoice     int
 
-	shellMode         bool
-	shellBsArmed      bool
-	shellCh           chan tea.Msg
-	shellProc         *exec.Cmd
-	shellOutIdx       int
+	shellMode    bool
+	shellBsArmed bool
+	shellCh      chan tea.Msg
+	shellProc    *exec.Cmd
+	shellOutIdx  int
+	// shellOutTrIdx mirrors shellOutIdx into the transcript: it is the
+	// index of the trPrerendered item that live shell output streams
+	// into, so a mode reprojection (which rebuilds m.history) keeps the
+	// streaming shell entry intact and remaps shellOutIdx to its new
+	// position. -1 when no shell command is streaming.
+	shellOutTrIdx     int
 	shellHistory      []string
 	shellHistoryIdx   int
 	shellHistoryDraft string
@@ -621,7 +627,22 @@ type model struct {
 	// restarts it with these wired in.
 	addedDirs []string
 
-	turnBuffer     []string
+	// transcript is the mode-independent source of truth for this
+	// tab's conversation: one typed item per user message, assistant
+	// block, tool call, tool result, diff, workflow-step summary, or
+	// prerendered banner. It is append-only and never filtered — view
+	// modes (quiet, tool-output, diffs) are applied by projectHistory,
+	// which derives m.history from this list. Because the transcript
+	// keeps everything, toggling a mode reprojects the whole history
+	// retroactively (tool calls appear/disappear) instead of being a
+	// one-way destructive decision made at arrival time.
+	transcript []transcriptItem
+
+	// responseActive is true while the tail of the transcript is an
+	// open assistant block: consecutive assistant text deltas coalesce
+	// into it. Any tool call/result/diff clears it, so the next
+	// assistant text starts a fresh block — that boundary is what
+	// separates a preamble ("Let me check…") from the final answer.
 	responseActive bool
 
 	lastContentFP string
@@ -975,17 +996,6 @@ func (m *model) drainPendingReplies() {
 		default:
 		}
 		m.sudoReply = nil
-	}
-}
-
-func (m *model) flushTurnBuffer() {
-	if len(m.turnBuffer) == 0 {
-		return
-	}
-	combined := strings.Join(m.turnBuffer, "")
-	m.turnBuffer = nil
-	if combined != "" {
-		m.appendResponse(combined)
 	}
 }
 

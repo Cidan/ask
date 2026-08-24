@@ -134,9 +134,11 @@ type Provider interface {
 	// persisted history.
 	ListSessions(cwd string) ([]sessionEntry, error)
 
-	// LoadHistory replays a prior session's message log as history
-	// entries the UI can render directly.
-	LoadHistory(sessionID string, opts HistoryOpts) ([]historyEntry, error)
+	// LoadHistory replays a prior session's message log as the faithful,
+	// mode-independent transcript. The caller projects it to renderable
+	// history under the current view modes, so replay and live streaming
+	// share one mapping.
+	LoadHistory(sessionID string) ([]transcriptItem, error)
 
 	// LoadSettings returns the provider's persisted UI settings (model,
 	// effort, cached slash commands). Each provider owns its own config
@@ -240,15 +242,6 @@ type ProviderSessionArgs struct {
 	// regardless of whether issues are wired up. Providers wire this
 	// into their MCP client; providers without an MCP surface ignore it.
 	ProjectMCP *issueMCPServer
-}
-
-// HistoryOpts narrows what the history replay renders. ToolOutput is
-// the same tri-state ("full" | "short" | "off") the live UI honours so
-// replay matches whatever the user currently sees in fresh sessions.
-type HistoryOpts struct {
-	RenderDiffs bool
-	ToolOutput  toolOutputMode
-	QuietMode   bool
 }
 
 // providerProc is an opaque subprocess handle. The UI uses it as an

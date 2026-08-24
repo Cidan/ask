@@ -43,30 +43,36 @@ func TestCloseThemePicker(t *testing.T) {
 	}
 }
 
-// TestRefreshHistoryCmd: nil-cmd contract — busy OR empty
-// sessionID both short-circuit to nil (no refresh). With a
-// session ID and not busy, the cmd is non-nil.
-func TestRefreshHistoryCmd(t *testing.T) {
-	cases := []struct {
-		name      string
-		busy      bool
-		sessionID string
-		wantNil   bool
-	}{
-		{"busy short-circuits", true, "abc", true},
-		{"empty session short-circuits", false, "", true},
-		{"both set returns cmd", false, "abc", false},
+// A view-mode toggle reprojects the in-memory transcript synchronously
+// (no async disk reload, no cmd) and applies the new visibility to the
+// whole history at once.
+func TestConfigToggle_QuietReprojectsSynchronously(t *testing.T) {
+	isolateHome(t)
+	m := newTestModel(t, newFakeProvider())
+	m.quietMode = false
+	m.toolOutputMode = toolOutputFull
+	m.transcript = []transcriptItem{
+		{kind: trAssistant, text: "a"},
+		{kind: trToolCall, toolName: "read"},
+		{kind: trAssistant, text: "b"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			m := model{testBusy: tc.busy, sessionID: tc.sessionID, id: 1}
-			cmd := m.refreshHistoryCmd()
-			if tc.wantNil && cmd != nil {
-				t.Errorf("expected nil cmd, got %T", cmd)
-			}
-			if !tc.wantNil && cmd == nil {
-				t.Error("expected non-nil cmd")
-			}
-		})
+	(&m).projectHistory()
+	if len(m.history) != 3 {
+		t.Fatalf("precondition: want 3 projected entries, got %d: %+v", len(m.history), m.history)
+	}
+
+	res, cmd := m.handleGlobalConfigEnter("quiet")
+	mm := res.(model)
+	if cmd != nil {
+		t.Errorf("toggle should reproject synchronously, got cmd %T", cmd)
+	}
+	if !mm.quietMode {
+		t.Error("quiet should be enabled after toggle")
+	}
+	if len(mm.history) != 2 {
+		t.Fatalf("quiet should hide the tool call, want 2 entries, got %d: %+v", len(mm.history), mm.history)
+	}
+	if mm.history[0].text != "a" || mm.history[1].text != "b" {
+		t.Errorf("quiet entries wrong: %+v", mm.history)
 	}
 }

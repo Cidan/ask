@@ -467,8 +467,8 @@ func TestUpdate_StartupResumeMsgRoutesIntoResumeVirtualSession(t *testing.T) {
 	isolateHome(t)
 	p := newFakeProvider()
 	p.id = "claude"
-	p.loadHistoryFn = func(id string, _ HistoryOpts) ([]historyEntry, error) {
-		return []historyEntry{{kind: histUser, text: "loaded:" + id}}, nil
+	p.loadHistoryFn = func(id string) ([]transcriptItem, error) {
+		return []transcriptItem{{kind: trUser, text: "loaded:" + id}}, nil
 	}
 	withRegisteredProviders(t, p)
 	m := newTestModel(t, p)

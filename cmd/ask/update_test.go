@@ -54,22 +54,40 @@ func TestUpdate_AssistantTextMsgAppendsResponseWhenNotQuiet(t *testing.T) {
 	}
 }
 
-func TestUpdate_AssistantTextMsgBuffersInQuietMode(t *testing.T) {
+// Quiet mode shows assistant prose live, one entry per block. A tool
+// call between two blocks is hidden, but it still breaks the blocks
+// apart — so a preamble and the final answer render as SEPARATE entries
+// instead of scrunching into one. This is the bug the whole refactor
+// targets.
+func TestUpdate_QuietModeSeparatesBlocksAroundToolActivity(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}
 	m.quietMode = true
-	m2, _ := runUpdate(t, m, assistantTextMsg{text: "first", proc: m.proc})
-	m2, _ = runUpdate(t, m2, assistantTextMsg{text: "second", proc: m2.proc})
-	if len(m2.history) != 0 {
-		t.Errorf("quiet mode should buffer, not append; history=%+v", m2.history)
+	m.toolOutputMode = toolOutputFull
+
+	m2, _ := runUpdate(t, m, assistantTextMsg{text: "Let me check.", proc: m.proc})
+	m2, _ = runUpdate(t, m2, toolCallMsg{name: "read", input: map[string]any{"file_path": "x"}, proc: m2.proc})
+	m2, _ = runUpdate(t, m2, toolResultMsg{output: "data", proc: m2.proc})
+	m2, _ = runUpdate(t, m2, assistantTextMsg{text: "Here's the answer.", proc: m2.proc})
+
+	if len(m2.history) != 2 {
+		t.Fatalf("want 2 response entries (tools hidden, blocks separated), got %d: %+v", len(m2.history), m2.history)
 	}
-	if len(m2.turnBuffer) != 2 || m2.turnBuffer[1] != "second" {
-		t.Errorf("turnBuffer=%v want [first second]", m2.turnBuffer)
+	if m2.history[0].kind != histResponse || m2.history[0].text != "Let me check." {
+		t.Errorf("first block wrong: %+v", m2.history[0])
 	}
-	// Flush buffer — emits combined text.
+	if m2.history[1].kind != histResponse || m2.history[1].text != "Here's the answer." {
+		t.Errorf("second block wrong: %+v", m2.history[1])
+	}
+	// The transcript recorded everything, hidden tools included, so the
+	// tool entries can be revealed later by toggling quiet off.
+	if len(m2.transcript) != 4 {
+		t.Fatalf("transcript should record all 4 items, got %d: %+v", len(m2.transcript), m2.transcript)
+	}
+	// turnComplete neither merges nor drops anything.
 	m3, _ := runUpdate(t, m2, turnCompleteMsg{proc: m2.proc})
-	if len(m3.history) != 1 || m3.history[0].kind != histResponse || m3.history[0].text != "firstsecond" {
-		t.Errorf("flush should emit combined text as response; got %+v", m3.history)
+	if len(m3.history) != 2 {
+		t.Fatalf("turnComplete must not change history, got %d: %+v", len(m3.history), m3.history)
 	}
 	if m3.busy() {
 		t.Errorf("turnCompleteMsg should clear busy")
@@ -135,7 +153,10 @@ func TestUpdate_AssistantTextMsgStreamingInterruptedByToolCall(t *testing.T) {
 	}
 }
 
-func TestUpdate_QuietModeFlushesMultipleChunksAndClears(t *testing.T) {
+// Consecutive assistant deltas with no tool activity between them are
+// one streaming block: they coalesce into a single live entry (quiet
+// mode included), and turnComplete leaves it untouched.
+func TestUpdate_QuietModeCoalescesConsecutiveChunks(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}
 	m.quietMode = true
@@ -152,34 +173,73 @@ func TestUpdate_QuietModeFlushesMultipleChunksAndClears(t *testing.T) {
 		cur, _ = runUpdate(t, cur, assistantTextMsg{text: ch, proc: cur.proc})
 	}
 
-	if len(cur.history) != 0 {
-		t.Fatalf("expected 0 history entries before flush, got %d", len(cur.history))
+	if len(cur.history) != 1 {
+		t.Fatalf("expected 1 coalesced entry shown live, got %d: %+v", len(cur.history), cur.history)
 	}
-	if len(cur.turnBuffer) != len(chunks) {
-		t.Fatalf("turnBuffer len = %d, want %d", len(cur.turnBuffer), len(chunks))
+	expected := "# Summary\n\n- Item 1\n- Item 2\n- Item 3\n\nAll done!"
+	if cur.history[0].kind != histResponse || cur.history[0].text != expected {
+		t.Fatalf("history[0].text = %q, want %q", cur.history[0].text, expected)
 	}
 
 	flushed, _ := runUpdate(t, cur, turnCompleteMsg{proc: cur.proc})
-	if len(flushed.history) != 1 {
-		t.Fatalf("expected 1 history entry after flush, got %d", len(flushed.history))
-	}
-	expected := "# Summary\n\n- Item 1\n- Item 2\n- Item 3\n\nAll done!"
-	if flushed.history[0].text != expected {
-		t.Fatalf("history[0].text = %q, want %q", flushed.history[0].text, expected)
-	}
-	if flushed.turnBuffer != nil {
-		t.Fatalf("turnBuffer should be nil after flush, got %v", flushed.turnBuffer)
+	if len(flushed.history) != 1 || flushed.history[0].text != expected {
+		t.Fatalf("turnComplete must not change the coalesced entry, got %+v", flushed.history)
 	}
 }
 
-func TestUpdate_QuietModeEmptyBufferNoOp(t *testing.T) {
+func TestUpdate_QuietModeEmptyTurnNoOp(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}
 	m.quietMode = true
 
 	m2, _ := runUpdate(t, m, turnCompleteMsg{proc: m.proc})
 	if len(m2.history) != 0 {
-		t.Fatalf("expected 0 history entries for empty turn buffer, got %d", len(m2.history))
+		t.Fatalf("expected 0 history entries for an empty turn, got %d", len(m2.history))
+	}
+}
+
+// A view-mode toggle re-projects the whole in-memory transcript
+// retroactively: hidden tool/diff items reappear or vanish across the
+// entire history, because the transcript kept them all along.
+func TestModeToggle_RetroactivelyReprojectsHistory(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.quietMode = false
+	m.toolOutputMode = toolOutputFull
+	m.renderDiffs = true
+
+	m2, _ := runUpdate(t, m, assistantTextMsg{text: "preamble", proc: m.proc})
+	m2, _ = runUpdate(t, m2, toolCallMsg{name: "read", input: map[string]any{"file_path": "x"}, proc: m2.proc})
+	m2, _ = runUpdate(t, m2, toolResultMsg{output: "data", proc: m2.proc})
+	m2, _ = runUpdate(t, m2, assistantTextMsg{text: "answer", proc: m2.proc})
+
+	// Full + non-quiet: preamble, tool call, tool result, answer.
+	if len(m2.history) != 4 {
+		t.Fatalf("full non-quiet want 4 entries, got %d: %+v", len(m2.history), m2.history)
+	}
+
+	// tool output off: the two tool entries vanish retroactively.
+	m2.toolOutputMode = toolOutputOff
+	(&m2).refreshHistory()
+	if len(m2.history) != 2 {
+		t.Fatalf("after toolOutput=off want 2 entries, got %d: %+v", len(m2.history), m2.history)
+	}
+
+	// back to full: they reappear — nothing was lost.
+	m2.toolOutputMode = toolOutputFull
+	(&m2).refreshHistory()
+	if len(m2.history) != 4 {
+		t.Fatalf("after toolOutput=full want 4 entries again, got %d: %+v", len(m2.history), m2.history)
+	}
+
+	// quiet on: only the two assistant blocks remain, in order.
+	m2.quietMode = true
+	(&m2).refreshHistory()
+	if len(m2.history) != 2 {
+		t.Fatalf("quiet want 2 entries, got %d: %+v", len(m2.history), m2.history)
+	}
+	if m2.history[0].text != "preamble" || m2.history[1].text != "answer" {
+		t.Errorf("quiet entries wrong: %+v", m2.history)
 	}
 }
 
@@ -1142,9 +1202,9 @@ func TestUpdate_HistoryLoadedAppendsEntriesOnResume(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.sessionID = "S-1"
 	msg := historyLoadedMsg{
-		tabID:     m.id,
-		sessionID: "S-1",
-		entries:   []historyEntry{{kind: histUser, text: "greeting"}},
+		tabID:      m.id,
+		sessionID:  "S-1",
+		transcript: []transcriptItem{{kind: trUser, text: "greeting"}},
 	}
 	m2, _ := runUpdate(t, m, msg)
 	// Non-silent replay prepends the loaded entries and appends the
@@ -1163,10 +1223,10 @@ func TestUpdate_HistoryLoadedSilentReplaces(t *testing.T) {
 	m.sessionID = "S-1"
 	m.history = []historyEntry{{kind: histUser, text: "stale"}}
 	msg := historyLoadedMsg{
-		tabID:     m.id,
-		sessionID: "S-1",
-		entries:   []historyEntry{{kind: histUser, text: "fresh"}},
-		silent:    true,
+		tabID:      m.id,
+		sessionID:  "S-1",
+		transcript: []transcriptItem{{kind: trUser, text: "fresh"}},
+		silent:     true,
 	}
 	m2, _ := runUpdate(t, m, msg)
 	if len(m2.history) != 1 || m2.history[0].text != "fresh" {
@@ -1177,7 +1237,7 @@ func TestUpdate_HistoryLoadedSilentReplaces(t *testing.T) {
 func TestUpdate_HistoryLoadedMismatchedIDIgnored(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.sessionID = "S-a"
-	msg := historyLoadedMsg{tabID: m.id, sessionID: "S-other", entries: []historyEntry{{text: "x"}}}
+	msg := historyLoadedMsg{tabID: m.id, sessionID: "S-other", transcript: []transcriptItem{{text: "x"}}}
 	m2, _ := runUpdate(t, m, msg)
 	if len(m2.history) != 0 {
 		t.Errorf("stale history load should be ignored, got %+v", m2.history)

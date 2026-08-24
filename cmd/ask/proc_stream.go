@@ -27,14 +27,14 @@ func nextStreamCmd(ch chan tea.Msg) tea.Cmd {
 // id (cross-provider translation paths fire with sessionID pointing
 // at a non-current-provider native id, where the sessionID alone
 // can't pair the reply with the tab state).
-func loadHistoryCmd(tabID int, p Provider, sessionID, vsID string, opts HistoryOpts, silent bool) tea.Cmd {
+func loadHistoryCmd(tabID int, p Provider, sessionID, vsID string, silent bool) tea.Cmd {
 	return func() tea.Msg {
-		entries, err := p.LoadHistory(sessionID, opts)
+		items, err := p.LoadHistory(sessionID)
 		return historyLoadedMsg{
 			tabID:            tabID,
 			sessionID:        sessionID,
 			virtualSessionID: vsID,
-			entries:          entries,
+			transcript:       items,
 			err:              err,
 			silent:           silent,
 		}

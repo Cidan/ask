@@ -264,8 +264,8 @@ func (p agentAPIProvider) ListSessions(cwd string) ([]sessionEntry, error) {
 	return p.store().list(cwd)
 }
 
-func (p agentAPIProvider) LoadHistory(sessionID string, opts HistoryOpts) ([]historyEntry, error) {
-	return p.store().loadHistory(sessionID, opts)
+func (p agentAPIProvider) LoadHistory(sessionID string) ([]transcriptItem, error) {
+	return p.store().loadTranscript(sessionID)
 }
 
 func (p agentAPIProvider) LoadSettings() ProviderSettings {

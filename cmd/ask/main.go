@@ -103,6 +103,7 @@ func newTab(id int, cfg askConfig) (*model, error) {
 		worktree:              worktreeEnabled(cfg, cwd),
 		historyIdx:            -1,
 		shellOutIdx:           -1,
+		shellOutTrIdx:         -1,
 		shellHistoryIdx:       -1,
 		fc:                    &frameCache{},
 	}

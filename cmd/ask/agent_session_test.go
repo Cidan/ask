@@ -90,7 +90,7 @@ func TestAgentSessionStore_ListNewestFirst(t *testing.T) {
 	}
 }
 
-func TestAgentSessionStore_LoadHistoryModes(t *testing.T) {
+func TestAgentSessionStore_LoadTranscriptAndProject(t *testing.T) {
 	isolateHome(t)
 	st := &agentSessionStore{provider: "vertex"}
 	cwd := t.TempDir()
@@ -98,23 +98,39 @@ func TestAgentSessionStore_LoadHistoryModes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	full, err := st.loadHistory("ses-h", HistoryOpts{ToolOutput: toolOutputFull})
+	// The loaded transcript is faithful and mode-independent: user turn,
+	// tool call, tool result, assistant answer.
+	items, err := st.loadTranscript("ses-h")
 	if err != nil {
-		t.Fatalf("loadHistory: %v", err)
+		t.Fatalf("loadTranscript: %v", err)
 	}
-	if len(full) != 4 {
-		t.Errorf("full mode entries = %d want 4: %+v", len(full), full)
+	if len(items) != 4 {
+		t.Fatalf("transcript items = %d want 4: %+v", len(items), items)
 	}
-	if full[0].kind != histUser || !strings.Contains(full[0].text, "fix the bug") {
-		t.Errorf("first entry must be the user turn: %+v", full[0])
+	if items[0].kind != trUser || !strings.Contains(items[0].text, "fix the bug") {
+		t.Errorf("first item must be the user turn: %+v", items[0])
+	}
+	if items[1].kind != trToolCall || items[1].toolName != "read" {
+		t.Errorf("second item must be the read tool call: %+v", items[1])
+	}
+	if items[2].kind != trToolResult {
+		t.Errorf("third item must be the tool result: %+v", items[2])
+	}
+	if items[3].kind != trAssistant || items[3].text != "Fixed the off-by-one." {
+		t.Errorf("fourth item must be the assistant answer: %+v", items[3])
 	}
 
-	off, err := st.loadHistory("ses-h", HistoryOpts{ToolOutput: toolOutputOff})
-	if err != nil {
-		t.Fatal(err)
+	// Projection applies the view modes over the same transcript.
+	full := projectTranscript(items, false, toolOutputFull, true)
+	if len(full) != 4 {
+		t.Errorf("full projection = %d want 4: %+v", len(full), full)
 	}
+	off := projectTranscript(items, false, toolOutputOff, true)
 	if len(off) != 2 {
-		t.Errorf("off mode entries = %d want 2: %+v", len(off), off)
+		t.Fatalf("off projection = %d want 2 (tools hidden): %+v", len(off), off)
+	}
+	if off[0].kind != histUser || off[1].kind != histResponse {
+		t.Errorf("off projection should be [user, assistant]: %+v", off)
 	}
 }
 
@@ -177,31 +193,43 @@ func TestAgentSessionStore_LoadHistoryQuietAndInvokeTool(t *testing.T) {
 		t.Fatalf("saveEvents failed: %v", err)
 	}
 
-	// Full mode should unwrap invoke_tool
-	full, err := st.loadHistory("ses-quiet", HistoryOpts{ToolOutput: toolOutputFull})
+	// The faithful transcript unwraps invoke_tool and keeps every block.
+	items, err := st.loadTranscript("ses-quiet")
 	if err != nil {
-		t.Fatalf("loadHistory failed: %v", err)
+		t.Fatalf("loadTranscript failed: %v", err)
 	}
+	if len(items) != 5 {
+		t.Fatalf("expected 5 transcript items (user, toolCall, assistant, toolRes, assistant), got %d: %+v", len(items), items)
+	}
+	if items[1].kind != trToolCall || items[1].toolName != "linear_list_issues" {
+		t.Errorf("expected unwrapped linear_list_issues tool call, got %+v", items[1])
+	}
+
+	// Full projection shows all five.
+	full := projectTranscript(items, false, toolOutputFull, true)
 	if len(full) != 5 {
-		t.Fatalf("expected 5 history entries (user, toolCall, assistant, toolRes, assistant), got %d", len(full))
+		t.Fatalf("expected 5 full-mode entries, got %d", len(full))
 	}
 	if !strings.Contains(full[1].text, "linear_list_issues") {
 		t.Errorf("expected unwrapped linear_list_issues in tool call block, got %q", full[1].text)
 	}
 
-	// Quiet mode collapses intermediate assistant texts
-	quiet, err := st.loadHistory("ses-quiet", HistoryOpts{QuietMode: true, ToolOutput: toolOutputFull})
-	if err != nil {
-		t.Fatalf("loadHistory quiet failed: %v", err)
-	}
-	if len(quiet) != 2 {
-		t.Fatalf("expected 2 history entries in quiet mode, got %d", len(quiet))
+	// Quiet projection keeps BOTH assistant blocks — the interim
+	// "Searching…" AND the final answer — and only hides the tool
+	// call/result. This is the fix for the interim-block-drop bug that
+	// the old quiet replay had (it collapsed the interim block).
+	quiet := projectTranscript(items, true, toolOutputFull, true)
+	if len(quiet) != 3 {
+		t.Fatalf("expected 3 quiet-mode entries (user + two assistant blocks), got %d: %+v", len(quiet), quiet)
 	}
 	if quiet[0].kind != histUser || quiet[0].text != "Search for foo" {
 		t.Errorf("unexpected first entry in quiet mode: %+v", quiet[0])
 	}
-	if quiet[1].kind != histResponse || quiet[1].text != "Here is the issue: FOO-1" {
-		t.Errorf("unexpected second entry in quiet mode: %+v", quiet[1])
+	if quiet[1].kind != histResponse || quiet[1].text != "Searching linear issues..." {
+		t.Errorf("interim assistant block must survive quiet projection: %+v", quiet[1])
+	}
+	if quiet[2].kind != histResponse || quiet[2].text != "Here is the issue: FOO-1" {
+		t.Errorf("unexpected final entry in quiet mode: %+v", quiet[2])
 	}
 }
 
