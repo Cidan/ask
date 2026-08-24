@@ -183,27 +183,34 @@ func TestParseToolOutputMode_Defaults(t *testing.T) {
 	}
 }
 
-func TestRenderToolResultBlock_TruncatesLongOutput(t *testing.T) {
+func TestRenderToolResultBlock_GenericShortHidesBodyFullShowsAll(t *testing.T) {
 	var lines []string
 	for i := 0; i < 50; i++ {
 		lines = append(lines, "line"+itoa(i))
 	}
-	out := renderToolResultBlock("", strings.Join(lines, "\n"), false, 0, false, toolOutputShort)
-	if !strings.Contains(out, "more lines") {
-		t.Errorf("long output should include truncation marker; got %q", out)
+	body := strings.Join(lines, "\n")
+	// Short mode drops a generic tool's body entirely — the header stands
+	// alone and the ▸ glyph carries the signal.
+	if out := renderToolResultBlock("grep", body, false, 0, false, toolOutputShort); out != "" {
+		t.Errorf("short generic result should be empty; got %q", out)
 	}
-	if strings.Contains(out, "line49") {
-		t.Errorf("output beyond the cap should be trimmed; saw line49 in %q", out)
+	// Full mode renders every line, unclamped.
+	full := renderToolResultBlock("grep", body, false, 0, false, toolOutputFull)
+	if !strings.Contains(full, "line0") || !strings.Contains(full, "line49") {
+		t.Errorf("full generic result should render all lines; got %q", full)
 	}
 }
 
-func TestRenderToolResultBlock_ShortOutputUnchanged(t *testing.T) {
-	out := renderToolResultBlock("", "one\ntwo", false, 0, false, toolOutputShort)
-	if !strings.Contains(out, "one") || !strings.Contains(out, "two") {
-		t.Errorf("short output should render both lines; got %q", out)
+func TestRenderToolResultBlock_ShortHidesErrorBody(t *testing.T) {
+	// Per the short-mode redesign, even error bodies are hidden — the glyph
+	// (landed red by settleToolCall) is the failure signal.
+	if out := renderToolResultBlock("fetch", "connection refused", true, 0, false, toolOutputShort); out != "" {
+		t.Errorf("short error result should be empty; got %q", out)
 	}
-	if strings.Contains(out, "more lines") {
-		t.Errorf("short output should not show truncation marker; got %q", out)
+	// Full mode still surfaces the error text for the audit trail.
+	full := renderToolResultBlock("fetch", "connection refused", true, 0, false, toolOutputFull)
+	if !strings.Contains(full, "connection refused") {
+		t.Errorf("full error result should show the message; got %q", full)
 	}
 }
 
@@ -227,40 +234,53 @@ func TestRenderToolResultBlock_ReadEmptyNoticePassesThrough(t *testing.T) {
 	}
 }
 
-func TestRenderToolResultBlock_BashShowsExitCode(t *testing.T) {
+func TestRenderToolResultBlock_BashShortShowsExitNotBody(t *testing.T) {
 	ok := renderToolResultBlock("bash", "all good", false, 0, true, toolOutputShort)
-	if !strings.Contains(ok, "exit 0") || !strings.Contains(ok, "all good") {
-		t.Errorf("bash result should show exit 0 and output; got %q", ok)
+	if !strings.Contains(ok, "exit 0") {
+		t.Errorf("bash short should show exit 0; got %q", ok)
+	}
+	if strings.Contains(ok, "all good") {
+		t.Errorf("bash short must not dump the output body; got %q", ok)
 	}
 	bad := renderToolResultBlock("bash", "boom", false, 2, true, toolOutputShort)
 	if !strings.Contains(bad, "exit 2") {
-		t.Errorf("bash result should show the non-zero exit code; got %q", bad)
+		t.Errorf("bash short should show the non-zero exit code; got %q", bad)
+	}
+	if strings.Contains(bad, "boom") {
+		t.Errorf("bash short must not dump the output body; got %q", bad)
 	}
 }
 
-func TestRenderToolResultBlock_EditSuppressedButErrorShown(t *testing.T) {
+func TestRenderToolResultBlock_EditSuppressed(t *testing.T) {
 	// A successful edit renders nothing — its diff tells the story.
 	if out := renderToolResultBlock("edit", "Replacements: 1", false, 0, false, toolOutputShort); out != "" {
 		t.Errorf("successful edit result should be suppressed; got %q", out)
 	}
-	// A failed edit still surfaces the error.
-	if out := renderToolResultBlock("edit", "old_string not found", true, 0, false, toolOutputShort); !strings.Contains(out, "old_string not found") {
-		t.Errorf("failed edit must show the error; got %q", out)
+	// A failed edit is also hidden in short mode (the glyph carries the
+	// signal), but full mode still surfaces the error.
+	if out := renderToolResultBlock("edit", "old_string not found", true, 0, false, toolOutputShort); out != "" {
+		t.Errorf("short mode should hide the edit error body; got %q", out)
+	}
+	if out := renderToolResultBlock("edit", "old_string not found", true, 0, false, toolOutputFull); !strings.Contains(out, "old_string not found") {
+		t.Errorf("full mode must show the edit error; got %q", out)
 	}
 }
 
-func TestRenderToolResultBlock_FullModeDoesNotClampBash(t *testing.T) {
+func TestRenderToolResultBlock_FullRendersBashBodyShortDoesNot(t *testing.T) {
 	var b strings.Builder
-	for i := 0; i < toolOutputMaxLines*2; i++ {
+	for i := 0; i < 40; i++ {
 		b.WriteString("row\n")
 	}
 	full := renderToolResultBlock("bash", b.String(), false, 0, true, toolOutputFull)
-	if strings.Contains(full, "more lines") {
-		t.Errorf("full mode should not clamp bash output; got truncation marker in %q", full)
+	if strings.Count(full, "row") != 40 {
+		t.Errorf("full mode should render every bash output row; got %d in %q", strings.Count(full, "row"), full)
 	}
 	short := renderToolResultBlock("bash", b.String(), false, 0, true, toolOutputShort)
-	if !strings.Contains(short, "more lines") {
-		t.Errorf("short mode should clamp bash output; got %q", short)
+	if strings.Contains(short, "row") {
+		t.Errorf("short mode must not render the bash output body; got %q", short)
+	}
+	if !strings.Contains(short, "exit 0") {
+		t.Errorf("short mode should still show the exit code; got %q", short)
 	}
 }
 
@@ -294,28 +314,24 @@ func TestRenderDiffBlock_SolidBackgroundsAndLineNumbers(t *testing.T) {
 	}
 }
 
-func TestClampToolOutput_CharsCap(t *testing.T) {
-	body := strings.Repeat("x", toolOutputMaxChars*2)
-	kept, _ := clampToolOutput(body)
-	if len(kept) > toolOutputMaxChars {
-		t.Errorf("char cap not enforced: len=%d want <=%d", len(kept), toolOutputMaxChars)
+func TestRestingToolGlyphStyle_ErrorDiffersFromSuccess(t *testing.T) {
+	applyTheme(themeByName("default"))
+	ok := restingToolGlyphStyle(false).Render("x")
+	bad := restingToolGlyphStyle(true).Render("x")
+	if ok == bad {
+		t.Errorf("errored resting glyph should render differently from success: %q", ok)
 	}
 }
 
-func TestClampToolOutput_LinesCap(t *testing.T) {
-	var b strings.Builder
-	for i := 0; i < toolOutputMaxLines*3; i++ {
-		b.WriteString("a\n")
+func TestInflightGlyphHex_CyclesWithTime(t *testing.T) {
+	a := inflightGlyphHex(0)
+	b := inflightGlyphHex(inflightGlyphPeriod / 2)
+	if a == b {
+		t.Errorf("glyph hue should differ across the cycle; both were %q", a)
 	}
-	kept, trimmed := clampToolOutput(b.String())
-	if strings.Count(kept, "\n") >= toolOutputMaxLines {
-		// After TrimRight removes the trailing \n, line count should be
-		// exactly toolOutputMaxLines (with toolOutputMaxLines-1 \n
-		// separators).
-		t.Errorf("expected line cap to leave at most %d lines; got %q", toolOutputMaxLines, kept)
-	}
-	if trimmed == 0 {
-		t.Errorf("expected trimmed count > 0")
+	// A full period wraps back to the start hue.
+	if got := inflightGlyphHex(inflightGlyphPeriod); got != a {
+		t.Errorf("hue should wrap to the start after one full period: %q vs %q", got, a)
 	}
 }
 

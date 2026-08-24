@@ -44,6 +44,15 @@ type transcriptItem struct {
 	toolName  string
 	toolInput map[string]any
 
+	// inflight/errored are trToolCall runtime state for the ▸ glyph pulse.
+	// inflight is set the moment the call is announced and cleared by
+	// settleToolCall when its result arrives; errored records whether that
+	// result was an error so a re-projection restores the resting glyph
+	// color. Both are always false for replayed/saved transcripts (every
+	// recorded call is already complete), so storing them here is safe.
+	inflight bool
+	errored  bool
+
 	// background applies to trToolCall and trToolResult: it mirrors the
 	// tool_use's run_in_background flag so the projection can drop the
 	// launch-ack result in short/off modes.
@@ -95,8 +104,12 @@ func projectItem(it transcriptItem, quiet bool, mode toolOutputMode, diffs bool)
 			return nil
 		}
 		return []historyEntry{{
-			kind: histToolCall,
-			text: renderToolCallBlock(it.toolName, it.toolInput, mode),
+			kind:         histToolCall,
+			text:         renderToolCallBlockStyled(it.toolName, it.toolInput, mode, restingToolGlyphStyle(it.errored)),
+			toolName:     it.toolName,
+			toolInput:    it.toolInput,
+			toolInflight: it.inflight,
+			toolErrored:  it.errored,
 		}}
 	case trToolResult:
 		if quiet || mode == toolOutputOff {
@@ -166,6 +179,15 @@ func (m *model) projectHistory() {
 	if m.shellOutIdx >= 0 {
 		m.shellOutIdx = newShellIdx
 	}
+	// Reconcile the in-flight count with the freshly projected history so a
+	// mode toggle mid-turn (which may add or drop the tool-call entries)
+	// keeps the fingerprint's pulse term honest.
+	m.inflightToolCount = 0
+	for i := range out {
+		if out[i].kind == histToolCall && out[i].toolInflight {
+			m.inflightToolCount++
+		}
+	}
 	m.lastContentFP = ""
 }
 
@@ -177,6 +199,75 @@ func (m *model) projectHistory() {
 func (m *model) pushTranscript(it transcriptItem) {
 	m.transcript = append(m.transcript, it)
 	m.history = append(m.history, projectItem(it, m.quietMode, m.toolOutputMode, m.renderDiffs)...)
+}
+
+// settleToolCall marks the in-flight tool call that a just-arrived result
+// belongs to as finished: its ▸ glyph stops pulsing and lands on the resting
+// color (red when errored). It flips both the source-of-truth transcript
+// item and the live history entry so a later re-projection stays correct,
+// and drops the in-flight count so the fingerprint's pulse term settles.
+//
+// Results carry no tool-use id on the live path (agent_run.go emits none), so
+// matching is by tool name, oldest-first (FIFO): the result pairs with the
+// earliest still-in-flight call of the same name. An empty name, or a name
+// that matches no in-flight call, falls back to the oldest in-flight call of
+// any name — correct for the common sequential case and a reasonable guess
+// for parallel calls to the same tool.
+func (m *model) settleToolCall(name string, errored bool) {
+	if idx := oldestInflightTranscript(m.transcript, name); idx >= 0 {
+		m.transcript[idx].inflight = false
+		m.transcript[idx].errored = errored
+	}
+	if idx := oldestInflightHistory(m.history, name); idx >= 0 {
+		e := &m.history[idx]
+		e.toolInflight = false
+		e.toolErrored = errored
+		e.text = renderToolCallBlockStyled(e.toolName, e.toolInput, m.toolOutputMode, restingToolGlyphStyle(errored))
+		invalidateEntryRender(e)
+		if m.inflightToolCount > 0 {
+			m.inflightToolCount--
+		}
+	}
+}
+
+// oldestInflightTranscript returns the index of the earliest still-in-flight
+// trToolCall, preferring a name match and falling back to any in-flight call.
+// -1 when none is in flight.
+func oldestInflightTranscript(items []transcriptItem, name string) int {
+	fallback := -1
+	for i := range items {
+		it := items[i]
+		if it.kind != trToolCall || !it.inflight {
+			continue
+		}
+		if name != "" && it.toolName == name {
+			return i
+		}
+		if fallback < 0 {
+			fallback = i
+		}
+	}
+	return fallback
+}
+
+// oldestInflightHistory is oldestInflightTranscript over the projected
+// history entries (histToolCall). Returns -1 when the call has no visible
+// entry (quiet/off mode) or none is in flight.
+func oldestInflightHistory(hist []historyEntry, name string) int {
+	fallback := -1
+	for i := range hist {
+		e := hist[i]
+		if e.kind != histToolCall || !e.toolInflight {
+			continue
+		}
+		if name != "" && e.toolName == name {
+			return i
+		}
+		if fallback < 0 {
+			fallback = i
+		}
+	}
+	return fallback
 }
 
 // addAssistantDelta records a chunk of assistant text. Consecutive

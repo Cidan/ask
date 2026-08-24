@@ -2099,3 +2099,150 @@ func TestWorkflowFailedMsg_OutcomeWordWrapping(t *testing.T) {
 		t.Errorf("expected workflowIndent to be 2, got %d", e.workflowIndent)
 	}
 }
+
+// A tool call is marked in flight the moment it is announced, and the
+// in-flight count that drives the glyph pulse tracks it.
+func TestToolCall_MarksInflightAndCounts(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.toolOutputMode = toolOutputShort
+
+	m2, _ := runUpdate(t, m, toolCallMsg{name: "bash", input: map[string]any{"command": "ls"}, proc: m.proc})
+	if len(m2.history) != 1 || m2.history[0].kind != histToolCall {
+		t.Fatalf("want 1 histToolCall entry, got %+v", m2.history)
+	}
+	if !m2.history[0].toolInflight {
+		t.Errorf("tool call should be marked in flight")
+	}
+	if m2.inflightToolCount != 1 {
+		t.Errorf("inflightToolCount = %d, want 1", m2.inflightToolCount)
+	}
+}
+
+// The result settles its call: the glyph stops pulsing (toolInflight clears)
+// and stays un-errored on success; the in-flight count returns to zero.
+func TestToolResult_SettlesInflightGlyph(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.toolOutputMode = toolOutputShort
+
+	m2, _ := runUpdate(t, m, toolCallMsg{name: "bash", input: map[string]any{"command": "ls"}, proc: m.proc})
+	m3, _ := runUpdate(t, m2, toolResultMsg{name: "bash", output: "ok", exitCode: 0, hasExitCode: true, proc: m2.proc})
+
+	if m3.history[0].kind != histToolCall {
+		t.Fatalf("history[0] should be the tool call, got %+v", m3.history[0])
+	}
+	if m3.history[0].toolInflight {
+		t.Errorf("tool call should be settled after its result")
+	}
+	if m3.history[0].toolErrored {
+		t.Errorf("a successful result should not mark the call errored")
+	}
+	if m3.inflightToolCount != 0 {
+		t.Errorf("inflightToolCount = %d, want 0", m3.inflightToolCount)
+	}
+}
+
+// An error result lands the glyph in the errored (red) state so a failed
+// call is visible even in short mode, where its body is hidden.
+func TestToolResult_ErrorSettlesGlyphErrored(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.toolOutputMode = toolOutputShort
+
+	m2, _ := runUpdate(t, m, toolCallMsg{name: "fetch", input: map[string]any{"url": "http://x"}, proc: m.proc})
+	m3, _ := runUpdate(t, m2, toolResultMsg{name: "fetch", output: "boom", isError: true, proc: m2.proc})
+
+	// fetch is a generic tool: its short-mode body is empty, so the only
+	// entry is the call header itself.
+	if m3.history[0].toolInflight {
+		t.Errorf("errored result should settle the call")
+	}
+	if !m3.history[0].toolErrored {
+		t.Errorf("errored result should mark the call errored")
+	}
+	if m3.inflightToolCount != 0 {
+		t.Errorf("inflightToolCount = %d, want 0", m3.inflightToolCount)
+	}
+}
+
+// While a tool call is in flight the fingerprint advances every spinner
+// tick (so the viewport repaints and the glyph pulses); once the call
+// settles, ticks no longer perturb it.
+func TestContentFingerprint_PulsesWhileToolInflight(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.toolOutputMode = toolOutputShort
+
+	m2, _ := runUpdate(t, m, toolCallMsg{name: "bash", input: map[string]any{"command": "ls"}, proc: m.proc})
+	fp1 := m2.contentFingerprint()
+	m2.eqFrame++ // a spinner tick advances the pulse
+	fp2 := m2.contentFingerprint()
+	if fp1 == fp2 {
+		t.Errorf("fingerprint must advance each tick while a tool is in flight: %q", fp1)
+	}
+
+	m3, _ := runUpdate(t, m2, toolResultMsg{name: "bash", output: "ok", exitCode: 0, hasExitCode: true, proc: m2.proc})
+	fpA := m3.contentFingerprint()
+	m3.eqFrame++
+	fpB := m3.contentFingerprint()
+	if fpA != fpB {
+		t.Errorf("settled fingerprint should be stable across ticks: %q vs %q", fpA, fpB)
+	}
+}
+
+// ensureEntryWrapped must ignore the wrap cache for an in-flight tool call
+// (so the glyph re-renders each frame) but respect it once the call settles.
+func TestEnsureEntryWrapped_InflightBypassesCacheSettledRespectsIt(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.toolOutputMode = toolOutputShort
+
+	m2, _ := runUpdate(t, m, toolCallMsg{name: "bash", input: map[string]any{"command": "ls"}, proc: m.proc})
+
+	// In-flight: a primed cache must be ignored and re-rendered.
+	m2.history[0].rendered = "SENTINEL"
+	m2.history[0].wrapped = []string{"SENTINEL"}
+	m2.history[0].wrappedFor = 80
+	(&m2).ensureEntryWrapped(0, 80)
+	if m2.history[0].rendered == "SENTINEL" {
+		t.Errorf("in-flight tool call must re-render each frame, not serve the cache")
+	}
+
+	// Settled: a primed cache must be respected.
+	m3, _ := runUpdate(t, m2, toolResultMsg{name: "bash", output: "ok", exitCode: 0, hasExitCode: true, proc: m2.proc})
+	(&m3).ensureEntryWrapped(0, 80) // populate a valid cache
+	m3.history[0].rendered = "KEEP"
+	m3.history[0].wrapped = []string{"KEEP"}
+	m3.history[0].wrappedFor = 80
+	(&m3).ensureEntryWrapped(0, 80)
+	if m3.history[0].rendered != "KEEP" {
+		t.Errorf("settled tool call should respect the wrap cache; got %q", m3.history[0].rendered)
+	}
+}
+
+// With two parallel calls in flight, a result settles the matching call by
+// tool name, leaving the other pulsing.
+func TestSettleToolCall_FIFOByName(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	m.toolOutputMode = toolOutputShort
+
+	m2, _ := runUpdate(t, m, toolCallMsg{name: "read", input: map[string]any{"file_path": "a"}, proc: m.proc})
+	m2, _ = runUpdate(t, m2, toolCallMsg{name: "bash", input: map[string]any{"command": "ls"}, proc: m2.proc})
+	if m2.inflightToolCount != 2 {
+		t.Fatalf("want 2 in-flight calls, got %d", m2.inflightToolCount)
+	}
+
+	// The bash result settles the bash call (index 1), leaving read (index 0).
+	m3, _ := runUpdate(t, m2, toolResultMsg{name: "bash", output: "ok", exitCode: 0, hasExitCode: true, proc: m2.proc})
+	if !m3.history[0].toolInflight {
+		t.Errorf("read call (index 0) should still be in flight")
+	}
+	if m3.history[1].toolInflight {
+		t.Errorf("bash call (index 1) should be settled by its result")
+	}
+	if m3.inflightToolCount != 1 {
+		t.Errorf("inflightToolCount = %d, want 1", m3.inflightToolCount)
+	}
+}

@@ -476,7 +476,13 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 				toolName:   msg.name,
 				toolInput:  msg.input,
 				background: msg.background,
+				inflight:   true,
 			})
+			// Count the call only when it produced a visible, animatable
+			// header (quiet/off modes project no entry, so nothing pulses).
+			if n := len(m.history); n > 0 && m.history[n-1].kind == histToolCall {
+				m.inflightToolCount++
+			}
 		}
 		return m, nil
 
@@ -488,6 +494,10 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		seq := m.statusRevertSeq
 		m.responseActive = false
 		if m.workflowRun == nil {
+			// Settle the matching in-flight call first (glyph stops pulsing,
+			// lands accent/red) while it is still marked in flight, then
+			// record the result itself.
+			m.settleToolCall(msg.name, msg.isError)
 			m.pushTranscript(transcriptItem{
 				kind:        trToolResult,
 				toolName:    msg.name,
