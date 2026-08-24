@@ -1,110 +1,31 @@
 package tools
 
-import (
-	"fmt"
-	"regexp"
-	"strings"
-)
+import "github.com/Cidan/ask/pkg/tools/filters"
 
-var (
-	ansiEscapeRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
-	npmWarnRegex    = regexp.MustCompile(`(?m)^npm WARN.*$`)
-	goDownloadRegex = regexp.MustCompile(`(?m)^go: downloading.*$`)
-	gitNoiseRegex   = regexp.MustCompile(`(?m)^(?:remote: .*|To .*|From .*|\s*\[(?:new branch|new tag|up to date)\].*)$`)
-)
-
-// ExtractBaseCommand parses the executable and first arguments that identify the tool action.
+// ExtractBaseCommand parses the executable plus the first argument that
+// identifies the tool action ("go test", "git push"), for use as the
+// savings-ledger key. It re-exports filters.BaseCommand so the ledger's
+// keys and the filter registry always agree on what "the command" is.
 func ExtractBaseCommand(command string) string {
-	parts := regexp.MustCompile(`(&&|\|\||;|\|)`).Split(command, -1)
-	if len(parts) == 0 {
+	fields := filters.BaseCommand(command)
+	if len(fields) == 0 {
 		return ""
 	}
-	lastPart := strings.TrimSpace(parts[len(parts)-1])
-	fields := strings.Fields(lastPart)
-
-	var cmdFields []string
-	for _, f := range fields {
-		if strings.Contains(f, "=") && !strings.Contains(f, "/") {
-			continue
-		}
-		cmdFields = append(cmdFields, f)
-	}
-
-	if len(cmdFields) == 0 {
-		return ""
-	}
-
-	base := cmdFields[0]
-	if len(cmdFields) > 1 {
+	base := fields[0]
+	if len(fields) > 1 {
 		switch base {
-		case "go", "npm", "git", "yarn", "cargo", "pnpm":
-			return base + " " + cmdFields[1]
+		case "go", "npm", "git", "yarn", "cargo", "pnpm", "bun", "pip", "uv":
+			return base + " " + fields[1]
 		}
 	}
 	return base
 }
 
-// ApplyBashFilter compresses command output to save tokens by removing ANSI escape codes
-// and known noisy output lines for standard tools.
-func ApplyBashFilter(command string, rawOutput string) (string, int) {
-	if rawOutput == "" {
-		return "", 0
-	}
-
-	filtered := ansiEscapeRegex.ReplaceAllString(rawOutput, "")
-
-	baseCmd := ExtractBaseCommand(command)
-	switch baseCmd {
-	case "npm install", "npm i", "npm ci":
-		filtered = npmWarnRegex.ReplaceAllString(filtered, "")
-	case "go build", "go test", "go run", "go get", "go mod":
-		filtered = goDownloadRegex.ReplaceAllString(filtered, "")
-	case "git push", "git fetch", "git pull", "git status":
-		filtered = gitNoiseRegex.ReplaceAllString(filtered, "")
-	}
-
-	var result []string
-	lines := strings.Split(filtered, "\n")
-	wasEmpty := false
-	for _, line := range lines {
-		trimmed := strings.TrimRight(line, " \t\r")
-		isEmpty := trimmed == ""
-		if isEmpty && wasEmpty {
-			continue
-		}
-		result = append(result, trimmed)
-		wasEmpty = isEmpty
-	}
-
-	for len(result) > 0 && result[0] == "" {
-		result = result[1:]
-	}
-	for len(result) > 0 && result[len(result)-1] == "" {
-		result = result[:len(result)-1]
-	}
-
-	const maxLines = 1000
-	if len(result) > maxLines {
-		half := maxLines / 2
-		newResult := make([]string, 0, maxLines+1)
-		newResult = append(newResult, result[:half]...)
-		newResult = append(newResult, fmt.Sprintf("... %d lines truncated to save tokens ...", len(result)-maxLines))
-		newResult = append(newResult, result[len(result)-half:]...)
-		result = newResult
-	}
-
-	filteredOutput := strings.Join(result, "\n")
-	if len(filteredOutput) > 0 && strings.HasSuffix(rawOutput, "\n") {
-		filteredOutput += "\n"
-	}
-	if len(filteredOutput) == 0 && len(rawOutput) > 0 {
-		filteredOutput = "(Command output was entirely filtered out)\n"
-	}
-
-	tokensSaved := (len(rawOutput) - len(filteredOutput)) / 4
-	if tokensSaved < 0 {
-		tokensSaved = 0
-	}
-
-	return filteredOutput, tokensSaved
+// ApplyBashFilter compresses command output to save tokens. It dispatches
+// through the command-aware semantic filter registry (pkg/tools/filters)
+// and falls back to the universal squeeze/dedup/cap pipeline for anything
+// unmodeled. exit steers verbosity: a successful run may collapse to a
+// summary while a failing run keeps its detail.
+func ApplyBashFilter(command, rawOutput string, exit int) (string, int) {
+	return filters.Apply(command, rawOutput, exit)
 }

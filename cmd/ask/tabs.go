@@ -237,6 +237,10 @@ func (a app) View() tea.View {
 		v.Content = drawOverlayCentered(v.Content, overlay, a.width, a.height)
 		v.Cursor = nil
 	}
+	if overlay := a.activeTab().savingsOverlay(a.width, a.height); overlay != "" {
+		v.Content = drawOverlayCentered(v.Content, overlay, a.width, a.height)
+		v.Cursor = nil
+	}
 	if a.sidebarFocus {
 		// The list owns the keyboard; a blinking caret in the
 		// input would claim otherwise.
@@ -452,9 +456,10 @@ func (a app) supplantWorkflow(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
 			a = tm
 		}
 	}
+	wt := workflowWorktree{root: projectRoot(t.cwd), name: t.worktreeName, on: t.worktree}
 	runWF := func() tea.Msg {
 		go func() {
-			_, _ = globalCoordinator.RunWorkflow(context.Background(), t.id, req.Workflow, req.Source)
+			_, _ = globalCoordinator.RunWorkflow(context.Background(), t.id, wt, req.Workflow, req.Source)
 		}()
 		return nil
 	}

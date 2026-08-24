@@ -46,6 +46,7 @@ const (
 	modeFinalizedPlan
 	modeSudoPassword
 	modeSkillsBrowser
+	modeSavings
 )
 
 type streamStatusMsg struct {
@@ -596,6 +597,10 @@ type model struct {
 	// skillsBrowser is the /skills (Ctrl+S) browser state
 	// (skills_browser.go). Non-nil while modeSkillsBrowser is up.
 	skillsBrowser *skillsBrowserState
+
+	// savings is the /savings overlay state (savings_screen.go). Non-nil
+	// while modeSavings is up.
+	savings *savingsOverlayState
 
 	themeName string
 

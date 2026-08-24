@@ -208,14 +208,18 @@ type BashResult struct {
 	TimedOut  bool   `json:"timed_out,omitempty" jsonschema:"true when the command was killed for exceeding its timeout"`
 	Cancelled bool   `json:"cancelled,omitempty" jsonschema:"true when the command was cancelled"`
 	Truncated bool   `json:"truncated,omitempty" jsonschema:"true when output exceeded the in-memory cap"`
+	RawPath   string `json:"raw_path,omitempty" jsonschema:"path to the untouched raw output when filtering was lossy; read it with the read tool (offset/limit) to recover anything the summary dropped"`
+	RawLines  int    `json:"raw_lines,omitempty" jsonschema:"line count of the raw_path file"`
 }
 
 // JobOutputResult is the job_output tool's response.
 type JobOutputResult struct {
-	JobID   string `json:"job_id,omitempty"`
-	Command string `json:"command,omitempty"`
-	Status  string `json:"status,omitempty" jsonschema:"running or exited"`
-	Output  string `json:"output,omitempty"`
+	JobID    string `json:"job_id,omitempty"`
+	Command  string `json:"command,omitempty"`
+	Status   string `json:"status,omitempty" jsonschema:"running or exited"`
+	Output   string `json:"output,omitempty"`
+	RawPath  string `json:"raw_path,omitempty" jsonschema:"path to the untouched raw output when filtering was lossy; read it with the read tool to recover anything the summary dropped"`
+	RawLines int    `json:"raw_lines,omitempty" jsonschema:"line count of the raw_path file"`
 }
 
 // JobKillResult is the job_kill tool's response.
@@ -298,13 +302,13 @@ func BashTool(env *ToolEnv) Tool {
 			defer timer.Stop()
 
 			var buf strings.Builder
-			handleFinalOutput := func(rawStr string) string {
+			handleFinalOutput := func(rawStr string, exit int) string {
 				if p.DisableTokenSavings {
 					return rawStr
 				}
-				filteredStr, tokensSaved := ApplyBashFilter(command, rawStr)
+				filteredStr, tokensSaved := ApplyBashFilter(command, rawStr, exit)
 				if tokensSaved > 0 {
-					_ = RecordSavings(ExtractBaseCommand(command), tokensSaved)
+					_ = RecordSavings(ExtractBaseCommand(command), len(rawStr)/4, tokensSaved)
 				}
 				return filteredStr
 			}
@@ -321,18 +325,21 @@ func BashTool(env *ToolEnv) Tool {
 				case chunk, ok := <-handle.Output:
 					if !ok {
 						res := <-handle.Done
-						return bashResponse(handleFinalOutput(buf.String()), rawTruncated, res), nil
+						rawStr := buf.String()
+						result := bashResponse(handleFinalOutput(rawStr, res.ExitCode), rawTruncated, res)
+						MaybeSpill(&result, command, rawStr)
+						return result, nil
 					}
 					collect(chunk)
 				case <-timer.C:
 					handle.Kill()
 					drainShellOutput(handle.Output, collect)
-					return BashResult{TimedOut: true, Output: TruncateMiddle(handleFinalOutput(buf.String()))},
+					return BashResult{TimedOut: true, Output: TruncateMiddle(handleFinalOutput(buf.String(), -1))},
 						fmt.Errorf("command timed out after %s and was killed", timeout)
 				case <-ctx.Done():
 					handle.Kill()
 					drainShellOutput(handle.Output, collect)
-					return BashResult{Cancelled: true, Output: TruncateMiddle(handleFinalOutput(buf.String()))}, nil
+					return BashResult{Cancelled: true, Output: TruncateMiddle(handleFinalOutput(buf.String(), -1))}, nil
 				}
 			}
 		},
@@ -383,8 +390,16 @@ func JobOutputTool(env *ToolEnv) Tool {
 				}
 			}
 			output, truncated, done, res := job.Snapshot()
+			rawOutput := output
 			if !job.DisableSavings {
-				filtered, saved := ApplyBashFilter(job.Command, output)
+				// A still-running job has partial output; treat it as a
+				// non-clean exit so semantic filters preserve it verbatim
+				// rather than collapsing an incomplete run to a summary.
+				exit := -1
+				if done {
+					exit = res.ExitCode
+				}
+				filtered, saved := ApplyBashFilter(job.Command, output, exit)
 				if done {
 					var shouldRecord bool
 					job.Mu.Lock()
@@ -394,7 +409,7 @@ func JobOutputTool(env *ToolEnv) Tool {
 					}
 					job.Mu.Unlock()
 					if shouldRecord {
-						_ = RecordSavings(ExtractBaseCommand(job.Command), saved)
+						_ = RecordSavings(ExtractBaseCommand(job.Command), len(output)/4, saved)
 					}
 				}
 				output = filtered
@@ -413,7 +428,11 @@ func JobOutputTool(env *ToolEnv) Tool {
 			if strings.TrimSpace(body) == "" {
 				body = "(no output yet)"
 			}
-			return JobOutputResult{JobID: p.JobID, Command: job.Command, Status: status, Output: body}, nil
+			result := JobOutputResult{JobID: p.JobID, Command: job.Command, Status: status, Output: body}
+			if done {
+				result.RawPath, result.RawLines = spillIfLossy(job.Command, rawOutput, body)
+			}
+			return result, nil
 		},
 	)
 }

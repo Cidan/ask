@@ -15,9 +15,10 @@ tool surface → `.claude/rules/tools.md`, workflow graph →
   tab-addressed messages with `dispatchByTabID` and everything else
   with `broadcast` (each tab filters with `matchesTabID`,
   coordinator.go). `app.View` joins the active body with the sidebar
-  (`joinBodySidebar`) and composites the two full-frame overlays —
-  model picker and skills browser — with `drawOverlayCentered` so they
-  cover the sidebar. Every other overlay is drawn inside the tab.
+  (`joinBodySidebar`) and composites the three full-frame overlays —
+  model picker, skills browser, and the `/savings` overlay — with
+  `drawOverlayCentered` so they cover the sidebar. Every other overlay is
+  drawn inside the tab.
 - `model.Update` is a value receiver; mutating helpers are pointer
   receivers (Go takes `&m` on the local copy). A deferred `layout()`
   runs after every Update.

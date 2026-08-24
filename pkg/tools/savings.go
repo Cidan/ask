@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -9,17 +10,57 @@ import (
 
 type CommandSavings struct {
 	Count       int `json:"count"`
+	RawTokens   int `json:"rawTokens"`
 	SavedTokens int `json:"savedTokens"`
 }
 
 type TokenSavings struct {
+	TotalRawTokens   int                       `json:"totalRawTokens"`
 	TotalSavedTokens int                       `json:"totalSavedTokens"`
 	ByCommand        map[string]CommandSavings `json:"byCommand"`
 }
 
-// RecordSavings safely increments the saved token count for the given base command.
-func RecordSavings(baseCommand string, tokensSaved int) error {
-	if tokensSaved <= 0 {
+// SavingsPath returns the token-savings ledger path
+// (~/.config/ask/savings.json).
+func SavingsPath() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(configDir, "ask", "savings.json"), nil
+}
+
+// LoadSavings reads the recorded token savings. A missing ledger is a
+// zero-value result, not an error; malformed content is an error so a
+// caller never mistakes corruption for zero gains.
+func LoadSavings() (TokenSavings, error) {
+	empty := TokenSavings{ByCommand: map[string]CommandSavings{}}
+	path, err := SavingsPath()
+	if err != nil {
+		return empty, err
+	}
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return empty, nil
+	}
+	if err != nil {
+		return TokenSavings{}, err
+	}
+	var s TokenSavings
+	if err := json.Unmarshal(b, &s); err != nil {
+		return TokenSavings{}, err
+	}
+	if s.ByCommand == nil {
+		s.ByCommand = map[string]CommandSavings{}
+	}
+	return s, nil
+}
+
+// RecordSavings increments the raw and saved token counts for a base
+// command under a file lock. rawTokens is the untouched output's estimate,
+// savedTokens the reduction; the percentage saved is derived from the two.
+func RecordSavings(baseCommand string, rawTokens, savedTokens int) error {
+	if savedTokens <= 0 {
 		return nil
 	}
 
@@ -65,10 +106,12 @@ func RecordSavings(baseCommand string, tokensSaved int) error {
 		savings.ByCommand = make(map[string]CommandSavings)
 	}
 
-	savings.TotalSavedTokens += tokensSaved
+	savings.TotalRawTokens += rawTokens
+	savings.TotalSavedTokens += savedTokens
 	cmdStat := savings.ByCommand[baseCommand]
 	cmdStat.Count++
-	cmdStat.SavedTokens += tokensSaved
+	cmdStat.RawTokens += rawTokens
+	cmdStat.SavedTokens += savedTokens
 	savings.ByCommand[baseCommand] = cmdStat
 
 	if err := f.Truncate(0); err != nil {

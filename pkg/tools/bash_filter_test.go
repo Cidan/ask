@@ -66,7 +66,7 @@ func TestApplyBashFilter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			actualOut, actualSave := ApplyBashFilter(tt.cmd, tt.rawOutput)
+			actualOut, actualSave := ApplyBashFilter(tt.cmd, tt.rawOutput, 0)
 			if actualOut != tt.expectedOut {
 				t.Errorf("ApplyBashFilter(%q) out = %q, expected %q", tt.cmd, actualOut, tt.expectedOut)
 			}

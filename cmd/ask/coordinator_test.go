@@ -91,7 +91,7 @@ func TestCoordinator_RunWorkflowRestoreSession(t *testing.T) {
 	src := workflowSource{Kind: workflowSourceChat}
 
 	// Run the workflow
-	reply, err := c.RunWorkflow(context.Background(), 42, def, src)
+	reply, err := c.RunWorkflow(context.Background(), 42, workflowWorktree{root: cwd}, def, src)
 	if err != nil {
 		t.Fatalf("expected workflow to complete, got err: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestCoordinator_RunWorkflowCancellationStopRetries(t *testing.T) {
 	// Run workflow in a separate goroutine
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := c.RunWorkflow(ctx, 42, def, src)
+		_, err := c.RunWorkflow(ctx, 42, workflowWorktree{root: cwd}, def, src)
 		errCh <- err
 	}()
 
@@ -250,7 +250,7 @@ func TestCoordinator_RunWorkflowUsesOneSessionForTheWholeGraph(t *testing.T) {
 		{Name: "three", Provider: "fake-prov", Model: "fake-model", Prompt: "c"},
 	}}
 
-	if _, err := c.RunWorkflow(context.Background(), 77, def, workflowSource{Kind: workflowSourceChat}); err != nil {
+	if _, err := c.RunWorkflow(context.Background(), 77, workflowWorktree{root: cwd}, def, workflowSource{Kind: workflowSourceChat}); err != nil {
 		t.Fatalf("RunWorkflow: %v", err)
 	}
 	if got := atomic.LoadInt32(&sessionsStarted); got != 1 {
@@ -356,5 +356,158 @@ func TestCoordinator_Dispatch_NoWorktreeWhenOff(t *testing.T) {
 	prov.mu.Unlock()
 	if got != repo {
 		t.Errorf("worktree off must run at the project root; cwd = %q, want %q", got, repo)
+	}
+}
+
+// workflowStepDoneSession is a fake StartSession for workflow-run tests:
+// it records args (via the provider) and drives the run to a clean finish
+// so RunWorkflow returns without a real agent loop.
+func workflowStepDoneSession(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
+	ch := make(chan tea.Msg, 8)
+	proc := &providerProc{stdin: &bufferCloser{Buffer: nil}}
+	proc.payload = &agentSession{
+		args:   args,
+		env:    newAgentToolEnv(args.Cwd, args.TabID, true, true, func(tea.Msg) {}),
+		sendCh: make(chan agentTurn, 8),
+		closed: make(chan struct{}),
+	}
+	go func() {
+		ch <- providerDoneMsg{res: providerResult{Result: "ok"}}
+		ch <- turnCompleteMsg{}
+		close(ch)
+	}()
+	return proc, ch, nil
+}
+
+func workflowRunTestDef() workflowDef {
+	return workflowDef{Name: "wf", Steps: []workflowStep{
+		{Name: "s", Provider: "fake-prov", Model: "m", Prompt: "p"},
+	}}
+}
+
+// TestCoordinator_RunWorkflow_ReusesTabWorktree: a workflow launched from a
+// tab that already has a worktree runs *in that worktree*, not the project
+// root — the regression that let a supplanting workflow write into main.
+func TestCoordinator_RunWorkflow_ReusesTabWorktree(t *testing.T) {
+	isolateHome(t)
+	stubWorkflowStepModel(t)
+	repo := initGitRepo(t)
+	t.Chdir(repo)
+
+	// The tab already has a worktree, as its first chat turn would create.
+	wtPath, wtName, err := createWorktreeAt(repo)
+	if err != nil {
+		t.Fatalf("createWorktreeAt: %v", err)
+	}
+
+	prov := newFakeProvider()
+	prov.id = "fake-prov"
+	prov.startSessionFn = workflowStepDoneSession
+	withRegisteredProviders(t, prov)
+
+	c := &Coordinator{sessions: map[int]*agentSession{}, workflowCancels: map[int]context.CancelFunc{}}
+	wt := workflowWorktree{root: repo, name: wtName, on: true}
+	if _, err := c.RunWorkflow(context.Background(), 5, wt, workflowRunTestDef(), workflowSource{Kind: workflowSourceChat}); err != nil {
+		t.Fatalf("RunWorkflow: %v", err)
+	}
+
+	prov.mu.Lock()
+	starts := append([]ProviderSessionArgs(nil), prov.startArgs...)
+	prov.mu.Unlock()
+	if len(starts) != 1 {
+		t.Fatalf("StartSession called %d times, want 1", len(starts))
+	}
+	if starts[0].Cwd != wtPath {
+		t.Errorf("workflow ran in %q, want the tab's worktree %q", starts[0].Cwd, wtPath)
+	}
+	if got := worktreeNameFromCwd(starts[0].Cwd); got != wtName {
+		t.Errorf("workflow cwd worktree = %q, want %q", got, wtName)
+	}
+}
+
+// TestCoordinator_RunWorkflow_CreatesWorktreeWhenTabHasNone: worktree mode on
+// but the tab never created one (e.g. a workflow launched as the tab's first
+// action) — the run makes a fresh worktree and announces it so the tab adopts
+// it, instead of writing to the project root.
+func TestCoordinator_RunWorkflow_CreatesWorktreeWhenTabHasNone(t *testing.T) {
+	isolateHome(t)
+	stubWorkflowStepModel(t)
+	repo := initGitRepo(t)
+	t.Chdir(repo)
+
+	var emitted []providerCwdMsg
+	prev := agentSendToProgram
+	agentSendToProgram = func(msg tea.Msg) bool {
+		if cm, ok := msg.(providerCwdMsg); ok {
+			emitted = append(emitted, cm)
+		}
+		return true
+	}
+	t.Cleanup(func() { agentSendToProgram = prev })
+
+	prov := newFakeProvider()
+	prov.id = "fake-prov"
+	prov.startSessionFn = workflowStepDoneSession
+	withRegisteredProviders(t, prov)
+
+	c := &Coordinator{sessions: map[int]*agentSession{}, workflowCancels: map[int]context.CancelFunc{}}
+	wt := workflowWorktree{root: repo, on: true} // mode on, no worktree yet
+	if _, err := c.RunWorkflow(context.Background(), 9, wt, workflowRunTestDef(), workflowSource{Kind: workflowSourceChat}); err != nil {
+		t.Fatalf("RunWorkflow: %v", err)
+	}
+
+	prov.mu.Lock()
+	starts := append([]ProviderSessionArgs(nil), prov.startArgs...)
+	prov.mu.Unlock()
+	if len(starts) != 1 {
+		t.Fatalf("StartSession called %d times, want 1", len(starts))
+	}
+	name := worktreeNameFromCwd(starts[0].Cwd)
+	if name == "" {
+		t.Fatalf("workflow ran at %q, not inside a worktree — the bug", starts[0].Cwd)
+	}
+	if fi, err := os.Stat(starts[0].Cwd); err != nil || !fi.IsDir() {
+		t.Fatalf("worktree dir %q missing: %v", starts[0].Cwd, err)
+	}
+	if len(emitted) != 1 || worktreeNameFromCwd(emitted[0].cwd) != name {
+		t.Errorf("expected one providerCwdMsg for worktree %q, got %+v", name, emitted)
+	}
+}
+
+// TestCoordinator_RunWorkflow_NoWorktreeWhenOff: with worktree mode off the
+// run stays at the project root and announces nothing.
+func TestCoordinator_RunWorkflow_NoWorktreeWhenOff(t *testing.T) {
+	isolateHome(t)
+	stubWorkflowStepModel(t)
+	repo := initGitRepo(t)
+	t.Chdir(repo)
+
+	var emitted int
+	prev := agentSendToProgram
+	agentSendToProgram = func(msg tea.Msg) bool {
+		if _, ok := msg.(providerCwdMsg); ok {
+			emitted++
+		}
+		return true
+	}
+	t.Cleanup(func() { agentSendToProgram = prev })
+
+	prov := newFakeProvider()
+	prov.id = "fake-prov"
+	prov.startSessionFn = workflowStepDoneSession
+	withRegisteredProviders(t, prov)
+
+	c := &Coordinator{sessions: map[int]*agentSession{}, workflowCancels: map[int]context.CancelFunc{}}
+	if _, err := c.RunWorkflow(context.Background(), 3, workflowWorktree{root: repo, on: false}, workflowRunTestDef(), workflowSource{Kind: workflowSourceChat}); err != nil {
+		t.Fatalf("RunWorkflow: %v", err)
+	}
+	prov.mu.Lock()
+	got := prov.startArgs[0].Cwd
+	prov.mu.Unlock()
+	if got != repo {
+		t.Errorf("worktree off must run at the project root; cwd = %q, want %q", got, repo)
+	}
+	if emitted != 0 {
+		t.Errorf("worktree off must announce no cwd; got %d providerCwdMsg", emitted)
 	}
 }
