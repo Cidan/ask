@@ -47,15 +47,24 @@ tool surface → `.claude/rules/tools.md`, workflow graph →
   plus `renderAheadEntries` (10) each side through
   `ensureEntryWrapped`; off-screen entries cost `estimateEntryLines`.
   The per-entry cache is `historyEntry.wrapped`/`wrappedFor`; a width
-  change re-renders glamour for response/user entries and re-wraps
-  prerendered ones. Never render in per-frame paths.
+  change re-renders glamour for response/user entries, re-renders
+  `histDiff` entries (their solid backgrounds must span the current
+  width), and re-wraps prerendered ones. Never render in per-frame paths.
 - The source of truth is `m.transcript []transcriptItem` (transcript.go):
   one typed, mode-independent item per user message, assistant block,
   tool call/result, diff, workflow summary, or prerendered banner.
   `m.history` is a *projection* of it: `projectItem`/`projectHistory`
   apply the view modes (quiet hides tool+diff items and shows assistant
   blocks live as separate entries; tool-output full/short/off; diffs
-  on/off). Arrival handlers `pushTranscript` (append + incremental
+  on/off). Tool activity projects to three grouped kinds — `histToolCall`
+  (per-tool header from the call input; see `renderToolCallBlock` /
+  `toolPrimaryArg`), `histToolResult` (per-tool body from
+  `renderToolResultBlock`: read → line count, bash → `exit N` + output,
+  edit/write → suppressed since the diff carries it, generic → clamped),
+  and `histDiff` (structured hunks, solid red/green backgrounds rendered
+  at width in `renderDiffBlock`, hardcoded to bypass the theme). A tool
+  call, its diff, and its result render as one tight block: `model.gapAfter`
+  drops the blank separator row between adjacent members of a group. Arrival handlers `pushTranscript` (append + incremental
   project, preserving caches); mode toggles call `refreshHistory`
   (synchronous full re-project, so toggles are retroactive over the
   whole history — nothing is dropped at arrival time). `/resume` and

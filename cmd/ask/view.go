@@ -237,7 +237,7 @@ func (m *model) ensureEntryWrapped(idx, width int) {
 	e := &m.history[idx]
 	if e.wrappedFor != width {
 		switch e.kind {
-		case histResponse, histUser, histUserQueued, histWorkflowDone:
+		case histResponse, histUser, histUserQueued, histWorkflowDone, histDiff:
 			e.rendered = ""
 		}
 	}
@@ -274,6 +274,8 @@ func (m *model) ensureEntryWrapped(idx, width int) {
 				m.rendererWidth = width
 			}
 			e.rendered = m.renderResponse(e.text)
+		case histDiff:
+			e.rendered = renderDiffBlock(e.filePath, e.hunks, width)
 		case histUser:
 			e.rendered = m.renderUserBarAt(e.text, width, false)
 		case histUserQueued:
@@ -342,6 +344,28 @@ func wrapStyledLines(rendered string, width int) []string {
 	return out
 }
 
+// gapAfter reports how many blank separator rows are drawn after history
+// entry i. Normally one, but zero inside a tool group so a tool call, its
+// diff, and its result render as one tight block (crush-style) instead of
+// three widely-spaced entries. Returns zero for the last entry, matching
+// the "no trailing blank" rule the layout loops used before.
+func (m model) gapAfter(i int) int {
+	if i < 0 || i >= len(m.history)-1 {
+		return 0
+	}
+	switch m.history[i].kind {
+	case histToolCall:
+		if next := m.history[i+1].kind; next == histDiff || next == histToolResult {
+			return 0
+		}
+	case histDiff:
+		if m.history[i+1].kind == histToolResult {
+			return 0
+		}
+	}
+	return 1
+}
+
 // refreshChatTotals walks history once per layout pass to populate
 // m.chat.totalLines (exact for cached entries, estimated for the rest).
 // O(N) over history but no allocation per entry — fine even for 20 MB
@@ -353,9 +377,7 @@ func (m *model) refreshChatTotals() {
 	n := len(m.history)
 	for i := 0; i < n; i++ {
 		total += m.estimateEntryLines(i)
-		if i < n-1 {
-			total++ // blank separator row between entries
-		}
+		total += m.gapAfter(i) // blank separator row between entries
 	}
 	m.chat.totalLines = total
 }
@@ -388,9 +410,7 @@ func (m *model) chatVisibleRange() (int, int) {
 			last = i + 1
 		}
 		row = entryEnd
-		if i < n-1 {
-			row++
-		}
+		row += m.gapAfter(i)
 	}
 	if first == -1 {
 		return -1, -1
@@ -436,9 +456,7 @@ func (m *model) viewportContent() string {
 	row := 0
 	for i := 0; i < first; i++ {
 		row += m.estimateEntryLines(i)
-		if i < len(m.history)-1 {
-			row++
-		}
+		row += m.gapAfter(i)
 	}
 	for i := first; i < last && len(lines) < contentH; i++ {
 		entryLines := m.history[i].wrapped
@@ -457,11 +475,11 @@ func (m *model) viewportContent() string {
 			lines = append(lines, entryLines[offset:end]...)
 		}
 		row = entryEnd
-		if i < len(m.history)-1 {
+		if g := m.gapAfter(i); g > 0 {
 			if row >= yStart && row < yEnd && len(lines) < contentH {
 				lines = append(lines, "")
 			}
-			row++
+			row += g
 		}
 	}
 	for len(lines) < contentH {
@@ -556,10 +574,21 @@ func (m model) spinnerBlockHeight() int {
 	return 0
 }
 
-func renderDiffBlock(path string, hunks []diff.Hunk) string {
+// renderDiffBlock renders a file's hunks as crush-style diff rows: a
+// per-line gutter (line number) plus the code, with added/removed rows
+// filled edge-to-edge with a solid green/red background. It is width-
+// aware because the backgrounds must span the content column exactly —
+// callers (ensureEntryWrapped) pass the layout width so each row is
+// padded/truncated to fill it. The 5-column shared left margin
+// (outputStyle) stays unstyled so the gutter reads clean.
+func renderDiffBlock(path string, hunks []diff.Hunk, width int) string {
+	inner := width - outputStyle.GetMarginLeft()
+	if inner < 12 {
+		inner = 12
+	}
 	var lines []string
 	if path != "" {
-		lines = append(lines, outputStyle.Render(diffPathStyle.Render(path)))
+		lines = append(lines, outputStyle.Render(diffPathStyle.Render(shortenPath(path))))
 	}
 	for i, h := range hunks {
 		if i > 0 {
@@ -567,20 +596,64 @@ func renderDiffBlock(path string, hunks []diff.Hunk) string {
 		}
 		header := fmt.Sprintf("@@ -%d,%d +%d,%d @@", h.OldStart, h.OldLines, h.NewStart, h.NewLines)
 		lines = append(lines, outputStyle.Render(diffHunkHeaderStyle.Render(header)))
+		oldNo, newNo := h.OldStart, h.NewStart
 		for _, line := range h.Lines {
-			var styled string
-			switch {
-			case strings.HasPrefix(line, "+"):
-				styled = diffAddStyle.Render(line)
-			case strings.HasPrefix(line, "-"):
-				styled = diffDelStyle.Render(line)
-			default:
-				styled = diffContextStyle.Render(line)
+			// diff.Parse keeps a trailing empty element from the diff's
+			// final newline; a real blank context line is " ", not "".
+			if line == "" {
+				continue
 			}
-			lines = append(lines, outputStyle.Render(styled))
+			var (
+				num       string
+				numStyle  lipgloss.Style
+				bodyStyle lipgloss.Style
+			)
+			switch {
+			case strings.HasPrefix(line, `\`):
+				// "\ No newline at end of file" — meta, not a real line.
+				num = ""
+				numStyle = diffCtxLineNumStyle
+				bodyStyle = diffContextStyle
+			case strings.HasPrefix(line, "+"):
+				num = itoa(newNo)
+				newNo++
+				numStyle = diffAddLineNumStyle
+				bodyStyle = diffAddStyle
+			case strings.HasPrefix(line, "-"):
+				num = itoa(oldNo)
+				oldNo++
+				numStyle = diffDelLineNumStyle
+				bodyStyle = diffDelStyle
+			default:
+				num = itoa(newNo)
+				oldNo++
+				newNo++
+				numStyle = diffCtxLineNumStyle
+				bodyStyle = diffContextStyle
+			}
+			gutter := numStyle.Render(padLeft(num, 5) + " ")
+			codeWidth := inner - lipgloss.Width(gutter)
+			if codeWidth < 1 {
+				codeWidth = 1
+			}
+			code := strings.ReplaceAll(line, "\t", "    ")
+			code = xansi.Truncate(code, codeWidth, "…")
+			row := gutter + bodyStyle.Width(codeWidth).Render(code)
+			lines = append(lines, outputStyle.Render(row))
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// shortenPath trims the current working directory prefix so diff and
+// tool headers show a repo-relative path instead of a long absolute one.
+func shortenPath(path string) string {
+	if wd := getwdOrEmpty(); wd != "" {
+		if rel, err := filepath.Rel(wd, path); err == nil && !strings.HasPrefix(rel, "..") {
+			return rel
+		}
+	}
+	return path
 }
 
 func (m model) renderResponse(raw string) string {

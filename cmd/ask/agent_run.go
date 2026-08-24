@@ -563,11 +563,14 @@ func (s *agentSession) runTurn(turn agentTurn) {
 					if dn, ok := displayNames[part.FunctionResponse.Name]; ok {
 						dispName = dn
 					}
+					exitCode, hasExit := extractExitCode(part.FunctionResponse.Response)
 					s.emit(toolResultMsg{
-						name:       dispName,
-						output:     resStr,
-						isError:    isErr,
-						background: backgroundCalls[part.FunctionResponse.Name],
+						name:        dispName,
+						output:      resStr,
+						isError:     isErr,
+						exitCode:    exitCode,
+						hasExitCode: hasExit,
+						background:  backgroundCalls[part.FunctionResponse.Name],
 					})
 				}
 			}

@@ -52,6 +52,10 @@ type transcriptItem struct {
 	// trToolResult.
 	output  string
 	isError bool
+	// exitCode/hasExitCode mirror toolResultMsg: a shell tool's process
+	// exit code, present only for bash/job_output/job_kill results.
+	exitCode    int
+	hasExitCode bool
 
 	// trDiff.
 	filePath string
@@ -91,7 +95,7 @@ func projectItem(it transcriptItem, quiet bool, mode toolOutputMode, diffs bool)
 			return nil
 		}
 		return []historyEntry{{
-			kind: histPrerendered,
+			kind: histToolCall,
 			text: renderToolCallBlock(it.toolName, it.toolInput, mode),
 		}}
 	case trToolResult:
@@ -103,17 +107,27 @@ func projectItem(it transcriptItem, quiet bool, mode toolOutputMode, diffs bool)
 		if it.background && mode != toolOutputFull {
 			return nil
 		}
+		body := renderToolResultBlock(it.toolName, it.output, it.isError, it.exitCode, it.hasExitCode, mode)
+		// A tool whose result is pure noise (a read's file dump, an
+		// edit's replacement count that the diff already shows) renders
+		// nothing — the call header stands alone.
+		if body == "" {
+			return nil
+		}
 		return []historyEntry{{
-			kind: histPrerendered,
-			text: renderToolResultBlock(it.output, it.isError),
+			kind: histToolResult,
+			text: body,
 		}}
 	case trDiff:
 		if quiet || !diffs {
 			return nil
 		}
+		// Structured, not prerendered: the diff re-renders at layout
+		// width in ensureEntryWrapped so its backgrounds span the column.
 		return []historyEntry{{
-			kind: histPrerendered,
-			text: renderDiffBlock(it.filePath, it.hunks),
+			kind:     histDiff,
+			filePath: it.filePath,
+			hunks:    it.hunks,
 		}}
 	}
 	return nil

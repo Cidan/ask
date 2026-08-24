@@ -489,11 +489,13 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m.responseActive = false
 		if m.workflowRun == nil {
 			m.pushTranscript(transcriptItem{
-				kind:       trToolResult,
-				toolName:   msg.name,
-				output:     msg.output,
-				isError:    msg.isError,
-				background: msg.background,
+				kind:        trToolResult,
+				toolName:    msg.name,
+				output:      msg.output,
+				isError:     msg.isError,
+				exitCode:    msg.exitCode,
+				hasExitCode: msg.hasExitCode,
+				background:  msg.background,
 			})
 		}
 		return m, tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {

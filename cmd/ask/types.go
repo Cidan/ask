@@ -219,13 +219,18 @@ type toolCallMsg struct {
 // drop the ack-only payload in short/off modes without dropping
 // foreground results.
 type toolResultMsg struct {
-	toolUseID  string
-	name       string
-	output     string
-	isError    bool
-	background bool
-	tabID      int
-	proc       *providerProc
+	toolUseID string
+	name      string
+	output    string
+	isError   bool
+	// exitCode carries a shell tool's process exit code so the result
+	// renderer can show "exit N". hasExitCode distinguishes a real 0 from
+	// "not a shell result"; only bash/job_output/job_kill set it.
+	exitCode    int
+	hasExitCode bool
+	background  bool
+	tabID       int
+	proc        *providerProc
 }
 
 type stderrBuf struct {
@@ -257,6 +262,14 @@ const (
 	histUser
 	histUserQueued
 	histWorkflowDone
+	// Tool activity is split into three adjacent kinds so the viewport can
+	// tell a call, its diff, and its result belong to one visual group and
+	// drop the blank separator between them (see model.gapAfter). histDiff
+	// carries structured hunks and re-renders at layout width; the other
+	// two hold a prerendered string like histPrerendered.
+	histToolCall
+	histToolResult
+	histDiff
 )
 
 type historyEntry struct {
@@ -265,6 +278,13 @@ type historyEntry struct {
 	rendered       string
 	workflowHeader string
 	workflowIndent int
+
+	// filePath and hunks carry a histDiff entry's structured payload.
+	// Unlike prerendered kinds, a diff re-renders in ensureEntryWrapped at
+	// the current width so its solid red/green backgrounds span the content
+	// column exactly (see renderDiffBlock).
+	filePath string
+	hunks    []diff.Hunk
 
 	// wrapped is the soft-wrapped slice of rendered lines for the
 	// width recorded in wrappedFor. It is the only thing chatView

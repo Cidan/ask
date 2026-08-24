@@ -113,7 +113,7 @@ func (m model) entryRowRanges() [][2]int {
 			h = max(1, lipgloss.Height(rendered))
 		}
 		out[i] = [2]int{row, row + h}
-		row += h + 1 // +1 for the blank separator row
+		row += h + m.gapAfter(i) // blank separator row, unless a tool group
 	}
 	return out
 }

@@ -3,6 +3,9 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/Cidan/ask/pkg/diff"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 func TestRenderToolCallBlock_IncludesNameAndInputs(t *testing.T) {
@@ -40,56 +43,55 @@ func TestRenderToolCallBlock_SortedKeys(t *testing.T) {
 	}
 }
 
-func TestRenderToolCallBlock_ShortPhraseIsTheWholeRendering(t *testing.T) {
-	// Every native tool call carries a model-authored phrase; in short
-	// mode that phrase is the entire rendering — no param rows at all.
+func TestRenderToolCallBlock_ShortBashShowsCommand(t *testing.T) {
+	// For known tools the concrete primary argument beats the phrase in
+	// the header: bash shows the command it ran, on a single line, with
+	// the noisy params dropped. (The phrase still shows live on the
+	// spinner status while the call runs.)
 	input := map[string]any{
 		"command":           "ls /tmp",
 		"description":       "Listing temp files",
 		"run_in_background": true,
 	}
 	out := renderToolCallBlock("bash", input, toolOutputShort)
-	if !strings.Contains(out, "Listing temp files") || !strings.Contains(out, "bash") {
-		t.Errorf("short mode should render the phrase headline; got %q", out)
+	if !strings.Contains(out, "bash") || !strings.Contains(out, "$ ls /tmp") {
+		t.Errorf("short bash should render the command; got %q", out)
 	}
-	if strings.Contains(out, "ls /tmp") || strings.Contains(out, "command") || strings.Contains(out, "run_in_background") {
-		t.Errorf("short mode with a phrase should drop all params; got %q", out)
+	if strings.Contains(out, "run_in_background") || strings.Contains(out, "description") {
+		t.Errorf("short bash should drop the other params; got %q", out)
 	}
 	if strings.Contains(out, "\n") {
-		t.Errorf("phrase rendering should be a single line; got %q", out)
+		t.Errorf("bash header should be a single line; got %q", out)
 	}
 }
 
-func TestRenderToolCallBlock_ShortNoPhraseFallsBackToAllowlist(t *testing.T) {
-	// Calls without a phrase (old transcripts, MCP tools) fall back to
-	// the highest-signal fields for known tools.
-	input := map[string]any{
-		"command":           "ls /tmp",
-		"run_in_background": true,
+func TestRenderToolCallBlock_ShortReadShowsFile(t *testing.T) {
+	// read's primary arg is the file path, shown even without a phrase.
+	// shortenPath may make the path cwd-relative, so assert on the
+	// basename, which survives either way.
+	out := renderToolCallBlock("read", map[string]any{"file_path": "/tmp/x.go"}, toolOutputShort)
+	if !strings.Contains(out, "read") || !strings.Contains(out, "x.go") {
+		t.Errorf("short read should render the file path; got %q", out)
 	}
-	out := renderToolCallBlock("bash", input, toolOutputShort)
-	if !strings.Contains(out, "command") || !strings.Contains(out, "ls /tmp") {
-		t.Errorf("short bash without phrase should keep command; got %q", out)
-	}
-	if strings.Contains(out, "run_in_background") {
-		t.Errorf("short bash should drop non-allowlisted inputs; got %q", out)
+	if strings.Contains(out, "\n") {
+		t.Errorf("read header should be a single line; got %q", out)
 	}
 }
 
-func TestRenderToolCallBlock_FullKeepsParamsBesidePhrase(t *testing.T) {
+func TestRenderToolCallBlock_FullKeepsParamsBesidePrimary(t *testing.T) {
 	input := map[string]any{
 		"command":     "go test ./...",
 		"description": "Running the test suite",
 	}
 	out := renderToolCallBlock("bash", input, toolOutputFull)
-	if !strings.Contains(out, "Running the test suite") {
-		t.Errorf("full mode should keep the phrase headline; got %q", out)
+	if !strings.Contains(out, "$ go test ./...") {
+		t.Errorf("full mode should show the command in the header; got %q", out)
 	}
 	if !strings.Contains(out, "command") || !strings.Contains(out, "go test ./...") {
-		t.Errorf("full mode should keep the params; got %q", out)
+		t.Errorf("full mode should keep the param rows; got %q", out)
 	}
 	if strings.Contains(out, "description:") {
-		t.Errorf("full mode should not duplicate the phrase as a row; got %q", out)
+		t.Errorf("full mode should not render the phrase as a row; got %q", out)
 	}
 }
 
@@ -186,7 +188,7 @@ func TestRenderToolResultBlock_TruncatesLongOutput(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		lines = append(lines, "line"+itoa(i))
 	}
-	out := renderToolResultBlock(strings.Join(lines, "\n"), false)
+	out := renderToolResultBlock("", strings.Join(lines, "\n"), false, 0, false, toolOutputShort)
 	if !strings.Contains(out, "more lines") {
 		t.Errorf("long output should include truncation marker; got %q", out)
 	}
@@ -196,12 +198,99 @@ func TestRenderToolResultBlock_TruncatesLongOutput(t *testing.T) {
 }
 
 func TestRenderToolResultBlock_ShortOutputUnchanged(t *testing.T) {
-	out := renderToolResultBlock("one\ntwo", false)
+	out := renderToolResultBlock("", "one\ntwo", false, 0, false, toolOutputShort)
 	if !strings.Contains(out, "one") || !strings.Contains(out, "two") {
 		t.Errorf("short output should render both lines; got %q", out)
 	}
 	if strings.Contains(out, "more lines") {
 		t.Errorf("short output should not show truncation marker; got %q", out)
+	}
+}
+
+func TestRenderToolResultBlock_ReadShowsLineCountNotDump(t *testing.T) {
+	// A read renders its line count, never the file body — that is the
+	// whole point of the redesign.
+	content := "     1\tpackage main\n     2\t\n     3\tfunc main() {}\n"
+	out := renderToolResultBlock("read", content, false, 0, false, toolOutputShort)
+	if !strings.Contains(out, "3 lines") {
+		t.Errorf("read result should show the line count; got %q", out)
+	}
+	if strings.Contains(out, "package main") {
+		t.Errorf("read result must not dump the file body; got %q", out)
+	}
+}
+
+func TestRenderToolResultBlock_ReadEmptyNoticePassesThrough(t *testing.T) {
+	out := renderToolResultBlock("read", "(empty file)", false, 0, false, toolOutputShort)
+	if !strings.Contains(out, "(empty file)") {
+		t.Errorf("read notice should pass through; got %q", out)
+	}
+}
+
+func TestRenderToolResultBlock_BashShowsExitCode(t *testing.T) {
+	ok := renderToolResultBlock("bash", "all good", false, 0, true, toolOutputShort)
+	if !strings.Contains(ok, "exit 0") || !strings.Contains(ok, "all good") {
+		t.Errorf("bash result should show exit 0 and output; got %q", ok)
+	}
+	bad := renderToolResultBlock("bash", "boom", false, 2, true, toolOutputShort)
+	if !strings.Contains(bad, "exit 2") {
+		t.Errorf("bash result should show the non-zero exit code; got %q", bad)
+	}
+}
+
+func TestRenderToolResultBlock_EditSuppressedButErrorShown(t *testing.T) {
+	// A successful edit renders nothing — its diff tells the story.
+	if out := renderToolResultBlock("edit", "Replacements: 1", false, 0, false, toolOutputShort); out != "" {
+		t.Errorf("successful edit result should be suppressed; got %q", out)
+	}
+	// A failed edit still surfaces the error.
+	if out := renderToolResultBlock("edit", "old_string not found", true, 0, false, toolOutputShort); !strings.Contains(out, "old_string not found") {
+		t.Errorf("failed edit must show the error; got %q", out)
+	}
+}
+
+func TestRenderToolResultBlock_FullModeDoesNotClampBash(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < toolOutputMaxLines*2; i++ {
+		b.WriteString("row\n")
+	}
+	full := renderToolResultBlock("bash", b.String(), false, 0, true, toolOutputFull)
+	if strings.Contains(full, "more lines") {
+		t.Errorf("full mode should not clamp bash output; got truncation marker in %q", full)
+	}
+	short := renderToolResultBlock("bash", b.String(), false, 0, true, toolOutputShort)
+	if !strings.Contains(short, "more lines") {
+		t.Errorf("short mode should clamp bash output; got %q", short)
+	}
+}
+
+func TestRenderDiffBlock_SolidBackgroundsAndLineNumbers(t *testing.T) {
+	applyTheme(themeByName("default"))
+	hunks := []diff.Hunk{{
+		OldStart: 10, OldLines: 2, NewStart: 10, NewLines: 2,
+		Lines: []string{" ctx", "-old line", "+new line"},
+	}}
+	out := renderDiffBlock("/repo/foo.go", hunks, 80)
+	plain := xansi.Strip(out)
+	if !strings.Contains(plain, "-old line") || !strings.Contains(plain, "+new line") {
+		t.Errorf("diff should contain the +/- content; got %q", plain)
+	}
+	if !strings.Contains(plain, "@@ -10,2 +10,2 @@") {
+		t.Errorf("diff should contain the hunk header; got %q", plain)
+	}
+	// Line numbers: the added line is new line 11 (context was 10).
+	if !strings.Contains(plain, "11") {
+		t.Errorf("diff should carry line numbers; got %q", plain)
+	}
+	// The +/- rows must carry ANSI styling (the solid backgrounds).
+	if out == plain {
+		t.Errorf("diff rows should be styled (backgrounds), but output had no ANSI")
+	}
+	// Every rendered row fits the width (backgrounds pad, never overflow).
+	for _, ln := range strings.Split(out, "\n") {
+		if w := xansi.StringWidth(ln); w > 80 {
+			t.Errorf("diff row exceeds width: %d > 80 (%q)", w, xansi.Strip(ln))
+		}
 	}
 }
 

@@ -13,15 +13,17 @@ import (
 // status line there.
 
 // toolOutputMode is the user-visible tri-state for tool output rendering.
+// The call header always leads with a per-tool primary argument (the file,
+// the command, the query — see toolPrimaryArg), falling back to the
+// model-authored phrase, then the shortToolFields allowlist. Result bodies
+// are per-tool (renderToolResultBlock): read shows a line count, bash shows
+// its exit code plus output, edit/write show nothing (the diff carries it).
 //
-//	full  — show the call header (with the description phrase), every
-//	       input field, and the result body (including the "started
-//	       background job" ack bash emits for run_in_background calls).
-//	short — show the call header with the description phrase only; for
-//	       calls without a phrase, fall back to the highest-signal
-//	       input fields per known tool (see shortToolFields). The
-//	       result body renders for foreground calls; background-call
-//	       results are suppressed.
+//	full  — call header with every input field, and the full (unclamped)
+//	       result body, including the "started background job" ack bash
+//	       emits for run_in_background calls.
+//	short — call header only, plus the clamped result body for foreground
+//	       calls; background-call results are suppressed.
 //	off   — render nothing for tool calls or their results, not even
 //	       headers.
 type toolOutputMode string
@@ -154,13 +156,20 @@ func toolCallPhrase(input map[string]any) string {
 // and nested maps remain legible.
 func renderToolCallBlock(name string, input map[string]any, mode toolOutputMode) string {
 	phrase := toolCallPhrase(input)
+	primary := toolPrimaryArg(name, input)
 	header := diffPathStyle.Render("▸ " + nonEmpty(name, "tool"))
-	if phrase != "" {
+	switch {
+	case primary != "":
+		// Concrete argument (the file, the command, the query) beats the
+		// phrase in the permanent header — the phrase still shows live on
+		// the spinner status line while the call runs.
+		header += diffContextStyle.Render("  " + primary)
+	case phrase != "":
 		header += diffContextStyle.Render(" — " + phrase)
 	}
 	lines := []string{outputStyle.Render(header)}
 	if mode == toolOutputShort {
-		if phrase != "" {
+		if primary != "" || phrase != "" {
 			return lines[0]
 		}
 		input = filterShortInputs(name, input)
@@ -174,23 +183,141 @@ func renderToolCallBlock(name string, input map[string]any, mode toolOutputMode)
 	return strings.Join(lines, "\n")
 }
 
-// renderToolResultBlock formats the output of a tool call. Long output
-// is clipped to toolOutputMaxLines / toolOutputMaxChars with a trailing
-// "(… N more lines)" marker. Error results render with the error style
-// so a failed command stands out against a pile of successful ones.
-func renderToolResultBlock(output string, isError bool) string {
-	body, trimmedLines := clampToolOutput(output)
+// toolPrimaryArg returns the single highest-signal argument to show in a
+// known tool's header — the file for read/write/edit/ls, the command for
+// bash, the pattern/query for search tools. Empty for tools without an
+// obvious primary (task, MCP, …), where the phrase is used instead.
+func toolPrimaryArg(name string, input map[string]any) string {
+	str := func(k string) string { s, _ := input[k].(string); return strings.TrimSpace(s) }
+	var v string
+	switch strings.ToLower(name) {
+	case "read", "write", "edit":
+		if p := str("file_path"); p != "" {
+			v = shortenPath(p)
+		}
+	case "bash":
+		if c := str("command"); c != "" {
+			v = "$ " + firstLine(c)
+		}
+	case "grep":
+		if p := str("pattern"); p != "" {
+			if inc := str("include"); inc != "" {
+				v = p + "  (" + inc + ")"
+			} else {
+				v = p
+			}
+		}
+	case "glob":
+		v = str("pattern")
+	case "ls":
+		if p := str("path"); p != "" {
+			v = shortenPath(p)
+		}
+	case "fetch":
+		v = str("url")
+	case "web_search":
+		v = str("query")
+	}
+	return truncate(v, 160)
+}
+
+// firstLine collapses a multi-line value (a heredoc command, say) to its
+// first line with an ellipsis so a header stays one logical line.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return strings.TrimSpace(s[:i]) + " …"
+	}
+	return s
+}
+
+// renderToolResultBlock formats a tool result as the body under its call
+// header. It dispatches per tool so each reads cleanly: a read shows just
+// its line count (never the file dump), a bash shows its exit code and a
+// clipped tail of output, an edit/write shows nothing (its diff already
+// tells the story). Everything else — and every error, whichever tool —
+// falls to the generic clipped body. Returns "" when there is nothing
+// worth showing, in which case the projection drops the entry entirely.
+func renderToolResultBlock(name, output string, isError bool, exitCode int, hasExitCode bool, mode toolOutputMode) string {
+	if !isError {
+		switch strings.ToLower(name) {
+		case "read":
+			return renderReadResult(output)
+		case "edit", "write":
+			return ""
+		case "bash":
+			return renderBashResult(output, exitCode, hasExitCode, mode)
+		}
+	}
+	return renderGenericResult(output, isError, mode)
+}
+
+// clampBody trims a result body for display. In full ("audit") mode it
+// returns the whole thing; otherwise it clips to the line/char caps and
+// reports how many lines were dropped.
+func clampBody(output string, mode toolOutputMode) (string, int) {
+	if mode == toolOutputFull {
+		return strings.TrimRight(output, "\n"), 0
+	}
+	return clampToolOutput(output)
+}
+
+// renderReadResult collapses a read to a one-line summary — the line
+// count, or the tool's own parenthetical notice ("(empty file)",
+// "(no lines at offset …)"). The file itself is on the call header; the
+// content is deliberately never dumped into history.
+func renderReadResult(output string) string {
+	trimmed := strings.TrimRight(output, "\n")
+	var summary string
+	switch {
+	case trimmed == "":
+		summary = "(empty)"
+	case strings.HasPrefix(trimmed, "("):
+		summary = trimmed
+	default:
+		summary = pluralReadLines(strings.Count(trimmed, "\n") + 1)
+	}
+	return outputStyle.Render(diffContextStyle.Render("  " + summary))
+}
+
+// renderBashResult shows the exit code (green for 0, red otherwise) and a
+// clipped tail of combined output. Background launches and still-running
+// polls carry no exit code, so they render just their output line.
+func renderBashResult(output string, exitCode int, hasExitCode bool, mode toolOutputMode) string {
+	var rows []string
+	if hasExitCode {
+		st := successStyle
+		if exitCode != 0 {
+			st = errStyle
+		}
+		rows = append(rows, outputStyle.Render(st.Render("  exit "+itoa(exitCode))))
+	}
+	body, trimmed := clampBody(output, mode)
+	if strings.TrimSpace(body) != "" {
+		for _, ln := range strings.Split(body, "\n") {
+			rows = append(rows, outputStyle.Render(diffContextStyle.Render("  "+ln)))
+		}
+		if trimmed > 0 {
+			rows = append(rows, outputStyle.Render(diffContextStyle.Render("  (… "+pluralLines(trimmed)+" omitted)")))
+		}
+	}
+	return strings.Join(rows, "\n")
+}
+
+// renderGenericResult is the fallback body: the clipped output, one row
+// per line, in the error style when the call failed.
+func renderGenericResult(output string, isError bool, mode toolOutputMode) string {
+	body, trimmedLines := clampBody(output, mode)
 	var rows []string
 	for _, ln := range strings.Split(body, "\n") {
-		styled := diffContextStyle.Render("    " + ln)
+		styled := diffContextStyle.Render("  " + ln)
 		if isError {
-			styled = errStyle.Render("    " + ln)
+			styled = errStyle.Render("  " + ln)
 		}
 		rows = append(rows, outputStyle.Render(styled))
 	}
 	if trimmedLines > 0 {
 		rows = append(rows, outputStyle.Render(diffContextStyle.Render(
-			"    (… "+pluralLines(trimmedLines)+" omitted)")))
+			"  (… "+pluralLines(trimmedLines)+" omitted)")))
 	}
 	return strings.Join(rows, "\n")
 }
@@ -228,6 +355,31 @@ func formatToolInputValue(v any) string {
 	return truncate(string(b), 200)
 }
 
+// extractExitCode pulls a shell tool's process exit code out of its raw
+// result map. Values arrive as float64 after the tool result round-trips
+// through JSON, but int/int64/json.Number are handled too. ok is false
+// for tools that carry no exit_code (read, edit, MCP, …) so the renderer
+// can tell "exit 0" apart from "not a shell result".
+func extractExitCode(resp map[string]any) (int, bool) {
+	v, ok := resp["exit_code"]
+	if !ok {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return int(i), true
+		}
+	}
+	return 0, false
+}
+
 // sortedKeys returns the map keys in stable ("command" before "cwd")
 // alphabetical order so successive renders of the same payload don't
 // flicker.
@@ -261,6 +413,13 @@ func pluralLines(n int) string {
 		return "1 more line"
 	}
 	return itoa(n) + " more lines"
+}
+
+func pluralReadLines(n int) string {
+	if n == 1 {
+		return "1 line"
+	}
+	return itoa(n) + " lines"
 }
 
 // itoa avoids pulling strconv just for plural rendering. n is always

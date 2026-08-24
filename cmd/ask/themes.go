@@ -448,6 +448,7 @@ var (
 	promptDotStyle     lipgloss.Style
 	cwdStyle           lipgloss.Style
 	errStyle           lipgloss.Style
+	successStyle       lipgloss.Style
 	userBarStyle       lipgloss.Style
 	userBarQueuedStyle lipgloss.Style
 	outputStyle        lipgloss.Style
@@ -470,6 +471,9 @@ var (
 	diffAddStyle        lipgloss.Style
 	diffDelStyle        lipgloss.Style
 	diffContextStyle    lipgloss.Style
+	diffAddLineNumStyle lipgloss.Style
+	diffDelLineNumStyle lipgloss.Style
+	diffCtxLineNumStyle lipgloss.Style
 
 	askBoxStyle              lipgloss.Style
 	askTabStyle              lipgloss.Style
@@ -547,6 +551,7 @@ func applyTheme(t theme) {
 	promptDotStyle = lipgloss.NewStyle().Foreground(t.promptDot)
 	cwdStyle = lipgloss.NewStyle().Foreground(t.prompt)
 	errStyle = lipgloss.NewStyle().Foreground(t.errorFG)
+	successStyle = lipgloss.NewStyle().Foreground(t.success)
 	userBarStyle = lipgloss.NewStyle().
 		MarginLeft(3).
 		Border(lipgloss.NormalBorder(), false, false, false, true).
@@ -577,9 +582,16 @@ func applyTheme(t theme) {
 
 	diffPathStyle = lipgloss.NewStyle().Foreground(t.accentAlt).Bold(true)
 	diffHunkHeaderStyle = lipgloss.NewStyle().Foreground(t.dim)
-	diffAddStyle = lipgloss.NewStyle().Foreground(t.success)
-	diffDelStyle = lipgloss.NewStyle().Foreground(t.errorFG)
 	diffContextStyle = lipgloss.NewStyle().Foreground(t.dim)
+	// Added/removed lines use fixed green/red backgrounds that intentionally
+	// bypass the theme: a diff must read as a diff on every theme, the way
+	// crush renders it. Only these +/- rows are hardcoded; the file-path
+	// header, hunk header, and context rows stay themed above.
+	diffAddStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#e6ffec")).Background(lipgloss.Color("#1b3a26"))
+	diffDelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffeef0")).Background(lipgloss.Color("#4a1d24"))
+	diffAddLineNumStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#7ee787")).Background(lipgloss.Color("#122b1b"))
+	diffDelLineNumStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffa198")).Background(lipgloss.Color("#3a151c"))
+	diffCtxLineNumStyle = lipgloss.NewStyle().Foreground(t.dim)
 
 	askBoxStyle = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

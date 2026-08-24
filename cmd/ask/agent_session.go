@@ -100,7 +100,15 @@ func loadTranscriptFromEvents(events []*session.Event) ([]transcriptItem, error)
 					continue
 				}
 				resStr, isErr := engine.ToolResultText(p.FunctionResponse.Response)
-				items = append(items, transcriptItem{kind: trToolResult, output: resStr, isError: isErr})
+				exitCode, hasExit := extractExitCode(p.FunctionResponse.Response)
+				items = append(items, transcriptItem{
+					kind:        trToolResult,
+					toolName:    p.FunctionResponse.Name,
+					output:      resStr,
+					isError:     isErr,
+					exitCode:    exitCode,
+					hasExitCode: hasExit,
+				})
 			}
 
 			var textParts []string
@@ -152,7 +160,15 @@ func loadTranscriptFromEvents(events []*session.Event) ([]transcriptItem, error)
 				continue
 			}
 			resStr, isErr := engine.ToolResultText(p.FunctionResponse.Response)
-			items = append(items, transcriptItem{kind: trToolResult, output: resStr, isError: isErr})
+			exitCode, hasExit := extractExitCode(p.FunctionResponse.Response)
+			items = append(items, transcriptItem{
+				kind:        trToolResult,
+				toolName:    p.FunctionResponse.Name,
+				output:      resStr,
+				isError:     isErr,
+				exitCode:    exitCode,
+				hasExitCode: hasExit,
+			})
 		}
 	}
 	return items, nil

@@ -136,7 +136,7 @@ func TestUpdate_AssistantTextMsgStreamingInterruptedByToolCall(t *testing.T) {
 
 	// Tool call arrives
 	m2, _ := runUpdate(t, m1, toolCallMsg{name: "read", input: map[string]any{"file_path": "main.go"}, proc: m1.proc})
-	if len(m2.history) != 2 || m2.history[1].kind != histPrerendered {
+	if len(m2.history) != 2 || m2.history[1].kind != histToolCall {
 		t.Fatalf("want 2 entries (response + tool call), got %+v", m2.history)
 	}
 
@@ -719,8 +719,11 @@ func TestUpdate_ToolDiffMsgRendersWhenEnabled(t *testing.T) {
 		proc:     m.proc,
 	}
 	m2, _ := runUpdate(t, m, msg)
-	if len(m2.history) != 1 || !strings.Contains(m2.history[0].text, "/a.txt") {
-		t.Errorf("expected diff entry in history, got %+v", m2.history)
+	if len(m2.history) != 1 || m2.history[0].kind != histDiff || m2.history[0].filePath != "/a.txt" {
+		t.Errorf("expected structured diff entry in history, got %+v", m2.history)
+	}
+	if len(m2.history[0].hunks) != 1 {
+		t.Errorf("diff entry should carry its hunks, got %+v", m2.history[0])
 	}
 }
 
@@ -782,11 +785,11 @@ func TestUpdate_ToolCallMsgShortFiltersInputs(t *testing.T) {
 	if len(m2.history) != 1 {
 		t.Fatalf("want 1 history entry, got %d", len(m2.history))
 	}
-	if !strings.Contains(m2.history[0].text, "list files") {
-		t.Errorf("short bash should render the phrase; got %q", m2.history[0].text)
+	if !strings.Contains(m2.history[0].text, "$ ls") {
+		t.Errorf("short bash should render the command; got %q", m2.history[0].text)
 	}
-	if strings.Contains(m2.history[0].text, "command") {
-		t.Errorf("short bash with a phrase should drop the params; got %q", m2.history[0].text)
+	if strings.Contains(m2.history[0].text, "run_in_background") || strings.Contains(m2.history[0].text, "description") {
+		t.Errorf("short bash should drop the other params; got %q", m2.history[0].text)
 	}
 }
 

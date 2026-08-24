@@ -2,6 +2,7 @@ package main
 
 import (
 	tea "charm.land/bubbletea/v2"
+	"github.com/Cidan/ask/pkg/diff"
 	"github.com/Cidan/ask/pkg/engine"
 )
 
@@ -38,6 +39,7 @@ func EngineEventToTeaMsg(event engine.EngineEvent) tea.Msg {
 	case engine.ToolDiffEvent:
 		return toolDiffMsg{
 			filePath: ev.Path,
+			hunks:    diff.Parse(ev.Diff),
 			tabID:    tabID,
 		}
 	case engine.UsageEvent:
