@@ -115,6 +115,10 @@ func TestMemoryExtractModel(t *testing.T) {
 	if p, m = MemoryExtractModel(config.Config{}, "nosuch"); p != "nosuch" || m != "" {
 		t.Fatalf("unknown provider: %s/%s", p, m)
 	}
+	p, m = MemoryExtractModel(config.Config{}, providers.ClaudeCodeProviderID)
+	if p != providers.ClaudeCodeProviderID || m != providers.ClaudeCodeCheapModel {
+		t.Fatalf("claude-code session without prices must extract on %s, got %s/%s", providers.ClaudeCodeCheapModel, p, m)
+	}
 }
 
 func TestMemoryExtractorFilesConceptsAndTopic(t *testing.T) {

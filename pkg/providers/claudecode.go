@@ -27,6 +27,7 @@ type ClaudeCode struct{}
 const (
 	ClaudeCodeProviderID   = "claude-code"
 	ClaudeCodeDefaultModel = "default"
+	ClaudeCodeCheapModel   = "haiku"
 
 	ClaudeCodeFieldBinary = "binary"
 	ClaudeCodeEnvBinary   = "ASK_CLAUDE_BIN"
@@ -55,6 +56,12 @@ func (ClaudeCode) DisplayName() string     { return "Claude Code" }
 func (ClaudeCode) DefaultModel() string    { return ClaudeCodeDefaultModel }
 func (ClaudeCode) ModelOptions() []string  { return ClaudeCodeModelOptions }
 func (ClaudeCode) EffortOptions() []string { return ClaudeCodeEffortOptions }
+
+var _ CheapModeler = ClaudeCode{}
+
+// CheapModel is the smallest alias the CLI accepts. The plan bills by
+// quota, not USD, so the catalog has no prices for CheapestModel to rank.
+func (ClaudeCode) CheapModel() string { return ClaudeCodeCheapModel }
 
 func (ClaudeCode) Settings() []SettingField {
 	return append([]SettingField(nil), claudeCodeSettings...)

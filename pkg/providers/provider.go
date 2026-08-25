@@ -72,6 +72,15 @@ type NativeWebSearchProvider interface {
 	HasNativeWebSearch() bool
 }
 
+// CheapModeler is the optional capability of naming the provider's
+// cheapest model outright. CheapestModel consults it before list prices,
+// so a subscription provider whose catalog carries no USD rates (Claude
+// Code) still routes background calls like memory extraction to its
+// smallest model instead of its default.
+type CheapModeler interface {
+	CheapModel() string
+}
+
 // SettingField is one configuration field a provider declares. The
 // /config → <provider> screen is rendered from these, one row per field.
 type SettingField struct {
