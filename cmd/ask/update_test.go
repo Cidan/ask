@@ -785,11 +785,11 @@ func TestUpdate_ToolCallMsgShortFiltersInputs(t *testing.T) {
 	if len(m2.history) != 1 {
 		t.Fatalf("want 1 history entry, got %d", len(m2.history))
 	}
-	if !strings.Contains(m2.history[0].text, "$ ls") {
-		t.Errorf("short bash should render the command; got %q", m2.history[0].text)
+	if !strings.Contains(m2.history[0].text, "list files") {
+		t.Errorf("short bash should render the description phrase; got %q", m2.history[0].text)
 	}
-	if strings.Contains(m2.history[0].text, "run_in_background") || strings.Contains(m2.history[0].text, "description") {
-		t.Errorf("short bash should drop the other params; got %q", m2.history[0].text)
+	if strings.Contains(m2.history[0].text, "$ ls") || strings.Contains(m2.history[0].text, "run_in_background") {
+		t.Errorf("short bash should render the description, not the raw params; got %q", m2.history[0].text)
 	}
 }
 

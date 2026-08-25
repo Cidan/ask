@@ -243,12 +243,14 @@ func (m *model) ensureEntryWrapped(idx, width int) {
 	}
 	e := &m.history[idx]
 	// An in-flight tool call re-renders its header every frame so the ▸
-	// glyph pulses through inflightToolGlyphStyle. Bypass the wrap cache
-	// entirely for it — contentFingerprint's inflight term guarantees this
-	// path runs each spinner tick, and it costs one restyled line.
+	// glyph glows through inflightToolGlyphStyle. Only the arrow animates —
+	// the tool name keeps the static resting accent (diffPathStyle). Bypass
+	// the wrap cache entirely for it — contentFingerprint's inflight term
+	// guarantees this path runs each spinner tick, and it costs one restyled
+	// line.
 	if e.kind == histToolCall && e.toolInflight {
 		e.rendered = renderToolCallBlockStyled(e.toolName, e.toolInput, m.toolOutputMode,
-			inflightToolGlyphStyle(float64(time.Now().UnixNano())/1e9))
+			inflightToolGlyphStyle(float64(time.Now().UnixNano())/1e9), diffPathStyle)
 		e.wrapped = wrapStyledLines(e.rendered, width)
 		e.wrappedFor = width
 		return
