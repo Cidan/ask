@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 
@@ -16,11 +17,12 @@ import (
 // status line there.
 
 // toolOutputMode is the user-visible tri-state for tool output rendering.
-// The call header always leads with a per-tool primary argument (the file,
-// the command, the query — see toolPrimaryArg), falling back to the
-// model-authored phrase, then the shortToolFields allowlist. Result bodies
-// are per-tool (renderToolResultBlock): read shows a line count, bash shows
-// its exit code plus output, edit/write show nothing (the diff carries it).
+// The call header always leads with the model-authored description phrase
+// (see toolCallPhrase) — what the call is trying to do — falling back to a
+// per-tool primary argument (the file, the command, the query — see
+// toolPrimaryArg), then the shortToolFields allowlist. Result bodies are
+// per-tool (renderToolResultBlock): read shows a line count, bash shows its
+// exit code plus output, edit/write show nothing (the diff carries it).
 //
 //	full  — call header with every input field, and the full (unclamped)
 //	       result body, including the "started background job" ack bash
@@ -158,29 +160,33 @@ func toolCallPhrase(input map[string]any) string {
 // duplicate the header). Non-string inputs are JSON-encoded so arrays
 // and nested maps remain legible.
 func renderToolCallBlock(name string, input map[string]any, mode toolOutputMode) string {
-	return renderToolCallBlockStyled(name, input, mode, diffPathStyle)
+	return renderToolCallBlockStyled(name, input, mode, diffPathStyle, diffPathStyle)
 }
 
-// renderToolCallBlockStyled is renderToolCallBlock with the "▸ name" glyph
-// drawn in a caller-supplied style instead of the resting diffPathStyle.
-// The projection bakes the resting color; the in-flight animation
-// (ensureEntryWrapped) re-invokes this each frame with a hue-rotated style
-// so the arrow pulses while the call runs, and settleToolCall re-bakes it
-// with restingToolGlyphStyle (red on error) once the result lands. Only the
-// glyph unit is restyled — the primary/phrase and any input rows keep the
-// dim context style.
-func renderToolCallBlockStyled(name string, input map[string]any, mode toolOutputMode, glyphStyle lipgloss.Style) string {
+// renderToolCallBlockStyled is renderToolCallBlock with the "▸" glyph and
+// the tool name drawn in caller-supplied styles instead of the resting
+// diffPathStyle. glyphStyle paints only the ▸ arrow; nameStyle paints the
+// tool name. The projection bakes the resting color into both; the
+// in-flight animation (ensureEntryWrapped) re-invokes this each frame with
+// a glowing glyphStyle and a static nameStyle, so only the arrow pulses
+// while the call runs, and settleToolCall re-bakes both with
+// restingToolGlyphStyle (red on error) once the result lands. The
+// description phrase / primary arg and any input rows keep the dim context
+// style.
+func renderToolCallBlockStyled(name string, input map[string]any, mode toolOutputMode, glyphStyle, nameStyle lipgloss.Style) string {
 	phrase := toolCallPhrase(input)
 	primary := toolPrimaryArg(name, input)
-	header := glyphStyle.Render("▸ " + nonEmpty(name, "tool"))
+	header := glyphStyle.Render("▸") + nameStyle.Render(" "+nonEmpty(name, "tool"))
 	switch {
-	case primary != "":
-		// Concrete argument (the file, the command, the query) beats the
-		// phrase in the permanent header — the phrase still shows live on
-		// the spinner status line while the call runs.
-		header += diffContextStyle.Render("  " + primary)
 	case phrase != "":
+		// The model-authored description of what the call is doing leads
+		// the header — the intent, not the raw input. The concrete argument
+		// still shows as a row in full mode.
 		header += diffContextStyle.Render(" — " + phrase)
+	case primary != "":
+		// No phrase (old transcripts, MCP tools that lack the param): fall
+		// back to the concrete argument — the file, command, or query.
+		header += diffContextStyle.Render("  " + primary)
 	}
 	lines := []string{outputStyle.Render(header)}
 	if mode == toolOutputShort {
@@ -198,22 +204,33 @@ func renderToolCallBlockStyled(name string, input map[string]any, mode toolOutpu
 	return strings.Join(lines, "\n")
 }
 
-// inflightGlyphPeriod is how long, in seconds, the ▸ glyph takes to make
-// one full hue rotation while a tool call is in flight. The viewport
-// repaints at the spinner's 60fps while any call runs (see
-// contentFingerprint), so the arrow reads as a smooth rainbow at that rate.
-const inflightGlyphPeriod = 1.5
+// inflightGlyphPeriod is one full glow cycle, in seconds, of the ▸ glyph
+// while a tool call is in flight: it breathes from a dimmed accent up to
+// the full theme accent and back. The viewport repaints at the spinner's
+// 60fps while any call runs (see contentFingerprint), so the pulse reads
+// as a slow, smooth glow at that rate.
+const inflightGlyphPeriod = 2.5
 
-// inflightGlyphHex returns the color the ▸ glyph pulses through at time t
-// (seconds). Hue rotates a full turn every inflightGlyphPeriod; saturation
-// and value match the EQ meter's palette so the two animations feel of a
-// piece.
+// inflightGlyphDimFloor is how dark the glyph gets at the trough of the
+// pulse, as a fraction of the resting accent's brightness. 1.0 (the peak)
+// is the accent at full strength — the color the glyph settles to.
+const inflightGlyphDimFloor = 0.45
+
+// inflightGlyphHex returns the color the ▸ glyph glows through at time t
+// (seconds). Only brightness pulses: hue and saturation stay the active
+// theme's accentAlt — the glyph's resting color (see diffPathStyle) — so
+// the arrow reads as a calm glow of the theme accent, not a rainbow.
+// Scaling the accent's RGB channels uniformly is a pure brightness change
+// (hue and saturation are scale-invariant); the cosine ease makes the glow
+// rise and fall smoothly and wrap cleanly every inflightGlyphPeriod.
 func inflightGlyphHex(t float64) string {
-	hue := math.Mod(t/inflightGlyphPeriod, 1.0)
-	if hue < 0 {
-		hue += 1.0
-	}
-	return hsvToHex(hue*360.0, 0.75, 0.58)
+	phase := 0.5 - 0.5*math.Cos(2*math.Pi*t/inflightGlyphPeriod)
+	factor := inflightGlyphDimFloor + (1.0-inflightGlyphDimFloor)*phase
+	r, g, b, _ := activeTheme.accentAlt.RGBA()
+	return fmt.Sprintf("#%02x%02x%02x",
+		uint8(float64(r>>8)*factor),
+		uint8(float64(g>>8)*factor),
+		uint8(float64(b>>8)*factor))
 }
 
 // inflightToolGlyphStyle is the animated glyph style for time t (seconds),

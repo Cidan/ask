@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
+	lipgloss "charm.land/lipgloss/v2"
 	"github.com/Cidan/ask/pkg/diff"
 	xansi "github.com/charmbracelet/x/ansi"
 )
@@ -43,25 +45,33 @@ func TestRenderToolCallBlock_SortedKeys(t *testing.T) {
 	}
 }
 
-func TestRenderToolCallBlock_ShortBashShowsCommand(t *testing.T) {
-	// For known tools the concrete primary argument beats the phrase in
-	// the header: bash shows the command it ran, on a single line, with
-	// the noisy params dropped. (The phrase still shows live on the
-	// spinner status while the call runs.)
+func TestRenderToolCallBlock_ShortLeadsWithDescription(t *testing.T) {
+	// The model-authored description leads the header — the intent, not
+	// the raw input. In short mode it IS the whole rendering: one line,
+	// with the command and the other params dropped.
 	input := map[string]any{
 		"command":           "ls /tmp",
 		"description":       "Listing temp files",
 		"run_in_background": true,
 	}
 	out := renderToolCallBlock("bash", input, toolOutputShort)
-	if !strings.Contains(out, "bash") || !strings.Contains(out, "$ ls /tmp") {
-		t.Errorf("short bash should render the command; got %q", out)
+	if !strings.Contains(out, "bash") || !strings.Contains(out, "Listing temp files") {
+		t.Errorf("short bash should lead with the description; got %q", out)
 	}
-	if strings.Contains(out, "run_in_background") || strings.Contains(out, "description") {
-		t.Errorf("short bash should drop the other params; got %q", out)
+	if strings.Contains(out, "$ ls /tmp") || strings.Contains(out, "run_in_background") {
+		t.Errorf("short mode should show the description, not the input; got %q", out)
 	}
 	if strings.Contains(out, "\n") {
 		t.Errorf("bash header should be a single line; got %q", out)
+	}
+}
+
+func TestRenderToolCallBlock_ShortFallsBackToPrimaryWithoutDescription(t *testing.T) {
+	// Without a description (MCP tools that lack the param, old
+	// transcripts) the header falls back to the concrete primary arg.
+	out := renderToolCallBlock("bash", map[string]any{"command": "ls /tmp"}, toolOutputShort)
+	if !strings.Contains(out, "$ ls /tmp") {
+		t.Errorf("no-description bash should fall back to the command; got %q", out)
 	}
 }
 
@@ -78,14 +88,19 @@ func TestRenderToolCallBlock_ShortReadShowsFile(t *testing.T) {
 	}
 }
 
-func TestRenderToolCallBlock_FullKeepsParamsBesidePrimary(t *testing.T) {
+func TestRenderToolCallBlock_FullLeadsWithDescriptionKeepsRows(t *testing.T) {
 	input := map[string]any{
 		"command":     "go test ./...",
 		"description": "Running the test suite",
 	}
 	out := renderToolCallBlock("bash", input, toolOutputFull)
-	if !strings.Contains(out, "$ go test ./...") {
-		t.Errorf("full mode should show the command in the header; got %q", out)
+	if !strings.Contains(out, "Running the test suite") {
+		t.Errorf("full mode should lead the header with the description; got %q", out)
+	}
+	// The concrete command is no longer promoted into the header ("$ …"),
+	// but full mode still renders it as a param row.
+	if strings.Contains(out, "$ go test ./...") {
+		t.Errorf("full mode header should show the description, not the command; got %q", out)
 	}
 	if !strings.Contains(out, "command") || !strings.Contains(out, "go test ./...") {
 		t.Errorf("full mode should keep the param rows; got %q", out)
@@ -323,15 +338,63 @@ func TestRestingToolGlyphStyle_ErrorDiffersFromSuccess(t *testing.T) {
 	}
 }
 
-func TestInflightGlyphHex_CyclesWithTime(t *testing.T) {
-	a := inflightGlyphHex(0)
-	b := inflightGlyphHex(inflightGlyphPeriod / 2)
-	if a == b {
-		t.Errorf("glyph hue should differ across the cycle; both were %q", a)
+func TestInflightGlyphHex_GlowsWithoutShiftingHue(t *testing.T) {
+	applyTheme(themeByName("default"))
+	parse := func(hex string) (r, g, b int) {
+		fmt.Sscanf(hex, "#%02x%02x%02x", &r, &g, &b)
+		return
 	}
-	// A full period wraps back to the start hue.
-	if got := inflightGlyphHex(inflightGlyphPeriod); got != a {
-		t.Errorf("hue should wrap to the start after one full period: %q vs %q", got, a)
+	dim := inflightGlyphHex(0)                          // trough of the pulse
+	bright := inflightGlyphHex(inflightGlyphPeriod / 2) // peak
+	if dim == bright {
+		t.Fatalf("glyph brightness should differ across the pulse; both were %q", dim)
+	}
+	// A full period wraps back to the trough — the glow is periodic.
+	if got := inflightGlyphHex(inflightGlyphPeriod); got != dim {
+		t.Errorf("glow should wrap after one full period: %q vs %q", got, dim)
+	}
+	dr, dg, db := parse(dim)
+	br, bg, bb := parse(bright)
+	if br+bg+bb <= dr+dg+db {
+		t.Fatalf("peak should be brighter than the trough: dim=%q bright=%q", dim, bright)
+	}
+	// Only brightness moves: the trough is the peak scaled by the dim
+	// floor, channel for channel, so hue and saturation never change —
+	// a glow of the theme accent, not a rainbow.
+	for _, ch := range []struct {
+		name   string
+		lo, hi int
+	}{{"r", dr, br}, {"g", dg, bg}, {"b", db, bb}} {
+		if want := int(float64(ch.hi) * inflightGlyphDimFloor); ch.lo != want {
+			t.Errorf("channel %s is not a pure brightness scale: trough=%d want %d (peak=%d)", ch.name, ch.lo, want, ch.hi)
+		}
+	}
+}
+
+func TestRenderToolCallBlockStyled_OnlyArrowUsesGlyphStyle(t *testing.T) {
+	applyTheme(themeByName("default"))
+	// bash with no description falls back to the command primary, so the
+	// header carries the arrow, the name, and a trailing arg — enough to
+	// tell the arrow and name styling apart.
+	input := map[string]any{"command": "ls"}
+	red := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff0000")).Bold(true)
+	grn := lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff00")).Bold(true)
+	blu := lipgloss.NewStyle().Foreground(lipgloss.Color("#0000ff")).Bold(true)
+
+	base := renderToolCallBlockStyled("bash", input, toolOutputShort, red, blu)
+	// Changing ONLY the name style must change the render — proof the name
+	// is painted independently and not swept into the arrow's style.
+	if got := renderToolCallBlockStyled("bash", input, toolOutputShort, red, grn); got == base {
+		t.Errorf("name style must affect the render; the word is styled independently of the arrow")
+	}
+	// Changing ONLY the arrow style must also change the render.
+	if got := renderToolCallBlockStyled("bash", input, toolOutputShort, grn, blu); got == base {
+		t.Errorf("arrow style must affect the render")
+	}
+	// Only color moves — the visible text is unchanged either way.
+	other := renderToolCallBlockStyled("bash", input, toolOutputShort, grn, grn)
+	if xansi.Strip(base) != xansi.Strip(other) {
+		t.Errorf("styling must not change the text: %q vs %q", xansi.Strip(base), xansi.Strip(other))
 	}
 }
 

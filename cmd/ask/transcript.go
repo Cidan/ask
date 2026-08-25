@@ -105,7 +105,7 @@ func projectItem(it transcriptItem, quiet bool, mode toolOutputMode, diffs bool)
 		}
 		return []historyEntry{{
 			kind:         histToolCall,
-			text:         renderToolCallBlockStyled(it.toolName, it.toolInput, mode, restingToolGlyphStyle(it.errored)),
+			text:         renderToolCallBlockStyled(it.toolName, it.toolInput, mode, restingToolGlyphStyle(it.errored), restingToolGlyphStyle(it.errored)),
 			toolName:     it.toolName,
 			toolInput:    it.toolInput,
 			toolInflight: it.inflight,
@@ -222,7 +222,7 @@ func (m *model) settleToolCall(name string, errored bool) {
 		e := &m.history[idx]
 		e.toolInflight = false
 		e.toolErrored = errored
-		e.text = renderToolCallBlockStyled(e.toolName, e.toolInput, m.toolOutputMode, restingToolGlyphStyle(errored))
+		e.text = renderToolCallBlockStyled(e.toolName, e.toolInput, m.toolOutputMode, restingToolGlyphStyle(errored), restingToolGlyphStyle(errored))
 		invalidateEntryRender(e)
 		if m.inflightToolCount > 0 {
 			m.inflightToolCount--

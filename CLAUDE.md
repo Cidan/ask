@@ -98,6 +98,12 @@ make clean
 
 - Running `go test ./...` directly works once `build/llama.cpp` exists,
   with the three `CGO_*` variables from the Makefile in the environment.
+- **In a git worktree** `build/` (gitignored) does not exist, and the cgo
+  directives in `pkg/memory/embed.go` resolve `build/llama.cpp` relative to
+  the checkout — so builds fail with `llama.h: No such file`. Symlink it to
+  the primary checkout once, from the worktree root:
+  `ln -s /path/to/primary/checkout/build build`. Then `make` / `go build` /
+  `go test` work unchanged.
 - The whole suite takes about 10 seconds; `cmd/ask` is the slow package.
   Tests never spawn subprocesses (except `git` and `jj` in the worktree
   tests) and
