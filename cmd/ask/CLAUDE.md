@@ -118,6 +118,14 @@ lockstep (`.claude/rules/issues.md`).
   `✗`/`✓` workflow failed/done, `●` busy), provider/model, context %
   and session spend (`sidebarCost`), activity (workflow step,
   in_progress todo, stream status, idle).
+- When any tab runs the `claude-code` provider, a usage footer pins to
+  the bottom of the column (`claude_usage.go`): colour-coded 5h / weekly
+  / Opus / Sonnet limit percentages plus resets and any extra-usage
+  dollar budget. Data comes from the account-global
+  `providers.CachedClaudeUsage()` cache, refreshed off-thread by a
+  perpetual `claudeUsageTickMsg` loop (armed in `app.Init`, re-armed in
+  `app.Update`) that polls the undocumented `/api/oauth/usage` endpoint.
+  `sidebarUsageFooterHeight` is reserved out of `sidebarVisibleCards`.
 - The list cursor IS `app.active`. `ActionSidebarFocus` (Tab) takes
   focus only when `model.wantsTabKey()` is false; while focused,
   Up/Down/j/k switch tabs immediately, a printable rune bounces focus

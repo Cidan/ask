@@ -8,6 +8,11 @@ package main
 // plus attention badges so the user can see at a glance when a
 // background tab needs input or finished.
 //
+// When any tab runs the claude-code provider, a usage footer pins to the
+// bottom of the column (claude_usage.go): the account's 5-hour / weekly /
+// Opus / Sonnet limit percentages. Its rows are reserved out of the card
+// count via sidebarUsageFooterHeight so cards never draw over it.
+//
 // Geometry: the sidebar claims ~1/5 of the terminal (clamped to
 // [sidebarMinWidth, sidebarMaxWidth]). The active tab's body is laid
 // out at bodyWidth() and joined line-by-line with the rendered column
@@ -78,9 +83,9 @@ func (a app) bodyWidth() int {
 }
 
 // sidebarVisibleCards returns how many whole cards fit below the
-// header.
+// header and above the usage footer (when one is shown).
 func (a app) sidebarVisibleCards() int {
-	rows := a.height - sidebarHeaderHeight
+	rows := a.height - sidebarHeaderHeight - a.sidebarUsageFooterHeight()
 	if rows < sidebarCardHeight {
 		return 1
 	}
@@ -144,10 +149,21 @@ func (a app) renderSidebar() string {
 		lines = append(lines, a.sidebarCardLines(i, inner)...)
 	}
 
-	for len(lines) < a.height {
+	// The Claude usage limits pin to the bottom of the column: pad the cards
+	// up to the footer's reserved rows, then append it last.
+	footer := a.sidebarUsageFooterLines(inner)
+	bodyRows := a.height - len(footer)
+	if bodyRows < 0 {
+		bodyRows = 0
+	}
+	for len(lines) < bodyRows {
 		lines = append(lines, "")
 	}
-	lines = lines[:a.height]
+	lines = lines[:bodyRows]
+	lines = append(lines, footer...)
+	if len(lines) > a.height {
+		lines = lines[:a.height]
+	}
 
 	var b strings.Builder
 	for i, ln := range lines {
