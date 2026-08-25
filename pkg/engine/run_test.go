@@ -556,9 +556,8 @@ func TestEngineRun_ADKMemoryIntegration(t *testing.T) {
 		t.Fatalf("pkgmemory.Open failed: %v", err)
 	}
 
-	// Index a memory in the project
-	if err := pkgmemory.Index(context.Background(), tmpCwd, "Rule: Always run tests before PR"); err != nil {
-		t.Fatalf("pkgmemory.Index failed: %v", err)
+	if _, err := pkgmemory.Upsert(context.Background(), pkgmemory.Concept{Scope: pkgmemory.ScopeFor(tmpCwd), Kind: pkgmemory.KindProject, Title: "Rule: Always run tests before PR"}); err != nil {
+		t.Fatalf("pkgmemory.Upsert failed: %v", err)
 	}
 
 	loadTool := loadmemorytool.New()
@@ -584,10 +583,11 @@ func TestEngineRun_ADKMemoryIntegration(t *testing.T) {
 	defer func() { ModelBuilder = origBuilder }()
 
 	res, err := Run(context.Background(), RunOptions{
-		Prompt:   "What is our PR testing rule?",
-		Cwd:      tmpCwd,
-		Provider: "vertex",
-		Tools:    []Tool{loadTool, preloadTool},
+		Prompt:     "What is our PR testing rule?",
+		Cwd:        tmpCwd,
+		Provider:   "vertex",
+		Tools:      []Tool{loadTool, preloadTool},
+		SkipMemory: true,
 	})
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)

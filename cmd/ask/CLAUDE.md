@@ -113,8 +113,9 @@ lockstep (`.claude/rules/issues.md`).
 ## App layer and tabs
 
 - sidebar.go is the only tab presentation (`tabBarHeight` is 0): width
-  terminal/5 clamped to [30,48]; 5-row cards — title (`tabTitle`, else
-  short cwd) with `▸` on the active card and a badge (`⚠` needs input,
+  terminal/5 clamped to [30,48]; 5-row cards — title (`tabTitle` plus
+  ` · tabTopic` when the memory topic is known, else short cwd) with `▸`
+  on the active card and a badge (`⚠` needs input,
   `✗`/`✓` workflow failed/done, `●` busy), provider/model, context %
   and session spend (`sidebarCost`), activity (workflow step,
   in_progress todo, stream status, idle).
@@ -200,8 +201,10 @@ lockstep (`.claude/rules/issues.md`).
   transcript/projection model. virtual_session.go: a
   `VirtualSession` (`~/.config/ask/sessions.json`) is one conversation
   mapped to per-provider native ids; `/resume` lists them per workspace,
-  `recordVirtualSession` upserts after a turn, `Title` is the tab
-  title. proc.go: `sessionArgs` builds `ProviderSessionArgs`;
+  `recordVirtualSession` upserts after a turn, `Title` / `Topic` are the
+  tab title and memory topic (`persistTabTitle` writes both; `/resume`
+  rehydrates both). proc.go: `sessionArgs` builds `ProviderSessionArgs`
+  (including `Topic`);
   `prepareProviderSessionAt` resolves the worktree cwd and runs
   `validateExecutorCwd`.
 
@@ -267,10 +270,25 @@ lockstep (`.claude/rules/issues.md`).
   `applyTheme` fills every style var), selection.go, list_nav.go
   (↑/↓ and Ctrl+P/N for popovers), tab_title.go (`fallbackTabTitle`
   seeds, `generateTabTitleCmd` refines through the swappable
-  `generateTabTitleText`, persisted on the VS), usage.go
+  `generateTabTitleText` — the same call names the memory topic from the
+  project's known topics, parsed by `splitTitleAndTopic`; a title-call
+  topic only seeds an empty `tabTopic`, while `tabTopicMsg` from the
+  session (the recall hook's inference each turn, the extractor's
+  choice after it) always applies; `pushTopicToSession` hands the tab's
+  topic to `agentSession.setTopic`), usage.go
   (`stepCostUSD` → `providers.StepCostUSD`; `usageMsg`/`costMsg`/
-  `tabTitleMsg` feed `sessionCostUSD`; unpriceable models show no
-  cost; the meter resets with the conversation).
+  `tabTitleMsg` feed `sessionCostUSD`; the extraction call posts a
+  `costMsg`; unpriceable models show no cost; the meter resets with the
+  conversation). agent_run.go: a finished chat turn (not a workflow
+  step) calls `enqueueMemoryTurn` → `engine.EnqueueMemoryTurn` with the
+  prompt, answer, touched files, and topic. memory_screen.go: the
+  `/memory` overlay (`modeMemory`, `memoryBrowserState`, composited in
+  tabs.go like `/savings`) lists the project's and global concepts by
+  weight — ↑↓, Enter expands the body, Tab cycles weight/recent/kind,
+  type to filter, `+`/`-` reinforce/demote, Ctrl+X twice forgets,
+  Ctrl+R reloads; a closed memory service toasts instead of opening.
+  `/config → Memory...` (`memoryFields`, `openMemoryFieldsPicker`) edits
+  the extraction provider/model (`Config.Memory`).
 
 ## Shell mode (shell.go)
 

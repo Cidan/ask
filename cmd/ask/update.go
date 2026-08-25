@@ -1044,6 +1044,23 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		m.tabTitle = msg.title
+		// The title call's topic only seeds: a topic the session has
+		// already inferred from recall wins.
+		if msg.topic != "" && m.tabTopic == "" {
+			m.tabTopic = msg.topic
+			(&m).pushTopicToSession()
+		}
+		(&m).persistTabTitle()
+		return m, nil
+
+	case tabTopicMsg:
+		if !m.matchesTabID(msg.tabID, msg.proc) {
+			return m, nil
+		}
+		if msg.topic == "" || m.tabTitle == "" {
+			return m, nil
+		}
+		m.tabTopic = msg.topic
 		(&m).persistTabTitle()
 		return m, nil
 
@@ -1311,6 +1328,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m.updateSkillsBrowser(msg)
 		case modeSavings:
 			return m.updateSavings(msg)
+		case modeMemory:
+			return m.updateMemoryBrowser(msg)
 		case modeFinalizedPlan:
 			return m.updateFinalizedPlan(msg)
 		case modeSudoPassword:
@@ -2055,6 +2074,7 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 	if m.tabTitle == "" && vs.Preview != "" {
 		m.tabTitle = fallbackTabTitle(vs.Preview)
 	}
+	m.tabTopic = vs.Topic
 
 	providerID := m.provider.ID()
 	// Reuse the cached native id only when the current provider was
@@ -2154,7 +2174,7 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 	cmd, _, _ := strings.Cut(line, " ")
 	if invalid := validateAskCwd(m.cwd); invalid.Msg != "" {
 		switch cmd {
-		case "/resume", "/new", "/clear", "/effort", "/config", "/workflows", "/skills", "/savings":
+		case "/resume", "/new", "/clear", "/effort", "/config", "/workflows", "/skills", "/savings", "/memory":
 			// Pure UI commands are still safe to run when ask's cwd
 			// is invalid — they don't start a session. Blocking them
 			// would also strand the user without a way to fix things
@@ -2195,6 +2215,7 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		m.addedDirs = nil
 		m.pendingWorkflow = nil
 		m.tabTitle = ""
+		m.tabTopic = ""
 		m.sessionCostUSD = 0
 		m.sessionCostKnown = false
 		(&m).clearSelection()
@@ -2218,6 +2239,8 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		return m.handleSkillsCommand(strings.TrimSpace(args))
 	case "/savings":
 		return m.openSavings(), nil
+	case "/memory":
+		return m.openMemoryBrowser()
 	case "/workflows":
 		// /workflows opens the builder. Same flow as Ctrl+W: drop
 		// any in-flight issues query so re-entry to the issues

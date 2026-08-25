@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/memory"
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/tools"
 	adksession "google.golang.org/adk/v2/session"
@@ -120,6 +121,7 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 		closed:          make(chan struct{}),
 		store:           store,
 		sessSvc:         engine.NewFileSessionService(p.prov.ID(), args.Cwd),
+		topic:           memory.NormalizeTopic(args.Topic),
 	}
 	// Build the model up front so a provider that cannot run fails here, with
 	// its own message, instead of on the first turn. Thread an observed-tool
@@ -178,8 +180,8 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		agentJobKillTool(env),
 		agentFetchTool(env),
 		agentTodosTool(env),
-		agentLoadMemoryTool(),
-		agentPreloadMemoryTool(),
+		agentLoadMemoryTool(s.args.Cwd),
+		agentPreloadMemoryTool(s.args.Cwd, s.currentTopic, s.setTopic),
 		agentTaskTool(env,
 			func() *agentSession { return s }),
 		agentAskUserQuestionTool(env),
@@ -205,7 +207,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	s.coreTools = wrapFileToolsWithMemory(s.coreTools, s.args.Cwd)
 	s.coreTools = wrapContextAwareTools(s.coreTools, s.args.Cwd, discoverRules(s.args.Cwd))
 	s.deferredBase = agentLinearTools(env)
-	s.deferredBase = append(s.deferredBase, agentMemoryIndexTool(env))
+	s.deferredBase = append(s.deferredBase, agentMemoryTools(env)...)
 	s.deferredBase = append(s.deferredBase, agentExtensionTools(env)...)
 	s.mcp = newMCPManager(s.args.TabID,
 		func() bool {

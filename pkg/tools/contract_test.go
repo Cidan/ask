@@ -19,6 +19,10 @@ func allCoreTools(t *testing.T) []Tool {
 // odd one out; a single assertion only works while this holds.
 func TestEveryToolSatisfiesTheADKRunContract(t *testing.T) {
 	for _, tl := range allCoreTools(t) {
+		if tl.Name() == "preload_memory" {
+			// A request processor, never called by the model.
+			continue
+		}
 		if _, ok := tl.(interface {
 			Run(agent.Context, any) (map[string]any, error)
 		}); !ok {
@@ -32,9 +36,10 @@ func TestEveryToolSatisfiesTheADKRunContract(t *testing.T) {
 // leaves it empty, which is what every tool used to do.
 func TestEveryToolDeclaresAnOutputSchema(t *testing.T) {
 	for _, tl := range allCoreTools(t) {
-		if tl.Name() == "invoke_tool" {
+		if tl.Name() == "invoke_tool" || tl.Name() == "preload_memory" {
 			// invoke_tool returns whatever the registry tool it dispatched
-			// to returns, so it has no static response shape to declare.
+			// to returns, so it has no static response shape to declare;
+			// preload_memory is a request processor with no declaration.
 			continue
 		}
 		d, ok := tl.(interface {

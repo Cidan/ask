@@ -47,6 +47,7 @@ const (
 	modeSudoPassword
 	modeSkillsBrowser
 	modeSavings
+	modeMemory
 )
 
 type streamStatusMsg struct {
@@ -371,8 +372,19 @@ type focusTabMsg struct {
 type tabTitleMsg struct {
 	tabID     int
 	title     string
+	topic     string
 	costUSD   float64
 	costKnown bool
+}
+
+// tabTopicMsg carries the topic the session settled on for the
+// conversation — inferred from recall hits each turn, or assigned by
+// the post-turn extraction — so the sidebar card and the VirtualSession
+// follow it.
+type tabTopicMsg struct {
+	tabID int
+	topic string
+	proc  *providerProc
 }
 
 // spawnWorkflowTabMsg asks the app layer to open a new tab dedicated
@@ -645,6 +657,10 @@ type model struct {
 	// while modeSavings is up.
 	savings *savingsOverlayState
 
+	// memoryBrowser is the /memory overlay state (memory_screen.go).
+	// Non-nil while modeMemory is up.
+	memoryBrowser *memoryBrowserState
+
 	themeName string
 
 	quietMode             bool
@@ -779,6 +795,10 @@ type model struct {
 	// title call (tab_title.go) and persisted on the VirtualSession.
 	// Empty until the first turn; /new and /clear reset it.
 	tabTitle string
+	// tabTopic is the one-or-two-word memory topic the conversation is
+	// about: seeded by the title call, then steered by each turn's
+	// recall and extraction (tabTopicMsg). Shown after the title.
+	tabTopic string
 
 	finalizedPlan                  string
 	finalizedPlanWorkflow          string

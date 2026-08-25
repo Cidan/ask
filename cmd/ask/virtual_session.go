@@ -40,6 +40,9 @@ type VirtualSession struct {
 	// rehydrated on /resume. Falls back to Preview when empty —
 	// pre-title sessions never had one.
 	Title string `json:"title,omitempty"`
+	// Topic is the memory topic the conversation settled on, persisted
+	// with the title and rehydrated on /resume.
+	Topic string `json:"topic,omitempty"`
 
 	// AddedDirs are absolute paths the user registered with /add-dir.
 	// Persisted alongside the session so a later /resume rehydrates

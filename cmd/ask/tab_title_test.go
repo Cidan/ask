@@ -15,7 +15,7 @@ import (
 	"google.golang.org/genai"
 )
 
-func swapTitleGenerator(t *testing.T, fn func(providerID, modelID, prompt string) (string, TokenUsage, error)) {
+func swapTitleGenerator(t *testing.T, fn func(providerID, modelID, prompt string, topics []string) (string, TokenUsage, error)) {
 	t.Helper()
 	prev := generateTabTitleText
 	generateTabTitleText = fn
@@ -54,8 +54,8 @@ func TestSanitizeTabTitle(t *testing.T) {
 }
 
 func TestMaybeStartTabTitleGating(t *testing.T) {
-	swapTitleGenerator(t, func(_, _, _ string) (string, TokenUsage, error) {
-		return "Generated title", TokenUsage{}, nil
+	swapTitleGenerator(t, func(_, _, _ string, _ []string) (string, TokenUsage, error) {
+		return "Generated title\ntopic: Auth Tests", TokenUsage{}, nil
 	})
 
 	// Seeds the fallback and returns the async cmd.
@@ -71,7 +71,7 @@ func TestMaybeStartTabTitleGating(t *testing.T) {
 	if !ok {
 		t.Fatalf("cmd produced %T", cmd())
 	}
-	if msg.tabID != m.id || msg.title != "Generated title" {
+	if msg.tabID != m.id || msg.title != "Generated title" || msg.topic != "auth tests" {
 		t.Fatalf("title msg = %+v", msg)
 	}
 
@@ -95,10 +95,10 @@ func TestMaybeStartTabTitleGating(t *testing.T) {
 }
 
 func TestGenerateTabTitleCmdSwallowsErrors(t *testing.T) {
-	swapTitleGenerator(t, func(_, _, _ string) (string, TokenUsage, error) {
+	swapTitleGenerator(t, func(_, _, _ string, _ []string) (string, TokenUsage, error) {
 		return "", TokenUsage{}, errors.New("network down")
 	})
-	msg := generateTabTitleCmd(7, "fake", "", "prompt")().(tabTitleMsg)
+	msg := generateTabTitleCmd(7, "fake", "", t.TempDir(), "prompt")().(tabTitleMsg)
 	if msg.tabID != 7 || msg.title != "" {
 		t.Fatalf("error path msg = %+v", msg)
 	}
@@ -242,7 +242,7 @@ func TestGenerateTabTitle_UsesProviderModel(t *testing.T) {
 					yield(&adkmodel.LLMResponse{
 						Content: &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{
 							{Thought: true, Text: "thinking…"},
-							genai.NewPartFromText("Recovered Title"),
+							genai.NewPartFromText("Recovered Title\ntopic: Auth"),
 						}},
 						UsageMetadata: &genai.GenerateContentResponseUsageMetadata{PromptTokenCount: 5, CandidatesTokenCount: 3},
 					}, nil)
@@ -251,12 +251,16 @@ func TestGenerateTabTitle_UsesProviderModel(t *testing.T) {
 		}, nil
 	}
 
-	title, usage, err := generateTabTitleText(providers.OpenRouterProviderID, "", "fix the flaky test")
+	raw, usage, err := generateTabTitleText(providers.OpenRouterProviderID, "", "fix the flaky test", []string{"auth", "deploy"})
 	if err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
-	if title != "Recovered Title" {
-		t.Errorf("title = %q want %q (thought parts skipped)", title, "Recovered Title")
+	title, topic := splitTitleAndTopic(raw)
+	if title != "Recovered Title" || topic != "auth" {
+		t.Errorf("title/topic = %q/%q want %q/%q (thought parts skipped)", title, topic, "Recovered Title", "auth")
+	}
+	if !strings.Contains(gotPrompt, "Known topics: auth, deploy") {
+		t.Errorf("known topics must reach the model: %q", gotPrompt)
 	}
 	if usage.InputTokens != 5 || usage.OutputTokens != 3 {
 		t.Errorf("usage = %+v want 5/3", usage)
@@ -271,7 +275,7 @@ func TestGenerateTabTitle_UsesProviderModel(t *testing.T) {
 		t.Errorf("prompt must reach the model: %q", gotPrompt)
 	}
 
-	if _, _, err := generateTabTitleText("nosuch", "", "x"); err == nil {
+	if _, _, err := generateTabTitleText("nosuch", "", "x", nil); err == nil {
 		t.Error("unknown provider must error")
 	}
 }

@@ -78,6 +78,10 @@ type RunOptions struct {
 
 	// SkipAllPermissions bypasses confirmation prompts for all tools.
 	SkipAllPermissions bool `json:"skip_all_permissions,omitempty"`
+
+	// SkipMemory leaves the finished turn out of concept extraction. Set
+	// for sub-agent runs, whose turns are not the user's conversation.
+	SkipMemory bool `json:"skip_memory,omitempty"`
 }
 
 // RunResult contains the outcome of the agent turn.
@@ -340,6 +344,7 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	}
 
 	var finalResponseText strings.Builder
+	var touchedFiles []string
 
 	for event, err := range r.Run(ctx, "user", sessionID, userMsg, agent.RunConfig{}) {
 		if err != nil {
@@ -409,6 +414,7 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 							toolInput = orig.Args
 						}
 					}
+					touchedFiles = AppendTouchedFile(touchedFiles, toolName, toolInput)
 					if opts.EventListener != nil {
 						opts.EventListener(ToolCallEvent{
 							BaseEvent: BaseEvent{TabID: 0},
@@ -476,6 +482,15 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			},
 		})
 		opts.EventListener(TurnCompleteEvent{BaseEvent: BaseEvent{TabID: 0}})
+	}
+	if !opts.SkipMemory {
+		EnqueueMemoryTurn(MemoryTurn{
+			Cwd:      opts.Cwd,
+			Prompt:   opts.Prompt,
+			Response: respText,
+			Files:    touchedFiles,
+			Provider: providerID,
+		})
 	}
 
 	return &RunResult{
