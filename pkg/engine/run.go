@@ -145,6 +145,10 @@ var ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Co
 	if p == nil {
 		return nil, errors.New("provider is nil")
 	}
+	// Tell the provider whether ask's own web_search can run (Brave key set),
+	// so a provider with a native fallback (Claude Code) only enables it when
+	// ask's tool is unavailable.
+	ctx = providers.WithWebSearchAvailable(ctx, config.ResolveBraveAPIKey(cfg.WebSearch) != "")
 	llm, err := p.BuildModel(ctx, cfg.ProviderConfig(p.ID()), modelID)
 	if err != nil {
 		return nil, err

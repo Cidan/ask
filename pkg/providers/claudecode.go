@@ -79,8 +79,18 @@ func (ClaudeCode) BuildModel(ctx context.Context, pc config.ProviderConfig, mode
 	if wd := ctxCwd(ctx); wd != "" {
 		cwd = wd
 	}
-	return newClaudeCodeModel(bin, CanonicalClaudeCodeModelID(modelID, ClaudeCodeDefaultModel), cwd), nil
+	// Enable the child's own WebSearch tool only when ask's Brave-backed
+	// web_search cannot run (no key). ModelBuilder records that in the
+	// context; the sink (if any) surfaces the native calls to the UI.
+	nativeWebSearch := !webSearchAvailableFromCtx(ctx)
+	sink := observedToolSinkFromCtx(ctx)
+	return newClaudeCodeModel(bin, CanonicalClaudeCodeModelID(modelID, ClaudeCodeDefaultModel), cwd, nativeWebSearch, sink), nil
 }
+
+// HasNativeWebSearch reports that Claude Code can run web search in its own
+// runtime. ask uses this as the fallback when no Brave key is configured; see
+// NativeWebSearchProvider.
+func (ClaudeCode) HasNativeWebSearch() bool { return true }
 
 func (ClaudeCode) CanonicalModelID(modelID, fallback string) string {
 	return CanonicalClaudeCodeModelID(modelID, fallback)
@@ -249,8 +259,9 @@ func cachedClaudeCodeMeta(modelID string) (ccModelMeta, bool) {
 }
 
 var (
-	_ Provider    = ClaudeCode{}
-	_ ModelLister = ClaudeCode{}
+	_ Provider                = ClaudeCode{}
+	_ ModelLister             = ClaudeCode{}
+	_ NativeWebSearchProvider = ClaudeCode{}
 )
 
 // ClaudeCodeResolveBinary: config value wins, then ASK_CLAUDE_BIN, then the
@@ -279,20 +290,29 @@ func CanonicalClaudeCodeModelID(modelID string, fallback ...string) string {
 // ccArgv builds the flags for one child. Everything that lets Claude's own
 // context, tools, and settings leak in is switched off; ask supplies the
 // system prompt, the tools (as an sdk MCP server), and the permission decision.
-func ccArgv(modelID, effort, systemPrompt string) []string {
+// When nativeWebSearch is set (no Brave key, so ask's web_search is off) the
+// child's built-in WebSearch is made available and pre-approved; every other
+// built-in stays stripped. Its calls are observed off the stream, not bridged.
+func ccArgv(modelID, effort, systemPrompt string, nativeWebSearch bool) []string {
 	mcp, _ := json.Marshal(map[string]any{
 		"mcpServers": map[string]any{"ask": map[string]any{"type": "sdk", "name": "ask"}},
 	})
+	tools := ""
+	allowed := "mcp__ask"
+	if nativeWebSearch {
+		tools = "WebSearch"
+		allowed = "mcp__ask,WebSearch"
+	}
 	argv := []string{
 		"-p",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--verbose",
 		"--include-partial-messages",
-		"--tools", "",
+		"--tools", tools,
 		"--mcp-config", string(mcp),
 		"--strict-mcp-config",
-		"--allowedTools", "mcp__ask",
+		"--allowedTools", allowed,
 		"--setting-sources", "",
 		"--settings", `{"autoMemoryEnabled":false}`,
 		"--no-session-persistence",

@@ -102,17 +102,12 @@ func (p agentAPIProvider) store() *agentSessionStore {
 func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
 	cfg, _ := loadConfig()
 	modelID := p.prov.CanonicalModelID(args.Model, p.prov.DefaultModel())
-	llm, err := engine.ModelBuilder(context.Background(), p.prov, toPkgConfig(cfg), modelID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", p.prov.ID(), err)
-	}
 
 	store := p.store()
 	callOpts, temperature := p.prov.CallOptions(modelID, args.Effort)
 	session := &agentSession{
 		args:            args,
 		provider:        p.prov,
-		model:           llm,
 		system:          buildAgentSystemPrompt(args),
 		callOpts:        callOpts,
 		temperature:     temperature,
@@ -126,6 +121,17 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 		store:           store,
 		sessSvc:         engine.NewFileSessionService(p.prov.ID(), args.Cwd),
 	}
+	// Build the model up front so a provider that cannot run fails here, with
+	// its own message, instead of on the first turn. Thread an observed-tool
+	// sink so tools the provider runs natively (Claude Code's WebSearch
+	// fallback when no Brave key is set) still render and record in ask's
+	// transcript rather than being invisible.
+	buildCtx := providers.WithObservedToolSink(context.Background(), newObservedToolSink(session.emit))
+	llm, err := engine.ModelBuilder(buildCtx, p.prov, toPkgConfig(cfg), modelID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", p.prov.ID(), err)
+	}
+	session.model = llm
 	session.retryMaxRetries, session.retryInitialDelay, session.retryBackoffFactor = agentRetryOptions(cfg)
 
 	switch {
@@ -190,7 +196,12 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	if !s.args.InWorkflow {
 		s.coreTools = append(s.coreTools, agentWorkflowTools(env)...)
 	}
-	s.coreTools = append(s.coreTools, agentWebSearchTool(env))
+	// Omit ask's Brave-backed web_search when the provider supplies a native
+	// fallback and no Brave key is set, so the model sees exactly one web
+	// search tool (the provider's native one) instead of a dead ask tool.
+	if !nativeWebSearchActive(s.provider, cfg) {
+		s.coreTools = append(s.coreTools, agentWebSearchTool(env))
+	}
 	s.coreTools = wrapFileToolsWithMemory(s.coreTools, s.args.Cwd)
 	s.coreTools = wrapContextAwareTools(s.coreTools, s.args.Cwd, discoverRules(s.args.Cwd))
 	s.deferredBase = agentLinearTools(env)
