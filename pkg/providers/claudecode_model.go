@@ -31,6 +31,9 @@ type claudeCodeModel struct {
 	modelID string
 	cwd     string
 
+	nativeWebSearch bool             // pass --tools WebSearch to the child
+	sink            ObservedToolSink // renders native tool activity; may be nil
+
 	mu         sync.Mutex
 	conn       ccConn
 	procCancel context.CancelFunc // cancels the child's own lifetime context
@@ -40,7 +43,11 @@ type claudeCodeModel struct {
 	// pending maps a tool_use id to the control-request id ask must answer
 	// with that tool's result.
 	pending map[string]ccPending
-	sysSent string // system prompt captured at spawn
+	// nativeCalls maps a native (non-MCP) tool_use id to its tool name, so a
+	// later tool_result frame can be matched and surfaced. Only touched from
+	// readStep (one GenerateContent at a time), so it needs no lock.
+	nativeCalls map[string]string
+	sysSent     string // system prompt captured at spawn
 }
 
 type ccPending struct {
@@ -48,12 +55,15 @@ type ccPending struct {
 	innerID   json.RawMessage
 }
 
-func newClaudeCodeModel(binary, modelID, cwd string) *claudeCodeModel {
+func newClaudeCodeModel(binary, modelID, cwd string, nativeWebSearch bool, sink ObservedToolSink) *claudeCodeModel {
 	return &claudeCodeModel{
-		binary:  binary,
-		modelID: modelID,
-		cwd:     cwd,
-		pending: map[string]ccPending{},
+		binary:          binary,
+		modelID:         modelID,
+		cwd:             cwd,
+		nativeWebSearch: nativeWebSearch,
+		sink:            sink,
+		pending:         map[string]ccPending{},
+		nativeCalls:     map[string]string{},
 	}
 }
 
@@ -103,7 +113,7 @@ func (m *claudeCodeModel) ensure(req *model.LLMRequest) error {
 		return nil
 	}
 	sys := reqSystemPrompt(req)
-	argv := ccArgv(m.modelID, reqEffort(req), sys)
+	argv := ccArgv(m.modelID, reqEffort(req), sys, m.nativeWebSearch)
 	// The child lives for the model's lifetime, not one turn: dial with a
 	// context derived from Background and cancelled only by Close. Binding it
 	// to the per-turn ctx (which the TUI cancels at turn end) would kill the
@@ -245,6 +255,13 @@ func (m *claudeCodeModel) readStep(ctx context.Context, stream bool, yield func(
 				if u != nil {
 					usage = u
 				}
+				m.observeToolUses(fr.Message)
+			case "user":
+				// The child echoes results of tools it ran natively (its
+				// WebSearch fallback) as tool_result blocks on user frames.
+				// MCP results ride the bridge, not this path, so only calls we
+				// surfaced are matched.
+				m.observeToolResults(fr.Message)
 			case "control_request":
 				call := m.handleControl(conn, fr)
 				if call != nil {
@@ -401,6 +418,36 @@ func (m *claudeCodeModel) interruptLocked() {
 			}},
 		}})
 		delete(m.pending, id)
+	}
+}
+
+// observeToolUses forwards native tool calls in an assistant frame to the sink
+// and records their ids so the matching result can be surfaced. No-op without a
+// sink.
+func (m *claudeCodeModel) observeToolUses(raw json.RawMessage) {
+	if m.sink == nil {
+		return
+	}
+	for _, tu := range ccAssistantToolUses(raw) {
+		m.nativeCalls[tu.ID] = tu.Name
+		m.sink.ObservedToolCall(tu.ID, tu.Name, tu.Input)
+	}
+}
+
+// observeToolResults forwards the results of native calls (matched by id) to
+// the sink. Results for ids we did not surface (MCP tools, handled by the
+// bridge) are ignored. No-op without a sink.
+func (m *claudeCodeModel) observeToolResults(raw json.RawMessage) {
+	if m.sink == nil {
+		return
+	}
+	for _, tr := range ccUserToolResults(raw) {
+		name, ok := m.nativeCalls[tr.ToolUseID]
+		if !ok {
+			continue
+		}
+		delete(m.nativeCalls, tr.ToolUseID)
+		m.sink.ObservedToolResult(tr.ToolUseID, name, tr.Text, tr.IsError)
 	}
 }
 

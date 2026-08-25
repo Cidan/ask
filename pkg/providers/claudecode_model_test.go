@@ -113,7 +113,7 @@ func TestClaudeCodeModel_ToolCallLockStep(t *testing.T) {
 	}
 	defer func() { ccDial = prevDial }()
 
-	m := newClaudeCodeModel("claude", "opus", "/repo")
+	m := newClaudeCodeModel("claude", "opus", "/repo", false, nil)
 
 	// --- Step 1: user turn -> the child asks to call read ---
 	fc.push(mcpRequest("r1", 0, "initialize", map[string]any{"protocolVersion": "2025-11-25"}))
@@ -190,7 +190,7 @@ func TestClaudeCodeModel_PlainTextTurn(t *testing.T) {
 	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
-	m := newClaudeCodeModel("claude", "haiku", "/repo")
+	m := newClaudeCodeModel("claude", "haiku", "/repo", false, nil)
 	fc.push(assistantTextFrame("hello"))
 	fc.push(resultFrame("hello there"))
 
@@ -215,7 +215,7 @@ func TestClaudeCodeModel_HistoryPreamble(t *testing.T) {
 	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
-	m := newClaudeCodeModel("claude", "opus", "/repo")
+	m := newClaudeCodeModel("claude", "opus", "/repo", false, nil)
 	fc.push(resultFrame("ok"))
 
 	collect(t, m, &model.LLMRequest{
@@ -256,7 +256,7 @@ func TestClaudeCodeModel_NonStreamingNoPartials(t *testing.T) {
 	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
-	m := newClaudeCodeModel("claude", "haiku", "/repo")
+	m := newClaudeCodeModel("claude", "haiku", "/repo", false, nil)
 	fc.push(streamEventFrame("hello "))
 	fc.push(streamEventFrame("there"))
 	fc.push(assistantTextFrame("hello there"))
@@ -303,7 +303,7 @@ func TestClaudeCodeModel_StreamingYieldsPartials(t *testing.T) {
 	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
-	m := newClaudeCodeModel("claude", "haiku", "/repo")
+	m := newClaudeCodeModel("claude", "haiku", "/repo", false, nil)
 	fc.push(streamEventFrame("hi"))
 	fc.push(resultFrame("hi"))
 

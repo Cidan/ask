@@ -108,7 +108,7 @@ func TestClaudeCode_CatalogAndLimits(t *testing.T) {
 }
 
 func TestCCArgv_LocksDownClaudeContext(t *testing.T) {
-	argv := ccArgv("opus", "high", "SYS PROMPT")
+	argv := ccArgv("opus", "high", "SYS PROMPT", false)
 	joined := strings.Join(argv, " ")
 	// The three flags that overwrite Claude's tools with ask's.
 	for _, want := range []string{
@@ -146,7 +146,7 @@ func TestCCArgv_LocksDownClaudeContext(t *testing.T) {
 }
 
 func TestCCArgv_DefaultModelOmitsModelFlag(t *testing.T) {
-	argv := ccArgv("default", "", "sys")
+	argv := ccArgv("default", "", "sys", false)
 	if indexOf(argv, "--model") >= 0 {
 		t.Errorf("the default model must not pass --model; got %v", argv)
 	}

@@ -61,6 +61,17 @@ type ModelLister interface {
 	ListModels(ctx context.Context, pc config.ProviderConfig) ([]string, error)
 }
 
+// NativeWebSearchProvider is the optional capability of running web search in
+// the provider's own runtime, used as a fallback when ask's Brave-backed
+// web_search tool is unavailable (no API key). When HasNativeWebSearch reports
+// true and no Brave key is configured, the session omits ask's web_search tool
+// and the provider enables its native one (gated by the WebSearchAvailable
+// context flag ModelBuilder sets, read in BuildModel). Claude Code implements
+// this; Vertex and OpenRouter do not.
+type NativeWebSearchProvider interface {
+	HasNativeWebSearch() bool
+}
+
 // SettingField is one configuration field a provider declares. The
 // /config → <provider> screen is rendered from these, one row per field.
 type SettingField struct {

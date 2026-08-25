@@ -76,7 +76,24 @@ ClaudeCode{}}`; Vertex is `DefaultProviderID()`. All three implement
   the child's stdio (`--mcp-config … --strict-mcp-config --allowedTools
   mcp__ask`), so every `tools/call` is answered by ADK executing ask's
   tool and the reply riding the next `GenerateContent`'s
-  `FunctionResponse`; Claude's own CLAUDE.md/auto-memory/skills are
+  `FunctionResponse`. **Native web-search fallback**: Claude Code implements
+  `providers.NativeWebSearchProvider`. When no Brave key is configured
+  (`ModelBuilder` records this via `WithWebSearchAvailable`, read in
+  `BuildModel`), ask's own Brave-backed `web_search` is *unavailable*, so
+  the session omits it (`nativeWebSearchActive` in
+  `cmd/ask/agent_observed_tools.go`) and `ccArgv` instead makes the child's
+  built-in `WebSearch` available and pre-approved (`--tools WebSearch
+  --allowedTools mcp__ask,WebSearch`); a Brave key flips it back off. That
+  one tool runs *inside* the child, not over the MCP bridge, so the model
+  observes its `tool_use` (assistant frame, name not `mcp__…`) and
+  `tool_result` (user frame) off the stream and forwards them to an
+  `ObservedToolSink` (injected at build time via `WithObservedToolSink`;
+  the session renders them as ordinary `toolCallMsg`/`toolResultMsg`). It
+  is observe-only: not gated by ask's approval modal (read-only search),
+  and native tokens are already billed into the turn `usage`. The sink is
+  wired for the interactive session (`StartSession`); tab-title and
+  workflow-step children build without one, so their native calls run but
+  aren't rendered. Claude's own CLAUDE.md/auto-memory/skills are
   switched off (`--setting-sources "" --settings
   '{"autoMemoryEnabled":false}'`) so only ask's `BuildSystemPrompt`
   reaches the model; the child runs `--no-session-persistence` and holds
