@@ -87,9 +87,16 @@ func (a app) bodyHeight() int {
 }
 
 func (a app) Init() tea.Cmd {
-	cmds := make([]tea.Cmd, 0, len(a.tabs))
+	cmds := make([]tea.Cmd, 0, len(a.tabs)+2)
 	for _, t := range a.tabs {
 		cmds = append(cmds, t.Init())
+	}
+	// Keep the Claude usage limits in the sidebar current: arm the refresh
+	// tick, and poll immediately when a claude-code tab is already open so the
+	// bars appear without waiting a full interval.
+	cmds = append(cmds, claudeUsageTickCmd())
+	if a.hasClaudeCodeTab() {
+		cmds = append(cmds, claudeUsageFetchCmd())
 	}
 	return tea.Batch(cmds...)
 }
@@ -208,6 +215,20 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.dispatchByTabID(m.tabID, msg)
 	case hookSubagentStopMsg:
 		return a.dispatchByTabID(m.tabID, msg)
+
+	case claudeUsageTickMsg:
+		// Re-arm the tick unconditionally so a claude-code tab opened later
+		// starts refreshing within one interval; only touch the network (and
+		// the user's OAuth token) while a claude-code tab is actually open.
+		cmds := []tea.Cmd{claudeUsageTickCmd()}
+		if a.hasClaudeCodeTab() {
+			cmds = append(cmds, claudeUsageFetchCmd())
+		}
+		return a, tea.Batch(cmds...)
+	case claudeUsageRefreshedMsg:
+		// The fetch already updated the providers cache; returning re-renders
+		// the sidebar footer from it.
+		return a, nil
 
 	default:
 		// proc-tagged messages (streamStatusMsg, providerDoneMsg, etc.) and
