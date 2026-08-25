@@ -278,6 +278,9 @@ func formatUSDPer1M(v float64) string {
 }
 
 func (s *modelPickerState) modelDetailLines(e modelPickerEntry, w int) []string {
+	if s.memoryTarget && e.providerID == "" {
+		return memoryAutoDetailLines(w)
+	}
 	lines := []string{
 		themePickerTitleStyle.Render(clipText(e.display, w)),
 		configKeyDimStyle.Render(clipText(e.providerName+" · "+e.modelID, w)),
@@ -299,6 +302,18 @@ func (s *modelPickerState) modelDetailLines(e modelPickerEntry, w int) []string 
 		lines = append(lines,
 			configKeyDimStyle.Render(padRight(f.label, modelPickerFactLabelW))+
 				valueStyle.Render(clipText(f.value, w-modelPickerFactLabelW)))
+	}
+	return lines
+}
+
+// memoryAutoDetailLines is the detail pane for the memory picker's synthetic
+// Automatic row: a short blurb explaining that selecting it clears the memory
+// extraction override.
+func memoryAutoDetailLines(w int) []string {
+	lines := []string{themePickerTitleStyle.Render(clipText(memoryAutoRowDisplay, w)), ""}
+	blurb := "Clears the memory extraction override. Post-turn concept extraction runs on the session's provider and its cheapest listed model."
+	for _, l := range wordWrap(blurb, w) {
+		lines = append(lines, configHelpStyle.Render(l))
 	}
 	return lines
 }

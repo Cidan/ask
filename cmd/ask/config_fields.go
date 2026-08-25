@@ -74,20 +74,6 @@ func (m model) openWebSearchFieldsPicker() model {
 	})
 }
 
-// memoryFields is the Memory screen: which provider and model run the
-// post-turn concept extraction. Both blank means the session's provider
-// and its cheapest listed model.
-var memoryFields = []providers.SettingField{{
-	Key:      "provider",
-	Title:    "Extraction provider",
-	Hint:     "provider id for the post-turn memory extraction; blank = the session's provider; enter to save",
-	Validate: validateProviderID,
-}, {
-	Key:   "model",
-	Title: "Extraction model",
-	Hint:  "model id for the extraction call; blank = the provider's cheapest listed model; enter to save",
-}}
-
 // memoryConfigSummary is the /config row value: the configured pair, or
 // what the extractor falls back to.
 func memoryConfigSummary(cfg askConfig) string {
@@ -102,23 +88,59 @@ func memoryConfigSummary(cfg askConfig) string {
 	return "session provider (cheapest)"
 }
 
-func (m model) openMemoryFieldsPicker() model {
-	return m.openFieldsPicker(fieldsPickerState{
-		id:     "memory",
-		title:  "Memory",
-		fields: memoryFields,
-		load: func(c askConfig) map[string]string {
-			return map[string]string{"provider": c.Memory.Provider, "model": c.Memory.Model}
-		},
-		save: func(c *askConfig, key, value string) {
-			switch key {
-			case "provider":
-				c.Memory.Provider = value
-			case "model":
-				c.Memory.Model = value
-			}
-		},
-	})
+// openMemoryModelPicker opens the shared full-frame model picker
+// (model_picker.go) retargeted at the memory extraction override: a pick
+// writes cfg.Memory.Provider/Model instead of switching the live tab, and the
+// list carries a synthetic "Automatic" row (injectMemoryAutoRow) that clears
+// the override back to the session provider + cheapest model. Opened from
+// /config → Global Options → Memory; the cursor is seeded from the stored
+// pair, and on close the picker returns to modeConfig so the user lands back
+// on the Global Options submenu.
+func (m model) openMemoryModelPicker() (model, tea.Cmd) {
+	cfg, _ := loadConfig()
+	s := buildModelPickerState(cfg)
+	s.memoryTarget = true
+	s.injectMemoryAutoRow()
+	s.seedCursor(cfg.Memory.Provider, cfg.Memory.Model)
+	m.modelPicker = s
+	m.mode = modeModelPicker
+	return m, m.modelPickerLoadCmd(false)
+}
+
+// applyModelPickerToMemory is the memory-targeted terminal action for the
+// shared picker: it writes the chosen provider+model onto cfg.Memory (both
+// cleared for the synthetic Automatic row, whose providerID is empty),
+// persists, and returns to /config. Called from applyModelPickerEntry when
+// modelPicker.memoryTarget is set.
+func (m model) applyModelPickerToMemory(entry modelPickerEntry) (tea.Model, tea.Cmd) {
+	provider := entry.providerID
+	modelID := entry.modelID
+	if strings.EqualFold(modelID, "default") {
+		modelID = ""
+	}
+	if err := withConfigLock(func() error {
+		cfg, _ := loadConfig()
+		cfg.Memory.Provider = provider
+		cfg.Memory.Model = modelID
+		return saveConfig(cfg)
+	}); err != nil {
+		debugLog("memory model saveConfig: %v", err)
+		m = m.closeModelPickerToConfig()
+		return m, m.toast.show("memory: save: " + err.Error())
+	}
+	m = m.closeModelPickerToConfig()
+	cfg, _ := loadConfig()
+	return m, m.toast.show("memory: extraction model → " + memoryConfigSummary(cfg))
+}
+
+// closeModelPickerToConfig dismisses the model picker back to the /config
+// modal (not the chat input), used when the picker was opened from inside
+// /config → Memory. The Global Options submenu flag is left set, so the user
+// returns to exactly where they opened the picker.
+func (m model) closeModelPickerToConfig() model {
+	m.mode = modeConfig
+	m.modelPicker = nil
+	return m
 }
 
 func (m model) openFieldsPicker(s fieldsPickerState) model {

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/Cidan/ask/pkg/engine"
@@ -264,17 +263,6 @@ var (
 	filterVertexModelOptions = providers.FilterVertexModelOptions
 	globalEffortOptions      = providers.GlobalEffortOptions
 )
-
-func validateProviderID(id string) error {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return nil
-	}
-	if _, ok := providers.Get(id); ok {
-		return nil
-	}
-	return fmt.Errorf("unknown provider %q", id)
-}
 
 func providerMeta(provider, model string) string {
 	switch {

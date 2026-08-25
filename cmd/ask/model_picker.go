@@ -130,6 +130,39 @@ type modelPickerState struct {
 	// live tab's provider/model. nil ⇒ the Ctrl+M behavior. See
 	// openModelPickerForStep.
 	stepTarget *stepTarget
+	// memoryTarget retargets the picker for /config → Memory: when true,
+	// choosing an entry writes cfg.Memory.Provider/Model (the post-turn
+	// extraction override) instead of switching the live tab, and the list
+	// carries a synthetic "Automatic" row at the top (injectMemoryAutoRow)
+	// that clears the override back to the session provider + cheapest model.
+	// See openMemoryModelPicker.
+	memoryTarget bool
+}
+
+// memoryAutoGroupID / memoryAutoGroupName / memoryAutoRowDisplay identify the
+// synthetic top row of the memory-targeted picker. Its entry carries an empty
+// providerID; picking it clears the memory extraction override.
+const (
+	memoryAutoGroupID    = "memory-auto"
+	memoryAutoGroupName  = "Automatic"
+	memoryAutoRowDisplay = "Session provider · cheapest (default)"
+)
+
+// injectMemoryAutoRow prepends the synthetic Automatic group so the
+// memory-targeted list always offers a reset-to-default row above the provider
+// groups. Idempotent, and re-run by rebuild after a catalog load rebuilds the
+// provider groups from scratch. A non-empty group id keeps the row out of the
+// "recently used" styling path (rows() flags recent on g.id == "").
+func (s *modelPickerState) injectMemoryAutoRow() {
+	if len(s.groups) > 0 && s.groups[0].id == memoryAutoGroupID {
+		return
+	}
+	auto := modelPickerGroup{
+		id:      memoryAutoGroupID,
+		name:    memoryAutoGroupName,
+		entries: []modelPickerEntry{{display: memoryAutoRowDisplay}},
+	}
+	s.groups = append([]modelPickerGroup{auto}, s.groups...)
 }
 
 func buildModelPickerState(cfg askConfig) *modelPickerState {
@@ -208,6 +241,9 @@ func (s *modelPickerState) rebuild(cfg askConfig) {
 	}
 	fresh := buildModelPickerState(cfg)
 	s.groups = fresh.groups
+	if s.memoryTarget {
+		s.injectMemoryAutoRow()
+	}
 	if cur != nil {
 		s.seedCursor(cur.providerID, cur.modelID)
 		return
@@ -450,9 +486,16 @@ func (m model) dispatchModelPick(entry modelPickerEntry) (tea.Model, tea.Cmd) {
 }
 
 func (m model) applyModelPickerEntry(entry modelPickerEntry) (tea.Model, tea.Cmd) {
-	recordRecentModel(entry.providerID, entry.modelID)
+	// The synthetic Automatic row carries an empty providerID; never record
+	// it as a recent model.
+	if entry.providerID != "" {
+		recordRecentModel(entry.providerID, entry.modelID)
+	}
 	if m.modelPicker != nil && m.modelPicker.stepTarget != nil {
 		return m.applyModelPickerToStep(*m.modelPicker.stepTarget, entry)
+	}
+	if m.modelPicker != nil && m.modelPicker.memoryTarget {
+		return m.applyModelPickerToMemory(entry)
 	}
 	modelID := entry.modelID
 	if strings.EqualFold(modelID, "default") {
