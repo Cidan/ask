@@ -81,7 +81,8 @@ Related: `.claude/rules/tools.md`, `.claude/rules/providers.md`,
   `AssistantTextEvent` (one per completed text), status, tool call /
   result / diff, usage, cost, model info, todos, subagent and background
   task start/end, `DoneEvent`, `TurnCompleteEvent`, `ExitedEvent`,
-  `MidTurnDrainedEvent`, `Workflow*Event`, `ExtensionsChangedEvent`.
+  `MidTurnDrainedEvent`, `Workflow*Event`, `ExtensionsChangedEvent`,
+  `MCPStatusChangedEvent`.
 - Ordering contract: every turn ends with `DoneEvent` then
   `TurnCompleteEvent`, on success and on error. `cmd/ask/event_adapter.go`
   depends on it.

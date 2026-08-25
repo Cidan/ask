@@ -139,6 +139,20 @@ type (
 	mcpServerConfig          = tools.MCPServerConfig
 	agentMCPServer           = tools.MCPServer
 	agentFinalizedPlanParams = tools.FinalizedPlanParams
+	resolvedMCPServer        = tools.ResolvedMCPServer
+	mcpServerOrigin          = tools.MCPServerOrigin
+	mcpStatus                = tools.MCPStatus
+)
+
+const (
+	mcpOriginPlugin      = tools.MCPOriginPlugin
+	mcpOriginProjectFile = tools.MCPOriginProjectFile
+	mcpOriginUser        = tools.MCPOriginUser
+	mcpOriginProject     = tools.MCPOriginProject
+
+	mcpStatusConnected = tools.MCPStatusConnected
+	mcpStatusNeedsAuth = tools.MCPStatusNeedsAuth
+	mcpStatusError     = tools.MCPStatusError
 )
 
 func ensureSudoIPCServer(interaction ...engine.InteractionHandler) *tools.SudoIPCServer {
@@ -152,6 +166,10 @@ func ensureSudoIPCServer(interaction ...engine.InteractionHandler) *tools.SudoIP
 var (
 	newMCPManager            = tools.NewMCPManager
 	resolveMCPServers        = tools.ResolveMCPServers
+	listMCPServers           = tools.ListMCPServers
+	authorizeMCPServer       = tools.AuthorizeMCPServer
+	mcpServerAuthorized      = tools.MCPServerAuthorized
+	forgetMCPServerAuth      = tools.ForgetMCPServerAuth
 	unwrapInvokeToolCall     = tools.UnwrapInvokeToolCall
 	runAskPassHelper         = tools.RunAskPassHelper
 	applyBashFilter          = tools.ApplyBashFilter

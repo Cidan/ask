@@ -113,6 +113,8 @@ func EngineEventToTeaMsg(event engine.EngineEvent) tea.Msg {
 		return queuedMessageDrainedMsg{text: ev.Text, tabID: tabID}
 	case engine.ExtensionsChangedEvent:
 		return extensionsChangedMsg{what: ev.What, tabID: tabID}
+	case engine.MCPStatusChangedEvent:
+		return mcpStatusChangedMsg{tabID: tabID}
 	default:
 		return nil
 	}

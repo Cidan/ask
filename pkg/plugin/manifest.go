@@ -8,10 +8,14 @@
 // The file shapes are byte-compatible with Claude Code so a marketplace
 // built for one tool installs in the other. ask-only content (workflows,
 // the `provider:` key on agents) rides in the same plugin directory;
-// Claude Code ignores what it does not know.
+// Claude Code ignores what it does not know. Plugins may also ship MCP
+// servers as a plugin-root `.mcp.json` or an `mcps/` directory of
+// `.mcp.json`-format files; ask attaches them to sessions, and Claude Code
+// reads the root `.mcp.json` too.
 package plugin
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -77,6 +81,28 @@ func (p *PathList) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// MCPServersField is the manifest/marketplace-entry "mcpServers" component
+// field. Claude Code allows either a path (or list of paths) to
+// .mcp.json-format files, or an inline object of servers. We honor the path
+// forms (they add files that ResolveContents picks up) and tolerate the
+// inline-object form without error (those servers are resolved from the
+// default .mcp.json / mcps/ locations instead), so neither shape breaks
+// manifest parsing.
+type MCPServersField struct {
+	Paths PathList
+}
+
+func (f *MCPServersField) UnmarshalJSON(b []byte) error {
+	t := bytes.TrimSpace(b)
+	if len(t) == 0 || string(t) == "null" {
+		return nil
+	}
+	if t[0] == '{' { // inline object: tolerated, not treated as a path
+		return nil
+	}
+	return f.Paths.UnmarshalJSON(b)
+}
+
 // MarketplaceManifest is .claude-plugin/marketplace.json.
 type MarketplaceManifest struct {
 	Name        string               `json:"name"`
@@ -94,20 +120,21 @@ type MarketplaceMetadata struct {
 
 // Entry is one plugin listed by a marketplace.
 type Entry struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
-	Version     string   `json:"version,omitempty"`
-	Category    string   `json:"category,omitempty"`
-	Homepage    string   `json:"homepage,omitempty"`
-	Author      *Author  `json:"author,omitempty"`
-	Source      Source   `json:"source"`
-	Strict      *bool    `json:"strict,omitempty"`
-	Skills      PathList `json:"skills,omitempty"`
-	Agents      PathList `json:"agents,omitempty"`
-	Commands    PathList `json:"commands,omitempty"`
-	Workflows   PathList `json:"workflows,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
-	Keywords    []string `json:"keywords,omitempty"`
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Version     string          `json:"version,omitempty"`
+	Category    string          `json:"category,omitempty"`
+	Homepage    string          `json:"homepage,omitempty"`
+	Author      *Author         `json:"author,omitempty"`
+	Source      Source          `json:"source"`
+	Strict      *bool           `json:"strict,omitempty"`
+	Skills      PathList        `json:"skills,omitempty"`
+	Agents      PathList        `json:"agents,omitempty"`
+	Commands    PathList        `json:"commands,omitempty"`
+	Workflows   PathList        `json:"workflows,omitempty"`
+	MCPServers  MCPServersField `json:"mcpServers,omitempty"`
+	Tags        []string        `json:"tags,omitempty"`
+	Keywords    []string        `json:"keywords,omitempty"`
 }
 
 // IsStrict reports whether plugin.json is the authority for the plugin's
@@ -236,19 +263,20 @@ func (s Source) String() string {
 
 // PluginManifest is .claude-plugin/plugin.json.
 type PluginManifest struct {
-	Name        string   `json:"name"`
-	DisplayName string   `json:"displayName,omitempty"`
-	Version     string   `json:"version,omitempty"`
-	Description string   `json:"description,omitempty"`
-	Author      *Author  `json:"author,omitempty"`
-	Homepage    string   `json:"homepage,omitempty"`
-	Repository  string   `json:"repository,omitempty"`
-	License     string   `json:"license,omitempty"`
-	Keywords    []string `json:"keywords,omitempty"`
-	Skills      PathList `json:"skills,omitempty"`
-	Agents      PathList `json:"agents,omitempty"`
-	Commands    PathList `json:"commands,omitempty"`
-	Workflows   PathList `json:"workflows,omitempty"`
+	Name        string          `json:"name"`
+	DisplayName string          `json:"displayName,omitempty"`
+	Version     string          `json:"version,omitempty"`
+	Description string          `json:"description,omitempty"`
+	Author      *Author         `json:"author,omitempty"`
+	Homepage    string          `json:"homepage,omitempty"`
+	Repository  string          `json:"repository,omitempty"`
+	License     string          `json:"license,omitempty"`
+	Keywords    []string        `json:"keywords,omitempty"`
+	Skills      PathList        `json:"skills,omitempty"`
+	Agents      PathList        `json:"agents,omitempty"`
+	Commands    PathList        `json:"commands,omitempty"`
+	Workflows   PathList        `json:"workflows,omitempty"`
+	MCPServers  MCPServersField `json:"mcpServers,omitempty"`
 }
 
 var kebabNameRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)

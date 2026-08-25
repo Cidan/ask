@@ -147,7 +147,7 @@ func TestMCPOAuthHandler_ServesStoredToken(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h, err := NewMCPOAuthHandler(serverURL)
+	h, err := NewMCPOAuthHandler(serverURL, false)
 	if err != nil {
 		t.Fatal(err)
 	}

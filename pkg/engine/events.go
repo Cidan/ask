@@ -27,6 +27,7 @@ const (
 	EventKindWorkflowDone    EventKind = "workflow_done"
 	EventKindWorkflowFailed  EventKind = "workflow_failed"
 	EventKindExtensions      EventKind = "extensions_changed"
+	EventKindMCPStatus       EventKind = "mcp_status_changed"
 )
 
 // EngineEvent is the common interface implemented by all events emitted by the ask engine.
@@ -270,6 +271,14 @@ type ExtensionsChangedEvent struct {
 }
 
 func (ExtensionsChangedEvent) Kind() EventKind { return EventKindExtensions }
+
+// MCPStatusChangedEvent is emitted when a session's set of MCP servers
+// changes connection/auth state, so the UI can refresh an open browser.
+type MCPStatusChangedEvent struct {
+	BaseEvent
+}
+
+func (MCPStatusChangedEvent) Kind() EventKind { return EventKindMCPStatus }
 
 // EventListener is a callback function that handles stream events from the engine.
 type EventListener func(event EngineEvent)

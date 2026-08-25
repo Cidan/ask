@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Cidan/ask/pkg/config"
+	"github.com/Cidan/ask/pkg/plugin"
 )
 
 const (
@@ -110,58 +111,212 @@ func LoadDotMCPJSON(cwd string) map[string]MCPServerConfig {
 	return file.MCPServers
 }
 
-// ResolveMCPServers merges project, user, and project-local MCP server configs.
-func ResolveMCPServers(cfg config.Config, cwd string) []NamedMCPServer {
-	merged := map[string]MCPServerConfig{}
-	for name, sc := range LoadDotMCPJSON(cwd) {
-		merged[name] = sc
+// fromConfigMCPServer converts a config.MCPServerConfig into the tools shape.
+// (config has no Headers field; every other field maps 1:1.)
+func fromConfigMCPServer(sc config.MCPServerConfig) MCPServerConfig {
+	return MCPServerConfig{
+		Type:           sc.Type,
+		Command:        sc.Command,
+		Args:           sc.Args,
+		Env:            sc.Env,
+		URL:            sc.URL,
+		OAuth:          sc.OAuth,
+		Disabled:       sc.Disabled,
+		TimeoutSeconds: sc.Timeout,
+		EnabledTools:   sc.EnabledTools,
+		DisabledTools:  sc.DisabledTools,
 	}
-	for name, sc := range cfg.MCPServers {
-		merged[name] = MCPServerConfig{
-			Type:           sc.Type,
-			Command:        sc.Command,
-			Args:           sc.Args,
-			Env:            sc.Env,
-			URL:            sc.URL,
-			OAuth:          sc.OAuth,
-			Disabled:       sc.Disabled,
-			TimeoutSeconds: sc.Timeout,
-			EnabledTools:   sc.EnabledTools,
-			DisabledTools:  sc.DisabledTools,
+}
+
+// expandPluginRoot substitutes ${CLAUDE_PLUGIN_ROOT} (and $CLAUDE_PLUGIN_ROOT)
+// with the plugin's installed directory, matching Claude Code's convention
+// for referencing files bundled inside a plugin.
+func expandPluginRoot(s, root string) string {
+	if !strings.Contains(s, "CLAUDE_PLUGIN_ROOT") {
+		return s
+	}
+	return os.Expand(s, func(k string) string {
+		if k == "CLAUDE_PLUGIN_ROOT" {
+			return root
 		}
+		return "${" + k + "}"
+	})
+}
+
+func expandPluginRootConfig(c MCPServerConfig, root string) MCPServerConfig {
+	c.Command = expandPluginRoot(c.Command, root)
+	c.URL = expandPluginRoot(c.URL, root)
+	if len(c.Args) > 0 {
+		args := make([]string, len(c.Args))
+		for i, a := range c.Args {
+			args[i] = expandPluginRoot(a, root)
+		}
+		c.Args = args
 	}
-	if pc, ok := cfg.Projects[cwd]; ok {
-		for name, sc := range pc.MCPServers {
-			merged[name] = MCPServerConfig{
-				Type:           sc.Type,
-				Command:        sc.Command,
-				Args:           sc.Args,
-				Env:            sc.Env,
-				URL:            sc.URL,
-				OAuth:          sc.OAuth,
-				Disabled:       sc.Disabled,
-				TimeoutSeconds: sc.Timeout,
-				EnabledTools:   sc.EnabledTools,
-				DisabledTools:  sc.DisabledTools,
+	if len(c.Env) > 0 {
+		env := make(map[string]string, len(c.Env))
+		for k, v := range c.Env {
+			env[k] = expandPluginRoot(v, root)
+		}
+		c.Env = env
+	}
+	return c
+}
+
+// pluginMCPServer is one MCP server contributed by an enabled plugin.
+type pluginMCPServer struct {
+	Name   string
+	Config MCPServerConfig
+	Plugin string // plugin ref, e.g. "name@marketplace"
+}
+
+// PluginMCPServers returns the MCP servers declared by every enabled plugin
+// (plugin-root .mcp.json and mcps/*.json), with ${CLAUDE_PLUGIN_ROOT}
+// expanded to each plugin's installed directory. Later plugins win on a
+// name clash; ordering is by plugin ref then server name for determinism.
+func PluginMCPServers(cwd string) []pluginMCPServer {
+	var out []pluginMCPServer
+	for _, in := range plugin.EnabledPlugins(cwd) {
+		if in.Dir == "" {
+			continue
+		}
+		ref := in.Ref.String()
+		for _, f := range in.Contents().MCPFiles {
+			data, err := os.ReadFile(f)
+			if err != nil {
+				continue
+			}
+			var file struct {
+				MCPServers map[string]MCPServerConfig `json:"mcpServers"`
+			}
+			if json.Unmarshal(data, &file) != nil {
+				continue
+			}
+			names := make([]string, 0, len(file.MCPServers))
+			for name := range file.MCPServers {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				out = append(out, pluginMCPServer{
+					Name:   name,
+					Config: expandPluginRootConfig(file.MCPServers[name], in.Dir),
+					Plugin: ref,
+				})
 			}
 		}
 	}
+	return out
+}
+
+// MCPServerOrigin identifies where an MCP server was configured.
+type MCPServerOrigin int
+
+const (
+	MCPOriginPlugin      MCPServerOrigin = iota // a plugin's .mcp.json / mcps/
+	MCPOriginProjectFile                        // the project-root .mcp.json
+	MCPOriginUser                               // user config mcpServers
+	MCPOriginProject                            // per-project config mcpServers
+)
+
+func (o MCPServerOrigin) String() string {
+	switch o {
+	case MCPOriginPlugin:
+		return "plugin"
+	case MCPOriginProjectFile:
+		return ".mcp.json"
+	case MCPOriginUser:
+		return "user"
+	case MCPOriginProject:
+		return "project"
+	}
+	return "unknown"
+}
+
+// ResolvedMCPServer is one MCP server with provenance and effective state.
+// Config is the stored (un-expanded) config; call Config.Expanded() before
+// connecting. Disabled is the effective state after applying overrides.
+type ResolvedMCPServer struct {
+	Name     string
+	Config   MCPServerConfig
+	Origin   MCPServerOrigin
+	Plugin   string // set when Origin == MCPOriginPlugin
+	Disabled bool
+}
+
+// effectiveMCPDisabled resolves a server's enabled/disabled state:
+// per-project override wins, then the user override, then the server's own
+// config flag.
+func effectiveMCPDisabled(name string, own bool, userOv, projOv map[string]bool) bool {
+	if v, ok := projOv[name]; ok {
+		return v
+	}
+	if v, ok := userOv[name]; ok {
+		return v
+	}
+	return own
+}
+
+// ListMCPServers returns every configured MCP server from all sources
+// (enabled plugins, project .mcp.json, user config, per-project config)
+// with provenance and the effective enabled/disabled state, INCLUDING
+// disabled ones. Precedence on a name clash (low -> high): plugin, project
+// .mcp.json, user config, per-project config. This is the single source of
+// truth for both the browser and the session attach path.
+func ListMCPServers(cfg config.Config, cwd string) []ResolvedMCPServer {
+	type rec struct {
+		cfg    MCPServerConfig
+		origin MCPServerOrigin
+		plugin string
+	}
+	merged := map[string]rec{}
+	for _, ps := range PluginMCPServers(cwd) {
+		merged[ps.Name] = rec{cfg: ps.Config, origin: MCPOriginPlugin, plugin: ps.Plugin}
+	}
+	for name, sc := range LoadDotMCPJSON(cwd) {
+		merged[name] = rec{cfg: sc, origin: MCPOriginProjectFile}
+	}
+	for name, sc := range cfg.MCPServers {
+		merged[name] = rec{cfg: fromConfigMCPServer(sc), origin: MCPOriginUser}
+	}
+	pc := config.LoadProjectConfig(cfg, cwd) // project-root keyed
+	for name, sc := range pc.MCPServers {
+		merged[name] = rec{cfg: fromConfigMCPServer(sc), origin: MCPOriginProject}
+	}
+
 	names := make([]string, 0, len(merged))
 	for name := range merged {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	out := make([]NamedMCPServer, 0, len(merged))
+	out := make([]ResolvedMCPServer, 0, len(merged))
 	for _, name := range names {
-		sc := merged[name]
-		if sc.Disabled {
+		r := merged[name]
+		out = append(out, ResolvedMCPServer{
+			Name:     name,
+			Config:   r.cfg,
+			Origin:   r.origin,
+			Plugin:   r.plugin,
+			Disabled: effectiveMCPDisabled(name, r.cfg.Disabled, cfg.MCPDisabled, pc.MCPDisabled),
+		})
+	}
+	return out
+}
+
+// ResolveMCPServers returns the servers that should actually be attached to
+// a session: effective-enabled, env-expanded, and non-empty (a command or a
+// URL). Disabled servers are dropped.
+func ResolveMCPServers(cfg config.Config, cwd string) []NamedMCPServer {
+	var out []NamedMCPServer
+	for _, r := range ListMCPServers(cfg, cwd) {
+		if r.Disabled {
 			continue
 		}
-		sc = sc.Expanded()
+		sc := r.Config.Expanded()
 		if sc.Command == "" && sc.URL == "" {
 			continue
 		}
-		out = append(out, NamedMCPServer{Name: name, Config: sc})
+		out = append(out, NamedMCPServer{Name: r.Name, Config: sc})
 	}
 	return out
 }

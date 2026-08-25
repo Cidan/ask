@@ -201,6 +201,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 			return s.provider != nil && s.provider.SupportsImages(s.modelID)
 		},
 		s.refreshToolset,
+		func() { s.emit(engine.MCPStatusChangedEvent{BaseEvent: engine.BaseEvent{TabID: s.args.TabID}}) },
 		globalTUIInteractionHandler,
 	)
 	s.mcp.AttachAll(context.Background(), agentSessionMCPServers(s.args, cfg))
