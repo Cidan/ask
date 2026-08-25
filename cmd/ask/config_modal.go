@@ -382,8 +382,7 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 		m = m.openWebSearchFieldsPicker()
 		return m, nil
 	case "memory":
-		m = m.openMemoryFieldsPicker()
-		return m, nil
+		return m.openMemoryModelPicker()
 	case "keybindings":
 		m = m.openConfigKeybindingsPicker()
 		return m, nil

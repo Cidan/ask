@@ -10,7 +10,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Cidan/ask/pkg/memory"
-	"github.com/Cidan/ask/pkg/providers"
 )
 
 type browserClock struct {
@@ -214,38 +213,56 @@ func TestGlobalConfig_MemoryRow(t *testing.T) {
 	if row.name != "Memory..." || row.key != "session provider (cheapest)" {
 		t.Fatalf("memory row = %+v", row)
 	}
+
+	// Enter on the row opens the shared model picker retargeted at the
+	// memory extraction override, with the synthetic Automatic row on top.
 	mi, _ := m.handleGlobalConfigEnter("memory")
 	m = mi.(model)
-	if !m.configFields.active || m.configFields.title != "Memory" {
-		t.Fatalf("memory row opens the fields picker: %+v", m.configFields)
+	if m.mode != modeModelPicker || m.modelPicker == nil || !m.modelPicker.memoryTarget {
+		t.Fatalf("memory row must open the memory-targeted model picker: mode=%v picker=%v", m.mode, m.modelPicker)
 	}
-	// An unknown provider id is rejected and keeps the editor open.
-	m = m.openFieldsPickerEditor("provider")
-	m.configFields.draft = "nosuch"
-	mi, cmd := m.updateFieldsPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = mi.(model)
-	if cmd == nil || m.configFields.editing != "provider" {
-		t.Fatal("invalid provider must toast and stay in the editor")
+	if g := m.modelPicker.groups; len(g) == 0 || g[0].id != memoryAutoGroupID {
+		t.Fatalf("first picker group must be the Automatic row, got %+v", m.modelPicker.groups)
 	}
-	m.configFields.draft = providers.OpenRouterProviderID
-	mi, _ = m.updateFieldsPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = mi.(model)
-	m = m.openFieldsPickerEditor("model")
-	m.configFields.draft = "openai/gpt-4o-mini"
-	mi, _ = m.updateFieldsPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = mi.(model)
+
+	// Choosing a concrete provider+model persists the pair and returns to
+	// /config (not the chat input), leaving the Global Options submenu open.
+	res, _ := m.dispatchModelPick(modelPickerEntry{providerID: "fake", providerName: "Fake", modelID: "m-two"})
+	m = res.(model)
+	if m.mode != modeConfig || m.modelPicker != nil {
+		t.Fatalf("picker should return to /config; mode=%v picker=%v", m.mode, m.modelPicker)
+	}
 	cfg, _ := loadConfig()
-	if cfg.Memory.Provider != providers.OpenRouterProviderID || cfg.Memory.Model != "openai/gpt-4o-mini" {
+	if cfg.Memory.Provider != "fake" || cfg.Memory.Model != "m-two" {
 		t.Fatalf("persisted memory block = %+v", cfg.Memory)
 	}
-	if memoryConfigSummary(cfg) != "openrouter/openai/gpt-4o-mini" {
+	if memoryConfigSummary(cfg) != "fake/m-two" {
 		t.Fatalf("summary = %q", memoryConfigSummary(cfg))
 	}
-	if rows := m.fieldsPickerItems(); rows[0].key != providers.OpenRouterProviderID || rows[1].key != "openai/gpt-4o-mini" {
-		t.Fatalf("picker rows = %+v", rows)
+
+	// Reopen and pick the "default" sentinel: clears only the model, so the
+	// extractor falls back to the provider's cheapest.
+	m, _ = m.openMemoryModelPicker()
+	res, _ = m.dispatchModelPick(modelPickerEntry{providerID: "fake", providerName: "Fake", modelID: "default"})
+	m = res.(model)
+	cfg, _ = loadConfig()
+	if cfg.Memory.Provider != "fake" || cfg.Memory.Model != "" {
+		t.Fatalf("default sentinel must clear only the model: %+v", cfg.Memory)
 	}
-	cfg.Memory.Model = ""
-	if memoryConfigSummary(cfg) != "openrouter (cheapest)" {
+	if memoryConfigSummary(cfg) != "fake (cheapest)" {
 		t.Fatalf("provider-only summary = %q", memoryConfigSummary(cfg))
+	}
+
+	// Reopen and pick the synthetic Automatic row (empty providerID): it
+	// clears the whole override back to the session default.
+	m, _ = m.openMemoryModelPicker()
+	res, _ = m.dispatchModelPick(modelPickerEntry{display: memoryAutoRowDisplay})
+	m = res.(model)
+	cfg, _ = loadConfig()
+	if cfg.Memory.Provider != "" || cfg.Memory.Model != "" {
+		t.Fatalf("Automatic row must clear the override: %+v", cfg.Memory)
+	}
+	if memoryConfigSummary(cfg) != "session provider (cheapest)" {
+		t.Fatalf("cleared summary = %q", memoryConfigSummary(cfg))
 	}
 }
