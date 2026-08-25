@@ -36,4 +36,18 @@ func TestCheapestModel(t *testing.T) {
 	if CheapestModel("nosuch") != "" {
 		t.Fatal("unknown provider must yield an empty id")
 	}
+
+	// A CheapModeler names its model outright, with or without prices.
+	if got := CheapestModel(ClaudeCodeProviderID); got != ClaudeCodeCheapModel {
+		t.Fatalf("claude-code cheapest = %q, want %q", got, ClaudeCodeCheapModel)
+	}
+	ModelMetaLookup = func(providerID, modelID string) (ModelMeta, bool) {
+		if providerID == ClaudeCodeProviderID && modelID == ClaudeCodeDefaultModel {
+			return ModelMeta{Pricing: &ModelPricing{InputPer1M: 0.01, OutputPer1M: 0.01}}, true
+		}
+		return ModelMeta{}, false
+	}
+	if got := CheapestModel(ClaudeCodeProviderID); got != ClaudeCodeCheapModel {
+		t.Fatalf("CheapModeler must win over a priced catalog entry, got %q", got)
+	}
 }

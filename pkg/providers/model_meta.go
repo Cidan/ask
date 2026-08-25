@@ -1,6 +1,9 @@
 package providers
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 // ModelMeta is the merged, display-ready description of one model: the
 // static catalog seeds it, models.dev fills what the provider's own API does
@@ -116,13 +119,19 @@ func StepCostUSD(providerID, modelID string, inputTokens, outputTokens, cacheWri
 	return cost / 1e6, true
 }
 
-// CheapestModel picks the provider's lowest list-price model (input plus
-// output USD per 1M) among its catalog options, skipping deprecated ones;
-// with no known price it falls back to the provider's default model.
+// CheapestModel picks the provider's cheapest model: the one it names
+// through CheapModeler, else the lowest list price (input plus output USD
+// per 1M) among its catalog options, skipping deprecated ones; with no
+// known price it falls back to the provider's default model.
 func CheapestModel(providerID string) string {
 	p, ok := Get(providerID)
 	if !ok {
 		return ""
+	}
+	if cm, ok := p.(CheapModeler); ok {
+		if id := strings.TrimSpace(cm.CheapModel()); id != "" {
+			return id
+		}
 	}
 	best, bestPrice := "", 0.0
 	for _, id := range p.ModelOptions() {
