@@ -98,6 +98,17 @@ func (s *agentSession) refreshToolset() {
 	s.toolsMu.Unlock()
 }
 
+// reconcileMCP brings this session's live MCP manager in line with the
+// current config (a browser toggle or a completed authorization), then
+// refreshes the deferred toolset.
+func (s *agentSession) reconcileMCP(cfg askConfig) {
+	if s.mcp == nil {
+		return
+	}
+	s.mcp.Reconcile(context.Background(), agentSessionMCPServers(s.args, cfg))
+	s.refreshToolset()
+}
+
 func (s *agentSession) currentTools() []tools.Tool {
 	s.toolsMu.Lock()
 	defer s.toolsMu.Unlock()

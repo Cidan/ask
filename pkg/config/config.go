@@ -25,13 +25,18 @@ type Config struct {
 	// Providers holds one block per registered provider id. Providers
 	// declare their own fields (pkg/providers SettingField); config only
 	// stores them.
-	Providers    map[string]ProviderConfig  `json:"providers,omitempty"`
-	UI           UIConfig                   `json:"ui,omitempty"`
-	WebSearch    WebSearchConfig            `json:"webSearch,omitempty"`
-	MCPServers   map[string]MCPServerConfig `json:"mcpServers,omitempty"`
-	Keybindings  map[string]string          `json:"keybindings,omitempty"`
-	RecentModels []RecentModelRef           `json:"recentModels,omitempty"`
-	Projects     map[string]ProjectConfig   `json:"projects,omitempty"`
+	Providers  map[string]ProviderConfig  `json:"providers,omitempty"`
+	UI         UIConfig                   `json:"ui,omitempty"`
+	WebSearch  WebSearchConfig            `json:"webSearch,omitempty"`
+	MCPServers map[string]MCPServerConfig `json:"mcpServers,omitempty"`
+	// MCPDisabled overrides the effective enabled/disabled state of an MCP
+	// server by name, regardless of which source defined it (project
+	// .mcp.json, user/project config, or a plugin). true = disabled,
+	// false = force-enabled. Absent = fall back to the server's own state.
+	MCPDisabled  map[string]bool          `json:"mcpDisabled,omitempty"`
+	Keybindings  map[string]string        `json:"keybindings,omitempty"`
+	RecentModels []RecentModelRef         `json:"recentModels,omitempty"`
+	Projects     map[string]ProjectConfig `json:"projects,omitempty"`
 }
 
 type ProviderSlashEntry struct {
@@ -222,11 +227,12 @@ type RecentModelRef struct {
 }
 
 type ProjectConfig struct {
-	Issues     IssuesConfig               `json:"issues,omitempty"`
-	MCP        ProjectMCPConfig           `json:"mcp,omitempty"`
-	Workflows  WorkflowsConfig            `json:"workflows,omitempty"`
-	MCPServers map[string]MCPServerConfig `json:"mcpServers,omitempty"`
-	Worktree   *bool                      `json:"worktree,omitempty"`
+	Issues      IssuesConfig               `json:"issues,omitempty"`
+	MCP         ProjectMCPConfig           `json:"mcp,omitempty"`
+	Workflows   WorkflowsConfig            `json:"workflows,omitempty"`
+	MCPServers  map[string]MCPServerConfig `json:"mcpServers,omitempty"`
+	MCPDisabled map[string]bool            `json:"mcpDisabled,omitempty"`
+	Worktree    *bool                      `json:"worktree,omitempty"`
 }
 
 // WorktreeEnabled resolves the effective worktree flag for cwd: the
@@ -685,6 +691,9 @@ func IsProjectConfigEmpty(pc ProjectConfig) bool {
 		return false
 	}
 	if len(pc.MCPServers) > 0 {
+		return false
+	}
+	if len(pc.MCPDisabled) > 0 {
 		return false
 	}
 	if pc.Worktree != nil {

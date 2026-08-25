@@ -177,6 +177,10 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Skills/agents/plugins changed on disk: every tab re-registers
 		// its slash commands and an open browser rebuilds.
 		return a.broadcast(msg)
+	case mcpServersChangedMsg:
+		return a.broadcast(msg)
+	case mcpStatusChangedMsg:
+		return a.broadcast(msg)
 	case skillsBrowserOpDoneMsg:
 		return a.dispatchByTabID(m.tabID, msg)
 

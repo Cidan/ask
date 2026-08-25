@@ -73,7 +73,7 @@ func (m model) renderSkillsBrowserList(s *skillsBrowserState, w, h int) []string
 	if len(lines) > h-1 {
 		lines = lines[:h-1]
 	}
-	help := "tab lens · ↑↓ · enter · ^n new · ^d delete · ^a add mkt · ^r refresh · esc"
+	help := "tab lens · ↑↓ · enter · ^n new · ^d delete · mcp: space toggle ^o auth · ^a add mkt · ^r refresh · esc"
 	if s.lens == skillsLensMarketplace {
 		help = "tab lens · ↑↓ · enter · ^g install · ^d uninstall · ^a add mkt · ^r refresh · esc"
 	}
@@ -130,6 +130,16 @@ func renderSkillsBrowserRow(r skillsRow, width int, selected bool) string {
 		}
 	case skillsRowAction:
 		plain = r.title
+	case skillsRowMCP:
+		plain = r.mcp.name
+		state := "on"
+		if r.mcp.disabled {
+			state = "off"
+		}
+		tag = r.mcp.sourceLabel() + " · " + r.mcp.transport + " · " + state
+		if r.mcp.oauth && mcpServerAuthorized(r.mcp.url) {
+			tag += " · ✓ auth"
+		}
 	}
 	if selected {
 		line := "▸ " + plain
@@ -182,6 +192,9 @@ func (m model) renderSkillsBrowserDetail(s *skillsBrowserState, w, h int) []stri
 			case skillsRowAction:
 				body = skillsActionLines(row, w)
 				hint = "enter"
+			case skillsRowMCP:
+				body = s.mcpDetailLines(*row.mcp, w)
+				hint = mcpDetailHint(*row.mcp)
 			}
 		}
 		if body == nil {
@@ -376,6 +389,53 @@ func (s *skillsBrowserState) itemDetailLines(it skillsItem, w int) []string {
 		}
 	}
 	return lines
+}
+
+func (s *skillsBrowserState) mcpDetailLines(r mcpBrowserRow, w int) []string {
+	lines := []string{
+		themePickerTitleStyle.Render(clipText(r.name, w)),
+		configKeyDimStyle.Render(clipText("mcp · "+r.sourceLabel(), w)),
+		"",
+	}
+	state := "enabled"
+	if r.disabled {
+		state = "disabled"
+	}
+	lines = append(lines, factLine("State", state, w))
+	lines = append(lines, factLine("Transport", r.transport, w))
+	lines = append(lines, factLine("Target", r.target, w))
+	if r.oauth {
+		auth := "not authorized"
+		if mcpServerAuthorized(r.url) {
+			auth = "authorized (token stored)"
+		}
+		if st, ok := s.mcpStatus[r.name]; ok {
+			switch st.Kind {
+			case mcpStatusConnected:
+				auth = "connected"
+			case mcpStatusNeedsAuth:
+				auth = "needs authorization — press ^o"
+			case mcpStatusError:
+				auth = "error: " + st.Detail
+			}
+		}
+		lines = append(lines, factLine("Auth", auth, w))
+	} else if st, ok := s.mcpStatus[r.name]; ok {
+		k := "connected"
+		if st.Kind == mcpStatusError {
+			k = "error: " + st.Detail
+		}
+		lines = append(lines, factLine("Status", k, w))
+	}
+	return lines
+}
+
+func mcpDetailHint(r mcpBrowserRow) string {
+	h := "space toggle on/off"
+	if r.oauth {
+		h += " · ^o authorize · ^d sign out"
+	}
+	return h
 }
 
 func skillsBody(it skillsItem) string {

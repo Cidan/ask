@@ -991,6 +991,23 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		return m, m.provider.ProbeInit(m.sessionArgs())
 
+	case mcpServersChangedMsg:
+		if m.skillsBrowser != nil {
+			m.skillsBrowser.rebuild(m.cwd)
+			(&m).seedBrowserMCPStatus()
+		}
+		if s := m.currentAgentSession(); s != nil {
+			cfg, _ := loadConfig()
+			s.reconcileMCP(cfg)
+		}
+		return m, nil
+
+	case mcpStatusChangedMsg:
+		if m.skillsBrowser != nil {
+			(&m).seedBrowserMCPStatus()
+		}
+		return m, nil
+
 	case skillsBrowserOpDoneMsg:
 		if msg.tabID != m.id {
 			return m, nil

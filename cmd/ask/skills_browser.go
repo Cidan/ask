@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/plugin"
 	"github.com/Cidan/ask/pkg/tools"
@@ -102,6 +103,7 @@ const (
 	skillsRowAction
 	skillsRowNote
 	skillsRowBlank
+	skillsRowMCP
 )
 
 type skillsAction int
@@ -120,10 +122,34 @@ type skillsRow struct {
 	item   *skillsItem
 	plugin *skillsPluginRow
 	action skillsAction
+	mcp    *mcpBrowserRow
 }
 
 func (r skillsRow) selectable() bool {
-	return r.kind == skillsRowItem || r.kind == skillsRowPlugin || r.kind == skillsRowAction
+	return r.kind == skillsRowItem || r.kind == skillsRowPlugin || r.kind == skillsRowAction || r.kind == skillsRowMCP
+}
+
+// mcpBrowserRow is one configured MCP server shown in the Installed lens.
+type mcpBrowserRow struct {
+	name      string
+	origin    mcpServerOrigin
+	plugin    string // when origin == plugin
+	transport string // stdio | http | sse
+	target    string // command or URL summary
+	disabled  bool   // effective
+	oauth     bool   // an http/sse server eligible for OAuth
+	url       string // for authorize / sign out
+}
+
+func (r mcpBrowserRow) filterText() string {
+	return "mcp " + r.name + " " + r.origin.String() + " " + r.plugin + " " + r.transport + " " + r.target
+}
+
+func (r mcpBrowserRow) sourceLabel() string {
+	if r.origin == mcpOriginPlugin {
+		return "plugin:" + r.plugin
+	}
+	return r.origin.String()
 }
 
 type skillsEditorKind int
@@ -170,6 +196,11 @@ type skillsBrowserState struct {
 	// refused until it lands.
 	busy      string
 	descCache map[string]string
+	// mcpServers is every configured MCP server from all sources (shown as
+	// a group in the Installed lens); mcpStatus carries the live
+	// connection/auth state seeded from this tab's session.
+	mcpServers []mcpBrowserRow
+	mcpStatus  map[string]tools.MCPStatus
 }
 
 // extensionsChangedMsg says a skill, agent, plugin, or marketplace
@@ -186,14 +217,48 @@ type skillsBrowserOpDoneMsg struct {
 	err   error
 }
 
+// mcpServersChangedMsg says the MCP server set / enable-state changed (a
+// browser toggle or an authorization). Every tab reconciles its live MCP
+// manager and an open browser rebuilds.
+type mcpServersChangedMsg struct{ tabID int }
+
+// mcpStatusChangedMsg says a session's MCP connection/auth state changed, so
+// an open browser refreshes its status column.
+type mcpStatusChangedMsg struct{ tabID int }
+
 func (m model) openSkillsBrowser() model {
 	(&m).clearSelection()
 	s := &skillsBrowserState{cwd: m.cwd}
 	s.rebuild(m.cwd)
 	s.resetCursorToFirst()
 	m.skillsBrowser = s
+	(&m).seedBrowserMCPStatus()
 	m.mode = modeSkillsBrowser
 	return m
+}
+
+// currentAgentSession returns this tab's live agent session, or nil.
+func (m model) currentAgentSession() *agentSession {
+	if m.proc == nil {
+		return nil
+	}
+	s, _ := m.proc.payload.(*agentSession)
+	return s
+}
+
+// seedBrowserMCPStatus copies the live MCP statuses from this tab's session
+// into the open browser so its detail pane reflects reality.
+func (m *model) seedBrowserMCPStatus() {
+	if m.skillsBrowser == nil {
+		return
+	}
+	statuses := map[string]tools.MCPStatus{}
+	if s := m.currentAgentSession(); s != nil && s.mcp != nil {
+		for _, st := range s.mcp.Statuses() {
+			statuses[st.Name] = st
+		}
+	}
+	m.skillsBrowser.mcpStatus = statuses
 }
 
 func (m model) closeSkillsBrowser() model {
@@ -282,9 +347,38 @@ func (s *skillsBrowserState) rebuild(cwd string) {
 			}
 		}
 	}
+	s.mcpServers = buildMCPBrowserRows(cwd)
 	if rows := s.rows(); s.cursor >= len(rows) {
 		s.resetCursorToFirst()
 	}
+}
+
+// buildMCPBrowserRows lists every configured MCP server from all sources for
+// the Installed lens.
+func buildMCPBrowserRows(cwd string) []mcpBrowserRow {
+	cfg, err := loadConfig()
+	if err != nil {
+		return nil
+	}
+	var out []mcpBrowserRow
+	for _, r := range listMCPServers(toPkgConfig(cfg), cwd) {
+		row := mcpBrowserRow{
+			name:      r.Name,
+			origin:    r.Origin,
+			plugin:    r.Plugin,
+			transport: r.Config.EffectiveType(),
+			disabled:  r.Disabled,
+			url:       r.Config.URL,
+		}
+		if r.Config.Command != "" {
+			row.target = r.Config.Command
+		} else {
+			row.target = r.Config.URL
+		}
+		row.oauth = row.transport != mcpServerTypeStdio
+		out = append(out, row)
+	}
+	return out
 }
 
 func originGroup(o engine.Origin) string {
@@ -416,7 +510,22 @@ func (s *skillsBrowserState) installedRows() []skillsRow {
 			rows = append(rows, skillsRow{kind: skillsRowItem, item: it})
 		}
 	}
-	if len(rows) == 0 && s.query == "" {
+	var mcpRows []skillsRow
+	for i := range s.mcpServers {
+		mr := &s.mcpServers[i]
+		if !modelPickerFuzzyMatch(s.query, mr.filterText()) {
+			continue
+		}
+		mcpRows = append(mcpRows, skillsRow{kind: skillsRowMCP, mcp: mr})
+	}
+	if len(mcpRows) > 0 {
+		if len(rows) > 0 {
+			rows = append(rows, skillsRow{kind: skillsRowBlank})
+		}
+		rows = append(rows, skillsRow{kind: skillsRowHeader, title: "MCP Servers", note: fmt.Sprintf("%d", len(s.mcpServers))})
+		rows = append(rows, mcpRows...)
+	}
+	if len(rows) == 0 && s.query == "" && len(s.mcpServers) == 0 {
 		rows = append(rows, skillsRow{kind: skillsRowNote, title: "no skills, agents, or workflows yet — press n to create one, or tab for the marketplace"})
 	}
 	return rows
@@ -611,6 +720,20 @@ func (m model) updateSkillsBrowser(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// MCP rows own space (toggle), ^o (authorize), and ^d (sign out) before
+	// the shared Ctrl+letter and type-to-search handling below.
+	if row, ok := s.current(); ok && row.kind == skillsRowMCP {
+		switch {
+		case msg.Mod == 0 && msg.Text == " ":
+			return m.toggleMCPServer(*row.mcp)
+		case msg.Mod == tea.ModCtrl && msg.Code == 'o':
+			return m.authorizeMCPRow(*row.mcp)
+		case msg.Mod == tea.ModCtrl && msg.Code == 'd':
+			return m.signOutMCPRow(*row.mcp)
+		case msg.Mod == 0 && msg.Code == tea.KeyDelete:
+			return m.signOutMCPRow(*row.mcp)
+		}
+	}
 	// Actions are Ctrl+letter so type-to-search owns every plain key.
 	// Ctrl+I (Tab) and Ctrl+M (Enter) are off limits. Unlike the other
 	// overlays, Ctrl+D is delete here, not close-tab — Esc closes.
@@ -735,8 +858,97 @@ func (m model) skillsBrowserEnter() (tea.Model, tea.Cmd) {
 			s.openEditor(skillsEditorNewMarketplace, row)
 		}
 		return m, nil
+	case skillsRowMCP:
+		return m.toggleMCPServer(*row.mcp)
 	}
 	return m, nil
+}
+
+// toggleMCPServer opens a user/project scope chooser, then writes an
+// enable/disable override for the server at that scope and reconciles live
+// sessions.
+func (m model) toggleMCPServer(r mcpBrowserRow) (tea.Model, tea.Cmd) {
+	s := m.skillsBrowser
+	want := !r.disabled // desired new "disabled" value
+	verb := "disable"
+	if !want {
+		verb = "enable"
+	}
+	s.editor = &skillsEditor{
+		kind:    skillsEditorScope,
+		title:   verb + " MCP server " + r.name,
+		help:    "Apply for this user (all projects) or just this project (committed in .ask project config). Project overrides win over user.",
+		options: []string{"user", "project"},
+		run: func(m *model, choice int) tea.Cmd {
+			project := choice == 1
+			cwd := m.cwd
+			name := r.name
+			return m.startSkillsBrowserOp(verb+"ing "+name+"…", func() (string, error) {
+				if err := setMCPDisabledOverride(cwd, name, want, project); err != nil {
+					return "", err
+				}
+				scope := "user"
+				if project {
+					scope = "project"
+				}
+				return fmt.Sprintf("✓ %sd %s (%s scope)", verb, name, scope), nil
+			})
+		},
+	}
+	return m, nil
+}
+
+// authorizeMCPRow runs the interactive OAuth flow for an http/sse server.
+func (m model) authorizeMCPRow(r mcpBrowserRow) (tea.Model, tea.Cmd) {
+	if !r.oauth || r.url == "" {
+		return m, m.toast.show(r.name + " is not an OAuth http/sse server")
+	}
+	srv := tools.MCPServer{Name: r.name, Cfg: tools.MCPServerConfig{Type: r.transport, URL: r.url, OAuth: true}}
+	return m, m.startSkillsBrowserOp("authorizing "+r.name+" — check your browser…", func() (string, error) {
+		if err := authorizeMCPServer(context.Background(), srv); err != nil {
+			return "", err
+		}
+		return "✓ authorized " + r.name, nil
+	})
+}
+
+// signOutMCPRow deletes the stored OAuth token for a server.
+func (m model) signOutMCPRow(r mcpBrowserRow) (tea.Model, tea.Cmd) {
+	if !r.oauth || r.url == "" {
+		return m, nil
+	}
+	name, u := r.name, r.url
+	return m, m.startSkillsBrowserOp("signing out "+name+"…", func() (string, error) {
+		if err := forgetMCPServerAuth(u); err != nil {
+			return "", err
+		}
+		return "✓ signed out " + name, nil
+	})
+}
+
+// setMCPDisabledOverride writes cfg.MCPDisabled[name]=disabled at user scope,
+// or ProjectConfig.MCPDisabled[name] at project scope.
+func setMCPDisabledOverride(cwd, name string, disabled, project bool) error {
+	if project {
+		pc, err := config.LoadProject(cwd)
+		if err != nil {
+			return err
+		}
+		if pc.MCPDisabled == nil {
+			pc.MCPDisabled = map[string]bool{}
+		}
+		pc.MCPDisabled[name] = disabled
+		return config.SaveProject(cwd, pc)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if cfg.MCPDisabled == nil {
+		cfg.MCPDisabled = map[string]bool{}
+	}
+	cfg.MCPDisabled[name] = disabled
+	return config.Save(cfg)
 }
 
 func hintOr(hint, fallback string) string {
@@ -914,6 +1126,7 @@ func (m model) finishSkillsBrowserOp(msg skillsBrowserOpDoneMsg) (tea.Model, tea
 		cmds = append(cmds, m.toast.show(msg.note))
 	}
 	cmds = append(cmds, func() tea.Msg { return extensionsChangedMsg{what: "browser"} })
+	cmds = append(cmds, func() tea.Msg { return mcpServersChangedMsg{} })
 	return m, tea.Batch(cmds...)
 }
 

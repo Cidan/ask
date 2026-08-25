@@ -62,7 +62,7 @@ func toolByName(tools []Tool, name string) Tool {
 func TestMCPManager_AttachListCallAndSkip(t *testing.T) {
 	_, ts := newEchoMCPServer(t)
 	imagesOK := false
-	mgr := NewMCPManager(1, func() bool { return imagesOK }, nil, nil)
+	mgr := NewMCPManager(1, func() bool { return imagesOK }, nil, nil, nil)
 	defer mgr.Close()
 
 	if err := mgr.Attach(context.Background(), MCPServer{
@@ -115,7 +115,7 @@ func TestMCPManager_AttachListCallAndSkip(t *testing.T) {
 
 func TestMCPToolset_AttachAndCall(t *testing.T) {
 	_, ts := newEchoMCPServer(t)
-	mgr := NewMCPManager(1, func() bool { return true }, nil, nil)
+	mgr := NewMCPManager(1, func() bool { return true }, nil, nil, nil)
 	defer mgr.Close()
 
 	if err := mgr.Attach(context.Background(), MCPServer{
@@ -143,7 +143,7 @@ func TestMCPToolset_AttachAndCall(t *testing.T) {
 func TestMCPManager_ToolsetsLifecycle(t *testing.T) {
 	_, ts1 := newEchoMCPServer(t)
 	_, ts2 := newEchoMCPServer(t)
-	mgr := NewMCPManager(1, nil, nil, nil)
+	mgr := NewMCPManager(1, nil, nil, nil, nil)
 
 	mgr.AttachAll(context.Background(), []MCPServer{
 		{Name: "s1", Cfg: MCPServerConfig{Type: MCPServerTypeHTTP, URL: ts1.URL}},

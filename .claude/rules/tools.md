@@ -242,25 +242,45 @@ gate off.
 
 ## MCP client (`pkg/tools/mcp*.go`)
 
-ask is an MCP client only. `MCPManager` owns one `mcpServerConn` per
-server; transports are stdio (`CommandTransport`), `sse`, and
-streamable `http` (default), chosen by `EffectiveType`. Every call goes
-through `ensure`: ping the session, rebuild it on failure, retry the
-call once. `tools/list_changed` refreshes that server's tool list and
-calls `onToolsChanged` → `refreshToolset`, which only touches the
-deferred registry. Per-server `enabledTools` / `disabledTools` filter
-(`MCPToolAllowed`). Image results become media when the model has
+ask is an MCP client only (go-sdk v1.7.0). `MCPManager` owns one
+`mcpServerConn` per server; transports are stdio (`CommandTransport`),
+`sse`, and streamable `http` (default), chosen by `EffectiveType`. Every
+call goes through `ensure`: ping the session, rebuild it on failure,
+retry the call once. `tools/list_changed` refreshes that server's tool
+list and calls `onToolsChanged` → `refreshToolset`, which only touches
+the deferred registry. Per-server `enabledTools` / `disabledTools`
+filter (`MCPToolAllowed`). Image results become media when the model has
 vision, else a placeholder line. Elicitation maps the requested schema
 to question-modal prompts (`handleElicitation`); URL-mode and headless
-requests are declined.
+requests are declined. The manager also tracks per-server live state
+(`Statuses()` → connected · needs-auth · error) and fires
+`onStatusChanged` (→ `engine.MCPStatusChangedEvent`); `Reconcile` /
+`Detach` add and drop servers live so the Ctrl+S browser can turn a
+server on/off without restarting the session.
 
-Server config (`pkg/tools/mcp_servers.go`): project-root `.mcp.json`
-← global `mcpServers` ← per-project `mcpServers`, later layers
-replacing by name; `${VAR}` / `${VAR:-default}` expansion; `disabled`
-entries dropped. `oauth: true` on an http server uses
-`MCPOAuthHandler` (SDK authorization-code + PKCE + dynamic client
-registration, browser via `MCPOAuthOpenBrowser`, loopback callback,
-tokens 0600 under `~/.config/ask/mcp-oauth/`).
+Server config (`pkg/tools/mcp_servers.go`): `ListMCPServers` is the one
+all-sources resolver — enabled plugins (`PluginMCPServers`: a plugin's
+`.mcp.json` / `mcps/*.json`, `${CLAUDE_PLUGIN_ROOT}` expanded) ← project-root
+`.mcp.json` ← global `mcpServers` ← per-project `mcpServers`, later layers
+replacing by name; it returns every server (incl. disabled) with its
+`Origin` and effective `Disabled`. `ResolveMCPServers` (the attach path)
+filters to enabled, applies `${VAR}` / `${VAR:-default}` expansion, and
+drops empties. Enable/disable overrides live in `config.MCPDisabled` at
+user scope and `ProjectConfig.MCPDisabled` at project scope (project wins
+over user, both over the server's own `disabled`).
+
+OAuth is just-in-time for all http/sse servers (`oauthWanted`: any http/sse
+server without header auth, or explicit `oauth: true`). A 401 challenge
+triggers the SDK flow (authorization-code + PKCE + dynamic client
+registration); startup connects non-interactively so a server that needs
+auth surfaces as `needs-auth` (`ErrMCPInteractiveAuthRequired`) instead of
+opening a browser. The browser's authorize action runs `AuthorizeMCPServer`
+(interactive). `MCPOAuthHandler` persists the token **and** the resolved
+client registration + endpoints (v1.7.0 `NewTokenSource` /
+`InitialTokenSource`) 0600 under `~/.config/ask/mcp-oauth/`, so refreshes
+and restarts stay headless; SSE OAuth rides an `oauthRoundTripper` (the SSE
+transport has no native handler). `MCPServerAuthorized` /
+`ForgetMCPServerAuth` back the browser's auth indicator and sign-out.
 
 ## linear_* twins
 

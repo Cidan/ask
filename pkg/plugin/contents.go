@@ -17,10 +17,14 @@ type Contents struct {
 	CommandFiles  []string
 	AgentFiles    []string
 	WorkflowFiles []string
+	// MCPFiles are .mcp.json-format files the plugin ships: the plugin-root
+	// .mcp.json, every *.json under mcps/, plus any manifest/entry
+	// "mcpServers" paths.
+	MCPFiles []string
 }
 
 func (c Contents) Count() int {
-	return len(c.SkillDirs) + len(c.CommandFiles) + len(c.AgentFiles) + len(c.WorkflowFiles)
+	return len(c.SkillDirs) + len(c.CommandFiles) + len(c.AgentFiles) + len(c.WorkflowFiles) + len(c.MCPFiles)
 }
 
 func (c Contents) Empty() bool { return c.Count() == 0 }
@@ -29,18 +33,20 @@ func (c Contents) Empty() bool { return c.Count() == 0 }
 // paths (strict: both merge; strict:false: the entry alone) with the
 // default directories, and expands them to concrete files.
 func ResolveContents(dir string, entry *Entry, manifest *PluginManifest) Contents {
-	var skills, agents, commands, workflows PathList
+	var skills, agents, commands, workflows, mcps PathList
 	if manifest != nil && (entry == nil || entry.IsStrict()) {
 		skills = append(skills, manifest.Skills...)
 		agents = append(agents, manifest.Agents...)
 		commands = append(commands, manifest.Commands...)
 		workflows = append(workflows, manifest.Workflows...)
+		mcps = append(mcps, manifest.MCPServers.Paths...)
 	}
 	if entry != nil {
 		skills = append(skills, entry.Skills...)
 		agents = append(agents, entry.Agents...)
 		commands = append(commands, entry.Commands...)
 		workflows = append(workflows, entry.Workflows...)
+		mcps = append(mcps, entry.MCPServers.Paths...)
 	}
 	if len(skills) == 0 {
 		skills = PathList{"skills"}
@@ -79,9 +85,27 @@ func ResolveContents(dir string, entry *Entry, manifest *PluginManifest) Content
 	c.AgentFiles = collectFiles(dir, dedupe(agents), ".md")
 	c.CommandFiles = collectFiles(dir, dedupe(commands), ".md")
 	c.WorkflowFiles = collectFiles(dir, dedupe(workflows), ".json")
+	c.MCPFiles = collectMCPFiles(dir, dedupe(mcps))
 	c.SkillDirs = dedupe(c.SkillDirs)
 	sort.Strings(c.SkillDirs)
 	return c
+}
+
+// collectMCPFiles returns the .mcp.json-format files a plugin ships: the
+// conventional plugin-root .mcp.json (Claude Code compatibility), every
+// *.json under mcps/ (ask's directory convention), plus any explicit paths
+// from the manifest/entry "mcpServers" field. Paths that escape the plugin
+// directory are dropped. The result is deduped and sorted.
+func collectMCPFiles(dir string, paths []string) []string {
+	var out []string
+	if p := filepath.Join(dir, ".mcp.json"); fileExists(p) {
+		out = append(out, p)
+	}
+	out = append(out, collectFiles(dir, []string{"mcps"}, ".json")...)
+	out = append(out, collectFiles(dir, paths, ".json")...)
+	out = dedupe(out)
+	sort.Strings(out)
+	return out
 }
 
 func resolveInside(dir, p string) (string, bool) {

@@ -2,10 +2,12 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +28,42 @@ type MCPServer struct {
 	Name string
 	Cfg  MCPServerConfig
 	Skip map[string]bool
+}
+
+// MCPServerStatusKind is a server's live connection/auth state in a session.
+type MCPServerStatusKind int
+
+const (
+	MCPStatusConnected MCPServerStatusKind = iota
+	MCPStatusNeedsAuth
+	MCPStatusError
+)
+
+// MCPStatus is a snapshot of one server's live state in a session.
+type MCPStatus struct {
+	Name   string
+	Kind   MCPServerStatusKind
+	Detail string // error text when Kind == MCPStatusError
+}
+
+// oauthWanted decides whether to attach an OAuth handler to a server: an
+// explicit request (oauth: true), or an http/sse server that is not already
+// using header-based auth (a 401 then means it wants OAuth). This is the
+// "just-in-time for all http/sse" behavior; header-authed servers (e.g. a
+// PAT) are left alone unless they opt in.
+func oauthWanted(c MCPServerConfig) bool {
+	if c.EffectiveType() == MCPServerTypeStdio {
+		return false
+	}
+	if c.OAuth {
+		return true
+	}
+	return len(c.Headers) == 0
+}
+
+// sameMCPConfig reports whether two server configs would connect identically.
+func sameMCPConfig(a, b MCPServerConfig) bool {
+	return reflect.DeepEqual(a, b)
 }
 
 const (
@@ -56,6 +94,40 @@ func (h headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 	return base.RoundTrip(req)
 }
 
+// oauthRoundTripper injects the bearer token from an MCPOAuthHandler and, on
+// a 401, runs Authorize then retries once. Used for the SSE transport, whose
+// SDK client has no native OAuthHandler hook.
+type oauthRoundTripper struct {
+	base    http.RoundTripper
+	handler *MCPOAuthHandler
+}
+
+func (rt *oauthRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := rt.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if src, err := rt.handler.TokenSource(req.Context()); err == nil && src != nil {
+		if tok, err := src.Token(); err == nil && tok != nil {
+			tok.SetAuthHeader(req)
+		}
+	}
+	resp, err := base.RoundTrip(req)
+	if err != nil || resp.StatusCode != http.StatusUnauthorized {
+		return resp, err
+	}
+	if aerr := rt.handler.Authorize(req.Context(), req, resp); aerr != nil {
+		return resp, nil // surface the 401 (e.g. the needs-auth path)
+	}
+	if src, err := rt.handler.TokenSource(req.Context()); err == nil && src != nil {
+		if tok, err := src.Token(); err == nil && tok != nil {
+			tok.SetAuthHeader(req)
+			return base.RoundTrip(req)
+		}
+	}
+	return resp, nil
+}
+
 // MCPTransportFor builds the wire transport for one server.
 var MCPTransportFor = func(srv MCPServer, oauth *MCPOAuthHandler) (mcp.Transport, error) {
 	switch srv.Cfg.EffectiveType() {
@@ -68,9 +140,14 @@ var MCPTransportFor = func(srv MCPServer, oauth *MCPOAuthHandler) (mcp.Transport
 		return &mcp.CommandTransport{Command: cmd}, nil
 	case MCPServerTypeSSE:
 		httpClient := &http.Client{}
+		var base http.RoundTripper = http.DefaultTransport
 		if len(srv.Cfg.Headers) > 0 {
-			httpClient.Transport = headerRoundTripper{headers: srv.Cfg.Headers}
+			base = headerRoundTripper{base: base, headers: srv.Cfg.Headers}
 		}
+		if oauth != nil {
+			base = &oauthRoundTripper{base: base, handler: oauth}
+		}
+		httpClient.Transport = base
 		return &mcp.SSEClientTransport{Endpoint: srv.Cfg.URL, HTTPClient: httpClient}, nil
 	default:
 		httpClient := &http.Client{}
@@ -90,17 +167,20 @@ var MCPTransportFor = func(srv MCPServer, oauth *MCPOAuthHandler) (mcp.Transport
 
 // MCPManager owns all MCP server attachments for a session.
 type MCPManager struct {
-	tabID          int
-	imagesOK       func() bool
-	onToolsChanged func()
-	interaction    engine.InteractionHandler
+	tabID           int
+	imagesOK        func() bool
+	onToolsChanged  func()
+	onStatusChanged func()
+	interaction     engine.InteractionHandler
 
-	mu    sync.Mutex
-	conns []*mcpServerConn
+	mu     sync.Mutex
+	conns  []*mcpServerConn
+	states map[string]MCPStatus // by server name; includes needs-auth/error servers
 }
 
-// NewMCPManager creates a new MCPManager.
-func NewMCPManager(tabID int, imagesOK func() bool, onToolsChanged func(), interaction engine.InteractionHandler) *MCPManager {
+// NewMCPManager creates a new MCPManager. onStatusChanged fires whenever a
+// server's connection/auth state changes (nil is allowed).
+func NewMCPManager(tabID int, imagesOK func() bool, onToolsChanged, onStatusChanged func(), interaction engine.InteractionHandler) *MCPManager {
 	if imagesOK == nil {
 		imagesOK = func() bool { return false }
 	}
@@ -108,11 +188,37 @@ func NewMCPManager(tabID int, imagesOK func() bool, onToolsChanged func(), inter
 		interaction = engine.HeadlessInteractionHandler{}
 	}
 	return &MCPManager{
-		tabID:          tabID,
-		imagesOK:       imagesOK,
-		onToolsChanged: onToolsChanged,
-		interaction:    interaction,
+		tabID:           tabID,
+		imagesOK:        imagesOK,
+		onToolsChanged:  onToolsChanged,
+		onStatusChanged: onStatusChanged,
+		interaction:     interaction,
+		states:          map[string]MCPStatus{},
 	}
+}
+
+func (m *MCPManager) setStatus(name string, kind MCPServerStatusKind, detail string) {
+	m.mu.Lock()
+	if m.states == nil {
+		m.states = map[string]MCPStatus{}
+	}
+	m.states[name] = MCPStatus{Name: name, Kind: kind, Detail: detail}
+	m.mu.Unlock()
+	if m.onStatusChanged != nil {
+		m.onStatusChanged()
+	}
+}
+
+// Statuses returns a snapshot of every tracked server's live state.
+func (m *MCPManager) Statuses() []MCPStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]MCPStatus, 0, len(m.states))
+	for _, s := range m.states {
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // AttachAll connects all servers concurrently.
@@ -128,12 +234,15 @@ func (m *MCPManager) AttachAll(ctx context.Context, servers []MCPServer) {
 	wg.Wait()
 }
 
-// Attach connects a single server.
+// Attach connects a single server. A server that needs interactive OAuth is
+// tracked as needs-auth (not a hard failure); other failures are tracked as
+// errors; success is tracked as connected.
 func (m *MCPManager) Attach(ctx context.Context, srv MCPServer) error {
 	conn := &mcpServerConn{mgr: m, srv: srv}
-	if srv.Cfg.OAuth && srv.Cfg.EffectiveType() != MCPServerTypeStdio {
-		oauth, err := NewMCPOAuthHandler(srv.Cfg.URL)
+	if oauthWanted(srv.Cfg) {
+		oauth, err := NewMCPOAuthHandler(srv.Cfg.URL, false) // startup: non-interactive
 		if err != nil {
+			m.setStatus(srv.Name, MCPStatusError, err.Error())
 			return fmt.Errorf("oauth setup %s: %w", srv.Name, err)
 		}
 		conn.oauth = oauth
@@ -142,16 +251,91 @@ func (m *MCPManager) Attach(ctx context.Context, srv MCPServer) error {
 	defer cancel()
 	if err := conn.connect(connectCtx); err != nil {
 		conn.close()
+		if errors.Is(err, ErrMCPInteractiveAuthRequired) {
+			m.setStatus(srv.Name, MCPStatusNeedsAuth, "")
+			return nil
+		}
+		m.setStatus(srv.Name, MCPStatusError, err.Error())
 		return err
 	}
 	if err := conn.refreshTools(connectCtx); err != nil {
 		conn.close()
+		m.setStatus(srv.Name, MCPStatusError, err.Error())
 		return fmt.Errorf("list tools on %s: %w", srv.Name, err)
 	}
 	m.mu.Lock()
 	m.conns = append(m.conns, conn)
 	m.mu.Unlock()
+	m.setStatus(srv.Name, MCPStatusConnected, "")
 	return nil
+}
+
+// Detach closes and removes the connection (and tracked state) for a server
+// by name. No-op if absent.
+func (m *MCPManager) Detach(name string) {
+	m.mu.Lock()
+	var kept, closing []*mcpServerConn
+	for _, c := range m.conns {
+		if c.srv.Name == name {
+			closing = append(closing, c)
+		} else {
+			kept = append(kept, c)
+		}
+	}
+	m.conns = kept
+	delete(m.states, name)
+	m.mu.Unlock()
+	for _, c := range closing {
+		c.close()
+	}
+	if len(closing) > 0 {
+		m.toolsChanged()
+	}
+	if m.onStatusChanged != nil {
+		m.onStatusChanged()
+	}
+}
+
+// Reconcile brings the live connection set in line with the desired servers:
+// attaches any that are new, detaches any no longer desired, and reattaches
+// one whose config changed. Called when the browser toggles a server or an
+// authorization completes.
+func (m *MCPManager) Reconcile(ctx context.Context, desired []MCPServer) {
+	want := map[string]MCPServer{}
+	for _, s := range desired {
+		want[s.Name] = s
+	}
+	m.mu.Lock()
+	have := map[string]MCPServerConfig{}
+	for _, c := range m.conns {
+		have[c.srv.Name] = c.srv.Cfg
+	}
+	tracked := make([]string, 0, len(m.states))
+	for n := range m.states {
+		tracked = append(tracked, n)
+	}
+	m.mu.Unlock()
+
+	for name := range have {
+		if _, ok := want[name]; !ok {
+			m.Detach(name)
+		}
+	}
+	for _, name := range tracked {
+		if _, ok := want[name]; !ok {
+			m.Detach(name)
+		}
+	}
+	for name, srv := range want {
+		if cfg, ok := have[name]; ok && sameMCPConfig(cfg, srv.Cfg) {
+			continue
+		}
+		if _, ok := have[name]; ok {
+			m.Detach(name)
+		}
+		_ = m.Attach(ctx, srv)
+	}
+	m.toolsChanged()
 }
 
 // Toolsets returns all active ADK mcptoolset.Toolset instances.

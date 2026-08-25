@@ -33,6 +33,14 @@ this — see `pkg/engine/CLAUDE.md`.
   `workflows/`; a `SKILL.md` at the plugin root is a single-skill plugin;
   `commands/*.md` load as skills (`Skill.Command`); paths escaping the
   plugin dir are dropped.
+- `Contents.MCPFiles` resolves a plugin's MCP servers: the plugin-root
+  `.mcp.json` (Claude compat), every `mcps/*.json` (ask's directory
+  convention), and any `mcpServers` manifest/entry paths — each a
+  `.mcp.json`-format file (`{"mcpServers":{…}}`). An inline `mcpServers`
+  object in plugin.json is tolerated (parsing never fails) but resolved
+  from the files. `pkg/tools.PluginMCPServers` reads these (expanding
+  `${CLAUDE_PLUGIN_ROOT}`) and `ListMCPServers` folds them into the
+  session's servers — see `.claude/rules/tools.md`.
 - Marketplace sources (`ParseMarketplaceSource`): `owner/repo`, git URL,
   directory, marketplace.json URL. URL marketplaces are never `Writable()`.
 
@@ -137,7 +145,11 @@ state; nothing under `~/.claude` is written.
 ## Browser (`cmd/ask/skills_browser.go`, Ctrl+S / `/skills`)
 
 Lenses on Tab: Installed (Project / User / one group per plugin; rows
-tagged skill · agent · wf) and Marketplace (one group per marketplace,
+tagged skill · agent · wf; plus an **MCP Servers** group listing every
+configured server from all sources with source · transport · on/off and
+an auth indicator — space toggles enable/disable via a user/project scope
+chooser, ^o authorizes an OAuth server, ^d/Delete signs it out) and
+Marketplace (one group per marketplace,
 Enter drills into a plugin; tail rows add / import / create). Plain keys
 type into the search, so actions are Ctrl+letter: Ctrl+G install, Ctrl+D
 or Delete remove (own item → delete after confirm; plugin-backed →
