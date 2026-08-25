@@ -17,6 +17,7 @@ func (m model) sessionArgs() ProviderSessionArgs {
 		WorktreeName:       m.worktreeName,
 		ResumeCwd:          m.resumeCwd,
 		AddedDirs:          append([]string(nil), m.addedDirs...),
+		Topic:              m.tabTopic,
 		ProjectMCP:         projectGitHubMCP(m.cwd),
 	}
 	if m.sessionMinted {

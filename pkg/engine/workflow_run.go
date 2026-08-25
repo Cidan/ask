@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	pkgmemory "github.com/Cidan/ask/pkg/memory"
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/workflow"
 	"google.golang.org/adk/v2/agent"
@@ -135,27 +134,8 @@ func (e *Engine) RunWorkflow(ctx context.Context, cwd string, tabID int, def wor
 	}
 
 	progress.Finish(nil)
-	IngestWorkflowMemory(ctx, sessSvc, sessionID)
+	IngestWorkflowMemory(ctx, sessSvc, sessionID, cwd)
 	return nil
-}
-
-// IngestWorkflowMemory files a finished run into ask's long-term memory.
-// pkg/memory is the adkmemory.Service wired as the runner's
-// MemoryService; this is the one place a workflow session is fed into it.
-func IngestWorkflowMemory(ctx context.Context, sessSvc session.Service, sessionID string) {
-	mem := pkgmemory.Default()
-	if mem == nil || !mem.IsOpen() || sessSvc == nil {
-		return
-	}
-	resp, err := sessSvc.Get(ctx, &session.GetRequest{
-		AppName:   "ask",
-		UserID:    "user",
-		SessionID: sessionID,
-	})
-	if err != nil || resp == nil || resp.Session == nil {
-		return
-	}
-	_ = mem.AddSessionToMemory(ctx, resp.Session)
 }
 
 // toolResponseText is ToolResultText, kept as a package-local alias for

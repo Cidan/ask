@@ -118,6 +118,7 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 					Model:              modelID,
 					Tools:              toolsList,
 					SkipAllPermissions: true,
+					SkipMemory:         true,
 				})
 				if err != nil {
 					return "", err

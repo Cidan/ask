@@ -167,11 +167,11 @@ func TestTabTitleMsgAddsCost(t *testing.T) {
 }
 
 func TestGenerateTabTitleCmdPricesCall(t *testing.T) {
-	swapTitleGenerator(t, func(_, _, _ string) (string, TokenUsage, error) {
+	swapTitleGenerator(t, func(_, _, _ string, _ []string) (string, TokenUsage, error) {
 		return "A title", TokenUsage{InputTokens: 1_000_000}, nil
 	})
 	// Unpriceable model: cost unknown, title still delivered.
-	msg := generateTabTitleCmd(3, "vertex", "my-custom", "prompt")().(tabTitleMsg)
+	msg := generateTabTitleCmd(3, "vertex", "my-custom", t.TempDir(), "prompt")().(tabTitleMsg)
 	if msg.costKnown || msg.title != "A title" {
 		t.Fatalf("custom-model title msg = %+v", msg)
 	}

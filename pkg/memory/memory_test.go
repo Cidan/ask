@@ -2,402 +2,577 @@ package memory
 
 import (
 	"context"
+	"database/sql"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	adkmemory "google.golang.org/adk/v2/memory"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
-type fakeEmbedder struct {
-	dim int
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
 }
 
-func newFakeEmbedder(dim int) *fakeEmbedder {
-	return &fakeEmbedder{dim: dim}
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
 }
 
-func (f *fakeEmbedder) Embed(text string) ([]float32, error) {
-	vec := make([]float32, f.dim)
-	var h uint32 = 2166136261
-	for i := 0; i < len(text); i++ {
-		h = (h ^ uint32(text[i])) * 16777619
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+func newTestService(t *testing.T) (*Service, *fakeClock) {
+	t.Helper()
+	clock := &fakeClock{now: time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)}
+	svc, err := NewService(Options{
+		DBPath:   filepath.Join(t.TempDir(), "memory.db"),
+		Embedder: NewFakeEmbedder(512),
+		Now:      clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
 	}
-	for i := 0; i < f.dim; i++ {
-		vec[i] = float32((h+uint32(i*31))%1000) / 1000.0
+	t.Cleanup(func() { svc.Close() })
+	return svc, clock
+}
+
+func TestUpsertAndGet(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	cwd := filepath.Join(t.TempDir(), "proj")
+
+	id, err := svc.Upsert(ctx, Concept{Scope: ScopeFor(cwd), Kind: KindFeedback, Topic: " Code  Style ", Title: "Keep answers short", Body: "Bullets over prose."})
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
 	}
-	var norm float32
-	for _, v := range vec {
-		norm += v * v
+	got, err := svc.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
 	}
-	if norm > 0 {
-		s := float32(1.0 / math.Sqrt(float64(norm)))
-		for i := range vec {
-			vec[i] *= s
+	if got.Kind != KindFeedback || got.Title != "Keep answers short" || got.Body != "Bullets over prose." || got.Topic != "code style" || got.Weight != WeightInitial {
+		t.Fatalf("unexpected concept: %+v", got)
+	}
+
+	// Rewriting by id keeps the id and re-embeds under the new text.
+	id2, err := svc.Upsert(ctx, Concept{ID: id, Scope: got.Scope, Kind: KindFeedback, Title: "Keep answers terse", Body: "One idea per line."})
+	if err != nil || id2 != id {
+		t.Fatalf("update: id=%d err=%v", id2, err)
+	}
+	res, err := svc.Recall(ctx, RecallQuery{Cwd: cwd, Query: "terse answers one idea per line", K: 5, Silent: true})
+	if err != nil || len(res.Concepts) != 1 || res.Concepts[0].Title != "Keep answers terse" {
+		t.Fatalf("recall after update: %+v err=%v", res, err)
+	}
+
+	// Invalid kind defaults, missing title derives from the body.
+	id3, err := svc.Upsert(ctx, Concept{Scope: ScopeGlobal, Kind: "bogus", Body: "First line is the title\nrest is body"})
+	if err != nil {
+		t.Fatalf("Upsert derived: %v", err)
+	}
+	c3, _ := svc.Get(ctx, id3)
+	if c3.Kind != KindProject || c3.Title != "First line is the title" {
+		t.Fatalf("derived concept: %+v", c3)
+	}
+	if _, err := svc.Upsert(ctx, Concept{Scope: ScopeGlobal}); err == nil {
+		t.Fatal("empty concept must error")
+	}
+	if _, err := svc.Upsert(ctx, Concept{Title: "no scope"}); err == nil {
+		t.Fatal("missing scope must error")
+	}
+	// Unknown id inserts rather than failing.
+	id4, err := svc.Upsert(ctx, Concept{ID: 9999, Scope: ScopeGlobal, Title: "fresh"})
+	if err != nil || id4 == 9999 || id4 == 0 {
+		t.Fatalf("unknown id upsert: id=%d err=%v", id4, err)
+	}
+}
+
+func TestRecallScopesProjectAndGlobal(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	tmp := t.TempDir()
+	projA, projB := filepath.Join(tmp, "a"), filepath.Join(tmp, "b")
+
+	mustUpsert := func(c Concept) int64 {
+		t.Helper()
+		id, err := svc.Upsert(ctx, c)
+		if err != nil {
+			t.Fatalf("Upsert %q: %v", c.Title, err)
+		}
+		return id
+	}
+	mustUpsert(Concept{Scope: ScopeFor(projA), Kind: KindProject, Title: "deploy pipeline requires staging validation"})
+	mustUpsert(Concept{Scope: ScopeFor(projB), Kind: KindProject, Title: "deploy pipeline requires staging validation"})
+	mustUpsert(Concept{Scope: ScopeGlobal, Kind: KindUser, Title: "deploy pipeline requires staging validation always"})
+
+	res, err := svc.Recall(ctx, RecallQuery{Cwd: projA, Query: "deploy pipeline requires staging validation", K: 10})
+	if err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	var scopes []string
+	for _, c := range res.Concepts {
+		scopes = append(scopes, c.Scope)
+	}
+	joined := strings.Join(scopes, "|")
+	if len(scopes) != 2 || !strings.Contains(joined, ScopeFor(projA)) || !strings.Contains(joined, ScopeGlobal) {
+		t.Fatalf("project A recall must be its own plus global concepts: %v", scopes)
+	}
+	if strings.Contains(joined, ScopeFor(projB)) {
+		t.Fatalf("project B concept leaked into project A recall: %v", scopes)
+	}
+
+	// Empty cwd searches every scope.
+	all, err := svc.Recall(ctx, RecallQuery{Query: "deploy pipeline requires staging validation", K: 10})
+	if err != nil || len(all.Concepts) != 3 {
+		t.Fatalf("unscoped recall = %d concepts, err=%v", len(all.Concepts), err)
+	}
+	// Unrelated queries find nothing.
+	none, err := svc.Recall(ctx, RecallQuery{Cwd: projA, Query: "kitten photography", K: 10})
+	if err != nil || len(none.Concepts) != 0 {
+		t.Fatalf("unrelated recall = %+v err=%v", none.Concepts, err)
+	}
+}
+
+func TestRecallReranksByWeightAndBumps(t *testing.T) {
+	svc, clock := newTestService(t)
+	ctx := context.Background()
+	cwd := filepath.Join(t.TempDir(), "proj")
+	scope := ScopeFor(cwd)
+
+	cold, _ := svc.Upsert(ctx, Concept{Scope: scope, Kind: KindProject, Title: "release checklist smoke tests run first"})
+	hot, _ := svc.Upsert(ctx, Concept{Scope: scope, Kind: KindProject, Title: "release checklist smoke tests tag build"})
+	for i := 0; i < 3; i++ {
+		clock.Advance(2 * time.Minute)
+		if _, err := svc.Reinforce(ctx, hot); err != nil {
+			t.Fatalf("Reinforce: %v", err)
 		}
 	}
-	return vec, nil
-}
-
-func (f *fakeEmbedder) EmbdSize() int {
-	return f.dim
-}
-
-func (f *fakeEmbedder) Close() {}
-
-func TestMemoryService_Lifecycle(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test_memory.db")
-
-	embedder := newFakeEmbedder(64)
-	svc, err := NewService(Options{
-		DBPath:   dbPath,
-		Embedder: embedder,
-	})
-	if err != nil {
-		t.Fatalf("NewService failed: %v", err)
+	res, err := svc.Recall(ctx, RecallQuery{Cwd: cwd, Query: "release checklist smoke tests", K: 2})
+	if err != nil || len(res.Concepts) != 2 {
+		t.Fatalf("Recall: %+v err=%v", res, err)
+	}
+	if res.Concepts[0].ID != hot {
+		t.Fatalf("reinforced concept must rank first: got #%d then #%d", res.Concepts[0].ID, res.Concepts[1].ID)
+	}
+	if res.Concepts[0].Score <= res.Concepts[1].Score {
+		t.Fatalf("scores must be ordered: %v", []float64{res.Concepts[0].Score, res.Concepts[1].Score})
 	}
 
-	if !svc.IsOpen() {
-		t.Fatal("expected service to be open")
+	// The recall bumped both.
+	c, _ := svc.Get(ctx, cold)
+	if c.AccessCount != 1 || c.Weight <= WeightInitial {
+		t.Fatalf("implicit bump missing: %+v", c)
 	}
+	before := c.Weight
+	_, _ = svc.Recall(ctx, RecallQuery{Cwd: cwd, Query: "release checklist", K: 2, Silent: true})
+	c, _ = svc.Get(ctx, cold)
+	if c.AccessCount != 1 || c.Weight != before {
+		t.Fatalf("silent recall must not bump: %+v", c)
+	}
+}
 
+func TestDecayReinforceDemoteRefractory(t *testing.T) {
+	svc, clock := newTestService(t)
 	ctx := context.Background()
-	cwd := filepath.Join(tmpDir, "myproj")
+	id, _ := svc.Upsert(ctx, Concept{Scope: ScopeGlobal, Kind: KindUser, Title: "user is a Go developer"})
 
-	err = svc.Index(ctx, cwd, "Initial architectural design decision")
-	if err != nil {
-		t.Fatalf("Index failed: %v", err)
-	}
-
-	hits, err := svc.Recall(ctx, cwd, "Initial architectural", 5)
-	if err != nil {
-		t.Fatalf("Recall failed: %v", err)
-	}
-	if len(hits) != 1 {
-		t.Fatalf("expected 1 hit, got %d", len(hits))
-	}
-	if hits[0].Text != "Initial architectural design decision" {
-		t.Errorf("unexpected hit text: %s", hits[0].Text)
+	clock.Advance(ConceptHalfLife)
+	c, _ := svc.Get(ctx, id)
+	if math.Abs(c.Weight-WeightInitial/2) > 0.01 {
+		t.Fatalf("after one half-life weight = %v, want ~%v", c.Weight, WeightInitial/2)
 	}
 
-	// Close service
-	if err := svc.Close(); err != nil {
-		t.Fatalf("Close failed: %v", err)
+	applied, err := svc.Reinforce(ctx, id)
+	if err != nil || !applied {
+		t.Fatalf("Reinforce applied=%v err=%v", applied, err)
 	}
-	if svc.IsOpen() {
-		t.Fatal("expected service to be closed")
+	c, _ = svc.Get(ctx, id)
+	want := 0.5 + ExplicitBump*(1-0.5/WeightCap)
+	if math.Abs(c.Weight-want) > 0.01 {
+		t.Fatalf("reinforced weight = %v want ~%v (log-dampened)", c.Weight, want)
+	}
+
+	// A second explicit bump inside the refractory window is dropped.
+	clock.Advance(10 * time.Second)
+	applied, err = svc.Reinforce(ctx, id)
+	if err != nil || applied {
+		t.Fatalf("refractory: applied=%v err=%v", applied, err)
+	}
+	after, _ := svc.Get(ctx, id)
+	if math.Abs(after.Weight-c.Weight) > 0.001 {
+		t.Fatalf("refractory bump changed weight: %v -> %v", c.Weight, after.Weight)
+	}
+
+	clock.Advance(RefractoryPeriod)
+	for i := 0; i < 20; i++ {
+		clock.Advance(RefractoryPeriod)
+		_, _ = svc.Reinforce(ctx, id)
+	}
+	c, _ = svc.Get(ctx, id)
+	if c.Weight > WeightCap || c.Weight < WeightCap-0.5 {
+		t.Fatalf("repeated reinforce must approach but not exceed the cap: %v", c.Weight)
+	}
+
+	clock.Advance(RefractoryPeriod)
+	for i := 0; i < 20; i++ {
+		clock.Advance(RefractoryPeriod)
+		_, _ = svc.Demote(ctx, id)
+	}
+	c, _ = svc.Get(ctx, id)
+	if c.Weight != WeightFloor {
+		t.Fatalf("demote must clamp at the floor, got %v", c.Weight)
+	}
+	if _, err := svc.Get(ctx, id); err != nil {
+		t.Fatal("demoted concept must still exist")
+	}
+
+	if _, err := svc.Reinforce(ctx, 424242); err == nil {
+		t.Fatal("reinforcing an unknown id must error")
 	}
 }
 
-func TestMemoryService_ProjectIsolation(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "isolation.db")
-
-	embedder := newFakeEmbedder(64)
-	svc, err := NewService(Options{
-		DBPath:   dbPath,
-		Embedder: embedder,
-	})
-	if err != nil {
-		t.Fatalf("NewService failed: %v", err)
-	}
-	defer svc.Close()
-
+func TestForget(t *testing.T) {
+	svc, _ := newTestService(t)
 	ctx := context.Background()
-	projA := filepath.Join(tmpDir, "project-a")
-	projB := filepath.Join(tmpDir, "project-b")
-
-	if err := svc.Index(ctx, projA, "Project A secret documentation"); err != nil {
-		t.Fatalf("Index projA: %v", err)
+	id, _ := svc.Upsert(ctx, Concept{Scope: ScopeGlobal, Kind: KindReference, Title: "dashboard lives at grafana"})
+	if err := svc.Forget(ctx, id); err != nil {
+		t.Fatalf("Forget: %v", err)
 	}
-	if err := svc.Index(ctx, projB, "Project B secret documentation"); err != nil {
-		t.Fatalf("Index projB: %v", err)
+	if _, err := svc.Get(ctx, id); err == nil {
+		t.Fatal("forgotten concept must be gone")
 	}
-
-	// Query from projA should only return projA records
-	hitsA, err := svc.Recall(ctx, projA, "Project A secret documentation", 5)
-	if err != nil {
-		t.Fatalf("Recall projA: %v", err)
+	res, _ := svc.Recall(ctx, RecallQuery{Query: "dashboard grafana", K: 5})
+	if len(res.Concepts) != 0 {
+		t.Fatalf("forgotten concept still recalled: %+v", res.Concepts)
 	}
-	if len(hitsA) != 1 || hitsA[0].Text != "Project A secret documentation" {
-		t.Fatalf("expected only projA hit, got: %+v", hitsA)
-	}
-
-	// Query from projB should only return projB records
-	hitsB, err := svc.Recall(ctx, projB, "Project B secret documentation", 5)
-	if err != nil {
-		t.Fatalf("Recall projB: %v", err)
-	}
-	if len(hitsB) != 1 || hitsB[0].Text != "Project B secret documentation" {
-		t.Fatalf("expected only projB hit, got: %+v", hitsB)
+	if err := svc.Forget(ctx, id); err == nil {
+		t.Fatal("forgetting twice must error")
 	}
 }
 
-func TestMemoryService_Sweep(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "sweep.db")
-
-	embedder := newFakeEmbedder(64)
-	svc, err := NewService(Options{
-		DBPath:   dbPath,
-		Embedder: embedder,
-	})
-	if err != nil {
-		t.Fatalf("NewService failed: %v", err)
-	}
-	defer svc.Close()
-
+func TestTopAndTopics(t *testing.T) {
+	svc, clock := newTestService(t)
 	ctx := context.Background()
-	cwd := filepath.Join(tmpDir, "testproj")
+	cwd := filepath.Join(t.TempDir(), "proj")
+	scope := ScopeFor(cwd)
 
-	if err := svc.Index(ctx, cwd, "Recent memory entry"); err != nil {
-		t.Fatalf("Index recent: %v", err)
+	a, _ := svc.Upsert(ctx, Concept{Scope: scope, Kind: KindProject, Topic: "memory", Title: "alpha"})
+	b, _ := svc.Upsert(ctx, Concept{Scope: scope, Kind: KindProject, Topic: "memory", Title: "beta"})
+	g, _ := svc.Upsert(ctx, Concept{Scope: ScopeGlobal, Kind: KindUser, Topic: "style", Title: "gamma"})
+	_, _ = svc.Upsert(ctx, Concept{Scope: "/elsewhere", Kind: KindProject, Topic: "other", Title: "delta"})
+	clock.Advance(time.Minute)
+	_, _ = svc.Reinforce(ctx, b)
+
+	top, err := svc.Top(ctx, cwd, 10)
+	if err != nil {
+		t.Fatalf("Top: %v", err)
+	}
+	if len(top) != 3 || top[0].ID != b {
+		var ids []int64
+		for _, c := range top {
+			ids = append(ids, c.ID)
+		}
+		t.Fatalf("Top = %v, want [%d %d|%d %d|%d] with %d first", ids, b, a, g, a, g, b)
+	}
+	if top2, _ := svc.Top(ctx, cwd, 2); len(top2) != 2 {
+		t.Fatalf("Top k=2 returned %d", len(top2))
 	}
 
-	// Artificially age a record
-	_, err = svc.db.Exec(`
-		UPDATE project_memory SET last_recalled_at = datetime('now', '-40 days')
+	names := svc.TopicNames(ctx, cwd, 10)
+	if strings.Join(names, ",") != "memory,style" {
+		t.Fatalf("topics = %v, want [memory style]", names)
+	}
+	if err := svc.TouchTopic(ctx, cwd, "Memory"); err != nil {
+		t.Fatalf("TouchTopic: %v", err)
+	}
+	topics, _ := svc.Topics(ctx, cwd, 10)
+	if topics[0].Name != "memory" || topics[0].Weight <= WeightInitial {
+		t.Fatalf("touched topic must lead and be bumped: %+v", topics)
+	}
+	if err := svc.TouchTopic(ctx, "", "cross project"); err != nil {
+		t.Fatalf("TouchTopic global: %v", err)
+	}
+	names = svc.TopicNames(ctx, cwd, 10)
+	if len(names) != 3 || !strings.Contains(strings.Join(names, ","), "cross project") {
+		t.Fatalf("global topic must be visible from a project: %v", names)
+	}
+	elsewhere := strings.Join(svc.TopicNames(ctx, "/elsewhere", 10), ",")
+	if strings.Contains(elsewhere, "memory") || !strings.Contains(elsewhere, "other") || !strings.Contains(elsewhere, "style") || !strings.Contains(elsewhere, "cross project") {
+		t.Fatalf("other project sees its own topics plus global, never another project's: %v", elsewhere)
+	}
+}
+
+func TestRecallInfersTopicAndBoosts(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	cwd := filepath.Join(t.TempDir(), "proj")
+	scope := ScopeFor(cwd)
+
+	_, _ = svc.Upsert(ctx, Concept{Scope: scope, Kind: KindFeedback, Topic: "communication", Title: "answers should be short"})
+	_, _ = svc.Upsert(ctx, Concept{Scope: scope, Kind: KindFeedback, Topic: "communication", Title: "answers should be brief"})
+	other, _ := svc.Upsert(ctx, Concept{Scope: scope, Kind: KindProject, Topic: "deploy", Title: "answers should be about deploys"})
+
+	res, err := svc.Recall(ctx, RecallQuery{Cwd: cwd, Query: "answers should be short", Topic: "deploy", K: 10})
+	if err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	if res.Topic != "communication" {
+		t.Fatalf("inferred topic = %q, want communication (two hits agree)", res.Topic)
+	}
+	if len(res.Concepts) != 3 || res.Concepts[len(res.Concepts)-1].ID != other {
+		t.Fatalf("off-topic concept must rank last after the topic boost: %+v", res.Concepts)
+	}
+
+	// No agreement among hits: fall back to the caller's topic.
+	single, _ := svc.Recall(ctx, RecallQuery{Cwd: cwd, Query: "staging deploys", Topic: "Deploy Ops", K: 10})
+	if single.Topic != "deploy ops" {
+		t.Fatalf("fallback topic = %q", single.Topic)
+	}
+	empty, _ := svc.Recall(ctx, RecallQuery{Cwd: cwd, Query: "   ", Topic: "x"})
+	if empty.Topic != "x" || len(empty.Concepts) != 0 {
+		t.Fatalf("empty query: %+v", empty)
+	}
+}
+
+func TestLegacyMigration(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+	raw, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = raw.Exec(`
+		CREATE TABLE project_memory (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT, text_payload TEXT, last_recalled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+		INSERT INTO project_memory (project_id, text_payload) VALUES ('/home/u/proj', 'FEEDBACK: never mock the database.' || char(10) || 'WHY: prod migration failed.');
+		INSERT INTO project_memory (project_id, text_payload) VALUES ('', 'user prefers dark mode');
+		INSERT INTO project_memory (project_id, text_payload) VALUES ('/home/u/proj', '   ');
 	`)
 	if err != nil {
-		t.Fatalf("aging record failed: %v", err)
+		t.Fatal(err)
 	}
+	raw.Close()
 
-	// Run sweep
-	if err := svc.Sweep(ctx); err != nil {
-		t.Fatalf("Sweep failed: %v", err)
-	}
-
-	// Recall should find nothing
-	hits, err := svc.Recall(ctx, cwd, "Recent memory entry", 5)
+	svc, err := NewService(Options{DBPath: dbPath, Embedder: NewFakeEmbedder(512)})
 	if err != nil {
-		t.Fatalf("Recall after sweep: %v", err)
+		t.Fatalf("NewService: %v", err)
 	}
-	if len(hits) != 0 {
-		t.Fatalf("expected 0 hits after sweep, got %d", len(hits))
+	defer svc.Close()
+	ctx := context.Background()
+	top, err := svc.Top(ctx, "", 10)
+	if err != nil || len(top) != 2 {
+		t.Fatalf("migrated concepts = %d err=%v: %+v", len(top), err, top)
+	}
+	byTitle := map[string]Concept{}
+	for _, c := range top {
+		byTitle[c.Title] = c
+	}
+	fb, ok := byTitle["FEEDBACK: never mock the database."]
+	if !ok || fb.Scope != "/home/u/proj" || !strings.Contains(fb.Body, "WHY") || fb.Kind != KindProject {
+		t.Fatalf("legacy row not converted: %+v", byTitle)
+	}
+	if dm := byTitle["user prefers dark mode"]; dm.Scope != ScopeGlobal {
+		t.Fatalf("empty project id must become global: %+v", dm)
+	}
+	var n int
+	if err := svc.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name IN ('project_memory','vec_memory')`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("legacy tables must be dropped: n=%d err=%v", n, err)
+	}
+	res, _ := svc.Recall(ctx, RecallQuery{Cwd: "/home/u/proj", Query: "mock the database", K: 5})
+	if len(res.Concepts) != 1 {
+		t.Fatalf("migrated concept not recallable: %+v", res.Concepts)
+	}
+	// Reopening is a no-op.
+	svc.Close()
+	again, err := NewService(Options{DBPath: dbPath, Embedder: NewFakeEmbedder(512)})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer again.Close()
+	if top, _ := again.Top(ctx, "", 10); len(top) != 2 {
+		t.Fatalf("reopen duplicated concepts: %d", len(top))
 	}
 }
 
-func TestMemoryService_ConcurrentAccess(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "concurrent.db")
-
-	embedder := newFakeEmbedder(32)
-	svc, err := NewService(Options{
-		DBPath:   dbPath,
-		Embedder: embedder,
-	})
-	if err != nil {
-		t.Fatalf("NewService failed: %v", err)
+func TestFormatConcepts(t *testing.T) {
+	concepts := []Concept{
+		{ID: 1, Kind: KindFeedback, Topic: "style", Title: "Short answers", Body: "Bullets.\nNo prose."},
+		{ID: 2, Kind: KindUser, Scope: ScopeGlobal, Title: "Go developer", Body: "Go developer"},
+		{ID: 3, Kind: KindProject, Title: "Third", Body: "hidden body"},
 	}
-	defer svc.Close()
+	got := FormatConcepts(concepts, "Project memory", "note", 2)
+	want := "## Project memory\nnote\n\n- #1 [feedback · style] Short answers\n  Bullets.\n  No prose.\n- #2 [user · global] Go developer\n- #3 [project] Third"
+	if got != want {
+		t.Fatalf("FormatConcepts:\n%s\nwant:\n%s", got, want)
+	}
+	if FormatConcepts(nil, "x", "", 1) != "" {
+		t.Fatal("empty list must render nothing")
+	}
+}
 
+func TestPromptBlocksThroughDefault(t *testing.T) {
+	_ = Close()
+	defer Close()
 	ctx := context.Background()
-	cwd := filepath.Join(tmpDir, "proj")
+	cwd := filepath.Join(t.TempDir(), "proj")
+	if SystemBlock(ctx, cwd) != "" || TopIDs(ctx, cwd) != nil || FileBlock(ctx, cwd, "main.go") != "" {
+		t.Fatal("closed service must render nothing")
+	}
+	if block, topic := RecallBlock(ctx, cwd, "anything", "T", nil); block != "" || topic != "t" {
+		t.Fatalf("closed RecallBlock = %q/%q", block, topic)
+	}
+	if err := Open(Options{DBPath: filepath.Join(t.TempDir(), "d.db"), Embedder: NewFakeEmbedder(512)}); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	top, _ := Upsert(ctx, Concept{Scope: ScopeFor(cwd), Kind: KindProject, Topic: "build", Title: "make test builds llama"})
+	other, _ := Upsert(ctx, Concept{Scope: ScopeFor(cwd), Kind: KindProject, Topic: "build", Title: "make test downloads model"})
 
+	sys := SystemBlock(ctx, cwd)
+	if !strings.Contains(sys, "## Project memory") || !strings.Contains(sys, "builds llama") {
+		t.Fatalf("SystemBlock: %q", sys)
+	}
+	ids := TopIDs(ctx, cwd)
+	if !ids[top] || !ids[other] {
+		t.Fatalf("TopIDs = %v", ids)
+	}
+	block, topic := RecallBlock(ctx, cwd, "make test", "", ids)
+	if block != "" {
+		t.Fatalf("ids in the system block must be excluded: %q", block)
+	}
+	if topic != "build" {
+		t.Fatalf("topic = %q", topic)
+	}
+	block, _ = RecallBlock(ctx, cwd, "make test", "", nil)
+	if !strings.Contains(block, "## Relevant memory") || !strings.Contains(block, "builds llama") {
+		t.Fatalf("RecallBlock: %q", block)
+	}
+	file := FileBlock(ctx, cwd, "make test")
+	if !strings.Contains(file, "## Memory for make test") {
+		t.Fatalf("FileBlock: %q", file)
+	}
+}
+
+type fakeExtractor struct {
+	mu   sync.Mutex
+	recs []TurnRecord
+}
+
+func (f *fakeExtractor) Enqueue(r TurnRecord) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recs = append(f.recs, r)
+	return true
+}
+
+func TestAddSessionToMemoryHandsLastExchangeToExtractor(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	sessSvc := session.InMemoryService()
+	created, err := sessSvc.Create(ctx, &session.CreateRequest{AppName: "ask", UserID: "user", SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	append := func(role genai.Role, text string) {
+		ev := session.NewEvent(ctx, "inv")
+		ev.Content = genai.NewContentFromText(text, role)
+		_ = sessSvc.AppendEvent(ctx, created.Session, ev)
+	}
+	append(genai.RoleUser, "first question")
+	append(genai.RoleModel, "first answer")
+	append(genai.RoleUser, "second question")
+	append(genai.RoleModel, "part one")
+	append(genai.RoleModel, "part two")
+
+	if err := svc.AddSessionToMemory(ctx, created.Session); err == nil {
+		t.Fatal("without an extractor AddSessionToMemory must error")
+	}
+	fx := &fakeExtractor{}
+	svc.SetExtractor(fx)
+	if err := svc.AddSessionToMemory(ctx, created.Session); err != nil {
+		t.Fatalf("AddSessionToMemory: %v", err)
+	}
+	if len(fx.recs) != 1 || fx.recs[0].Prompt != "second question" || fx.recs[0].Response != "part one\npart two" {
+		t.Fatalf("extractor got %+v", fx.recs)
+	}
+	var closed *Service
+	if err := closed.AddSessionToMemory(ctx, nil); err == nil {
+		t.Fatal("closed service must error")
+	}
+}
+
+func TestSearchMemoryADKShape(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	_, _ = svc.Upsert(ctx, Concept{Scope: "/p", Kind: KindProject, Topic: "deploy", Title: "staging validation first", Body: "Deploy pipeline requires staging validation first."})
+
+	resp, err := svc.SearchMemory(ctx, &adkmemory.SearchRequest{Query: "staging validation pipeline"})
+	if err != nil || len(resp.Memories) != 1 {
+		t.Fatalf("SearchMemory: %+v err=%v", resp, err)
+	}
+	entry := resp.Memories[0]
+	if entry.ID == "" || entry.CustomMetadata["kind"] != KindProject || entry.CustomMetadata["topic"] != "deploy" {
+		t.Fatalf("entry: %+v", entry)
+	}
+	if !strings.Contains(entry.Content.Parts[0].Text, "staging validation first") {
+		t.Fatalf("content: %q", entry.Content.Parts[0].Text)
+	}
+	if empty, _ := svc.SearchMemory(ctx, &adkmemory.SearchRequest{Query: " "}); len(empty.Memories) != 0 {
+		t.Fatal("blank query must return nothing")
+	}
+	var closed *Service
+	if r, err := closed.SearchMemory(ctx, &adkmemory.SearchRequest{Query: "x"}); err != nil || len(r.Memories) != 0 {
+		t.Fatal("closed service must return an empty response")
+	}
+}
+
+func TestConcurrentAccess(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	cwd := filepath.Join(t.TempDir(), "proj")
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
 		wg.Add(2)
-		go func(idx int) {
+		go func() {
 			defer wg.Done()
-			_ = svc.Index(ctx, cwd, "Concurrent indexed text entry")
-		}(i)
-		go func(idx int) {
+			_, _ = svc.Upsert(ctx, Concept{Scope: ScopeFor(cwd), Kind: KindProject, Title: "concurrent entry"})
+		}()
+		go func() {
 			defer wg.Done()
-			_, _ = svc.Recall(ctx, cwd, "Concurrent indexed", 3)
-		}(i)
+			_, _ = svc.Recall(ctx, RecallQuery{Cwd: cwd, Query: "concurrent entry", K: 3})
+		}()
 	}
 	wg.Wait()
 }
 
-func TestFormatRecallContext(t *testing.T) {
-	hits := []RecallHit{
-		{ID: 1, Text: "First rule"},
-		{ID: 2, Text: "Second note"},
+func TestWeightMath(t *testing.T) {
+	if w := decayedWeight(2, 0, ConceptHalfLife); w != 2 {
+		t.Fatalf("no time, no decay: %v", w)
 	}
-
-	formatted := FormatRecallContext(hits, "Project Memory")
-	expected := "## Project Memory\n\n1. First rule\n2. Second note"
-	if formatted != expected {
-		t.Fatalf("expected:\n%q\ngot:\n%q", expected, formatted)
+	if w := decayedWeight(WeightInitial, 1000*ConceptHalfLife, ConceptHalfLife); w != WeightFloor {
+		t.Fatalf("decay floors at %v, got %v", WeightFloor, w)
 	}
-
-	if empty := FormatRecallContext(nil, "Heading"); empty != "" {
-		t.Errorf("expected empty string for nil hits, got %q", empty)
+	if w := bumpWeight(WeightCap, ExplicitBump, true); w != WeightCap {
+		t.Fatalf("dampened bump at the cap must stay at the cap: %v", w)
 	}
-}
-
-func TestPromptContext_And_SystemBlock(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "global.db")
-	embedder := newFakeEmbedder(32)
-
-	_ = Close()
-	defer Close()
-
-	if block := SystemBlock(context.Background(), "/tmp"); block != "" {
-		t.Errorf("expected empty block when service closed, got %q", block)
+	if w := bumpWeight(1, -10, true); w != WeightFloor {
+		t.Fatalf("negative bumps clamp at the floor: %v", w)
 	}
-	if prompt := PromptContext(context.Background(), "/tmp", "test"); prompt != "" {
-		t.Errorf("expected empty prompt context when service closed, got %q", prompt)
+	if rerankScore(0, 4) <= rerankScore(0, 1) || rerankScore(0.3, 1) >= rerankScore(0, 1) {
+		t.Fatal("score must grow with weight and shrink with distance")
 	}
-
-	err := Open(Options{
-		DBPath:   dbPath,
-		Embedder: embedder,
-	})
-	if err != nil {
-		t.Fatalf("Open failed: %v", err)
+	if NormalizeTopic("  Memory   Design  Notes extra ") != "memory design notes" {
+		t.Fatal("NormalizeTopic must lowercase, collapse, and cap at three words")
 	}
-
-	ctx := context.Background()
-	cwd := filepath.Join(tmpDir, "proj")
-	_ = Index(ctx, cwd, "Database migration guidelines")
-
-	prompt := PromptContext(ctx, cwd, "Database migration guidelines")
-	if prompt == "" {
-		t.Error("expected non-empty prompt recall context")
-	}
-}
-
-func TestMemoryService_ADKServiceCompliance(t *testing.T) {
-	var _ adkmemory.Service = (*Service)(nil)
-
-	// Closed service calls should fail gracefully or return empty response
-	var closedSvc *Service
-	if err := closedSvc.AddSessionToMemory(context.Background(), nil); err == nil {
-		t.Error("expected error when adding session to closed service")
-	}
-	resp, err := closedSvc.SearchMemory(context.Background(), &adkmemory.SearchRequest{Query: "test"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(resp.Memories) != 0 {
-		t.Errorf("expected 0 memories for closed service, got %d", len(resp.Memories))
-	}
-}
-
-func TestMemoryService_AddSessionToMemory(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "session_mem.db")
-
-	embedder := newFakeEmbedder(64)
-	svc, err := NewService(Options{
-		DBPath:   dbPath,
-		Embedder: embedder,
-	})
-	if err != nil {
-		t.Fatalf("NewService failed: %v", err)
-	}
-	defer svc.Close()
-
-	ctx := context.Background()
-	sessSvc := session.InMemoryService()
-	sess, err := sessSvc.Create(ctx, &session.CreateRequest{
-		AppName:   "ask",
-		UserID:    "user",
-		SessionID: "sess-123",
-	})
-	if err != nil {
-		t.Fatalf("session create failed: %v", err)
-	}
-
-	// Append user and model events
-	userEvent := session.NewEvent(ctx, "inv-1")
-	userEvent.Content = genai.NewContentFromText("I prefer snake_case naming conventions across all Go packages.", genai.RoleUser)
-	_ = sessSvc.AppendEvent(ctx, sess.Session, userEvent)
-
-	modelEvent := session.NewEvent(ctx, "inv-2")
-	modelEvent.Content = genai.NewContentFromText("Acknowledged, I will follow snake_case naming conventions.", genai.RoleModel)
-	_ = sessSvc.AppendEvent(ctx, sess.Session, modelEvent)
-
-	// Ingest session
-	if err := svc.AddSessionToMemory(ctx, sess.Session); err != nil {
-		t.Fatalf("AddSessionToMemory failed: %v", err)
-	}
-
-	// Query via SearchMemory
-	searchResp, err := svc.SearchMemory(ctx, &adkmemory.SearchRequest{
-		Query: "snake_case naming conventions",
-	})
-	if err != nil {
-		t.Fatalf("SearchMemory failed: %v", err)
-	}
-	if len(searchResp.Memories) == 0 {
-		t.Fatal("expected at least 1 memory entry, got 0")
-	}
-
-	found := false
-	for _, m := range searchResp.Memories {
-		if m.Content != nil && len(m.Content.Parts) > 0 && m.Content.Parts[0].Text != "" {
-			if strings.Contains(m.Content.Parts[0].Text, "snake_case") {
-				found = true
-				break
-			}
-		}
-	}
-	if !found {
-		t.Error("expected to find ingested snake_case memory in SearchMemory response")
-	}
-}
-
-func TestMemoryService_SearchMemory(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "search_mem.db")
-
-	embedder := newFakeEmbedder(64)
-	svc, err := NewService(Options{
-		DBPath:   dbPath,
-		Embedder: embedder,
-	})
-	if err != nil {
-		t.Fatalf("NewService failed: %v", err)
-	}
-	defer svc.Close()
-
-	ctx := context.Background()
-	cwd := filepath.Join(tmpDir, "myproj")
-
-	if err := svc.Index(ctx, cwd, "Deploy pipeline requires staging validation first"); err != nil {
-		t.Fatalf("Index failed: %v", err)
-	}
-
-	// Search matching query
-	resp, err := svc.SearchMemory(ctx, &adkmemory.SearchRequest{
-		Query: "staging validation pipeline",
-	})
-	if err != nil {
-		t.Fatalf("SearchMemory failed: %v", err)
-	}
-	if len(resp.Memories) != 1 {
-		t.Fatalf("expected 1 memory entry, got %d", len(resp.Memories))
-	}
-
-	entry := resp.Memories[0]
-	if entry.ID == "" {
-		t.Error("expected non-empty memory entry ID")
-	}
-	if entry.Content == nil || len(entry.Content.Parts) == 0 || entry.Content.Parts[0].Text != "Deploy pipeline requires staging validation first" {
-		t.Errorf("unexpected content in memory entry: %+v", entry.Content)
-	}
-	if entry.CustomMetadata == nil || entry.CustomMetadata["project_id"] == "" {
-		t.Errorf("expected project_id in custom metadata: %+v", entry.CustomMetadata)
-	}
-
-	// Search empty query
-	emptyResp, err := svc.SearchMemory(ctx, &adkmemory.SearchRequest{
-		Query: "",
-	})
-	if err != nil {
-		t.Fatalf("SearchMemory empty query failed: %v", err)
-	}
-	if len(emptyResp.Memories) != 0 {
-		t.Errorf("expected 0 memories for empty query, got %d", len(emptyResp.Memories))
+	if TitleFromBody("\n\n"+strings.Repeat("x", 100)) == "" || len([]rune(TitleFromBody(strings.Repeat("x", 100)))) > 80 {
+		t.Fatal("TitleFromBody must clip long first lines")
 	}
 }
 
@@ -406,39 +581,25 @@ func TestRealModel_IfAvailable(t *testing.T) {
 	if err != nil {
 		t.Skip("user home not found")
 	}
-
 	modelPath := filepath.Join(realHome, ".local", "share", "ask", "models", "embeddinggemma-300M-Q8_0.gguf")
 	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
 		t.Skip("real GGUF model not found, skipping real model test")
 	}
-
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "real_model.db")
-
-	svc, err := NewService(Options{
-		DBPath:    dbPath,
-		ModelPath: modelPath,
-	})
+	svc, err := NewService(Options{DBPath: filepath.Join(t.TempDir(), "real.db"), ModelPath: modelPath})
 	if err != nil {
 		t.Fatalf("NewService with real model failed: %v", err)
 	}
 	defer svc.Close()
-
 	ctx := context.Background()
-	cwd := filepath.Join(tmpDir, "real_proj")
-
-	if err := svc.Index(ctx, cwd, "Refactoring user authentication logic"); err != nil {
-		t.Fatalf("Index real model: %v", err)
+	cwd := filepath.Join(t.TempDir(), "real_proj")
+	if _, err := svc.Upsert(ctx, Concept{Scope: ScopeFor(cwd), Kind: KindProject, Title: "Refactoring user authentication logic"}); err != nil {
+		t.Fatalf("Upsert real model: %v", err)
 	}
-
-	hits, err := svc.Recall(ctx, cwd, "user authentication", 3)
-	if err != nil {
-		t.Fatalf("Recall real model: %v", err)
+	res, err := svc.Recall(ctx, RecallQuery{Cwd: cwd, Query: "user authentication", K: 3})
+	if err != nil || len(res.Concepts) == 0 {
+		t.Fatalf("Recall real model: %+v err=%v", res, err)
 	}
-	if len(hits) == 0 {
-		t.Fatal("expected at least 1 hit with real model")
-	}
-	if hits[0].Text != "Refactoring user authentication logic" {
-		t.Errorf("unexpected hit text: %s", hits[0].Text)
+	if res.Concepts[0].Title != "Refactoring user authentication logic" {
+		t.Errorf("unexpected hit: %s", res.Concepts[0].Title)
 	}
 }

@@ -84,6 +84,7 @@ func (m model) globalConfigItems() []configItem {
 		{"Theme", m.themeName, "theme"},
 		{"Default Provider", provName, "provider"},
 		{"Web Search...", webSearch, "webSearch"},
+		{"Memory...", memoryConfigSummary(cfg), "memory"},
 	}
 	// One settings row per registered provider, generated from the
 	// registry: the row reads "on" once the provider has its credentials.
@@ -379,6 +380,9 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "webSearch":
 		m = m.openWebSearchFieldsPicker()
+		return m, nil
+	case "memory":
+		m = m.openMemoryFieldsPicker()
 		return m, nil
 	case "keybindings":
 		m = m.openConfigKeybindingsPicker()

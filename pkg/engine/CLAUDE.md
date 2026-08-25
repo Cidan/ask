@@ -127,7 +127,8 @@ text) → `<env>` (cwd, git repo flag, platform, date, git status from
 `AgentGitStatus`, 40-line cap) → `<project_instructions>` →
 `<project_rules>` (eager) → `<included_docs>` (`@`-links, seeded from
 each document's `Links`, resolved against its own `Root`) →
-`<project_memory>` (when `memory.IsOpen()`, 2s timeout) →
+`<project_memory>` (the top-weighted concepts, when `memory.IsOpen()`,
+2s timeout) →
 `<available_skills>` (unless `DisableSkillsPrompt`) →
 `<available_agents>` → `providers.SteeringPrompt`.
 
@@ -220,9 +221,19 @@ each document's `Links`, resolved against its own `Root`) →
 ## Memory
 
 `memory.IsOpen()` / `memory.SystemBlock` feed `<project_memory>`;
-`pkgmemory.Default()` is the runner's `MemoryService` when open;
-`IngestWorkflowMemory` files a finished workflow session. See
-`pkg/memory/CLAUDE.md`.
+`pkgmemory.Default()` is the runner's `MemoryService` when open.
+`memory_extract.go` is the write side: `MemoryExtractor` (one worker,
+bounded drop-oldest queue, `Close` cancels in flight, `Drain` for tests)
+turns a finished turn into concepts with one small model call on
+`MemoryExtractModel` (config `memory.{provider,model}`, else the session's
+provider and `providers.CheapestModel`). `EnsureMemoryExtractor` /
+`CloseMemoryExtractor` own the process-wide instance;
+`EnqueueMemoryTurn` is what `Run` (unless `RunOptions.SkipMemory` — set
+for sub-agents) and the TUI call; `IngestWorkflowMemory(ctx, sessSvc,
+sessionID, cwd)` reduces a finished workflow session to its last exchange
+and enqueues it. `AppendTouchedFile` collects the read/write/edit paths a
+turn touched. `DebugLog` is the engine's debug seam (the TUI points it at
+`debugLog`). Detail in `pkg/memory/CLAUDE.md`.
 
 ## File map
 

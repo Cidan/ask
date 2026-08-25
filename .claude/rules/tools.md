@@ -62,7 +62,9 @@ in the TUI (`cmd/ask/agent_tools_task.go`); `pkg/tools.CoreTools` is the
 same list without it.
 
 Deferred registry (`s.deferredBase` + `s.mcp.Tools()`): the `linear_*`
-twins, `memory_index`, the extension tools (`skill_*`, `agent_*`,
+twins, the memory set (`memory_index`, `memory_reinforce`,
+`memory_demote`, `memory_forget` — `tools.MemoryTools`), the extension
+tools (`skill_*`, `agent_*`,
 `marketplace_*`, `plugin_*`, `skill_publish`, `skill_pull`), and every
 MCP tool as `mcp__<server>__<tool>`. Registry tools are real and
 callable but absent from the wire definitions: the model finds them
@@ -112,7 +114,7 @@ round-trip first would be pure overhead).
   sub-agents); otherwise it asks the `InteractionHandler` and returns
   the denial text, which the tool returns as its error. The text tells
   the model not to retry. Gated: `bash` outside `safeShellCommands`,
-  `write`, `edit`, `fetch`, `web_search`, `memory_index`,
+  `write`, `edit`, `fetch`, `web_search`, `memory_index`, `memory_forget`,
   `marketplace_add`, `plugin_install`, `skill_publish`, `skill_pull`.
   `invoke_tool` adds no gate of its own.
 - `write` / `edit` on an existing file require a prior `read` in this
@@ -291,11 +293,17 @@ error otherwise.
 
 ## Memory touch points
 
-`load_memory` / `preload_memory` are core (`pkg/tools/memory.go`);
-`memory_index` is registry and approval-gated. `WrapFileToolsWithMemory`
-decorates `read` / `edit` / `write` so a result carries recall for the
-touched path when the memory service is open. All of it is a no-op when
-`memory.IsOpen()` is false.
+`load_memory` (query or `id`) and `preload_memory` are core
+(`pkg/tools/memory.go`). `preload_memory` is ask's own `MemoryRecallHook`,
+an ADK request processor with no declaration: once per invocation it
+recalls on the turn's user text and appends a `<memory>` part to a copy
+of the turn's user message (never the system instruction), reporting the
+inferred topic to the session. The contract tests skip it by name. The
+registry set is `tools.MemoryTools`: `memory_index` (approval-gated),
+`memory_reinforce`, `memory_demote`, `memory_forget` (approval-gated).
+`WrapFileToolsWithMemory` decorates `read` / `edit` / `write` so a result
+carries a silent recall for the touched path. All of it is a no-op when
+`memory.IsOpen()` is false. Detail in `pkg/memory/CLAUDE.md`.
 
 ## Runtime notes (`cmd/ask/agent_run.go`)
 

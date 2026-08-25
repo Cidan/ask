@@ -37,6 +37,15 @@ type Config struct {
 	Keybindings  map[string]string        `json:"keybindings,omitempty"`
 	RecentModels []RecentModelRef         `json:"recentModels,omitempty"`
 	Projects     map[string]ProjectConfig `json:"projects,omitempty"`
+	Memory       MemoryConfig             `json:"memory,omitempty"`
+}
+
+// MemoryConfig picks the model that runs the post-turn concept
+// extraction. Empty Provider means the session's provider; empty Model
+// means that provider's cheapest listed model.
+type MemoryConfig struct {
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
 }
 
 type ProviderSlashEntry struct {

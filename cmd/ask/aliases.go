@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
@@ -211,11 +210,22 @@ func okResult(text string) *mcp.CallToolResult {
 }
 
 // Memory aliases
+
+// openMemoryService opens the concept store and starts the background
+// extractor that files finished turns into it.
 func openMemoryService(cfg ...askConfig) error {
-	return memory.Open(memory.Options{})
+	if err := memory.Open(memory.Options{}); err != nil {
+		return err
+	}
+	engine.DebugLog = debugLog
+	engine.EnsureMemoryExtractor()
+	return nil
 }
 
+// closeMemoryService stops the extractor before the store so no job
+// races the database going away.
 func closeMemoryService() error {
+	engine.CloseMemoryExtractor()
 	return memory.Close()
 }
 
@@ -223,24 +233,12 @@ func memoryServiceOpen() bool {
 	return memory.IsOpen()
 }
 
-func sweepOldMemories(ctx context.Context) error {
-	return memory.Sweep(ctx)
-}
-
-func agentMemoryPromptContext(cwd, prompt string) string {
-	return memory.PromptContext(context.Background(), cwd, prompt)
-}
-
-func agentMemorySystemBlock(cwd string) string {
-	return memory.SystemBlock(context.Background(), cwd)
-}
-
 func wrapFileToolsWithMemory(ts []tools.Tool, cwd string) []tools.Tool {
 	return tools.WrapFileToolsWithMemory(ts, cwd)
 }
 
-func agentMemoryIndexTool(env *agentToolEnv) tools.Tool {
-	return tools.MemoryIndexTool(env.Cwd, env.ApprovalDenied)
+func agentMemoryTools(env *agentToolEnv) []tools.Tool {
+	return tools.MemoryTools(env.Cwd, env.ApprovalDenied)
 }
 
 // Provider aliases

@@ -266,6 +266,10 @@ func (a app) View() tea.View {
 		v.Content = drawOverlayCentered(v.Content, overlay, a.width, a.height)
 		v.Cursor = nil
 	}
+	if overlay := a.activeTab().memoryOverlay(a.width, a.height); overlay != "" {
+		v.Content = drawOverlayCentered(v.Content, overlay, a.width, a.height)
+		v.Cursor = nil
+	}
 	if a.sidebarFocus {
 		// The list owns the keyboard; a blinking caret in the
 		// input would claim otherwise.

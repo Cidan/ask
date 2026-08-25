@@ -227,6 +227,9 @@ func (a app) sidebarCardLines(i, inner int) []string {
 // when one exists, the shortened cwd otherwise.
 func (m *model) sidebarTitle() string {
 	if m.tabTitle != "" {
+		if m.tabTopic != "" {
+			return m.tabTitle + " · " + m.tabTopic
+		}
 		return m.tabTitle
 	}
 	if label := shortCwdOf(m.cwd); label != "" {

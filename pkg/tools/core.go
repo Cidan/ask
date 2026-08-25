@@ -25,9 +25,9 @@ func BuildCoreTools(args engine.ToolFactoryArgs, attachWebSearch bool) []Tool {
 		args.EventListener,
 		args.InteractionHandler,
 	)
-	extensions := ExtensionTools(env)
+	registry := append(ExtensionTools(env), MemoryTools(env.Cwd, env.ApprovalDenied)...)
 	registryFunc := func() []Tool {
-		return extensions
+		return registry
 	}
 	core := CoreTools(env, registryFunc, attachWebSearch)
 	if args.WorkflowStep {
@@ -69,6 +69,8 @@ func CoreTools(env *ToolEnv, registry func() []Tool, attachWebSearch bool) []Too
 		JobKillTool(env),
 		FetchTool(env),
 		TodosTool(env),
+		LoadMemoryTool(env.Cwd),
+		PreloadMemoryTool(env.Cwd, nil, nil),
 		AskUserQuestionTool(env),
 		EndTurnTool(env),
 		SearchToolsTool(registry),

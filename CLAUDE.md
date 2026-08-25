@@ -143,7 +143,7 @@ make clean
 
 | Location | Holds |
 |----------|-------|
-| `~/.config/ask/ask.json` | Config: provider blocks, UI toggles, keybindings, MCP servers, recent models, per-project blocks (issues, MCP tokens, user-scope workflows). |
+| `~/.config/ask/ask.json` | Config: provider blocks, UI toggles, keybindings, MCP servers, recent models, the `memory` block (extraction provider/model), per-project blocks (issues, MCP tokens, user-scope workflows). |
 | `~/.config/ask/agent-sessions/<provider>/` | ADK transcripts behind `/resume`. `~/.config/ask/sessions.json` is the virtual-session index. |
 | `~/.config/ask/{skills,agents,workflows}/` | User-scope skills, subagents, workflows. |
 | `~/.config/ask/plugins/` | Known marketplaces, installed plugins, publications, the plugin cache. |

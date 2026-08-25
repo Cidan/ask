@@ -74,6 +74,53 @@ func (m model) openWebSearchFieldsPicker() model {
 	})
 }
 
+// memoryFields is the Memory screen: which provider and model run the
+// post-turn concept extraction. Both blank means the session's provider
+// and its cheapest listed model.
+var memoryFields = []providers.SettingField{{
+	Key:      "provider",
+	Title:    "Extraction provider",
+	Hint:     "provider id for the post-turn memory extraction; blank = the session's provider; enter to save",
+	Validate: validateProviderID,
+}, {
+	Key:   "model",
+	Title: "Extraction model",
+	Hint:  "model id for the extraction call; blank = the provider's cheapest listed model; enter to save",
+}}
+
+// memoryConfigSummary is the /config row value: the configured pair, or
+// what the extractor falls back to.
+func memoryConfigSummary(cfg askConfig) string {
+	switch {
+	case cfg.Memory.Provider != "" && cfg.Memory.Model != "":
+		return cfg.Memory.Provider + "/" + cfg.Memory.Model
+	case cfg.Memory.Provider != "":
+		return cfg.Memory.Provider + " (cheapest)"
+	case cfg.Memory.Model != "":
+		return cfg.Memory.Model
+	}
+	return "session provider (cheapest)"
+}
+
+func (m model) openMemoryFieldsPicker() model {
+	return m.openFieldsPicker(fieldsPickerState{
+		id:     "memory",
+		title:  "Memory",
+		fields: memoryFields,
+		load: func(c askConfig) map[string]string {
+			return map[string]string{"provider": c.Memory.Provider, "model": c.Memory.Model}
+		},
+		save: func(c *askConfig, key, value string) {
+			switch key {
+			case "provider":
+				c.Memory.Provider = value
+			case "model":
+				c.Memory.Model = value
+			}
+		},
+	})
+}
+
 func (m model) openFieldsPicker(s fieldsPickerState) model {
 	s.active = true
 	m.configFields = s

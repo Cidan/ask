@@ -116,6 +116,31 @@ func StepCostUSD(providerID, modelID string, inputTokens, outputTokens, cacheWri
 	return cost / 1e6, true
 }
 
+// CheapestModel picks the provider's lowest list-price model (input plus
+// output USD per 1M) among its catalog options, skipping deprecated ones;
+// with no known price it falls back to the provider's default model.
+func CheapestModel(providerID string) string {
+	p, ok := Get(providerID)
+	if !ok {
+		return ""
+	}
+	best, bestPrice := "", 0.0
+	for _, id := range p.ModelOptions() {
+		meta, ok := ModelMetaLookup(providerID, id)
+		if !ok || meta.Pricing == nil || meta.Status == "deprecated" {
+			continue
+		}
+		price := meta.Pricing.InputPer1M + meta.Pricing.OutputPer1M
+		if best == "" || price < bestPrice {
+			best, bestPrice = id, price
+		}
+	}
+	if best == "" {
+		return p.DefaultModel()
+	}
+	return best
+}
+
 // mergeProviderNative applies a provider's own listing: it wins on every
 // fact, but its description only fills a gap models.dev left.
 func (dst *ModelMeta) mergeProviderNative(src ModelMeta) {

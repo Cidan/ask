@@ -27,6 +27,8 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"math"
+	"strings"
 	"sync"
 	"unsafe"
 )
@@ -136,7 +138,9 @@ func (m *EmbeddingModel) EmbdSize() int {
 	return int(C.llama_model_n_embd(m.model))
 }
 
-// FakeEmbedder provides a deterministic in-memory embedder for tests.
+// FakeEmbedder is the deterministic test embedder: a hashed bag of
+// words, L2-normalised, so texts sharing words land near each other and
+// unrelated texts do not.
 type FakeEmbedder struct {
 	dim int
 }
@@ -147,12 +151,28 @@ func NewFakeEmbedder(dim int) *FakeEmbedder {
 
 func (f *FakeEmbedder) Embed(text string) ([]float32, error) {
 	vec := make([]float32, f.dim)
-	var h uint32 = 2166136261
-	for i := 0; i < len(text); i++ {
-		h = (h ^ uint32(text[i])) * 16777619
+	for _, word := range strings.Fields(strings.ToLower(text)) {
+		word = strings.Trim(word, ".,;:!?\"'()[]{}#-")
+		if word == "" {
+			continue
+		}
+		var h uint32 = 2166136261
+		for i := 0; i < len(word); i++ {
+			h = (h ^ uint32(word[i])) * 16777619
+		}
+		vec[int(h%uint32(f.dim))] += 1
 	}
-	for i := 0; i < f.dim; i++ {
-		vec[i] = float32((h+uint32(i*31))%1000) / 1000.0
+	var norm float64
+	for _, v := range vec {
+		norm += float64(v * v)
+	}
+	if norm == 0 {
+		vec[0] = 1
+		return vec, nil
+	}
+	scale := float32(1 / math.Sqrt(norm))
+	for i := range vec {
+		vec[i] *= scale
 	}
 	return vec, nil
 }

@@ -234,6 +234,9 @@ type ProviderSessionArgs struct {
 	// Providers decide how to expose them to the agent. The list is
 	// deduped and ordered as the user added them.
 	AddedDirs []string
+	// Topic is the tab's current memory topic at session start, so a
+	// resumed or re-dispatched session recalls with the same context.
+	Topic string
 	// ProjectMCP is the project-level MCP server (today: the GitHub
 	// MCP slot the github issue provider also piggybacks on), exposed
 	// to the chat agent so it can call the same tools ask uses for
@@ -399,4 +402,5 @@ var appBuiltinSlashCmds = []slashCmd{
 	{"/workflows", "edit workflow pipelines"},
 	{"/skills", "browse skills, agents, and marketplaces"},
 	{"/savings", "show bash output token savings"},
+	{"/memory", "browse and tune long-term memory"},
 }

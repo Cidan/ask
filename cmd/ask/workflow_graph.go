@@ -113,7 +113,7 @@ drain:
 	}
 	state := progress.Finish(runErr)
 	if runErr == nil {
-		engine.IngestWorkflowMemory(ctx, sess.sessSvc, sess.sessionID)
+		engine.IngestWorkflowMemory(ctx, sess.sessSvc, sess.sessionID, cwd)
 	}
 	return state, runErr
 }

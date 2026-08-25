@@ -12,6 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/memory"
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/tools"
 	"github.com/Cidan/ask/pkg/workflow"
@@ -76,12 +77,40 @@ type agentSession struct {
 	retryInitialDelay  time.Duration
 	retryBackoffFactor float64
 
+	// topic is the conversation's memory topic: the recall hook reads
+	// it every turn and the hook's inference and the post-turn
+	// extraction both update it (tabTopicMsg).
+	topicMu sync.Mutex
+	topic   string
+
 	// workflowAgent, when set, replaces the ask_coder agent for this
 	// session's turns: the session runs a compiled workflow graph
 	// instead of a single coder agent. workflowProgress consumes the
 	// same ADK event stream to drive the workflow tab's step log.
 	workflowAgent    adkagent.Agent
 	workflowProgress *workflow.Progress
+}
+
+func (s *agentSession) currentTopic() string {
+	s.topicMu.Lock()
+	defer s.topicMu.Unlock()
+	return s.topic
+}
+
+// setTopic records a new topic and tells the tab; unchanged or empty
+// topics are ignored.
+func (s *agentSession) setTopic(topic string) {
+	topic = memory.NormalizeTopic(topic)
+	if topic == "" {
+		return
+	}
+	s.topicMu.Lock()
+	changed := topic != s.topic
+	s.topic = topic
+	s.topicMu.Unlock()
+	if changed {
+		s.emit(tabTopicMsg{topic: topic})
+	}
 }
 
 func (s *agentSession) refreshToolset() {
@@ -233,6 +262,9 @@ func (s *agentSession) emit(msg tea.Msg) {
 		m.proc = s.proc
 		msg = m
 	case queuedMessageDrainedMsg:
+		m.proc = s.proc
+		msg = m
+	case tabTopicMsg:
 		m.proc = s.proc
 		msg = m
 	}
@@ -491,6 +523,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 
 	var finalResponseText strings.Builder
 	var latestThoughtSig []byte
+	var touchedFiles []string
 
 	displayNames := make(map[string]string)
 	backgroundCalls := make(map[string]bool)
@@ -552,6 +585,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 						name, inputMap = unwrapInvokeToolCall(inputMap)
 					}
 					displayNames[part.FunctionCall.Name] = name
+					touchedFiles = engine.AppendTouchedFile(touchedFiles, name, inputMap)
 					bg, _ := inputMap["run_in_background"].(bool)
 					if bg {
 						backgroundCalls[part.FunctionCall.Name] = true
@@ -618,6 +652,33 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		},
 	})
 	s.emit(turnCompleteMsg{})
+	if !s.args.InWorkflow && s.workflowAgent == nil {
+		s.enqueueMemoryTurn(turn.text, respText, touchedFiles)
+	}
+}
+
+// enqueueMemoryTurn hands the finished turn to the background concept
+// extractor. The extraction call's spend lands on the tab's cost meter
+// and the topic it settles on becomes the tab's.
+func (s *agentSession) enqueueMemoryTurn(prompt, response string, files []string) {
+	providerID := providers.DefaultProviderID()
+	if s.provider != nil {
+		providerID = s.provider.ID()
+	}
+	engine.EnqueueMemoryTurn(engine.MemoryTurn{
+		Cwd:      s.args.Cwd,
+		Prompt:   prompt,
+		Response: response,
+		Topic:    s.currentTopic(),
+		Files:    files,
+		Provider: providerID,
+		OnUsage: func(pid, mid string, in, out int) {
+			if cost, known := stepCostUSD(pid, mid, TokenUsage{InputTokens: in, OutputTokens: out}); known {
+				s.emit(costMsg{costUSD: cost})
+			}
+		},
+		OnTopic: s.setTopic,
+	})
 }
 
 func isAgentCancel(err error) bool {
