@@ -75,7 +75,7 @@ func TestNewMCPOAuthHandler_NonInteractiveReturnsSentinel(t *testing.T) {
 	MCPOAuthOpenBrowser = func(string) error { spy = true; return nil }
 	t.Cleanup(func() { MCPOAuthOpenBrowser = prev })
 
-	h, err := NewMCPOAuthHandler("https://needs-auth.test/mcp", false)
+	h, err := NewMCPOAuthHandler("https://needs-auth.test/mcp", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

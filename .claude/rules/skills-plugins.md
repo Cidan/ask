@@ -33,14 +33,18 @@ this — see `pkg/engine/CLAUDE.md`.
   `workflows/`; a `SKILL.md` at the plugin root is a single-skill plugin;
   `commands/*.md` load as skills (`Skill.Command`); paths escaping the
   plugin dir are dropped.
-- `Contents.MCPFiles` resolves a plugin's MCP servers: the plugin-root
-  `.mcp.json` (Claude compat), every `mcps/*.json` (ask's directory
-  convention), and any `mcpServers` manifest/entry paths — each a
-  `.mcp.json`-format file (`{"mcpServers":{…}}`). An inline `mcpServers`
-  object in plugin.json is tolerated (parsing never fails) but resolved
-  from the files. `pkg/tools.PluginMCPServers` reads these (expanding
-  `${CLAUDE_PLUGIN_ROOT}`) and `ListMCPServers` folds them into the
-  session's servers — see `.claude/rules/tools.md`.
+- A plugin's MCP servers come from two shapes, both honored:
+  `Contents.MCPFiles` are `.mcp.json`-format files (`{"mcpServers":{…}}`) —
+  the plugin-root `.mcp.json` (Claude compat), every `mcps/*.json` (ask's
+  directory convention), and any `mcpServers` manifest/entry *paths*.
+  `Contents.InlineMCP` carries an inline `mcpServers` *object* declared
+  directly in plugin.json or the marketplace entry (the raw `{"name":{…}}`
+  map, preserved by `MCPServersField.Inline`; `MarshalJSON` round-trips the
+  Claude shape so a persisted entry doesn't decode the Go struct blob back as
+  a spurious inline object). `pkg/tools.PluginMCPServers` decodes both
+  (inline wins on a name clash; expands `${CLAUDE_PLUGIN_ROOT}`) and
+  `ListMCPServers` folds them into the session's servers — see
+  `.claude/rules/tools.md`.
 - Marketplace sources (`ParseMarketplaceSource`): `owner/repo`, git URL,
   directory, marketplace.json URL. URL marketplaces are never `Writable()`.
 

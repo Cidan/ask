@@ -48,6 +48,7 @@ const (
 	modeSkillsBrowser
 	modeSavings
 	modeMemory
+	modeMCPAuth
 )
 
 type streamStatusMsg struct {
@@ -577,6 +578,13 @@ type model struct {
 	sudoInput            textinput.Model
 	sudoIncorrectAttempt bool
 
+	// MCP OAuth authorize modal (modeMCPAuth): the interactive copy-link /
+	// paste-redirect flow that lets authorization complete over SSH.
+	mcpAuthServer string
+	mcpAuthURL    string
+	mcpAuthInput  string
+	mcpAuthReply  chan mcpAuthReply
+
 	cancelTurnConfirming bool
 	cancelTurnChoice     int
 
@@ -1053,6 +1061,13 @@ func (m *model) drainPendingReplies() {
 		default:
 		}
 		m.sudoReply = nil
+	}
+	if m.mcpAuthReply != nil {
+		select {
+		case m.mcpAuthReply <- mcpAuthReply{cancelled: true}:
+		default:
+		}
+		m.mcpAuthReply = nil
 	}
 }
 

@@ -762,6 +762,7 @@ func (m model) View() tea.View {
 	needModal := m.mode == modeAskQuestion
 	needApproval := m.mode == modeApproval
 	needSudoPassword := m.mode == modeSudoPassword
+	needMCPAuth := m.mode == modeMCPAuth
 	needConfig := m.mode == modeConfig
 	// The model picker is composited at the app layer (tabs.go) so it can
 	// cover the sidebar; the tab body draws nothing for it.
@@ -770,7 +771,7 @@ func (m model) View() tea.View {
 	needMergeConfirm := m.mergePRConfirming && m.mode == modeInput
 	needFinalizedPlan := m.mode == modeFinalizedPlan
 
-	if (needBox || needModal || needApproval || needSudoPassword || needConfig || needCancelConfirm || needCloseTabConfirm || needMergeConfirm || needFinalizedPlan) && m.width > 0 && m.height > 0 {
+	if (needBox || needModal || needApproval || needSudoPassword || needMCPAuth || needConfig || needCancelConfirm || needCloseTabConfirm || needMergeConfirm || needFinalizedPlan) && m.width > 0 && m.height > 0 {
 		cbStart := time.Now()
 		canvas := uv.NewScreenBuffer(m.width, m.height)
 		uv.NewStyledString(body).Draw(canvas, image.Rectangle{
@@ -856,6 +857,23 @@ func (m model) View() tea.View {
 		}
 		if needSudoPassword {
 			modal := m.viewSudoPassword()
+			mW := lipgloss.Width(modal)
+			mH := lipgloss.Height(modal)
+			mX := (m.width - mW) / 2
+			mY := (m.height - mH) / 2
+			if mX < 0 {
+				mX = 0
+			}
+			if mY < 0 {
+				mY = 0
+			}
+			uv.NewStyledString(modal).Draw(canvas, image.Rectangle{
+				Min: image.Pt(mX, mY),
+				Max: image.Pt(mX+mW, mY+mH),
+			})
+		}
+		if needMCPAuth {
+			modal := m.viewMCPAuth()
 			mW := lipgloss.Width(modal)
 			mH := lipgloss.Height(modal)
 			mX := (m.width - mW) / 2

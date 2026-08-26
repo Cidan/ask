@@ -85,6 +85,30 @@ type sudoPasswordRequestedMsg struct {
 	reply  chan sudoPasswordReply
 }
 
+// mcpAuthReply carries the user's answer to the MCP OAuth authorize modal:
+// the pasted redirect URL / code, or a cancel.
+type mcpAuthReply struct {
+	redirect  string
+	cancelled bool
+}
+
+// mcpAuthPromptRequestedMsg opens the MCP OAuth authorize modal on tabID and
+// blocks the authorizing goroutine on reply. It is emitted by the prompter
+// closure the Ctrl+S browser passes into tools.AuthorizeMCPServer.
+type mcpAuthPromptRequestedMsg struct {
+	tabID      int
+	serverName string
+	authURL    string
+	reply      chan mcpAuthReply
+}
+
+// mcpAuthDismissMsg closes the MCP OAuth authorize modal on tabID without a
+// reply: the loopback callback already delivered the code, so the paste
+// prompt is no longer needed.
+type mcpAuthDismissMsg struct {
+	tabID int
+}
+
 const askToolDescription = `Ask the user one or more questions through a tabbed modal in the ask terminal UI.
 
 Use this tool when a decision is best made by the user and you cannot reasonably infer the answer from context, prior turns, or project conventions. Do not use it for trivia you can answer yourself, and do not use it as a substitute for a plan or a todo list.

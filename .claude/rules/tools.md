@@ -277,7 +277,12 @@ triggers the SDK flow (authorization-code + PKCE + dynamic client
 registration); startup connects non-interactively so a server that needs
 auth surfaces as `needs-auth` (`ErrMCPInteractiveAuthRequired`) instead of
 opening a browser. The browser's authorize action runs `AuthorizeMCPServer`
-(interactive). `MCPOAuthHandler` persists the token **and** the resolved
+(interactive), passing a `MCPAuthPrompter`: the interactive fetch opens the
+local browser best-effort **and** races the loopback callback against a modal
+(`modeMCPAuth`) that shows the auth URL, copies it over OSC 52 (works via SSH),
+and accepts the pasted redirect URL / code back — so authorization completes
+over SSH without port-forwarding (`parseManualAuth` recovers `state` from the
+outgoing auth URL for a bare code). `MCPOAuthHandler` persists the token **and** the resolved
 client registration + endpoints (v1.7.0 `NewTokenSource` /
 `InitialTokenSource`) 0600 under `~/.config/ask/mcp-oauth/`, so refreshes
 and restarts stay headless; SSE OAuth rides an `oauthRoundTripper` (the SSE

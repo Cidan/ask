@@ -291,7 +291,7 @@ func (m *model) effectiveModelID() string {
 // ask-question or approval modal is up. These never steal focus (see
 // dispatchByTabID); the badge is how the user finds them.
 func (m *model) needsUserInput() bool {
-	return m.mode == modeAskQuestion || m.mode == modeApproval || m.mode == modeSudoPassword
+	return m.mode == modeAskQuestion || m.mode == modeApproval || m.mode == modeSudoPassword || m.mode == modeMCPAuth
 }
 
 // sidebarBadge returns the attention glyph for the card's title row
