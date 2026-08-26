@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Cidan/ask/pkg/config"
+	"github.com/Cidan/ask/pkg/plugin"
 )
 
 func TestMCPServerConfig_EffectiveType(t *testing.T) {
@@ -114,6 +115,53 @@ func TestResolveMCPServers_LayeringAndFilters(t *testing.T) {
 	}
 	if got[0].Name != "docs" || got[1].Name != "issues" || got[2].Name != "search" {
 		t.Errorf("order must be name-sorted: %v %v %v", got[0].Name, got[1].Name, got[2].Name)
+	}
+}
+
+func TestMCPServersFromContents_InlineOnly(t *testing.T) {
+	// The Slack-style plugin: server declared inline, no .mcp.json file.
+	c := plugin.Contents{
+		InlineMCP: []json.RawMessage{
+			json.RawMessage(`{"slack":{"type":"http","url":"https://mcp.slack.com/mcp"}}`),
+		},
+	}
+	servers := mcpServersFromContents(c)
+	got, ok := servers["slack"]
+	if !ok {
+		t.Fatalf("inline slack server not decoded: %+v", servers)
+	}
+	if got.EffectiveType() != MCPServerTypeHTTP || got.URL != "https://mcp.slack.com/mcp" {
+		t.Errorf("inline server decoded wrong: %+v", got)
+	}
+	if n := PluginContentsMCPCount(c); n != 1 {
+		t.Errorf("PluginContentsMCPCount = %d, want 1", n)
+	}
+}
+
+func TestMCPServersFromContents_FileAndInlineMerge(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "servers.json")
+	if err := os.WriteFile(file, []byte(`{"mcpServers":{"a":{"url":"https://file/a"},"shared":{"url":"https://file/shared"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := plugin.Contents{
+		MCPFiles: []string{file},
+		InlineMCP: []json.RawMessage{
+			json.RawMessage(`{"b":{"url":"https://inline/b"},"shared":{"url":"https://inline/shared"}}`),
+		},
+	}
+	servers := mcpServersFromContents(c)
+	if len(servers) != 3 {
+		t.Fatalf("want a+b+shared, got %d: %+v", len(servers), servers)
+	}
+	if servers["a"].URL != "https://file/a" || servers["b"].URL != "https://inline/b" {
+		t.Errorf("file and inline servers must both appear: %+v", servers)
+	}
+	if servers["shared"].URL != "https://inline/shared" {
+		t.Errorf("inline must win on a name clash: %+v", servers["shared"])
+	}
+	if n := PluginContentsMCPCount(c); n != 3 {
+		t.Errorf("PluginContentsMCPCount = %d, want 3", n)
 	}
 }
 

@@ -240,7 +240,7 @@ func (m *MCPManager) AttachAll(ctx context.Context, servers []MCPServer) {
 func (m *MCPManager) Attach(ctx context.Context, srv MCPServer) error {
 	conn := &mcpServerConn{mgr: m, srv: srv}
 	if oauthWanted(srv.Cfg) {
-		oauth, err := NewMCPOAuthHandler(srv.Cfg.URL, false) // startup: non-interactive
+		oauth, err := NewMCPOAuthHandler(srv.Cfg.URL, false, nil) // startup: non-interactive
 		if err != nil {
 			m.setStatus(srv.Name, MCPStatusError, err.Error())
 			return fmt.Errorf("oauth setup %s: %w", srv.Name, err)

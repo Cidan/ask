@@ -170,10 +170,53 @@ type pluginMCPServer struct {
 	Plugin string // plugin ref, e.g. "name@marketplace"
 }
 
+// mcpServersFromContents decodes every MCP server a plugin's resolved
+// contents declare: the bundled .mcp.json-format files (wrapped
+// `{"mcpServers": {…}}`) and the inline manifest/entry objects (the raw
+// `{"name": {…}}` map). Inline declarations win on a name clash. Configs are
+// returned un-expanded (no ${CLAUDE_PLUGIN_ROOT} substitution yet).
+func mcpServersFromContents(c plugin.Contents) map[string]MCPServerConfig {
+	out := map[string]MCPServerConfig{}
+	for _, f := range c.MCPFiles {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		var file struct {
+			MCPServers map[string]MCPServerConfig `json:"mcpServers"`
+		}
+		if json.Unmarshal(data, &file) != nil {
+			continue
+		}
+		for name, cfg := range file.MCPServers {
+			out[name] = cfg
+		}
+	}
+	for _, raw := range c.InlineMCP {
+		var servers map[string]MCPServerConfig
+		if json.Unmarshal(raw, &servers) != nil {
+			continue
+		}
+		for name, cfg := range servers {
+			out[name] = cfg
+		}
+	}
+	return out
+}
+
+// PluginContentsMCPCount reports how many MCP servers a plugin's resolved
+// contents declare across bundled files and inline objects. Used for the
+// install summary so an MCP-only plugin doesn't look like it installed
+// nothing.
+func PluginContentsMCPCount(c plugin.Contents) int {
+	return len(mcpServersFromContents(c))
+}
+
 // PluginMCPServers returns the MCP servers declared by every enabled plugin
-// (plugin-root .mcp.json and mcps/*.json), with ${CLAUDE_PLUGIN_ROOT}
-// expanded to each plugin's installed directory. Later plugins win on a
-// name clash; ordering is by plugin ref then server name for determinism.
+// (plugin-root .mcp.json, mcps/*.json, and inline manifest/entry
+// `mcpServers` objects), with ${CLAUDE_PLUGIN_ROOT} expanded to each
+// plugin's installed directory. Later plugins win on a name clash; ordering
+// is by plugin ref then server name for determinism.
 func PluginMCPServers(cwd string) []pluginMCPServer {
 	var out []pluginMCPServer
 	for _, in := range plugin.EnabledPlugins(cwd) {
@@ -181,29 +224,18 @@ func PluginMCPServers(cwd string) []pluginMCPServer {
 			continue
 		}
 		ref := in.Ref.String()
-		for _, f := range in.Contents().MCPFiles {
-			data, err := os.ReadFile(f)
-			if err != nil {
-				continue
-			}
-			var file struct {
-				MCPServers map[string]MCPServerConfig `json:"mcpServers"`
-			}
-			if json.Unmarshal(data, &file) != nil {
-				continue
-			}
-			names := make([]string, 0, len(file.MCPServers))
-			for name := range file.MCPServers {
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			for _, name := range names {
-				out = append(out, pluginMCPServer{
-					Name:   name,
-					Config: expandPluginRootConfig(file.MCPServers[name], in.Dir),
-					Plugin: ref,
-				})
-			}
+		servers := mcpServersFromContents(in.Contents())
+		names := make([]string, 0, len(servers))
+		for name := range servers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			out = append(out, pluginMCPServer{
+				Name:   name,
+				Config: expandPluginRootConfig(servers[name], in.Dir),
+				Plugin: ref,
+			})
 		}
 	}
 	return out

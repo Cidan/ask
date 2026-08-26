@@ -83,13 +83,17 @@ func (p *PathList) UnmarshalJSON(b []byte) error {
 
 // MCPServersField is the manifest/marketplace-entry "mcpServers" component
 // field. Claude Code allows either a path (or list of paths) to
-// .mcp.json-format files, or an inline object of servers. We honor the path
-// forms (they add files that ResolveContents picks up) and tolerate the
-// inline-object form without error (those servers are resolved from the
-// default .mcp.json / mcps/ locations instead), so neither shape breaks
-// manifest parsing.
+// .mcp.json-format files, or an inline object of servers. We honor both: the
+// path forms add files that ResolveContents picks up, and the inline object
+// (the raw `{"name": {…}}` map) is preserved in Inline so ResolveContents can
+// surface it and tools.PluginMCPServers can decode it directly.
 type MCPServersField struct {
 	Paths PathList
+	// Inline is the raw inline `mcpServers` object (`{"name": {…}}`) when the
+	// inline-object form was used, or nil. It is the value of the mcpServers
+	// key, not a wrapped `{"mcpServers": …}` document, so it decodes straight
+	// into a map[string]MCPServerConfig.
+	Inline json.RawMessage
 }
 
 func (f *MCPServersField) UnmarshalJSON(b []byte) error {
@@ -97,10 +101,26 @@ func (f *MCPServersField) UnmarshalJSON(b []byte) error {
 	if len(t) == 0 || string(t) == "null" {
 		return nil
 	}
-	if t[0] == '{' { // inline object: tolerated, not treated as a path
+	if t[0] == '{' { // inline object: preserve it verbatim
+		f.Inline = append(json.RawMessage(nil), t...)
 		return nil
 	}
 	return f.Paths.UnmarshalJSON(b)
+}
+
+// MarshalJSON round-trips the field back to Claude Code's real "mcpServers"
+// shape — the inline object, a path array, or null — rather than the Go
+// struct's default `{"Paths":…,"Inline":…}`. Without this, persisting an
+// Entry (e.g. into installed_plugins.json) and re-reading it would decode the
+// struct blob as a spurious inline object.
+func (f MCPServersField) MarshalJSON() ([]byte, error) {
+	if len(f.Inline) > 0 {
+		return f.Inline, nil
+	}
+	if len(f.Paths) > 0 {
+		return json.Marshal([]string(f.Paths))
+	}
+	return []byte("null"), nil
 }
 
 // MarketplaceManifest is .claude-plugin/marketplace.json.

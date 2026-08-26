@@ -199,6 +199,10 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.dispatchByTabID(m.tabID, msg)
 	case sudoPasswordRequestedMsg:
 		return a.dispatchByTabID(m.tabID, msg)
+	case mcpAuthPromptRequestedMsg:
+		return a.dispatchByTabID(m.tabID, msg)
+	case mcpAuthDismissMsg:
+		return a.dispatchByTabID(m.tabID, msg)
 	case shellBatchMsg:
 		return a.dispatchByTabID(m.tabID, msg)
 	case providerInitLoadedMsg:
@@ -326,6 +330,10 @@ func (a app) dispatchByTabID(tabID int, msg tea.Msg) (tea.Model, tea.Cmd) {
 		case sudoPasswordRequestedMsg:
 			if m.reply != nil {
 				m.reply <- sudoPasswordReply{cancelled: true}
+			}
+		case mcpAuthPromptRequestedMsg:
+			if m.reply != nil {
+				m.reply <- mcpAuthReply{cancelled: true}
 			}
 		}
 		return a, nil

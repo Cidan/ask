@@ -904,8 +904,9 @@ func (m model) authorizeMCPRow(r mcpBrowserRow) (tea.Model, tea.Cmd) {
 		return m, m.toast.show(r.name + " is not an OAuth http/sse server")
 	}
 	srv := tools.MCPServer{Name: r.name, Cfg: tools.MCPServerConfig{Type: r.transport, URL: r.url, OAuth: true}}
-	return m, m.startSkillsBrowserOp("authorizing "+r.name+" — check your browser…", func() (string, error) {
-		if err := authorizeMCPServer(context.Background(), srv); err != nil {
+	prompter := mcpAuthPrompter(m.id, r.name)
+	return m, m.startSkillsBrowserOp("authorizing "+r.name+" — copy the link or check your browser…", func() (string, error) {
+		if err := authorizeMCPServer(context.Background(), srv, prompter); err != nil {
 			return "", err
 		}
 		return "✓ authorized " + r.name, nil
@@ -1197,7 +1198,7 @@ func (m model) skillsBrowserInstall() (tea.Cmd, bool) {
 					return "", err
 				}
 				c := in.Contents()
-				return fmt.Sprintf("✓ installed %s (%s): %d skill(s), %d agent(s), %d workflow(s)", ref, scope, len(c.SkillDirs)+len(c.CommandFiles), len(c.AgentFiles), len(c.WorkflowFiles)), nil
+				return fmt.Sprintf("✓ installed %s (%s): %d skill(s), %d agent(s), %d workflow(s), %d MCP server(s)", ref, scope, len(c.SkillDirs)+len(c.CommandFiles), len(c.AgentFiles), len(c.WorkflowFiles), tools.PluginContentsMCPCount(c)), nil
 			})
 		},
 	}

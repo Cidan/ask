@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,58 @@ var ErrMCPInteractiveAuthRequired = errors.New("mcp: interactive OAuth authoriza
 
 var MCPOAuthOpenBrowser = func(authURL string) error {
 	return exec.Command("xdg-open", authURL).Start()
+}
+
+// MCPAuthPrompter presents an authorization URL to the user during an
+// interactive OAuth flow and returns the browser's redirect URL (the callback
+// URL the authorization server redirected to, carrying ?code=…&state=…) or a
+// bare authorization code, pasted back at the terminal. It is how ask
+// completes OAuth over SSH, where the loopback redirect on the ask host is
+// unreachable from the browser on the user's machine: the user copies the
+// auth URL, approves in a local browser, and pastes the redirected URL back.
+//
+// The prompter blocks until the user submits a value or cancels. Returning a
+// non-nil error (e.g. the user pressed Esc) cancels the flow. Implementations
+// must honor ctx: when the loopback callback resolves first, the flow cancels
+// ctx to dismiss the prompt.
+type MCPAuthPrompter func(ctx context.Context, authURL string) (redirectOrCode string, err error)
+
+// parseManualAuth turns a user-pasted value into an AuthorizationResult. The
+// value is either the full redirect URL from the browser's address bar
+// (preferred: it carries code, state, and any RFC 9207 iss) or a bare
+// authorization code, in which case the state is recovered from the state
+// parameter embedded in the outgoing authURL so the SDK's state check still
+// passes.
+func parseManualAuth(input, authURL string) (*auth.AuthorizationResult, error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil, errors.New("no authorization code or redirect URL provided")
+	}
+	looksLikeURL := strings.Contains(input, "://") || strings.HasPrefix(input, "?") || strings.Contains(input, "code=")
+	if looksLikeURL {
+		raw := input
+		if strings.HasPrefix(raw, "?") {
+			raw = "http://127.0.0.1/callback" + raw
+		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("could not parse the pasted redirect URL: %w", err)
+		}
+		q := u.Query()
+		code := q.Get("code")
+		if code == "" {
+			if e := q.Get("error"); e != "" {
+				return nil, fmt.Errorf("authorization server returned an error: %s", e)
+			}
+			return nil, errors.New("the pasted redirect URL has no authorization code")
+		}
+		return &auth.AuthorizationResult{Code: code, State: q.Get("state"), Iss: q.Get("iss")}, nil
+	}
+	state := ""
+	if au, err := url.Parse(authURL); err == nil {
+		state = au.Query().Get("state")
+	}
+	return &auth.AuthorizationResult{Code: input, State: state}, nil
 }
 
 func MCPOAuthTokenPath(serverURL string) (string, error) {
@@ -311,8 +364,9 @@ func (cb *MCPOAuthCallback) Fetch(ctx context.Context, args *auth.AuthorizationA
 // construction and binds the listener only while an interactive
 // authorization is actually running.
 type lazyOAuthCallback struct {
-	port int
-	url  string
+	port     int
+	url      string
+	prompter MCPAuthPrompter
 
 	mu     sync.Mutex
 	server *http.Server
@@ -380,22 +434,50 @@ func (cb *lazyOAuthCallback) release() {
 	}
 }
 
+// manualAuth is the prompter's outcome, delivered on a channel so Fetch can
+// select it against the loopback callback.
+type manualAuth struct {
+	value string
+	err   error
+}
+
 func (cb *lazyOAuthCallback) Fetch(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 	if err := cb.bind(); err != nil {
 		return nil, err
 	}
 	defer cb.release()
-	if err := MCPOAuthOpenBrowser(args.URL); err != nil {
-		return nil, fmt.Errorf("open browser: %w", err)
-	}
+	// Best-effort local browser open: over SSH or on a headless host this
+	// fails, and the prompter's copy/paste path is how the flow completes.
+	_ = MCPOAuthOpenBrowser(args.URL)
+
 	cb.mu.Lock()
 	res := cb.result
 	cb.mu.Unlock()
+
+	// Run the interactive prompt (copy the URL, paste the redirect back)
+	// concurrently with the loopback listener; whichever resolves first wins.
+	// When the loopback wins, cancelling promptCtx dismisses the prompt.
+	promptCtx, cancelPrompt := context.WithCancel(ctx)
+	defer cancelPrompt()
+	var manualCh chan manualAuth
+	if cb.prompter != nil {
+		manualCh = make(chan manualAuth, 1)
+		go func() {
+			v, err := cb.prompter(promptCtx, args.URL)
+			manualCh <- manualAuth{value: v, err: err}
+		}()
+	}
+
 	timer := time.NewTimer(MCPOAuthFlowTimeout)
 	defer timer.Stop()
 	select {
 	case r := <-res:
 		return r, nil
+	case m := <-manualCh:
+		if m.err != nil {
+			return nil, m.err
+		}
+		return parseManualAuth(m.value, args.URL)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-timer.C:
@@ -421,8 +503,10 @@ type MCPOAuthHandler struct {
 // NewMCPOAuthHandler builds an OAuth handler for an http/sse MCP server.
 // interactive=false makes Authorize return ErrMCPInteractiveAuthRequired
 // instead of opening a browser. A saved token (with its client registration)
-// is restored so refreshes and restarts stay headless.
-func NewMCPOAuthHandler(serverURL string, interactive bool) (*MCPOAuthHandler, error) {
+// is restored so refreshes and restarts stay headless. prompter, when
+// non-nil, drives the interactive copy-link / paste-redirect UX; pass nil for
+// the non-interactive startup path.
+func NewMCPOAuthHandler(serverURL string, interactive bool, prompter MCPAuthPrompter) (*MCPOAuthHandler, error) {
 	tokenPath, err := MCPOAuthTokenPath(serverURL)
 	if err != nil {
 		return nil, err
@@ -431,6 +515,7 @@ func NewMCPOAuthHandler(serverURL string, interactive bool) (*MCPOAuthHandler, e
 	if err != nil {
 		return nil, err
 	}
+	cb.prompter = prompter
 	h := &MCPOAuthHandler{
 		serverURL:   serverURL,
 		tokenPath:   tokenPath,
@@ -514,14 +599,14 @@ func (h *MCPOAuthHandler) Close() {
 // a single connection that forces the 401 -> discovery -> DCR -> browser ->
 // token-exchange path, then persisting the token. Used by the Ctrl+S
 // browser's "authorize" action; it does not require a live session.
-func AuthorizeMCPServer(ctx context.Context, srv MCPServer) error {
+func AuthorizeMCPServer(ctx context.Context, srv MCPServer, prompter MCPAuthPrompter) error {
 	if srv.Cfg.EffectiveType() == MCPServerTypeStdio {
 		return fmt.Errorf("%s: stdio servers do not use OAuth", srv.Name)
 	}
 	if srv.Cfg.URL == "" {
 		return fmt.Errorf("%s: no URL to authorize", srv.Name)
 	}
-	oauth, err := NewMCPOAuthHandler(srv.Cfg.URL, true)
+	oauth, err := NewMCPOAuthHandler(srv.Cfg.URL, true, prompter)
 	if err != nil {
 		return err
 	}

@@ -971,6 +971,24 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		m = m.startSudoPassword(msg)
 		return m, nil
 
+	case mcpAuthPromptRequestedMsg:
+		if m.workflowRun != nil {
+			if msg.reply != nil {
+				msg.reply <- mcpAuthReply{cancelled: true}
+			}
+			return m, nil
+		}
+		m = m.startMCPAuth(msg)
+		return m, nil
+
+	case mcpAuthDismissMsg:
+		// The loopback callback delivered the code; close the paste prompt
+		// without answering it (the prompter already moved on).
+		if m.mode == modeMCPAuth {
+			m = m.clearMCPAuth()
+		}
+		return m, nil
+
 	case modelCatalogLoadedMsg:
 		if m.modelPicker != nil {
 			m.modelPicker.loading = false
@@ -1220,6 +1238,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if m.mode == modeAskQuestion {
 			return m.applyAskPaste(msg.Content)
 		}
+		if m.mode == modeMCPAuth {
+			return m.applyMCPAuthPaste(msg.Content)
+		}
 		if m.mode != modeInput {
 			return m, nil
 		}
@@ -1334,6 +1355,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m.updateFinalizedPlan(msg)
 		case modeSudoPassword:
 			return m.updateSudoPassword(msg)
+		case modeMCPAuth:
+			return m.updateMCPAuth(msg)
 		}
 		// Workflow tabs are read-only: the input area is replaced
 		// with a status banner and the user has no way to type a
