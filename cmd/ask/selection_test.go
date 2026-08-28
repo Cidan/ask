@@ -386,8 +386,12 @@ func TestUpdateMouseRelease_DarwinAutoCopiesSelectionSilently(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("non-degenerate drag-end with non-empty selection must dispatch an auto-copy cmd")
 	}
-	if msg := cmd(); msg != nil {
-		t.Errorf("auto-copy must stay silent on success; got %T %+v", msg, msg)
+	raw, result := runCopyCmd(t, cmd)
+	if result != nil {
+		t.Errorf("auto-copy must stay silent on success; got %T %+v", result, result)
+	}
+	if raw != clipboardOSC52("auto-copy", false) {
+		t.Errorf("auto-copy raw write=%q, want OSC 52 for both selections of %q", raw, "auto-copy")
 	}
 	if copied != "auto-copy" {
 		t.Errorf("clipboard payload=%q want %q (visual slice only, not whole-entry source)", copied, "auto-copy")
@@ -414,10 +418,10 @@ func TestUpdateMouseRelease_DarwinAutoCopyClipboardFailureSurfacesToast(t *testi
 	if cmd == nil {
 		t.Fatal("expected an error-toast cmd on clipboard failure")
 	}
-	msg := cmd()
-	tmsg, ok := msg.(toastShowMsg)
+	_, result := runCopyCmd(t, cmd)
+	tmsg, ok := result.(toastShowMsg)
 	if !ok {
-		t.Fatalf("expected toastShowMsg on failure; got %T", msg)
+		t.Fatalf("expected toastShowMsg on failure; got %T", result)
 	}
 	if !strings.Contains(tmsg.text, "copy failed") {
 		t.Errorf("toast text=%q should announce failure", tmsg.text)
@@ -519,10 +523,10 @@ func TestUpdateMouseRightClick_WithSelectionCopiesAndClears(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a copy/toast cmd")
 	}
-	msg := cmd()
-	tmsg, ok := msg.(toastShowMsg)
+	raw, result := runCopyCmd(t, cmd)
+	tmsg, ok := result.(toastShowMsg)
 	if !ok {
-		t.Fatalf("expected toastShowMsg, got %T", msg)
+		t.Fatalf("expected toastShowMsg, got %T", result)
 	}
 	// Right-click copies only the highlighted cells (WYSIWYG), never the
 	// whole entry: the drag spans cols 0..10, which clamps past the
@@ -531,8 +535,73 @@ func TestUpdateMouseRightClick_WithSelectionCopiesAndClears(t *testing.T) {
 	if copied != "buffer" {
 		t.Errorf("clipboard payload=%q want %q (highlighted slice only, not whole entry)", copied, "buffer")
 	}
+	if raw != clipboardOSC52("buffer", false) {
+		t.Errorf("raw write=%q, want OSC 52 for both selections of %q", raw, "buffer")
+	}
 	if !strings.Contains(tmsg.text, "copied") {
 		t.Errorf("toast text=%q should announce success", tmsg.text)
+	}
+}
+
+// runCopyCmd executes a cmd from copyTextCmd / copyTextSilentCmd and
+// splits what it produced: the OSC 52 bytes handed to Bubble Tea as a
+// tea.RawMsg, and the binary-writer half's message (a toastShowMsg, or
+// nil when it stayed silent).
+func runCopyCmd(t *testing.T, cmd tea.Cmd) (raw string, result tea.Msg) {
+	t.Helper()
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("copy cmd must batch the OSC 52 raw write with the binary write; got %T", cmd())
+	}
+	var sawRaw bool
+	for _, c := range batch {
+		if c == nil {
+			continue
+		}
+		switch msg := c().(type) {
+		case tea.RawMsg:
+			if sawRaw {
+				t.Fatalf("copy cmd emitted two raw writes")
+			}
+			sawRaw = true
+			raw = msg.Msg.(string)
+		default:
+			result = msg
+		}
+	}
+	if !sawRaw {
+		t.Fatalf("copy cmd emitted no OSC 52 raw write")
+	}
+	return raw, result
+}
+
+func TestCopyTextCmd_SSHReportsCopiedThroughOSC52Alone(t *testing.T) {
+	// Over SSH the remote has no usable clipboard binary (or one that
+	// targets the wrong host). The raw OSC 52 write is the copy, and
+	// the toast must say so rather than "copy failed".
+	withClipboardStubs(t, "linux",
+		map[string]bool{},
+		func(name, stdin string, args ...string) error {
+			t.Fatalf("clipboardRun must not fork over SSH; ran %s %v", name, args)
+			return nil
+		})
+	clipboardGetenv = func(key string) string {
+		if key == "SSH_TTY" {
+			return "/dev/pts/3"
+		}
+		return ""
+	}
+	cmd := copyTextCmd(NewToastModel(40, time.Second), "remote text")
+	raw, result := runCopyCmd(t, cmd)
+	if raw != clipboardOSC52("remote text", false) {
+		t.Errorf("raw write=%q, want OSC 52 for both selections of %q", raw, "remote text")
+	}
+	tmsg, ok := result.(toastShowMsg)
+	if !ok {
+		t.Fatalf("expected toastShowMsg, got %T", result)
+	}
+	if !strings.Contains(tmsg.text, "copied") {
+		t.Errorf("toast text=%q should announce success over SSH", tmsg.text)
 	}
 }
 
@@ -772,9 +841,10 @@ func TestCopySelectionAndClear_ClipboardErrorSurfacesToast(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected toast cmd even on error")
 	}
-	tmsg, ok := cmd().(toastShowMsg)
+	_, result := runCopyCmd(t, cmd)
+	tmsg, ok := result.(toastShowMsg)
 	if !ok {
-		t.Fatalf("expected toastShowMsg, got %T", cmd())
+		t.Fatalf("expected toastShowMsg, got %T", result)
 	}
 	if !strings.Contains(tmsg.text, "copy failed") {
 		t.Errorf("error toast=%q should include 'copy failed'", tmsg.text)

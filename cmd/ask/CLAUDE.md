@@ -307,8 +307,19 @@ lockstep (`.claude/rules/issues.md`).
 
 ## Clipboard and images (clipboard.go, kitty.go)
 
-- Text copy: OSC 52 to `/dev/tty` (tmux passthrough aware) plus a
-  binary — `pbcopy` on macOS; `wl-copy`, `xclip`, `xsel` on Linux.
+- Text copy (`copyTextCmd` / `copyTextSilentCmd`) batches two cmds:
+  `clipboardOSC52Cmd` hands OSC 52 for both the CLIPBOARD (`c`) and
+  PRIMARY (`p`) selections to `tea.Raw` (kitty, foot and xterm paste
+  PRIMARY on Shift+Insert / middle-click, and the terminal never fills
+  it while ask owns the mouse); inside tmux the plain sequences go out
+  followed by the same bytes in `ansi.TmuxPassthrough`, since tmux
+  forwards the former only with `set-clipboard on` and the latter only
+  with `allow-passthrough on`. `clipboardCopyText` runs a binary that
+  writes both selections — `pbcopy` on macOS; `wl-copy`, `xclip`,
+  `xsel` on Linux — and its result drives the toast. Under SSH
+  (`SSH_TTY` / `SSH_CONNECTION` / `SSH_CLIENT`) the binaries are
+  skipped: they would talk to the remote display, and OSC 52 is the
+  copy. `clipboardGetenv` is the seam for both env probes.
 - Image paste: Linux reads `wl-paste --list-types` and the first
   accepted mime (png/jpeg/gif/webp), no X11 path; macOS coerces the
   pasteboard with `osascript`. Raw bytes go to the provider; a PNG
