@@ -11,20 +11,22 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // withClipboardStubs swaps the package-level clipboard seams for the
-// duration of the test so we never spawn a real subprocess or touch
-// /dev/tty. Callers pass the GOOS to simulate, the set of binaries
-// that should "exist" on PATH, and a recorder that captures every
-// successful write. The OSC 52 emit is stubbed to a no-op; tests that
-// need to assert OSC 52 emission can replace clipboardEmitOSC52Fn
-// directly after calling this helper.
+// duration of the test so we never spawn a real subprocess and never
+// read the test host's TMUX / SSH environment. Callers pass the GOOS to
+// simulate, the set of binaries that should "exist" on PATH, and a
+// recorder that captures every write. The environment reads as empty;
+// tests that need tmux or SSH replace clipboardGetenv after calling
+// this helper.
 func withClipboardStubs(t *testing.T, goos string, present map[string]bool, run func(name, stdin string, args ...string) error) {
 	t.Helper()
-	prevGOOS, prevLook, prevRun, prevEmit := clipboardGOOS, clipboardLookPath, clipboardRun, clipboardEmitOSC52Fn
+	prevGOOS, prevLook, prevRun, prevGetenv := clipboardGOOS, clipboardLookPath, clipboardRun, clipboardGetenv
 	t.Cleanup(func() {
-		clipboardGOOS, clipboardLookPath, clipboardRun, clipboardEmitOSC52Fn = prevGOOS, prevLook, prevRun, prevEmit
+		clipboardGOOS, clipboardLookPath, clipboardRun, clipboardGetenv = prevGOOS, prevLook, prevRun, prevGetenv
 	})
 	clipboardGOOS = goos
 	clipboardLookPath = func(name string) (string, error) {
@@ -34,65 +36,155 @@ func withClipboardStubs(t *testing.T, goos string, present map[string]bool, run 
 		return "", errors.New("not found")
 	}
 	clipboardRun = run
-	clipboardEmitOSC52Fn = func(string) error { return nil }
+	clipboardGetenv = func(string) string { return "" }
 }
 
-func TestClipboardCopyText_DarwinUsesPbcopy(t *testing.T) {
-	var ranName, ranStdin string
-	var ranArgs []string
-	withClipboardStubs(t, "darwin",
-		map[string]bool{"pbcopy": true},
-		func(name, stdin string, args ...string) error {
-			ranName, ranStdin, ranArgs = name, stdin, args
-			return nil
-		})
+// clipboardRunRecord is one clipboardRun invocation as seen by the
+// recorder that recordClipboardRuns installs.
+type clipboardRunRecord struct {
+	name  string
+	stdin string
+	args  string
+}
+
+// recordClipboardRuns returns a clipboardRun stub that appends every
+// call to the returned slice (args joined by single spaces so tests can
+// compare against the literal command line).
+func recordClipboardRuns() (*[]clipboardRunRecord, func(name, stdin string, args ...string) error) {
+	var runs []clipboardRunRecord
+	return &runs, func(name, stdin string, args ...string) error {
+		runs = append(runs, clipboardRunRecord{name: name, stdin: stdin, args: strings.Join(args, " ")})
+		return nil
+	}
+}
+
+func TestClipboardCopyText_DarwinUsesPbcopyOnce(t *testing.T) {
+	// macOS has a single pasteboard: exactly one pbcopy run, no
+	// PRIMARY-selection follow-up.
+	runs, rec := recordClipboardRuns()
+	withClipboardStubs(t, "darwin", map[string]bool{"pbcopy": true}, rec)
 	if err := clipboardCopyText("hello mac"); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if ranName != "pbcopy" {
-		t.Errorf("ran %q, want pbcopy", ranName)
-	}
-	if ranStdin != "hello mac" {
-		t.Errorf("stdin %q, want hello mac", ranStdin)
-	}
-	if len(ranArgs) != 0 {
-		t.Errorf("pbcopy got args %v, want none", ranArgs)
+	want := []clipboardRunRecord{{name: "pbcopy", stdin: "hello mac"}}
+	if len(*runs) != 1 || (*runs)[0] != want[0] {
+		t.Errorf("runs=%+v, want %+v", *runs, want)
 	}
 }
 
-func TestClipboardCopyText_LinuxPrefersWlCopy(t *testing.T) {
-	var ranName string
-	withClipboardStubs(t, "linux",
-		map[string]bool{"wl-copy": true, "xclip": true, "xsel": true},
-		func(name, stdin string, args ...string) error {
-			ranName = name
-			return nil
-		})
+func TestClipboardCopyText_LinuxWlCopyWritesClipboardThenPrimary(t *testing.T) {
+	// wl-copy is the highest-priority Linux writer. Shift+Insert and
+	// middle-click paste the PRIMARY selection (kitty, foot, xterm, …),
+	// and the terminal never fills it while ask owns the mouse, so the
+	// clipboard write must be followed by a --primary write of the same
+	// payload.
+	runs, rec := recordClipboardRuns()
+	withClipboardStubs(t, "linux", map[string]bool{"wl-copy": true, "xclip": true, "xsel": true}, rec)
 	if err := clipboardCopyText("hi"); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if ranName != "wl-copy" {
-		t.Errorf("ran %q, want wl-copy (highest priority on linux)", ranName)
+	want := []clipboardRunRecord{
+		{name: "wl-copy", stdin: "hi", args: ""},
+		{name: "wl-copy", stdin: "hi", args: "--primary"},
+	}
+	if len(*runs) != len(want) {
+		t.Fatalf("runs=%+v, want %+v", *runs, want)
+	}
+	for i := range want {
+		if (*runs)[i] != want[i] {
+			t.Errorf("run %d = %+v, want %+v", i, (*runs)[i], want[i])
+		}
 	}
 }
 
-func TestClipboardCopyText_LinuxFallsBackToXclip(t *testing.T) {
-	var ranName string
-	var ranArgs []string
-	withClipboardStubs(t, "linux",
-		map[string]bool{"xclip": true},
-		func(name, stdin string, args ...string) error {
-			ranName, ranArgs = name, args
-			return nil
-		})
+func TestClipboardCopyText_LinuxFallsBackToXclipForBothSelections(t *testing.T) {
+	runs, rec := recordClipboardRuns()
+	withClipboardStubs(t, "linux", map[string]bool{"xclip": true}, rec)
 	if err := clipboardCopyText("hi"); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if ranName != "xclip" {
-		t.Errorf("ran %q, want xclip fallback", ranName)
+	want := []clipboardRunRecord{
+		{name: "xclip", stdin: "hi", args: "-selection clipboard"},
+		{name: "xclip", stdin: "hi", args: "-selection primary"},
 	}
-	if got := strings.Join(ranArgs, " "); got != "-selection clipboard" {
-		t.Errorf("xclip args=%q, want -selection clipboard", got)
+	if len(*runs) != len(want) {
+		t.Fatalf("runs=%+v, want %+v", *runs, want)
+	}
+	for i := range want {
+		if (*runs)[i] != want[i] {
+			t.Errorf("run %d = %+v, want %+v", i, (*runs)[i], want[i])
+		}
+	}
+}
+
+func TestClipboardCopyText_LinuxFallsBackToXselForBothSelections(t *testing.T) {
+	runs, rec := recordClipboardRuns()
+	withClipboardStubs(t, "linux", map[string]bool{"xsel": true}, rec)
+	if err := clipboardCopyText("hi"); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	want := []clipboardRunRecord{
+		{name: "xsel", stdin: "hi", args: "--clipboard --input"},
+		{name: "xsel", stdin: "hi", args: "--primary --input"},
+	}
+	if len(*runs) != len(want) {
+		t.Fatalf("runs=%+v, want %+v", *runs, want)
+	}
+	for i := range want {
+		if (*runs)[i] != want[i] {
+			t.Errorf("run %d = %+v, want %+v", i, (*runs)[i], want[i])
+		}
+	}
+}
+
+func TestClipboardCopyText_PrimaryWriteErrorPropagates(t *testing.T) {
+	var calls int
+	withClipboardStubs(t, "linux",
+		map[string]bool{"wl-copy": true},
+		func(name, stdin string, args ...string) error {
+			calls++
+			if strings.Join(args, " ") == "--primary" {
+				return errors.New("primary busted")
+			}
+			return nil
+		})
+	err := clipboardCopyText("hi")
+	if err == nil || !strings.Contains(err.Error(), "wl-copy") || !strings.Contains(err.Error(), "primary busted") {
+		t.Fatalf("expected the primary write error to propagate with the binary name, got %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("clipboardRun called %d times, want 2 (clipboard then primary)", calls)
+	}
+}
+
+func TestClipboardCopyText_SSHSkipsRemoteBinaries(t *testing.T) {
+	// Over SSH the binaries on PATH belong to the remote host; the
+	// user's clipboard is on the terminal at the far end and only OSC
+	// 52 reaches it. The binary path must stay untouched (no PATH
+	// lookup, no fork) and report success so the toast doesn't claim a
+	// failure for a copy that worked.
+	for _, env := range []string{"SSH_TTY", "SSH_CONNECTION", "SSH_CLIENT"} {
+		t.Run(env, func(t *testing.T) {
+			withClipboardStubs(t, "linux",
+				map[string]bool{"wl-copy": true},
+				func(name, stdin string, args ...string) error {
+					t.Fatalf("clipboardRun must not fork over SSH; ran %s %v", name, args)
+					return nil
+				})
+			clipboardLookPath = func(name string) (string, error) {
+				t.Fatalf("clipboardLookPath must not be consulted over SSH; asked for %s", name)
+				return "", nil
+			}
+			clipboardGetenv = func(key string) string {
+				if key == env {
+					return "set"
+				}
+				return ""
+			}
+			if err := clipboardCopyText("remote"); err != nil {
+				t.Fatalf("SSH copy must succeed via OSC 52 alone, got %v", err)
+			}
+		})
 	}
 }
 
@@ -137,108 +229,81 @@ func TestClipboardCopyText_PropagatesRunError(t *testing.T) {
 	}
 }
 
-func TestOsc52Sequence_PlainSystemClipboard(t *testing.T) {
-	got := osc52Sequence("hello", false)
-	want := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte("hello")) + "\x07"
+// osc52Plain is the byte shape the terminal must receive for a plain
+// (non-tmux) copy: one OSC 52 for the CLIPBOARD selection (`c`) and one
+// for PRIMARY (`p`), each carrying the same base64 payload. Two
+// sequences rather than the multi-target "cp" form because not every
+// emulator parses more than one target character.
+func osc52Plain(s string) string {
+	b64 := base64.StdEncoding.EncodeToString([]byte(s))
+	return "\x1b]52;c;" + b64 + "\x07" + "\x1b]52;p;" + b64 + "\x07"
+}
+
+func TestClipboardOSC52_PlainSetsClipboardAndPrimary(t *testing.T) {
+	got := clipboardOSC52("hello", false)
+	if want := osc52Plain("hello"); got != want {
+		t.Errorf("clipboardOSC52(plain):\n got %q\nwant %q", got, want)
+	}
+	if strings.Contains(got, "\x1bPtmux;") {
+		t.Errorf("plain sequence must not carry a tmux envelope: %q", got)
+	}
+}
+
+func TestClipboardOSC52_TmuxSendsPlainThenPassthrough(t *testing.T) {
+	// tmux drops an application's OSC 52 unless `set-clipboard` is
+	// `on`, and drops a DCS passthrough unless `allow-passthrough` is
+	// on. Sending the plain sequences first and the same bytes inside
+	// the envelope second covers whichever the user enabled; ESCs
+	// inside the envelope are doubled so tmux unwraps to the original.
+	got := clipboardOSC52("hi", true)
+	plain := osc52Plain("hi")
+	want := plain + "\x1bPtmux;" + strings.ReplaceAll(plain, "\x1b", "\x1b\x1b") + "\x1b\\"
 	if got != want {
-		t.Errorf("osc52Sequence(plain):\n got %q\nwant %q", got, want)
+		t.Errorf("clipboardOSC52(tmux):\n got %q\nwant %q", got, want)
 	}
 }
 
-func TestOsc52Sequence_TmuxPassthroughDoublesEscape(t *testing.T) {
-	// Inside tmux the inner OSC must be wrapped in DCS passthrough and
-	// every embedded ESC inside the inner sequence must be doubled so
-	// the outer terminal sees the original OSC after tmux strips one
-	// layer.
-	got := osc52Sequence("hi", true)
-	inner := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte("hi")) + "\x07"
-	want := "\x1bPtmux;\x1b" + strings.ReplaceAll(inner, "\x1b", "\x1b\x1b") + "\x1b\\"
-	if got != want {
-		t.Errorf("osc52Sequence(tmux):\n got %q\nwant %q", got, want)
+func TestClipboardOSC52Cmd_YieldsRawWrite(t *testing.T) {
+	withClipboardStubs(t, "linux", map[string]bool{}, nil)
+	msg, ok := clipboardOSC52Cmd("payload")().(tea.RawMsg)
+	if !ok {
+		t.Fatalf("clipboardOSC52Cmd must yield a tea.RawMsg so the bytes leave through the program output; got %T", msg)
 	}
-	// Sanity: the wrapper must start with DCS (ESC P) and end with ST
-	// (ESC backslash) — anything else would not be a valid passthrough.
-	if !strings.HasPrefix(got, "\x1bPtmux;") {
-		t.Errorf("tmux wrap missing DCS introducer: %q", got)
-	}
-	if !strings.HasSuffix(got, "\x1b\\") {
-		t.Errorf("tmux wrap missing ST terminator: %q", got)
+	if got := msg.Msg; got != osc52Plain("payload") {
+		t.Errorf("raw write = %q, want %q", got, osc52Plain("payload"))
 	}
 }
 
-func TestClipboardCopyText_EmitsOSC52AlongsideBinary(t *testing.T) {
-	// macOS / tmux is the original symptom: pbcopy "succeeds" but never
-	// reaches the system pasteboard. The OSC 52 emit is the parallel
-	// path that does. Both must fire for every clipboardCopyText call.
-	var emitText string
-	var emitCount int
-	var ranName, ranStdin string
-	withClipboardStubs(t, "darwin",
-		map[string]bool{"pbcopy": true},
-		func(name, stdin string, args ...string) error {
-			ranName, ranStdin = name, stdin
-			return nil
-		})
-	clipboardEmitOSC52Fn = func(s string) error {
-		emitCount++
-		emitText = s
-		return nil
+func TestClipboardOSC52Cmd_WrapsForTmuxFromEnv(t *testing.T) {
+	withClipboardStubs(t, "linux", map[string]bool{}, nil)
+	clipboardGetenv = func(key string) string {
+		if key == "TMUX" {
+			return "/tmp/tmux-1000/default,4242,0"
+		}
+		return ""
 	}
-	if err := clipboardCopyText("payload"); err != nil {
-		t.Fatalf("unexpected err: %v", err)
+	msg, ok := clipboardOSC52Cmd("payload")().(tea.RawMsg)
+	if !ok {
+		t.Fatalf("expected tea.RawMsg, got %T", msg)
 	}
-	if emitCount != 1 {
-		t.Errorf("OSC 52 emit fired %d times, want 1", emitCount)
-	}
-	if emitText != "payload" {
-		t.Errorf("OSC 52 got %q, want payload", emitText)
-	}
-	if ranName != "pbcopy" || ranStdin != "payload" {
-		t.Errorf("binary writer should still run: name=%q stdin=%q", ranName, ranStdin)
+	if got := msg.Msg; got != clipboardOSC52("payload", true) {
+		t.Errorf("raw write under TMUX = %q, want plain+passthrough %q", got, clipboardOSC52("payload", true))
 	}
 }
 
-func TestClipboardCopyText_OSC52FailureDoesNotBlockBinary(t *testing.T) {
-	// /dev/tty not openable in some sandboxes; that path errors but the
-	// binary writer is still authoritative for the success toast.
-	var ranName string
-	withClipboardStubs(t, "linux",
-		map[string]bool{"wl-copy": true},
-		func(name, stdin string, args ...string) error {
-			ranName = name
-			return nil
-		})
-	clipboardEmitOSC52Fn = func(string) error { return errors.New("no tty") }
-	if err := clipboardCopyText("x"); err != nil {
-		t.Fatalf("OSC 52 emit failure must not surface as a copy error: %v", err)
-	}
-	if ranName != "wl-copy" {
-		t.Errorf("binary writer should still run after OSC 52 failure; ran=%q", ranName)
-	}
-}
-
-func TestClipboardCopyText_OSC52FiresEvenWhenBinaryMissing(t *testing.T) {
-	// On a linux box with no clipboard binaries on PATH the binary
-	// path fails — but OSC 52 may still have hit the terminal. We
-	// surface the binary error so the user sees the diagnostic, but
-	// the OSC 52 emit must have run regardless so that supported
-	// terminals still populate the clipboard.
-	var emitted bool
+func TestClipboardCopyText_NoBinaryStillReportsSoUserCanInstallOne(t *testing.T) {
+	// Locally (not SSH) a missing binary is worth telling the user
+	// about even though the OSC 52 raw write went out in parallel: it
+	// is the one hint that wl-clipboard / xclip is not installed.
 	withClipboardStubs(t, "linux",
 		map[string]bool{},
 		func(name, stdin string, args ...string) error {
 			t.Fatalf("clipboardRun must not be called when no binary present")
 			return nil
 		})
-	clipboardEmitOSC52Fn = func(string) error {
-		emitted = true
-		return nil
-	}
-	if err := clipboardCopyText("payload"); err == nil {
-		t.Fatal("expected the no-binary error to still propagate")
-	}
-	if !emitted {
-		t.Errorf("OSC 52 must fire before the binary lookup loop, regardless of binary availability")
+	err := clipboardCopyText("payload")
+	if err == nil || !strings.Contains(err.Error(), "wl-copy") {
+		t.Fatalf("expected the no-binary error listing the writers tried, got %v", err)
 	}
 }
 

@@ -216,20 +216,21 @@ func (m model) copySelectionAndClear() (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// copyTextCmd writes text to the OS clipboard off the main update
-// goroutine, then dispatches a toast trigger. Wrapping in a tea.Cmd
+// copyTextCmd sends the OSC 52 write through the program output and
+// writes text to the OS clipboard off the main update goroutine, then
+// dispatches a toast trigger. Wrapping the binary write in a tea.Cmd
 // (instead of doing it synchronously in Update) means a slow or stuck
 // pbcopy/wl-copy never blocks the UI thread.
 func copyTextCmd(t *toastModel, text string) tea.Cmd {
 	if t == nil {
 		return nil
 	}
-	return func() tea.Msg {
+	return tea.Batch(clipboardOSC52Cmd(text), func() tea.Msg {
 		if err := clipboardCopyText(text); err != nil {
 			return toastShowMsg{text: "copy failed: " + err.Error()}
 		}
 		return toastShowMsg{text: "copied to clipboard"}
-	}
+	})
 }
 
 // copyTextSilentCmd is the no-toast-on-success variant of copyTextCmd,
@@ -247,12 +248,12 @@ func copyTextSilentCmd(t *toastModel, text string) tea.Cmd {
 	if t == nil {
 		return nil
 	}
-	return func() tea.Msg {
+	return tea.Batch(clipboardOSC52Cmd(text), func() tea.Msg {
 		if err := clipboardCopyText(text); err != nil {
 			return toastShowMsg{text: "copy failed: " + err.Error()}
 		}
 		return nil
-	}
+	})
 }
 
 // selectionRenderMask returns the inclusive-start / exclusive-end
