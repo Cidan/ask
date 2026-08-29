@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
@@ -96,6 +97,63 @@ func userContent(text string) *genai.Content {
 	return &genai.Content{Role: "user", Parts: []*genai.Part{{Text: text}}}
 }
 
+// TestClaudeCodeModel_SystemPromptFileLifecycle proves the spawn writes the
+// system prompt to a temp file passed as --system-prompt-file (never inline),
+// and that Close removes the file and clears the tracked path.
+func TestClaudeCodeModel_SystemPromptFileLifecycle(t *testing.T) {
+	fc := newFakeConn(4)
+	prevDial := ccDial
+	var gotArgv []string
+	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) {
+		gotArgv = args.Argv
+		return fc, nil
+	}
+	defer func() { ccDial = prevDial }()
+
+	m := newClaudeCodeModel("claude", "opus", "/repo", false, nil)
+
+	const sysPrompt = "You are ask.\nThis is a large system prompt.\n"
+	req := &model.LLMRequest{Config: &genai.GenerateContentConfig{
+		SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: sysPrompt}}},
+	}}
+	if err := m.ensure(req); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+
+	// The child was dialed with --system-prompt-file, never the inline flag.
+	if indexOf(gotArgv, "--system-prompt") >= 0 {
+		t.Errorf("argv must not carry the inline --system-prompt flag; got %v", gotArgv)
+	}
+	i := indexOf(gotArgv, "--system-prompt-file")
+	if i < 0 || i+1 >= len(gotArgv) {
+		t.Fatalf("argv missing --system-prompt-file; got %v", gotArgv)
+	}
+	path := gotArgv[i+1]
+	if path != m.sysPromptPath {
+		t.Errorf("argv path %q != model.sysPromptPath %q", path, m.sysPromptPath)
+	}
+
+	// The prompt lives in that temp file verbatim.
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read system prompt file %q: %v", path, err)
+	}
+	if string(got) != sysPrompt {
+		t.Errorf("system prompt file = %q, want %q", got, sysPrompt)
+	}
+
+	// Close removes the temp file and clears the tracked path.
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("system prompt file must be removed on Close; stat err = %v", err)
+	}
+	if m.sysPromptPath != "" {
+		t.Errorf("sysPromptPath must be cleared on Close; got %q", m.sysPromptPath)
+	}
+}
+
 // TestClaudeCodeModel_ToolCallLockStep walks a full turn: the child requests a
 // tool through the MCP bridge, the model yields it as a FunctionCall, and the
 // next GenerateContent answers it and reads the result.
@@ -131,9 +189,13 @@ func TestClaudeCodeModel_ToolCallLockStep(t *testing.T) {
 	}
 	out1 := collect(t, m, req1)
 
-	// The argv locked Claude down and carried our system prompt.
-	if indexOf(gotArgv, "--strict-mcp-config") < 0 || indexOf(gotArgv, "SYS") < 0 {
+	// The argv locked Claude down and carried our system prompt as a file.
+	spi := indexOf(gotArgv, "--system-prompt-file")
+	if indexOf(gotArgv, "--strict-mcp-config") < 0 || spi < 0 || spi+1 >= len(gotArgv) {
 		t.Fatalf("argv wrong: %v", gotArgv)
+	}
+	if sp, err := os.ReadFile(gotArgv[spi+1]); err != nil || string(sp) != "SYS" {
+		t.Fatalf("system prompt file = %q, err=%v; want SYS", sp, err)
 	}
 	// A FunctionCall for read must have been yielded.
 	fcall := lastFunctionCall(out1)
@@ -191,6 +253,7 @@ func TestClaudeCodeModel_PlainTextTurn(t *testing.T) {
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "haiku", "/repo", false, nil)
+	t.Cleanup(func() { _ = m.Close() })
 	fc.push(assistantTextFrame("hello"))
 	fc.push(resultFrame("hello there"))
 
@@ -216,6 +279,7 @@ func TestClaudeCodeModel_HistoryPreamble(t *testing.T) {
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "opus", "/repo", false, nil)
+	t.Cleanup(func() { _ = m.Close() })
 	fc.push(resultFrame("ok"))
 
 	collect(t, m, &model.LLMRequest{
@@ -257,6 +321,7 @@ func TestClaudeCodeModel_NonStreamingNoPartials(t *testing.T) {
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "haiku", "/repo", false, nil)
+	t.Cleanup(func() { _ = m.Close() })
 	fc.push(streamEventFrame("hello "))
 	fc.push(streamEventFrame("there"))
 	fc.push(assistantTextFrame("hello there"))
@@ -304,6 +369,7 @@ func TestClaudeCodeModel_StreamingYieldsPartials(t *testing.T) {
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "haiku", "/repo", false, nil)
+	t.Cleanup(func() { _ = m.Close() })
 	fc.push(streamEventFrame("hi"))
 	fc.push(resultFrame("hi"))
 

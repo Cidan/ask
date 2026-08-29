@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +49,9 @@ type claudeCodeModel struct {
 	// readStep (one GenerateContent at a time), so it needs no lock.
 	nativeCalls map[string]string
 	sysSent     string // system prompt captured at spawn
+	// sysPromptPath is the temp file passed to the child as
+	// --system-prompt-file; removed on Close (and on a failed spawn).
+	sysPromptPath string
 }
 
 type ccPending struct {
@@ -73,6 +77,10 @@ func (m *claudeCodeModel) Name() string { return m.modelID }
 func (m *claudeCodeModel) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.sysPromptPath != "" {
+		_ = os.Remove(m.sysPromptPath)
+		m.sysPromptPath = ""
+	}
 	if m.conn == nil {
 		return nil
 	}
@@ -113,7 +121,11 @@ func (m *claudeCodeModel) ensure(req *model.LLMRequest) error {
 		return nil
 	}
 	sys := reqSystemPrompt(req)
-	argv := ccArgv(m.modelID, reqEffort(req), sys, m.nativeWebSearch)
+	sysPath, err := writeClaudeSystemPromptFile(sys)
+	if err != nil {
+		return err
+	}
+	argv := ccArgv(m.modelID, reqEffort(req), sysPath, m.nativeWebSearch)
 	// The child lives for the model's lifetime, not one turn: dial with a
 	// context derived from Background and cancelled only by Close. Binding it
 	// to the per-turn ctx (which the TUI cancels at turn end) would kill the
@@ -127,12 +139,14 @@ func (m *claudeCodeModel) ensure(req *model.LLMRequest) error {
 	})
 	if err != nil {
 		cancel()
+		_ = os.Remove(sysPath)
 		return err
 	}
 	m.conn = conn
 	m.procCancel = cancel
 	m.started = true
 	m.sysSent = sys
+	m.sysPromptPath = sysPath
 	m.cursor = 0
 	m.pending = map[string]ccPending{}
 	if err := conn.send(ccControlEnvelope{

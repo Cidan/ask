@@ -131,6 +131,7 @@ func TestClaudeCodeModel_ObservesNativeTools(t *testing.T) {
 
 	sink := &fakeSink{}
 	m := newClaudeCodeModel("claude", "opus", "/repo", true, sink)
+	t.Cleanup(func() { _ = m.Close() })
 
 	fc.push(assistantTextFrame("Let me search."))
 	fc.push(nativeToolUseFrame("WebSearch", "toolu_1", map[string]any{"query": "latest go"}))
@@ -173,6 +174,7 @@ func TestClaudeCodeModel_NoSinkNoObservation(t *testing.T) {
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "opus", "/repo", true, nil)
+	t.Cleanup(func() { _ = m.Close() })
 	fc.push(nativeToolUseFrame("WebSearch", "toolu_1", map[string]any{"query": "x"}))
 	fc.push(userToolResultFrame("toolu_1", "y", false))
 	fc.push(resultFrame("done"))

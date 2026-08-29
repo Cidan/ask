@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -108,18 +109,27 @@ func TestClaudeCode_CatalogAndLimits(t *testing.T) {
 }
 
 func TestCCArgv_LocksDownClaudeContext(t *testing.T) {
-	argv := ccArgv("opus", "high", "SYS PROMPT", false)
+	argv := ccArgv("opus", "high", "/tmp/ask-claude-system-abc.txt", false)
 	joined := strings.Join(argv, " ")
 	// The three flags that overwrite Claude's tools with ask's.
 	for _, want := range []string{
 		"--tools ", "--mcp-config", "--strict-mcp-config",
 		"--allowedTools mcp__ask", "--setting-sources ",
-		"--no-session-persistence", "--system-prompt SYS PROMPT",
+		"--no-session-persistence",
+		"--system-prompt-file /tmp/ask-claude-system-abc.txt",
 		"--model opus", "--effort high",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("argv missing %q; got %v", want, argv)
 		}
+	}
+	// The prompt must ride --system-prompt-file, never inline as --system-prompt,
+	// or a large prompt overflows the OS argv limit.
+	if i := indexOf(argv, "--system-prompt"); i >= 0 {
+		t.Errorf("argv must not carry the inline --system-prompt flag; got %v", argv)
+	}
+	if i := indexOf(argv, "--system-prompt-file"); i < 0 || argv[i+1] != "/tmp/ask-claude-system-abc.txt" {
+		t.Errorf("--system-prompt-file must be followed by the temp path; got %v", argv)
 	}
 	// autoMemory is turned off in --settings.
 	if !strings.Contains(joined, `"autoMemoryEnabled":false`) {
@@ -145,8 +155,37 @@ func TestCCArgv_LocksDownClaudeContext(t *testing.T) {
 	}
 }
 
+func TestWriteClaudeSystemPromptFile(t *testing.T) {
+	const want = "You are ask.\nA sizeable system prompt.\n"
+	path, err := writeClaudeSystemPromptFile(want)
+	if err != nil {
+		t.Fatalf("writeClaudeSystemPromptFile: %v", err)
+	}
+	defer os.Remove(path)
+	if path == "" {
+		t.Fatal("returned path is empty")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read temp file: %v", err)
+	}
+	if string(got) != want {
+		t.Errorf("temp file content = %q, want %q", got, want)
+	}
+	// Each invocation gets a distinct random id so concurrent children never
+	// share a file.
+	path2, err := writeClaudeSystemPromptFile(want)
+	if err != nil {
+		t.Fatalf("writeClaudeSystemPromptFile (2): %v", err)
+	}
+	defer os.Remove(path2)
+	if path2 == path {
+		t.Errorf("two invocations returned the same path %q", path)
+	}
+}
+
 func TestCCArgv_DefaultModelOmitsModelFlag(t *testing.T) {
-	argv := ccArgv("default", "", "sys", false)
+	argv := ccArgv("default", "", "/tmp/ask-claude-system-xyz.txt", false)
 	if indexOf(argv, "--model") >= 0 {
 		t.Errorf("the default model must not pass --model; got %v", argv)
 	}

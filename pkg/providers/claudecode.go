@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -296,11 +298,12 @@ func CanonicalClaudeCodeModelID(modelID string, fallback ...string) string {
 
 // ccArgv builds the flags for one child. Everything that lets Claude's own
 // context, tools, and settings leak in is switched off; ask supplies the
-// system prompt, the tools (as an sdk MCP server), and the permission decision.
-// When nativeWebSearch is set (no Brave key, so ask's web_search is off) the
+// system prompt (via --system-prompt-file, whose path the caller wrote), the
+// tools (as an sdk MCP server), and the permission decision. When
+// nativeWebSearch is set (no Brave key, so ask's web_search is off) the
 // child's built-in WebSearch is made available and pre-approved; every other
 // built-in stays stripped. Its calls are observed off the stream, not bridged.
-func ccArgv(modelID, effort, systemPrompt string, nativeWebSearch bool) []string {
+func ccArgv(modelID, effort, systemPromptPath string, nativeWebSearch bool) []string {
 	mcp, _ := json.Marshal(map[string]any{
 		"mcpServers": map[string]any{"ask": map[string]any{"type": "sdk", "name": "ask"}},
 	})
@@ -323,7 +326,7 @@ func ccArgv(modelID, effort, systemPrompt string, nativeWebSearch bool) []string
 		"--setting-sources", "",
 		"--settings", `{"autoMemoryEnabled":false}`,
 		"--no-session-persistence",
-		"--system-prompt", systemPrompt,
+		"--system-prompt-file", systemPromptPath,
 	}
 	if m := strings.TrimSpace(modelID); m != "" && m != ClaudeCodeDefaultModel {
 		argv = append(argv, "--model", m)
@@ -332,6 +335,29 @@ func ccArgv(modelID, effort, systemPrompt string, nativeWebSearch bool) []string
 		argv = append(argv, "--effort", e)
 	}
 	return argv
+}
+
+// writeClaudeSystemPromptFile writes the assembled system prompt to a uniquely
+// named temp file and returns its absolute path. The child reads it via
+// --system-prompt-file; passing the prompt inline as --system-prompt overflows
+// the OS argv limit (E2BIG) once it grows large (CLAUDE.md + rules + skills +
+// subagent triggers + every tool description). The caller removes the file when
+// the child is torn down.
+func writeClaudeSystemPromptFile(systemPrompt string) (string, error) {
+	f, err := os.CreateTemp("", "ask-claude-system-*.txt")
+	if err != nil {
+		return "", fmt.Errorf("claude-code: create system prompt file: %w", err)
+	}
+	if _, err := f.WriteString(systemPrompt); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("claude-code: write system prompt file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("claude-code: close system prompt file: %w", err)
+	}
+	return f.Name(), nil
 }
 
 // ccEffortFlag maps a genai ThinkingLevel (set by CallOptions) back to a CLI
