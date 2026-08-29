@@ -1,0 +1,69 @@
+name: release-tag
+
+# On every push to main, cut the next release tag so the module is
+# fetchable at a readable version via `go get github.com/Cidan/ask@vX.Y.0`.
+# The module path has no /vN suffix, so tags must stay in the v0/v1 range;
+# we keep the major at 1 and use the minor as a single monotonic counter:
+# v1.0.0 -> v1.1.0 -> v1.2.0 -> ...
+# Put [skip release] in a commit message to skip tagging for that push.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Decide whether to skip
+        id: gate
+        run: |
+          set -euo pipefail
+          msg="$(git log -1 --pretty=%B)"
+          if printf '%s' "$msg" | grep -qiF '[skip release]'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute next tag
+        id: next
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          latest="$(git tag --list 'v1.*' --sort=-v:refname | head -n1)"
+          if [ -z "$latest" ]; then
+            next="v1.0.0"
+          else
+            ver="${latest#v}"
+            major="${ver%%.*}"
+            rest="${ver#*.}"
+            minor="${rest%%.*}"
+            minor=$((minor + 1))
+            next="v${major}.${minor}.0"
+          fi
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+          echo "Next tag: $next"
+
+      - name: Create and push tag
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.next.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "refs/tags/$TAG"
