@@ -129,9 +129,9 @@ type Extractor interface {
 
 // Options configures the initialization of the Memory Service.
 type Options struct {
-	DBPath    string
-	ModelPath string
-	Embedder  Embedder
+	DBPath string
+	// Embedder produces the vectors the store indexes; required.
+	Embedder Embedder
 	// Now is the clock decay and refractory math read; nil means time.Now.
 	Now func() time.Time
 }
@@ -154,35 +154,12 @@ func DefaultDBPath() (string, error) {
 	return filepath.Join(home, ".config", "ask", "memory", "memory.db"), nil
 }
 
-// DefaultModelPath returns the standard local embedding model GGUF location.
-func DefaultModelPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".local", "share", "ask", "models", "embeddinggemma-300M-Q8_0.gguf"), nil
-}
-
 // NewService initializes a SQLite-vec memory service with the specified options.
 func NewService(opts Options) (*Service, error) {
-	var embedder Embedder
-	if opts.Embedder != nil {
-		embedder = opts.Embedder
-	} else {
-		modelPath := opts.ModelPath
-		if modelPath == "" {
-			var err error
-			modelPath, err = DefaultModelPath()
-			if err != nil {
-				return nil, err
-			}
-		}
-		loaded, err := LoadEmbeddingModel(modelPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load embedding model: %w", err)
-		}
-		embedder = loaded
+	if opts.Embedder == nil {
+		return nil, errors.New("memory: Options.Embedder is required")
 	}
+	embedder := opts.Embedder
 
 	dbPath := opts.DBPath
 	if dbPath == "" {

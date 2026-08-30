@@ -63,11 +63,11 @@ runtime is `pkg/engine`, re-exported as a library by the root package
 | `pkg/providers/` | The `Provider` contract and registry, Vertex and OpenRouter, the shared OpenAI-protocol model, static catalog, models.dev client, merged model metadata and pricing, the steering prompt. |
 | `pkg/workflow/` | Workflow definitions, the three-scope store, compile to an ADK graph, progress adapter, run tracker, sources. |
 | `pkg/plugin/` | Claude Code plugin-marketplace format: manifests, marketplace/plugin state, install, publish, import from Claude. |
-| `pkg/memory/` | sqlite-vec memory store with a local llama.cpp embedding model (cgo). |
+| `pkg/memory/` | sqlite-vec memory store behind an injected `Embedder` (no llama.cpp dependency); `pkg/memory/llamacpp/` is the local llama.cpp embedder (cgo) that only `cmd/ask` imports. |
 | `pkg/config/` | `~/.config/ask/ask.json` shapes, per-provider blocks, legacy migration, worktree helpers. |
 | `pkg/diff/` | Pure-Go Myers unified diff and parser. |
 | `third_party/sqlite/` | `sqlite3.h` / `sqlite3ext.h` for sqlite-vec's cgo build (no system header assumed); reached through the Makefile's `CGO_CFLAGS`. |
-| `build/` | Gitignored: the llama.cpp checkout and static libraries that `pkg/memory` links against. |
+| `build/` | Gitignored: the llama.cpp checkout and static libraries that `pkg/memory/llamacpp` links against. |
 
 ## Where the detail lives
 
@@ -85,9 +85,12 @@ runtime is `pkg/engine`, re-exported as a library by the root package
 
 ## Build and test
 
-`pkg/memory` is cgo against llama.cpp, so every `go build` / `go test`
-needs the static libraries and the `CGO_*` flags the Makefile exports.
-The Makefile targets do all of it:
+`pkg/memory/llamacpp` (imported by `cmd/ask`) is cgo against llama.cpp,
+so every `go build` / `go test` of the whole module needs the static
+libraries and the `CGO_*` flags the Makefile exports. `pkg/memory` itself
+only needs the sqlite headers; a downstream module that imports it with
+its own `Embedder` never touches llama.cpp. The Makefile targets do all
+of it:
 
 ```
 make build      # clone+build llama.cpp (once), download the embedding model (once), go build -o bin/ask ./cmd/ask
@@ -99,7 +102,7 @@ make clean
 - Running `go test ./...` directly works once `build/llama.cpp` exists,
   with the three `CGO_*` variables from the Makefile in the environment.
 - **In a git worktree** `build/` (gitignored) does not exist, and the cgo
-  directives in `pkg/memory/embed.go` resolve `build/llama.cpp` relative to
+  directives in `pkg/memory/llamacpp/embed.go` resolve `build/llama.cpp` relative to
   the checkout — so builds fail with `llama.h: No such file`. Symlink it to
   the primary checkout once, from the worktree root:
   `ln -s /path/to/primary/checkout/build build`. Then `make` / `go build` /
