@@ -1,10 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/memory"
+	"github.com/Cidan/ask/pkg/memory/llamacpp"
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/tools"
 	"github.com/Cidan/ask/pkg/workflow"
@@ -210,11 +212,23 @@ func okResult(text string) *mcp.CallToolResult {
 
 // Memory aliases
 
-// openMemoryService opens the concept store and starts the background
-// extractor that files finished turns into it.
+// openMemoryService loads the local llama.cpp embedding model, opens the
+// concept store on it, and starts the background extractor that files
+// finished turns into it.
 func openMemoryService(cfg ...askConfig) error {
-	if err := memory.Open(memory.Options{}); err != nil {
-		return err
+	if !memory.IsOpen() {
+		modelPath, err := llamacpp.DefaultModelPath()
+		if err != nil {
+			return err
+		}
+		embedder, err := llamacpp.LoadEmbeddingModel(modelPath)
+		if err != nil {
+			return fmt.Errorf("failed to load embedding model: %w", err)
+		}
+		if err := memory.Open(memory.Options{Embedder: embedder}); err != nil {
+			embedder.Close()
+			return err
+		}
 	}
 	engine.DebugLog = debugLog
 	engine.EnsureMemoryExtractor()

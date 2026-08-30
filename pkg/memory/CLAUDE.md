@@ -81,11 +81,18 @@ last exchange (`TurnFromSession`) and hands it to the installed
 
 ## Embedding
 
-- `Embedder` interface (`Embed`, `EmbdSize`, `Close`). `EmbeddingModel`
-  (`embed.go`) is llama.cpp through cgo, `n_ctx` 2048, input truncated to
-  2048 tokens. Model: `embeddinggemma-300M-Q8_0.gguf` at
-  `~/.local/share/ask/models/` (`DefaultModelPath`); `make download-model`
-  fetches it. Loaded only by `NewService` when `Options.Embedder` is nil.
+- `Embedder` interface (`Embed`, `EmbdSize`, `Close`) in `embed.go`, which
+  has no cgo. `Options.Embedder` is required: `NewService` returns an error
+  when it is nil and never loads a model itself, so `pkg/memory` (and every
+  package that imports it — `pkg/engine`, `pkg/tools`, the root `ask`
+  package) builds without llama.cpp. Downstream consumers plug in their own
+  embedder.
+- `llamacpp.EmbeddingModel` (`pkg/memory/llamacpp/embed.go`) is the
+  llama.cpp embedder through cgo, `n_ctx` 2048, input truncated to 2048
+  tokens; `var _ memory.Embedder = (*EmbeddingModel)(nil)`. Model:
+  `embeddinggemma-300M-Q8_0.gguf` at `~/.local/share/ask/models/`
+  (`llamacpp.DefaultModelPath`); `make download-model` fetches it. Only
+  `cmd/ask` imports this package.
 - `NewFakeEmbedder(dim)` is the deterministic test embedder: a hashed,
   L2-normalised bag of words, so texts sharing words are near and
   unrelated texts are not. Use `512` dims in tests — smaller dims collide
@@ -94,11 +101,13 @@ last exchange (`TurnFromSession`) and hands it to the installed
 
 ## Lifecycle and injection points
 
-- `cmd/ask/aliases.go` `openMemoryService` → `memory.Open(Options{})` at
+- `cmd/ask/aliases.go` `openMemoryService` → `llamacpp.LoadEmbeddingModel`
+  (`llamacpp.DefaultModelPath`) → `memory.Open(Options{Embedder})` at
   startup, then `engine.EnsureMemoryExtractor()`; `closeMemoryService`
-  stops the extractor before `memory.Close()`. A failed open prints to
-  stderr and ask runs without memory. No config flag for the store; the
-  extraction model is `ask.json` `memory.{provider,model}`.
+  stops the extractor before `memory.Close()`, which closes the embedder.
+  A failed load or open prints to stderr and ask runs without memory. No
+  config flag for the store; the extraction model is `ask.json`
+  `memory.{provider,model}`.
 - Session start: `pkg/engine/prompt.go` appends `SystemBlock` as
   `<project_memory>` (2s timeout) when `IsOpen`.
 - Per turn: `tools.PreloadMemoryTool` (`MemoryRecallHook`, core, name
@@ -139,10 +148,11 @@ tools error with `memory service closed`.
 
 ## Build and test
 
-- `embed.go`'s `#cgo` lines point at `build/llama.cpp/{include,ggml/include}`
-  and the static libs under `build/llama.cpp/build/{src,ggml/src}`;
-  `make setup-llama` clones and builds them. Nothing in this package
-  builds without that.
+- `llamacpp/embed.go`'s `#cgo` lines point at
+  `build/llama.cpp/{include,ggml/include}` and the static libs under
+  `build/llama.cpp/build/{src,ggml/src}`; `make setup-llama` clones and
+  builds them. `pkg/memory` itself has no llama.cpp dependency; only
+  `pkg/memory/llamacpp` (and therefore `cmd/ask`) needs the build.
 - sqlite-vec's cgo includes `sqlite3ext.h` → `sqlite3.h`; no system
   header is assumed, the two live in `third_party/sqlite/` and are found
   only through the Makefile's `CGO_CFLAGS=-I$(PWD)/third_party/sqlite`.
@@ -153,5 +163,6 @@ tools error with `memory service closed`.
   it must `Close` it first and defer `Close` (`pkg/tools/memory_test.go`,
   `pkg/engine/memory_extract_test.go`, `cmd/ask/tab_topic_test.go`), and
   tests that install an extractor `engine.SetMemoryExtractor(nil)` on
-  cleanup. `TestRealModel_IfAvailable` loads the real gguf from the real
-  `$HOME` and skips when it is absent.
+  cleanup. `llamacpp.TestRealModel_IfAvailable` loads the real gguf from
+  the real `$HOME` and skips when it is absent;
+  `TestNewService_RequiresEmbedder` pins the no-implicit-load contract.

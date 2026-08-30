@@ -576,30 +576,12 @@ func TestWeightMath(t *testing.T) {
 	}
 }
 
-func TestRealModel_IfAvailable(t *testing.T) {
-	realHome, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("user home not found")
+func TestNewService_RequiresEmbedder(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	if _, err := NewService(Options{DBPath: dbPath}); err == nil {
+		t.Fatal("NewService without an Embedder must fail instead of loading a model itself")
 	}
-	modelPath := filepath.Join(realHome, ".local", "share", "ask", "models", "embeddinggemma-300M-Q8_0.gguf")
-	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
-		t.Skip("real GGUF model not found, skipping real model test")
-	}
-	svc, err := NewService(Options{DBPath: filepath.Join(t.TempDir(), "real.db"), ModelPath: modelPath})
-	if err != nil {
-		t.Fatalf("NewService with real model failed: %v", err)
-	}
-	defer svc.Close()
-	ctx := context.Background()
-	cwd := filepath.Join(t.TempDir(), "real_proj")
-	if _, err := svc.Upsert(ctx, Concept{Scope: ScopeFor(cwd), Kind: KindProject, Title: "Refactoring user authentication logic"}); err != nil {
-		t.Fatalf("Upsert real model: %v", err)
-	}
-	res, err := svc.Recall(ctx, RecallQuery{Cwd: cwd, Query: "user authentication", K: 3})
-	if err != nil || len(res.Concepts) == 0 {
-		t.Fatalf("Recall real model: %+v err=%v", res, err)
-	}
-	if res.Concepts[0].Title != "Refactoring user authentication logic" {
-		t.Errorf("unexpected hit: %s", res.Concepts[0].Title)
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Fatalf("a rejected NewService must not create the database, stat err=%v", err)
 	}
 }
