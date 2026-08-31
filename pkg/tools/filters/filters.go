@@ -34,6 +34,7 @@ func buildRegistry() []Filter {
 		GitFilter{},
 		PytestFilter{},
 		InstallFilter{},
+		KubectlFilter{},
 	}
 	return append(fs, ruleFilters()...)
 }
@@ -66,9 +67,10 @@ func Apply(command, raw string, exit int) (filtered string, saved int) {
 	text := StripANSI(raw)
 	endedNL := strings.HasSuffix(raw, "\n")
 
+	fields := BaseCommand(command)
 	var lines []string
-	if f := match(BaseCommand(command)); f != nil {
-		lines = SplitLines(f.Filter(BaseCommand(command), text, exit))
+	if f := match(fields); f != nil {
+		lines = SplitLines(f.Filter(fields, text, exit))
 	} else {
 		lines = DedupConsecutive(SplitLines(text))
 	}

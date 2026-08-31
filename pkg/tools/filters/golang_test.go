@@ -133,6 +133,20 @@ func TestGo_RunPassesThrough(t *testing.T) {
 	}
 }
 
+// A -C <dir> global flag before the subcommand still routes go test
+// through GoFilter (go 1.20+ allows `go -C dir test`).
+func TestGo_DashCFlagStillMatches(t *testing.T) {
+	raw := strings.Join([]string{
+		"=== RUN   TestA",
+		"--- PASS: TestA (0.00s)",
+		"PASS",
+		"ok  \tx/p\t0.012s",
+	}, "\n") + "\n"
+	if out, _ := Apply("go -C sub test ./...", raw, 0); out != "ok  \tx/p\t0.012s\n" {
+		t.Errorf("go -C test = %q", out)
+	}
+}
+
 // go mod keeps everything but download chatter.
 func TestGo_ModStripsDownloads(t *testing.T) {
 	out, _ := Apply("go mod download", "go: downloading example.com/m v1.2.3\nall good\n", 0)

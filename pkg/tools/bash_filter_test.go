@@ -25,6 +25,40 @@ func TestExtractBaseCommand(t *testing.T) {
 	}
 }
 
+// ExtractBaseCommand resolves the ledger key past global flags and
+// pipelines, so the ledger key agrees with the filter that ran.
+func TestExtractBaseCommand_FlagsAndPipelines(t *testing.T) {
+	tests := []struct{ cmd, want string }{
+		{"git --no-pager diff", "git diff"},
+		{"git -C /repo status", "git status"},
+		{"go test ./... 2>&1 | tail -n 40", "go test"},
+		{"cd build && cmake .. && make -j4", "make"},
+		{"kubectl get pods -o wide | head", "kubectl get"},
+		{"sudo -A make install", "make"},
+		{`python3 -c "import sys; print('|'.join(sys.argv))"`, "python3"},
+	}
+	for _, tt := range tests {
+		if got := ExtractBaseCommand(tt.cmd); got != tt.want {
+			t.Errorf("ExtractBaseCommand(%q) = %q, want %q", tt.cmd, got, tt.want)
+		}
+	}
+}
+
+// IsTrivialCommand excludes pagers/builtins/file reads but keeps real
+// build/test/tooling commands even when they are piped into a pager.
+func TestIsTrivialCommand(t *testing.T) {
+	for _, c := range []string{"cat foo", "head -100 log", "ls -la", "grep -rn x .", ""} {
+		if !IsTrivialCommand(c) {
+			t.Errorf("IsTrivialCommand(%q) = false, want true", c)
+		}
+	}
+	for _, c := range []string{"go test ./...", "git --no-pager diff | head", "kubectl get pods | head", "make build"} {
+		if IsTrivialCommand(c) {
+			t.Errorf("IsTrivialCommand(%q) = true, want false", c)
+		}
+	}
+}
+
 func TestApplyBashFilter(t *testing.T) {
 	tests := []struct {
 		name        string

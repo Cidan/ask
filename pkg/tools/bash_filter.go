@@ -2,23 +2,24 @@ package tools
 
 import "github.com/Cidan/ask/pkg/tools/filters"
 
-// ExtractBaseCommand parses the executable plus the first argument that
-// identifies the tool action ("go test", "git push"), for use as the
-// savings-ledger key. It re-exports filters.BaseCommand so the ledger's
-// keys and the filter registry always agree on what "the command" is.
+// ExtractBaseCommand returns the savings-ledger key for a command: its
+// primary program plus, for subcommand-style tools, the subcommand ("go
+// test", "git diff", "kubectl get"). It delegates to filters.LedgerKey so
+// the ledger's keys and the filter registry always agree on what "the
+// command" is — global flags (`git --no-pager diff`) and pipelines (`go
+// test ./... | tail`) resolve to the same key the filter dispatches on.
 func ExtractBaseCommand(command string) string {
-	fields := filters.BaseCommand(command)
-	if len(fields) == 0 {
-		return ""
-	}
-	base := fields[0]
-	if len(fields) > 1 {
-		switch base {
-		case "go", "npm", "git", "yarn", "cargo", "pnpm", "bun", "pip", "uv":
-			return base + " " + fields[1]
-		}
-	}
-	return base
+	return filters.LedgerKey(command)
+}
+
+// IsTrivialCommand reports whether a command is not a meaningful token-
+// savings opportunity — its primary program is a pager, text transformer,
+// or a tiny builtin (cat, grep, head, cd, echo, …), or there is no command
+// at all. The bash tool skips these when recording savings so the ledger
+// reflects real build/test/tooling commands rather than file reads and
+// shell plumbing. It delegates to filters.IsTrivial.
+func IsTrivialCommand(command string) bool {
+	return filters.IsTrivial(command)
 }
 
 // ApplyBashFilter compresses command output to save tokens. It dispatches
