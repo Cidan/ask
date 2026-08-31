@@ -256,6 +256,43 @@ func TestRules_TerraformStripsRefresh(t *testing.T) {
 	}
 }
 
+// A plan with nothing to do collapses to a one-line summary (exit 0 only).
+func TestRules_TerraformNoChanges(t *testing.T) {
+	raw := strings.Join([]string{
+		"aws_instance.web: Refreshing state... [id=i-123]",
+		"",
+		"No changes. Your infrastructure matches the configuration.",
+		"",
+		"Terraform has compared your real infrastructure against your configuration",
+		"and found no differences, so no changes are needed.",
+	}, "\n") + "\n"
+	if out, _ := Apply("terraform plan", raw, 0); out != "terraform: no changes\n" {
+		t.Fatalf("terraform no-changes = %q, want 'terraform: no changes'", out)
+	}
+}
+
+// An apply strips per-resource creation/modification progress but keeps the
+// diff intent and the final Apply-complete summary.
+func TestRules_TerraformApplyStripsProgress(t *testing.T) {
+	raw := strings.Join([]string{
+		"aws_instance.web: Creating...",
+		"aws_instance.web: Still creating... [10s elapsed]",
+		"aws_instance.web: Creation complete after 12s [id=i-abc]",
+		"aws_db.main: Modifying... [id=db-1]",
+		"aws_db.main: Modifications complete after 3s [id=db-1]",
+		"",
+		"Apply complete! Resources: 1 added, 1 changed, 0 destroyed.",
+	}, "\n") + "\n"
+	out, _ := Apply("terraform apply -auto-approve", raw, 0)
+	if strings.Contains(out, "Creating...") || strings.Contains(out, "Creation complete") ||
+		strings.Contains(out, "Modifying...") || strings.Contains(out, "Still creating") {
+		t.Errorf("terraform apply progress survived: %q", out)
+	}
+	if !strings.Contains(out, "Apply complete! Resources: 1 added, 1 changed") {
+		t.Errorf("terraform apply summary dropped: %q", out)
+	}
+}
+
 // docker build is pass/fail: "docker build: ok" on success, full log on
 // failure (KeepOnError).
 func TestRules_DockerBuildPassFail(t *testing.T) {

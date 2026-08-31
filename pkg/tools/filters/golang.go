@@ -19,7 +19,11 @@ type GoFilter struct{}
 func (GoFilter) Name() string { return "go" }
 
 func (GoFilter) Match(fields []string) bool {
-	return len(fields) >= 2 && progOf(fields[0]) == "go" && fields[1] == "test"
+	if len(fields) == 0 || progOf(fields[0]) != "go" {
+		return false
+	}
+	sub, ok := subcommandAfter(fields, goValueFlags)
+	return ok && sub == "test"
 }
 
 func (GoFilter) Filter(fields []string, raw string, exit int) string {

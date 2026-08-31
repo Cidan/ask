@@ -216,15 +216,29 @@ var ruleTable = []Rule{
 		},
 	},
 	{
-		// terraform/tofu spend most of a plan echoing state refresh chatter;
-		// strip it and keep the diff, the Plan line, and the apply summary.
+		// terraform/tofu spend most of a plan echoing state refresh chatter
+		// and most of an apply echoing per-resource progress; strip both and
+		// keep the diff, the Plan line, and the apply summary. A plan with
+		// nothing to do collapses to "terraform: no changes" (exit 0 only, so
+		// a failing plan is never hidden). KeepOnError returns the raw output
+		// verbatim on failure so the error is fully visible.
 		Name:        "terraform",
 		Command:     re(`^(terraform|tofu)\b`),
 		KeepOnError: true,
+		Summarize: []OutputMatch{
+			{Pattern: re(`(?m)^No changes\. `), Message: "terraform: no changes"},
+		},
 		Strip: []*regexp.Regexp{
 			re(`: Refreshing state\.\.\.`),
 			re(`: Reading\.\.\.`),
 			re(`: Read complete after `),
+			re(`: Creating\.\.\.`),
+			re(`: Creation complete after `),
+			re(`: Modifying\.\.\.`),
+			re(`: Modifications complete after `),
+			re(`: Destroying\.\.\.`),
+			re(`: Destruction complete after `),
+			re(`: Provisioning with `),
 			re(`: Still (reading|creating|modifying|destroying)\.\.\.`),
 		},
 	},

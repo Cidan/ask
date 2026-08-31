@@ -56,12 +56,24 @@ func LoadSavings() (TokenSavings, error) {
 	return s, nil
 }
 
-// RecordSavings increments the raw and saved token counts for a base
-// command under a file lock. rawTokens is the untouched output's estimate,
-// savedTokens the reduction; the percentage saved is derived from the two.
+// RecordSavings increments the run count plus the raw and saved token
+// counts for a base command under a file lock. rawTokens is the untouched
+// output's estimate, savedTokens the reduction; the percentage saved is
+// derived from the two. A zero saving is still recorded — a real command
+// that compressed to nothing this run is a coverage data point, so the
+// overlay reflects every modeled command, not only the ones that won.
+// Callers gate out trivial/pager commands (see IsTrivialCommand) before
+// recording, and clamp keeps a defensive negative from underflowing the
+// totals.
 func RecordSavings(baseCommand string, rawTokens, savedTokens int) error {
-	if savedTokens <= 0 {
+	if baseCommand == "" {
 		return nil
+	}
+	if savedTokens < 0 {
+		savedTokens = 0
+	}
+	if rawTokens < 0 {
+		rawTokens = 0
 	}
 
 	configDir, err := os.UserConfigDir()

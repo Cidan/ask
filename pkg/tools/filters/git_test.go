@@ -128,3 +128,39 @@ func TestGit_SmallDiffPassesThrough(t *testing.T) {
 		t.Errorf("small diff was summarized: %q", out)
 	}
 }
+
+// Global flags before the subcommand (git --no-pager diff, git -C dir
+// status, git -c k=v log) must not defeat the filter — the idiomatic
+// non-interactive forms are exactly the ones agents run.
+func TestGit_GlobalFlagsResolveSubcommand(t *testing.T) {
+	// --no-pager diff still summarizes a large diff to per-file stats.
+	var b strings.Builder
+	b.WriteString("diff --git a/foo.go b/foo.go\n")
+	b.WriteString("index 111..222 100644\n--- a/foo.go\n+++ b/foo.go\n@@ -1,2 +1,3 @@\n")
+	for range 50 {
+		b.WriteString("+added\n")
+	}
+	out, _ := Apply("git --no-pager diff", b.String(), 0)
+	if !strings.HasPrefix(out, "git diff: 1 files changed, +50 -0") {
+		t.Fatalf("git --no-pager diff not summarized: %q", out)
+	}
+
+	// -C <dir> status (value flag consumes the path) still porcelainizes.
+	statusRaw := "On branch main\nnothing to commit, working tree clean\n"
+	if out, _ := Apply("git -C /repo status", statusRaw, 0); out != "## main\n" {
+		t.Errorf("git -C status = %q, want '## main'", out)
+	}
+
+	// -c k=v log (value flag consumes the config) still shortens commits.
+	logRaw := strings.Join([]string{
+		"commit 1234567890abcdef1234567890abcdef12345678",
+		"Author: A <a@x>",
+		"Date:   Mon Jan 1 00:00:00 2024",
+		"",
+		"    Subject here",
+		"",
+	}, "\n")
+	if out, _ := Apply("git -c user.name=x log", logRaw, 0); out != "1234567 Subject here\n" {
+		t.Errorf("git -c log = %q", out)
+	}
+}

@@ -307,7 +307,7 @@ func BashTool(env *ToolEnv) Tool {
 					return rawStr
 				}
 				filteredStr, tokensSaved := ApplyBashFilter(command, rawStr, exit)
-				if tokensSaved > 0 {
+				if !IsTrivialCommand(command) {
 					_ = RecordSavings(ExtractBaseCommand(command), len(rawStr)/4, tokensSaved)
 				}
 				return filteredStr
@@ -400,10 +400,10 @@ func JobOutputTool(env *ToolEnv) Tool {
 					exit = res.ExitCode
 				}
 				filtered, saved := ApplyBashFilter(job.Command, output, exit)
-				if done {
+				if done && !IsTrivialCommand(job.Command) {
 					var shouldRecord bool
 					job.Mu.Lock()
-					if !job.SavingsRecorded && saved > 0 {
+					if !job.SavingsRecorded {
 						job.SavingsRecorded = true
 						shouldRecord = true
 					}

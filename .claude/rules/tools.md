@@ -154,7 +154,12 @@ round-trip first would be pure overhead).
 - Output passes through `ApplyBashFilter(command, raw, exitCode)`
   unless `disable_token_savings`; savings are tallied in
   `~/.config/ask/savings.json` (`RecordSavings(base, rawTokens,
-  savedTokens)`, keyed by `ExtractBaseCommand`; `LoadSavings` reads it
+  savedTokens)`, keyed by `ExtractBaseCommand` → `LedgerKey`). Every
+  non-trivial command is recorded — a zero-saving run is a coverage data
+  point, so the overlay reflects modeled commands that had nothing to
+  compress, not only the wins — while pagers, text transformers, and tiny
+  builtins (cat/grep/head/cd/echo…) are skipped via `IsTrivialCommand` so
+  the ledger stays about real build/test/tooling. `LoadSavings` reads it
   back, `/savings` opens an interactive overlay — a two-level tree grouped
   by base command (go, git, make…) with a RUNS/SAVED/%/IMPACT column
   grid and a fixed-width rtk-gain-style impact bar,
@@ -168,7 +173,8 @@ round-trip first would be pure overhead).
   hand-written aggregators (`go test` NDJSON→summary + text RUN/PASS strip
   — `GoFilter` claims only `go test`; `git` status→porcelain /
   log→short-sha / large-diff→per-file stats / transport noise, `pytest`
-  success-collapse + failures-only, npm-family install noise) first, then
+  success-collapse + failures-only, npm-family install noise, `kubectl`
+  managedFields-block + deprecation-warning strip) first, then
   the declarative `ruleTable` (`rules.go`: `make`, `go build`/`vet`
   (pass/fail) + `go mod`/`get` (strip) + `go run` (passthrough),
   `cargo build`/`cargo test`, `jstest` (vitest/jest), `gradle`, `pip`,
@@ -186,8 +192,15 @@ round-trip first would be pure overhead).
   a failure preserves detail, and an unmodeled failure passes through
   raw (a running background job reads as exit `-1` so a partial stream
   is never collapsed); `Summarize` fires only on exit 0. `BaseCommand`
-  is the one command parser both the registry and the ledger key agree
-  on. New long-tail commands are a new `Rule` in `rules.go`; complex
+  is the one quote-aware command parser both the registry and the ledger
+  key agree on: it tokenizes honoring quotes / `$()` / backticks (so an
+  operator inside a string never invents a garbage key) and selects a
+  pipeline's *primary* stage — the last filter-claimed or non-pager
+  producer, not the trailing `| head` / `| tail` — so `go test ./... |
+  tail` both filters and keys as `go test`. Global flags are skipped when
+  resolving a subcommand (`subcommandAfter`: `git --no-pager diff` → `git
+  diff`, `go -C dir test` → `go test`); `LedgerKey` is the derived ledger
+  key. New long-tail commands are a new `Rule` in `rules.go`; complex
   aggregation is a new `Filter` in its own file, registered ahead of the
   rules.
 - **Raw-output recovery** (`pkg/tools/spill.go`): when filtering is lossy

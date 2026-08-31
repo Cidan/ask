@@ -20,20 +20,25 @@ var gitSubcommands = map[string]bool{
 }
 
 func (GitFilter) Match(fields []string) bool {
-	return len(fields) >= 2 && progOf(fields[0]) == "git" && gitSubcommands[fields[1]]
+	if len(fields) == 0 || progOf(fields[0]) != "git" {
+		return false
+	}
+	sub, ok := subcommandAfter(fields, gitValueFlags)
+	return ok && gitSubcommands[sub]
 }
 
 func (GitFilter) Filter(fields []string, raw string, exit int) string {
 	if exit != 0 {
 		return raw // a failed git command: the error is the whole point
 	}
-	switch fields[1] {
+	sub, _ := subcommandAfter(fields, gitValueFlags)
+	switch sub {
 	case "status":
 		return filterGitStatus(raw)
 	case "log":
 		return filterGitLog(raw)
 	case "diff", "show":
-		return filterGitDiff(raw, "git "+fields[1])
+		return filterGitDiff(raw, "git "+sub)
 	default: // push, fetch, pull
 		return filterGitRemote(raw)
 	}
