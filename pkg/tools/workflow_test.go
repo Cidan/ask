@@ -77,6 +77,218 @@ func TestWorkflowCRUDRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWorkflowGetAndList_RenderFullDefinitionAsContentText(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	env, _ := newTestToolEnv(t)
+
+	create := workflowToolByName(t, env, "workflow_create")
+	createJSON := `{
+		"name": "ship-render",
+		"scope": "global",
+		"description": "Ship code changes safely",
+		"steps": [
+			{
+				"name": "Validate plan",
+				"provider": "vertex",
+				"model": "gemini-3.7-flash",
+				"prompt": "Review task and produce plan"
+			},
+			{
+				"name": "Implement and validate",
+				"kind": "loop",
+				"maxIterations": 15,
+				"exitCondition": "Validation passes completely",
+				"steps": [
+					{"name": "Execute work", "provider": "vertex", "prompt": "Make changes and run tests"},
+					{"name": "Validate implementation", "provider": "vertex", "prompt": "Review changes against plan"}
+				]
+			}
+		]
+	}`
+	if resp, err := RunToolWithJSON(testAgentCtx(), create, createJSON); err != nil || resp.IsError {
+		t.Fatalf("create failed: %+v %v", resp, err)
+	}
+
+	// workflow_get must render the whole definition — including every step
+	// prompt and the loop exit condition — into the human-readable content
+	// text (the MCP TextContent). Providers that forward only the text field
+	// (claudecode) and session resume both drop the structured data payload,
+	// so the definition has to live in the text or the model never sees it.
+	// Assert on the isolated content text, not the whole response map, so the
+	// structured data (which also carries prompts) cannot mask a regression.
+	getRes, _, err := WorkflowGetCore(env.Cwd, WorkflowGetInput{Name: "ship-render"})
+	if err != nil || getRes.IsError {
+		t.Fatalf("get failed: %+v %v", getRes, err)
+	}
+	getContent := MCPResultText(getRes)
+	wantGet := []string{
+		"Workflow: ship-render (scope: global)",
+		"Description: Ship code changes safely",
+		"1. Validate plan",
+		"provider=vertex",
+		"model=gemini-3.7-flash",
+		"Review task and produce plan",
+		"2. Implement and validate",
+		"maxIterations=15",
+		"Exit condition: Validation passes completely",
+		"2.1. Execute work",
+		"Make changes and run tests",
+		"2.2. Validate implementation",
+		"Review changes against plan",
+	}
+	for _, want := range wantGet {
+		if !strings.Contains(getContent, want) {
+			t.Errorf("workflow_get content missing %q\ngot:\n%s", want, getContent)
+		}
+	}
+
+	// workflow_list must surface names, scopes, descriptions and the step
+	// outline, but deliberately omit prompts to keep the listing small.
+	listRes, _, err := WorkflowListCore(env.Cwd, WorkflowListInput{})
+	if err != nil || listRes.IsError {
+		t.Fatalf("list failed: %+v %v", listRes, err)
+	}
+	listContent := MCPResultText(listRes)
+	wantList := []string{
+		"ship-render (scope: global)",
+		"Description: Ship code changes safely",
+		"Validate plan [agent]",
+		"Implement and validate [loop]",
+	}
+	for _, want := range wantList {
+		if !strings.Contains(listContent, want) {
+			t.Errorf("workflow_list content missing %q\ngot:\n%s", want, listContent)
+		}
+	}
+	if strings.Contains(listContent, "Make changes and run tests") {
+		t.Errorf("workflow_list content must omit step prompts\ngot:\n%s", listContent)
+	}
+}
+
+func TestRenderWorkflowDef_BranchesAndDefaults(t *testing.T) {
+	if got := workflowScopeLabel(workflow.Def{}); got != "user" {
+		t.Errorf("empty scope should default to user, got %q", got)
+	}
+	if got := workflowScopeLabel(workflow.Def{Scope: workflow.ScopeRepo}); got != "repo" {
+		t.Errorf("explicit scope should pass through, got %q", got)
+	}
+
+	// One definition exercising the branches the create→get scenario does
+	// not: a bare agent step (no provider/model/prompt), a provider-only
+	// step, a multi-line prompt, a loop with no maxIterations and no exit
+	// condition, and an empty description under a plugin scope.
+	d := workflow.Def{
+		Name:   "edge",
+		Plugin: "kit@market",
+		Scope:  workflow.ScopePlugin,
+		Steps: []workflow.Step{
+			{Name: "bare"},
+			{Name: "provider only", Provider: "vertex"},
+			{Name: "multiline", Provider: "vertex", Model: "gemini", Prompt: "line one\nline two"},
+			{Name: "loop no meta", Kind: "loop", Steps: []workflow.Step{{Name: "inner"}}},
+		},
+	}
+	got := renderWorkflowDef(d)
+	want := []string{
+		"Workflow: edge (scope: plugin) [plugin: kit@market]",
+		"Description: (none)",
+		"1. bare  [agent]",
+		"2. provider only  [agent · provider=vertex]",
+		"3. multiline  [agent · provider=vertex · model=gemini]",
+		"     line one",
+		"     line two",
+		"4. loop no meta  [loop]",
+		"   4.1. inner  [agent]",
+	}
+	for _, w := range want {
+		if !strings.Contains(got, w) {
+			t.Errorf("renderWorkflowDef missing %q\ngot:\n%s", w, got)
+		}
+	}
+	if n := strings.Count(got, "Prompt:"); n != 1 {
+		t.Errorf("only the one step with a prompt should render a Prompt block, got %d\n%s", n, got)
+	}
+	if strings.Contains(got, "maxIterations=") {
+		t.Errorf("loop without a cap must not render maxIterations\n%s", got)
+	}
+	if strings.Contains(got, "Exit condition:") {
+		t.Errorf("loop without an exit condition must not render one\n%s", got)
+	}
+}
+
+func TestRenderWorkflowList_BranchesAndDefaults(t *testing.T) {
+	if got := renderWorkflowList(nil); got != "No workflows are defined." {
+		t.Errorf("empty list should be explicit, got %q", got)
+	}
+
+	defs := []workflow.Def{
+		{Name: "alpha", Scope: workflow.ScopeGlobal, Steps: []workflow.Step{{Name: "one"}}},
+		{
+			Name:        "beta",
+			Scope:       workflow.ScopePlugin,
+			Plugin:      "kit@market",
+			Description: "does beta",
+			Steps: []workflow.Step{
+				{Name: "x", Prompt: "secret prompt"},
+				{Name: "loopy", Kind: "loop", Steps: []workflow.Step{{Name: "i"}}},
+			},
+		},
+	}
+	got := renderWorkflowList(defs)
+	want := []string{
+		"2 workflow(s):",
+		"alpha (scope: global)",
+		"  Description: (no description)",
+		"  Steps: one [agent]",
+		"beta (scope: plugin) [plugin: kit@market]",
+		"  Description: does beta",
+		"  Steps: x [agent] → loopy [loop]",
+	}
+	for _, w := range want {
+		if !strings.Contains(got, w) {
+			t.Errorf("renderWorkflowList missing %q\ngot:\n%s", w, got)
+		}
+	}
+	if strings.Contains(got, "secret prompt") {
+		t.Errorf("listing must omit step prompts\n%s", got)
+	}
+}
+
+func TestWorkflowGetCore_NotFoundReturnsError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	env, _ := newTestToolEnv(t)
+
+	res, out, err := WorkflowGetCore(env.Cwd, WorkflowGetInput{Name: "does-not-exist"})
+	if err != nil {
+		t.Fatalf("unexpected go error: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("expected an error result for a missing workflow, got %+v", res)
+	}
+	if out.Workflow.Name != "" || len(out.Workflow.Steps) != 0 {
+		t.Errorf("error result must carry an empty workflow, got %+v", out.Workflow)
+	}
+	if txt := MCPResultText(res); !strings.Contains(txt, "does-not-exist") || !strings.Contains(txt, "not found") {
+		t.Errorf("error text should name the missing workflow, got %q", txt)
+	}
+}
+
+func TestWorkflowListCore_EmptyRendersExplicitText(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	env, _ := newTestToolEnv(t)
+
+	res, out, err := WorkflowListCore(env.Cwd, WorkflowListInput{})
+	if err != nil || res.IsError {
+		t.Fatalf("list failed: %+v %v", res, err)
+	}
+	if len(out.Workflows) != 0 {
+		t.Fatalf("expected no workflows in a fresh HOME, got %d", len(out.Workflows))
+	}
+	if txt := MCPResultText(res); txt != "No workflows are defined." {
+		t.Errorf("empty listing content should be explicit, got %q", txt)
+	}
+}
+
 func TestWorkflowTools_LoopWorkflowPromptAndExitConditionPreservation(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	env, _ := newTestToolEnv(t)

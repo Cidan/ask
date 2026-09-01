@@ -209,7 +209,7 @@ func WorkflowListCore(cwd string, in WorkflowListInput) (*mcp.CallToolResult, Wo
 			Steps:       steps,
 		})
 	}
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("listed %d workflows", len(out.Workflows))}}}, out, nil
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: renderWorkflowList(all)}}}, out, nil
 }
 
 func stepViewsToSteps(views []WorkflowStepView) []workflow.Step {
@@ -286,13 +286,117 @@ func defToDefView(d workflow.Def) WorkflowDefView {
 	}
 }
 
+// workflowScopeLabel names a workflow's scope for display, defaulting to
+// "user" when unset (the zero value ListAll assigns to user-scope items).
+func workflowScopeLabel(d workflow.Def) string {
+	if d.Scope == "" {
+		return string(workflow.ScopeUser)
+	}
+	return string(d.Scope)
+}
+
+// stepMeta renders a step's execution attributes: kind plus provider/model
+// for agent steps, or iteration cap for loop steps.
+func stepMeta(s workflow.Step) string {
+	if s.IsLoop() {
+		parts := []string{"loop"}
+		if s.MaxIterations > 0 {
+			parts = append(parts, fmt.Sprintf("maxIterations=%d", s.MaxIterations))
+		}
+		return "[" + strings.Join(parts, " · ") + "]"
+	}
+	parts := []string{"agent"}
+	if s.Provider != "" {
+		parts = append(parts, "provider="+s.Provider)
+	}
+	if s.Model != "" {
+		parts = append(parts, "model="+s.Model)
+	}
+	return "[" + strings.Join(parts, " · ") + "]"
+}
+
+// writeWorkflowStep renders one step (and its inner loop steps) with the
+// full prompt so the model reads the complete definition from the tool's
+// text field, not only from structured data.
+func writeWorkflowStep(b *strings.Builder, s workflow.Step, label, indent string) {
+	fmt.Fprintf(b, "%s%s. %s  %s\n", indent, label, s.Name, stepMeta(s))
+	if ec := strings.TrimSpace(s.ExitCondition); ec != "" {
+		fmt.Fprintf(b, "%s   Exit condition: %s\n", indent, ec)
+	}
+	if p := strings.TrimSpace(s.Prompt); p != "" {
+		fmt.Fprintf(b, "%s   Prompt:\n", indent)
+		for _, line := range strings.Split(p, "\n") {
+			fmt.Fprintf(b, "%s     %s\n", indent, line)
+		}
+	}
+	for j, inner := range s.Steps {
+		writeWorkflowStep(b, inner, fmt.Sprintf("%s.%d", label, j+1), indent+"   ")
+	}
+}
+
+// renderWorkflowDef renders a workflow's full definition — name, scope,
+// description, and every step with its prompt — as readable text. This is
+// the tool's human-readable content: it reaches the model on every provider
+// (the claudecode bridge and session resume forward only the text field),
+// where the structured data payload would be dropped.
+func renderWorkflowDef(d workflow.Def) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Workflow: %s (scope: %s)", d.Name, workflowScopeLabel(d))
+	if d.Plugin != "" {
+		fmt.Fprintf(&b, " [plugin: %s]", d.Plugin)
+	}
+	b.WriteString("\n")
+	desc := strings.TrimSpace(d.Description)
+	if desc == "" {
+		desc = "(none)"
+	}
+	fmt.Fprintf(&b, "Description: %s\n\nSteps:\n", desc)
+	for i, s := range d.Steps {
+		writeWorkflowStep(&b, s, fmt.Sprintf("%d", i+1), "")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// renderWorkflowList renders every workflow's name, scope, description, and
+// step outline (kinds only, prompts omitted) as readable text — the listing
+// the model reads to judge which workflow fits a task.
+func renderWorkflowList(defs []workflow.Def) string {
+	if len(defs) == 0 {
+		return "No workflows are defined."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d workflow(s):\n", len(defs))
+	for _, d := range defs {
+		fmt.Fprintf(&b, "\n%s (scope: %s)", d.Name, workflowScopeLabel(d))
+		if d.Plugin != "" {
+			fmt.Fprintf(&b, " [plugin: %s]", d.Plugin)
+		}
+		b.WriteString("\n")
+		desc := strings.TrimSpace(d.Description)
+		if desc == "" {
+			desc = "(no description)"
+		}
+		fmt.Fprintf(&b, "  Description: %s\n", desc)
+		outline := make([]string, 0, len(d.Steps))
+		for _, s := range d.Steps {
+			kind := "agent"
+			if s.IsLoop() {
+				kind = "loop"
+			}
+			outline = append(outline, fmt.Sprintf("%s [%s]", s.Name, kind))
+		}
+		fmt.Fprintf(&b, "  Steps: %s\n", strings.Join(outline, " → "))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func WorkflowGetCore(cwd string, in WorkflowGetInput) (*mcp.CallToolResult, WorkflowGetOutput, error) {
 	w, err := workflow.ResolveByName(cwd, in.Name, workflow.Scope(in.Scope))
 	if err != nil {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}, IsError: true}, WorkflowGetOutput{}, nil
 	}
 	view := defToDefView(w)
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("found workflow %s", w.Name)}}}, WorkflowGetOutput{Workflow: view}, nil
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: renderWorkflowDef(w)}}}, WorkflowGetOutput{Workflow: view}, nil
 }
 
 func WorkflowCreateCore(cwd string, in WorkflowCreateInput) (*mcp.CallToolResult, WorkflowCreateOutput, error) {
