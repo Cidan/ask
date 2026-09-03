@@ -122,7 +122,7 @@ func TestRunADKTool_DirectMapInvocation(t *testing.T) {
 }
 
 func TestRunADKTool_MemoryAwareTool(t *testing.T) {
-	env := NewToolEnv(t.TempDir(), 1, true, false, nil, nil)
+	env := NewToolEnv(t.TempDir(), 1, true, nil, nil)
 	writeTool := WriteTool(env)
 	wrapped := WrapFileToolsWithMemory([]Tool{writeTool}, env.Cwd)[0]
 	res, err := RunADKTool(testAgentCtx(), wrapped, map[string]any{

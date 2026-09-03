@@ -354,7 +354,7 @@ func newTestToolEnv(t *testing.T) (*agentToolEnv, *[]tea.Msg) {
 	t.Helper()
 	var mu sync.Mutex
 	msgs := &[]tea.Msg{}
-	env := newAgentToolEnv(t.TempDir(), 1, true, true, func(m tea.Msg) {
+	env := newAgentToolEnv(t.TempDir(), 1, true, func(m tea.Msg) {
 		mu.Lock()
 		defer mu.Unlock()
 		*msgs = append(*msgs, m)

@@ -143,9 +143,6 @@ func WriteTool(env *ToolEnv) Tool {
 				return WriteResult{}, errors.New("file_path is required")
 			}
 			path := env.AbsPath(p.FilePath)
-			if notice := env.RequireTodosNotice(); notice != "" {
-				return WriteResult{Notice: notice}, nil
-			}
 			oldContent := ""
 			mode := os.FileMode(0o644)
 			if info, err := os.Stat(path); err == nil {
@@ -220,9 +217,6 @@ func EditTool(env *ToolEnv) Tool {
 				return EditResult{}, errors.New("old_string and new_string are identical — nothing to do")
 			}
 			path := env.AbsPath(p.FilePath)
-			if notice := env.RequireTodosNotice(); notice != "" {
-				return EditResult{Notice: notice}, nil
-			}
 
 			if p.OldString == "" {
 				if _, err := os.Stat(path); err == nil {

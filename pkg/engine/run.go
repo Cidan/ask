@@ -104,13 +104,12 @@ type RunResult struct {
 
 // ToolFactoryArgs provides configuration parameters to construct the agent toolset.
 type ToolFactoryArgs struct {
-	Cwd                   string
-	TabID                 int
-	SkipPermissions       bool
-	GateTodosBeforeMutate bool
-	EventListener         EventListener
-	InteractionHandler    InteractionHandler
-	AttachWebSearch       bool
+	Cwd                string
+	TabID              int
+	SkipPermissions    bool
+	EventListener      EventListener
+	InteractionHandler InteractionHandler
+	AttachWebSearch    bool
 	// WorkflowStep attaches the workflow-step tools (save_artifact,
 	// load_artifacts) so a step can pass data to a later one.
 	WorkflowStep bool
@@ -268,13 +267,12 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		agentTools = append(agentTools, opts.Tools...)
 	} else if tf := GetDefaultToolFactory(); tf != nil {
 		agentTools = tf(ToolFactoryArgs{
-			Cwd:                   opts.Cwd,
-			TabID:                 0,
-			SkipPermissions:       opts.SkipAllPermissions,
-			GateTodosBeforeMutate: opts.Config.UI.GateTodosBeforeMutate != nil && *opts.Config.UI.GateTodosBeforeMutate,
-			EventListener:         opts.EventListener,
-			InteractionHandler:    opts.InteractionHandler,
-			AttachWebSearch:       true,
+			Cwd:                opts.Cwd,
+			TabID:              0,
+			SkipPermissions:    opts.SkipAllPermissions,
+			EventListener:      opts.EventListener,
+			InteractionHandler: opts.InteractionHandler,
+			AttachWebSearch:    true,
 		})
 	}
 

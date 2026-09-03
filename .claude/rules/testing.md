@@ -89,7 +89,7 @@ Shared helpers in `cmd/ask/testhelpers_test.go`: `fakeProvider`
 - `pkg/engine` — runner, session service, prompt assembly, `@`-links,
   rules, skills, subagents, retry, workflow graph integration.
 - `pkg/tools` — every native tool, the registry, MCP client, OAuth,
-  server config, todos/workflow guard, `contract_test.go` (typed-struct
+  server config, `contract_test.go` (typed-struct
   contract for all tools).
 - `pkg/providers` — registry contract, Vertex, OpenRouter, openai-compat,
   catalog, metadata layering, models.dev client.

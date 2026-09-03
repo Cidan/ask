@@ -30,7 +30,6 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	qmTrue := true
 	diffsTrue := true
 	worktreeTrue := true
-	gateTodosTrue := true
 	retryMax := 3
 	retryDelay := 500
 	retryFactor := 1.5
@@ -50,12 +49,11 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 			},
 		},
 		UI: uiConfig{
-			QuietMode:             &qmTrue,
-			RenderDiffs:           &diffsTrue,
-			ToolOutput:            string(toolOutputShort),
-			Worktree:              &worktreeTrue,
-			GateTodosBeforeMutate: &gateTodosTrue,
-			Theme:                 "catppuccin-mocha",
+			QuietMode:   &qmTrue,
+			RenderDiffs: &diffsTrue,
+			ToolOutput:  string(toolOutputShort),
+			Worktree:    &worktreeTrue,
+			Theme:       "catppuccin-mocha",
 			Retry: &retryUIConfig{
 				MaxRetries:     &retryMax,
 				InitialDelayMs: &retryDelay,
@@ -90,9 +88,6 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	}
 	if got.UI.Theme != "catppuccin-mocha" {
 		t.Errorf("theme lost: %q", got.UI.Theme)
-	}
-	if got.UI.GateTodosBeforeMutate == nil || *got.UI.GateTodosBeforeMutate != true {
-		t.Errorf("gateTodosBeforeMutate lost in roundtrip: %+v", got.UI.GateTodosBeforeMutate)
 	}
 	if got.UI.Retry == nil {
 		t.Fatalf("ui.retry block lost in roundtrip")

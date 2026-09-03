@@ -28,7 +28,7 @@ const (
 
 var agentImageExts = tools.ImageExts
 
-func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, gateTodosBeforeMutate bool, emit func(tea.Msg)) *agentToolEnv {
+func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, emit func(tea.Msg)) *agentToolEnv {
 	var listener engine.EventListener
 	if emit != nil {
 		listener = func(ev engine.EngineEvent) {
@@ -37,7 +37,7 @@ func newAgentToolEnv(cwd string, tabID int, skipPermissions bool, gateTodosBefor
 			}
 		}
 	}
-	env := tools.NewToolEnv(cwd, tabID, skipPermissions, gateTodosBeforeMutate, listener, globalTUIInteractionHandler)
+	env := tools.NewToolEnv(cwd, tabID, skipPermissions, listener, globalTUIInteractionHandler)
 	env.WorkflowRunner = func(ctx context.Context, tabID int, def workflow.Def, src any) (string, error) {
 		var wfSrc workflowSource
 		if s, ok := src.(workflowSource); ok {

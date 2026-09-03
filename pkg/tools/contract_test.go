@@ -10,7 +10,7 @@ import (
 
 func allCoreTools(t *testing.T) []Tool {
 	t.Helper()
-	env := NewToolEnv(t.TempDir(), 1, true, false, nil, nil)
+	env := NewToolEnv(t.TempDir(), 1, true, nil, nil)
 	return CoreTools(env, func() []Tool { return nil }, true)
 }
 
@@ -79,7 +79,7 @@ func TestEveryToolDeclaresAnOutputSchema(t *testing.T) {
 // retryandreflect plugin hand the model corrective guidance instead of
 // the failure being an ordinary result field it may ignore.
 func TestToolFailuresAreGoErrors(t *testing.T) {
-	env := NewToolEnv(t.TempDir(), 1, true, false, nil, nil)
+	env := NewToolEnv(t.TempDir(), 1, true, nil, nil)
 	if _, err := runTypedTool[ReadResult](t, ReadTool(env), ReadParams{FilePath: "does-not-exist"}); err == nil {
 		t.Error("a failing read must return a Go error, not a result field")
 	}

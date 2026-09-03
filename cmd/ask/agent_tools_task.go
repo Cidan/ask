@@ -15,7 +15,9 @@ import (
 
 const agentTaskToolDescription = `Launch a sub-agent with its own context window and collect its final report.
 
-Without 'agent', a research sub-agent runs on the current model with full access to the codebase (read, search, bash, fetch, web search, MCPs) — use it for broad fan-out searches, deep file reading, and multi-component investigations whose intermediate results would clutter your context. Multiple sub-agents can be launched in parallel in a single turn. With 'agent', the named definition from <available_agents> runs instead: its own instructions, its own tool grants, and possibly a different model or provider entirely.
+Without 'agent', a sub-agent runs on the current model with full access to the codebase (read, edit, search, bash, fetch, web search, MCPs) — delegate research, multi-file investigation, well-scoped implementation, and running builds or test suites to it, and launch several in parallel in a single turn whenever the pieces are independent. With 'agent', the named definition from <available_agents> runs instead: its own instructions, its own tool grants, and possibly a different model or provider entirely.
+
+Write the 'prompt' as a complete, self-contained brief: the sub-agent cannot see this conversation, so give it the goal, the files or areas to look at, the constraints and conventions to honor, and exactly what to report back (with file_path:line_number evidence).
 
 Set run_in_background:true to keep working while it runs — the call returns a job id immediately; poll the report with job_output and stop it with job_kill. The sub-agent's final message is returned verbatim as data.`
 

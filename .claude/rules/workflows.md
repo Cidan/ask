@@ -135,8 +135,7 @@ TUI also reads `env.PendingFinishData` as a backup before `Finish`.
   steps), and `finish_workflow` on the final step only. ADK ships only
   `load_artifacts`; `SaveArtifactTool` is the save half.
 - The model-facing `workflow_list/get/create/edit/delete/copy` tools are
-  in pkg/tools/workflow.go; `workflow_list` disarms the todos guard
-  (`env.MarkWorkflowsChecked`). Their placement is in `tools.md`.
+  in pkg/tools/workflow.go. Their placement is in `tools.md`.
 
 ## Tracker (pkg/workflow/tracker.go, cmd/ask/workflows.go)
 

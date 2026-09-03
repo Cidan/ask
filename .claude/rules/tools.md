@@ -76,9 +76,9 @@ name, description, full `input_schema`) and calls them with
 the registry func (engine). A core slot costs context on every call of
 every session; the bar is "the agent cannot work without seeing it
 unprompted". The documented exceptions are `web_search`, `fetch`,
-`finalized_plan`, and the `workflow_*` tools (the workflow guard below
-makes the model call `workflow_list` directly, so a `search_tools`
-round-trip first would be pure overhead).
+`finalized_plan`, and the `workflow_*` tools (kept on the wire so the
+model can surface and run workflows without a `search_tools`
+round-trip first).
 
 `invoke_tool` invariants (`pkg/tools/registry.go`):
 
@@ -125,20 +125,12 @@ round-trip first would be pure overhead).
 - `read` rejects image extensions (`ImageExts`), caps at `MaxReadLines`
   / `MaxReadBytes`; every tool output is cut middle-out at
   `MaxToolOutput` (`TruncateMiddle`).
-- `GateTodosBeforeMutate` (config `UI.GateTodosBeforeMutate`, default
-  off) turns on two things: `write` / `edit` refuse until a todos list
-  has been applied this session (`RequireTodosNotice`), and the todos
-  tool's workflow guard. The guard fires at most twice per session, only
-  in a project that has workflows: first when `todos` is called before
-  `workflow_list` (`WorkflowGuardTodosNotice`, list not applied), then
-  when `todos` is called after checking but without a workflow being
-  dispatched or inline execution being approved
-  (`WorkflowDecisionGuardNotice`). `workflow_list` sets
-  `WorkflowsChecked`; `finalized_plan` sets `WorkflowsChecked` +
-  `WorkflowRunDispatched` on either approval path. With the flag off
-  all of this is inert.
 - `todos` replaces the whole list, allows one `in_progress` item, and
   appends a nudge to every ack telling the model when to call again.
+  There is no todos-before-mutate gate and no workflow guard: `write` /
+  `edit` never require a prior todos list, and `todos` is applied on the
+  first call. Workflows are opt-in — the steering prompt no longer forces
+  a `workflow_list` check.
 
 ## bash and jobs
 
@@ -245,15 +237,14 @@ round-trip first would be pure overhead).
   offers: execute in the suggested workflow, pick another workflow,
   execute inline, or keep talking. A workflow pick runs
   `env.WorkflowRunner` (the coordinator) and returns its outcome as the
-  tool result; inline approval disarms the todos guards.
+  tool result; inline approval just returns approval so the model proceeds.
 
 ## Sub-agents (`cmd/ask/agent_tools_task.go`)
 
 `task` runs a research sub-agent on the parent model, or a named
 definition from `<available_agents>` (`agent:` param) on its own
 provider/model and tool grants. `NewSubagentToolEnv` shares the parent's
-file tracker, jobs, and emit, with permissions skipped and the todos
-gate off.
+file tracker, jobs, and emit, with permissions skipped.
 
 ## MCP client (`pkg/tools/mcp*.go`)
 

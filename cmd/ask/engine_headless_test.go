@@ -57,7 +57,7 @@ func TestHeadlessCoordinator_MultiTurnSessionHistory(t *testing.T) {
 			closed:        make(chan struct{}),
 			sessionID:     "ses-multi",
 		}
-		sess.env = newAgentToolEnv(args.Cwd, args.TabID, true, false, sess.emit)
+		sess.env = newAgentToolEnv(args.Cwd, args.TabID, true, sess.emit)
 		proc := &providerProc{
 			stdin:   agentStdin{s: sess},
 			stderr:  &stderrBuf{},
