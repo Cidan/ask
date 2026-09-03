@@ -332,6 +332,94 @@ func TestAgentSession_InterruptCleanTurnEnd(t *testing.T) {
 	}
 }
 
+// TestAgentSession_EmitAfterShutdownNoPanic reproduces the "send on closed
+// channel" crash. run() closes s.ch on shutdown, but emit is also called from
+// background goroutines that outlive the turn — post-turn memory extraction
+// (its OnUsage/OnTopic settle a cost/topic up to 90s later), finished
+// background bash jobs, and subagent tasks. A plain non-blocking send on a
+// closed channel panics even inside a select with a default (the default only
+// covers a full channel), so a late emit used to take the whole TUI down when
+// the user escaped a question / cancelled a turn / closed the tab. A late emit
+// must now be swallowed silently.
+func TestAgentSession_EmitAfterShutdownNoPanic(t *testing.T) {
+	s := &agentSession{
+		args:      ProviderSessionArgs{TabID: 1},
+		ch:        make(chan tea.Msg, 8),
+		sendCh:    make(chan agentTurn, 1),
+		closed:    make(chan struct{}),
+		sessionID: "ses-emit",
+	}
+	go s.run()
+
+	// Shut down exactly like killProc()/tab close: run() drains, emits
+	// providerExitedMsg, returns, and closes s.ch.
+	s.shutdown()
+
+	// Wait until run() has actually closed s.ch — the window a late
+	// background emit lands in.
+	for {
+		if _, ok := <-s.ch; !ok {
+			break
+		}
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("emit after session shutdown panicked: %v", r)
+		}
+	}()
+	// The very messages the memory extractor settles with after a turn (cost
+	// then topic); they must not crash once the session is gone.
+	s.emit(costMsg{costUSD: 0.01})
+	s.emit(tabTopicMsg{topic: "memory"})
+}
+
+// TestAgentSession_EmitConcurrentWithShutdown hammers emit from several
+// goroutines while the session shuts down, mirroring in-flight background work
+// racing the turn's teardown. With the guard, the send and the close are
+// mutually exclusive, so no emit ever touches a closed channel. A crash here
+// (especially under -race) is the regression.
+func TestAgentSession_EmitConcurrentWithShutdown(t *testing.T) {
+	s := &agentSession{
+		args:      ProviderSessionArgs{TabID: 1},
+		ch:        make(chan tea.Msg, 8),
+		sendCh:    make(chan agentTurn, 1),
+		closed:    make(chan struct{}),
+		sessionID: "ses-emit-race",
+	}
+	go s.run()
+
+	// A reader keeps the buffered channel draining so the send path is
+	// actually exercised rather than always falling to the default.
+	go func() {
+		for range s.ch {
+		}
+	}()
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					s.emit(costMsg{costUSD: 0.001})
+				}
+			}
+		}()
+	}
+
+	time.Sleep(5 * time.Millisecond)
+	s.shutdown() // closes s.closed → run() closes s.ch while emits are in flight
+	time.Sleep(20 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}
+
 func TestAgentSession_ErrorTurn(t *testing.T) {
 	origStream := engine.GenerateStream
 	defer func() { engine.GenerateStream = origStream }()
