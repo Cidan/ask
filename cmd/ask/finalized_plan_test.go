@@ -235,10 +235,9 @@ func TestFinalizedPlan_ExecuteInlineSelection(t *testing.T) {
 	}
 }
 
-func TestFinalizedPlan_ToolGoroutineInlineDisarm(t *testing.T) {
-	// Verify that finalized_plan tool disarms todos guards on executeInline
-	env := newAgentToolEnv(t.TempDir(), 1, true, false, func(tea.Msg) {})
-	env.WorkflowsAvailable = true
+func TestFinalizedPlan_ToolExecuteInline(t *testing.T) {
+	// The finalized_plan tool approves the plan for inline execution.
+	env := newAgentToolEnv(t.TempDir(), 1, true, func(tea.Msg) {})
 
 	tool := agentFinalizedPlanTool(env)
 
@@ -266,16 +265,8 @@ func TestFinalizedPlan_ToolGoroutineInlineDisarm(t *testing.T) {
 	if resp.IsError {
 		t.Fatalf("tool run failed: %s", resp.Content)
 	}
-
-	if strings.Contains(resp.Content, "error") {
-		t.Fatalf("tool response error: %s", resp.Content)
-	}
-
-	checked := env.WorkflowsChecked
-	runDispatched := env.WorkflowRunDispatched
-
-	if !checked || !runDispatched {
-		t.Errorf("executeInline did not disarm workflow checked/dispatched guards: checked=%v, run=%v", checked, runDispatched)
+	if !strings.Contains(resp.Content, "inline execution") {
+		t.Errorf("executeInline should approve the plan for inline execution; got %q", resp.Content)
 	}
 }
 
@@ -350,7 +341,7 @@ func TestFinalizedPlan_SelfLaunchWorkflowExecution(t *testing.T) {
 		proc := &providerProc{
 			stdin: &bufferCloser{Buffer: nil},
 		}
-		env := newAgentToolEnv(args.Cwd, args.TabID, true, true, func(msg tea.Msg) {})
+		env := newAgentToolEnv(args.Cwd, args.TabID, true, func(msg tea.Msg) {})
 		env.PendingEndTurn = &endTurnSignal{Summary: "step done", Decision: "break"}
 		env.PendingFinishData = &finishWorkflowData{Description: "completed ship workflow", Artifacts: []string{"pr#1"}}
 		sess := &agentSession{
@@ -387,7 +378,7 @@ func TestFinalizedPlan_SelfLaunchWorkflowExecution(t *testing.T) {
 	parentSess := &agentSession{
 		args: ProviderSessionArgs{TabID: 1, Cwd: cwd},
 	}
-	parentSess.env = newAgentToolEnv(parentSess.args.Cwd, 1, true, false, func(msg tea.Msg) {})
+	parentSess.env = newAgentToolEnv(parentSess.args.Cwd, 1, true, func(msg tea.Msg) {})
 	globalCoordinator.SetSession(1, parentSess)
 	defer globalCoordinator.RemoveSession(1)
 
@@ -442,7 +433,7 @@ func TestFinalizedPlan_SelfLaunchWorkflowExecution_ClearsUIWorkflowRunState(t *t
 		proc := &providerProc{
 			stdin: &bufferCloser{Buffer: nil},
 		}
-		env := newAgentToolEnv(args.Cwd, args.TabID, true, true, func(msg tea.Msg) {})
+		env := newAgentToolEnv(args.Cwd, args.TabID, true, func(msg tea.Msg) {})
 		env.PendingEndTurn = &endTurnSignal{Summary: "step done", Decision: "break"}
 		env.PendingFinishData = &finishWorkflowData{Description: "completed ship workflow", Artifacts: []string{"pr#1"}}
 		sess := &agentSession{
@@ -483,7 +474,7 @@ func TestFinalizedPlan_SelfLaunchWorkflowExecution_ClearsUIWorkflowRunState(t *t
 	parentSess := &agentSession{
 		args: ProviderSessionArgs{TabID: 1, Cwd: cwd},
 	}
-	parentSess.env = newAgentToolEnv(parentSess.args.Cwd, 1, true, false, func(msg tea.Msg) {})
+	parentSess.env = newAgentToolEnv(parentSess.args.Cwd, 1, true, func(msg tea.Msg) {})
 	globalCoordinator.SetSession(1, parentSess)
 	defer globalCoordinator.RemoveSession(1)
 
@@ -559,7 +550,7 @@ func TestFinalizedPlan_SelfLaunchWorkflowExecution_Failure(t *testing.T) {
 	parentSess := &agentSession{
 		args: ProviderSessionArgs{TabID: 1, Cwd: cwd},
 	}
-	parentSess.env = newAgentToolEnv(parentSess.args.Cwd, 1, true, false, func(msg tea.Msg) {})
+	parentSess.env = newAgentToolEnv(parentSess.args.Cwd, 1, true, func(msg tea.Msg) {})
 	globalCoordinator.SetSession(1, parentSess)
 	defer globalCoordinator.RemoveSession(1)
 
@@ -626,7 +617,7 @@ func TestFinalizedPlan_AgentSession_EndToEndWorkflowCompletion(t *testing.T) {
 		proc := &providerProc{
 			stdin: &bufferCloser{Buffer: nil},
 		}
-		env := newAgentToolEnv(args.Cwd, args.TabID, true, true, func(msg tea.Msg) {})
+		env := newAgentToolEnv(args.Cwd, args.TabID, true, func(msg tea.Msg) {})
 		env.PendingEndTurn = &endTurnSignal{Summary: "workflow step done", Decision: "break"}
 		env.PendingFinishData = &finishWorkflowData{Description: "PR #42 opened", Artifacts: []string{"pr/42"}}
 		sess := &agentSession{
@@ -699,7 +690,7 @@ func TestFinalizedPlan_AgentSession_EndToEndWorkflowCompletion(t *testing.T) {
 		closed:        make(chan struct{}),
 		sessionID:     "ses-test",
 	}
-	s.env = newAgentToolEnv(cwd, 1, true, false, s.emit)
+	s.env = newAgentToolEnv(cwd, 1, true, s.emit)
 	s.tools = []tools.Tool{
 		agentFinalizedPlanTool(s.env),
 	}

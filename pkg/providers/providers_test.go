@@ -13,8 +13,11 @@ func TestProviders_SteeringPrompt(t *testing.T) {
 	if prompt == "" {
 		t.Fatalf("expected non-empty steering prompt")
 	}
-	if !strings.Contains(prompt, "workflow_list") {
-		t.Errorf("expected steering prompt to include workflow check")
+	if !strings.Contains(prompt, "sub-agent") || !strings.Contains(prompt, "task tool") {
+		t.Errorf("expected steering prompt to include sub-agent delegation guidance")
+	}
+	if strings.Contains(prompt, "workflow_list") {
+		t.Errorf("steering prompt must no longer force a workflow_list check")
 	}
 
 	wfPrompt := SteeringPrompt(SteeringOptions{

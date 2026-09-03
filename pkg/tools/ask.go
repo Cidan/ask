@@ -253,14 +253,9 @@ func FinalizedPlanTool(env *ToolEnv) Tool {
 					return FinalizedPlanResult{Outcome: "The user declined the plan and wants to continue discussing. Re-evaluate your approach based on the user's feedback."}, nil
 				}
 				if resp.ExecuteInline {
-					env.MarkWorkflowsChecked()
-					env.MarkWorkflowRunDispatched()
-					return FinalizedPlanResult{Approved: true, Outcome: "Plan approved for inline execution. Planning mode has been turned OFF and todos guards have been disarmed. You can now execute your plan directly using write/edit/bash/etc."}, nil
+					return FinalizedPlanResult{Approved: true, Outcome: "Plan approved for inline execution. You can now execute your plan directly using write/edit/bash/etc."}, nil
 				}
 				if resp.WorkflowName != "" {
-					env.MarkWorkflowsChecked()
-					env.MarkWorkflowRunDispatched()
-
 					if env.WorkflowRunner != nil {
 						def, err := workflow.ResolveByName(env.Cwd, resp.WorkflowName, "")
 						if err != nil {

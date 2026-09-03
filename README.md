@@ -326,7 +326,6 @@ every change writes immediately.
 | Tool Output | short | `short` shows each tool call as the model's one-line description; `full` adds the parameters and output; `off` hides tool calls |
 | Skip All Permissions | off | Bypass the approval modal for every tool call (restarts the session) |
 | Worktree | off | Run each session inside an isolated git worktree under `.claude/worktrees/` (adds it to `.gitignore`); Project Options can override this per project |
-| Gate Todos Before Mutate | off | Refuse `edit` / `write` until the agent has posted a todo list, and make it check the project's workflows first |
 | Theme | default | Live-preview picker over 16 palettes |
 | Default Provider | vertex | Provider for new sessions |
 | Web Search... | | Brave Search API key for the agent's `web_search` tool (`BRAVE_API_KEY` also works) |

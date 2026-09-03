@@ -227,7 +227,7 @@ lockstep (`.claude/rules/issues.md`).
   `validateAskCwd` fails.
 - `/config` (config_modal.go): Global Options (Quiet Mode, Cursor
   Blink, Render Diffs, Tool Output, Skip All Permissions, Worktree,
-  Gate Todos Before Mutate, Theme, Default Provider, Web Search…, one
+  Theme, Default Provider, Web Search…, one
   `<Provider>...` row per `providers.All()` entry, Keybindings…) and
   Project Options (config_project.go: GitHub MCP endpoint/PAT, Linear
   endpoint/key/team, Issue provider, Worktree). The project Worktree

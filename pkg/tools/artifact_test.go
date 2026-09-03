@@ -13,7 +13,7 @@ import (
 // A non-final step can pass data forward (save/load) but must not be able
 // to report the run's outcome; only the final step gets finish_workflow.
 func TestWorkflowStepTools(t *testing.T) {
-	env := NewToolEnv(t.TempDir(), 1, true, false, nil, nil)
+	env := NewToolEnv(t.TempDir(), 1, true, nil, nil)
 
 	names := func(ts []Tool) map[string]bool {
 		m := map[string]bool{}

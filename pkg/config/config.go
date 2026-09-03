@@ -170,15 +170,14 @@ func (c *Config) SetProviderConfig(id string, pc ProviderConfig) {
 }
 
 type UIConfig struct {
-	QuietMode             *bool          `json:"quietMode,omitempty"`
-	CursorBlink           *bool          `json:"cursorBlink,omitempty"`
-	RenderDiffs           *bool          `json:"renderDiffs,omitempty"`
-	ToolOutput            string         `json:"toolOutput,omitempty"`
-	SkipAllPermissions    *bool          `json:"skipAllPermissions,omitempty"`
-	Worktree              *bool          `json:"worktree,omitempty"`
-	GateTodosBeforeMutate *bool          `json:"gateTodosBeforeMutate,omitempty"`
-	Theme                 string         `json:"theme,omitempty"`
-	Retry                 *RetryUIConfig `json:"retry,omitempty"`
+	QuietMode          *bool          `json:"quietMode,omitempty"`
+	CursorBlink        *bool          `json:"cursorBlink,omitempty"`
+	RenderDiffs        *bool          `json:"renderDiffs,omitempty"`
+	ToolOutput         string         `json:"toolOutput,omitempty"`
+	SkipAllPermissions *bool          `json:"skipAllPermissions,omitempty"`
+	Worktree           *bool          `json:"worktree,omitempty"`
+	Theme              string         `json:"theme,omitempty"`
+	Retry              *RetryUIConfig `json:"retry,omitempty"`
 }
 
 type RetryUIConfig struct {

@@ -44,13 +44,12 @@ type FinishWorkflowData struct {
 
 // ToolEnv is the per-session execution environment shared by all harness tools.
 type ToolEnv struct {
-	Cwd                   string
-	TabID                 int
-	SkipPermissions       bool
-	GateTodosBeforeMutate bool
-	PlanningMode          bool
-	IsSubagent            bool
-	SubagentID            string
+	Cwd             string
+	TabID           int
+	SkipPermissions bool
+	PlanningMode    bool
+	IsSubagent      bool
+	SubagentID      string
 
 	Emit        engine.EventListener
 	Interaction engine.InteractionHandler
@@ -60,14 +59,6 @@ type ToolEnv struct {
 	// Custom approval function if overriding standard interaction handler.
 	Approve func(ctx context.Context, toolName string, input map[string]any) (bool, error)
 
-	wfMu                  sync.Mutex
-	WorkflowsAvailable    bool
-	WorkflowsChecked      bool
-	WorkflowRunDispatched bool
-	WorkflowGuardFired    bool
-	DecisionGuardFired    bool
-	TodosApplied          bool
-
 	PendingEndTurn    *EndTurnSignal
 	PendingFinishData *FinishWorkflowData
 
@@ -76,20 +67,18 @@ type ToolEnv struct {
 }
 
 // NewToolEnv constructs a ToolEnv for a session.
-func NewToolEnv(cwd string, tabID int, skipPermissions bool, gateTodosBeforeMutate bool, emit engine.EventListener, interaction engine.InteractionHandler) *ToolEnv {
+func NewToolEnv(cwd string, tabID int, skipPermissions bool, emit engine.EventListener, interaction engine.InteractionHandler) *ToolEnv {
 	if interaction == nil {
 		interaction = engine.HeadlessInteractionHandler{AutoApproveTools: skipPermissions}
 	}
 	env := &ToolEnv{
-		Cwd:                   cwd,
-		TabID:                 tabID,
-		SkipPermissions:       skipPermissions,
-		GateTodosBeforeMutate: gateTodosBeforeMutate,
-		Emit:                  emit,
-		Interaction:           interaction,
-		Files:                 NewFileTracker(),
-		Jobs:                  NewJobManager(),
-		WorkflowsAvailable:    len(workflow.ListAll(cwd)) > 0,
+		Cwd:             cwd,
+		TabID:           tabID,
+		SkipPermissions: skipPermissions,
+		Emit:            emit,
+		Interaction:     interaction,
+		Files:           NewFileTracker(),
+		Jobs:            NewJobManager(),
 	}
 	env.Approve = env.approveViaInteraction
 	return env
@@ -98,24 +87,22 @@ func NewToolEnv(cwd string, tabID int, skipPermissions bool, gateTodosBeforeMuta
 // NewSubagentToolEnv constructs an isolated ToolEnv for a subagent execution.
 func NewSubagentToolEnv(parent *ToolEnv, subagentID string) *ToolEnv {
 	if parent == nil {
-		env := NewToolEnv(".", 0, true, false, nil, nil)
+		env := NewToolEnv(".", 0, true, nil, nil)
 		env.IsSubagent = true
 		env.SubagentID = subagentID
 		return env
 	}
 	env := &ToolEnv{
-		Cwd:                   parent.Cwd,
-		TabID:                 parent.TabID,
-		SkipPermissions:       true,
-		GateTodosBeforeMutate: false,
-		PlanningMode:          false,
-		IsSubagent:            true,
-		SubagentID:            subagentID,
-		Emit:                  parent.Emit,
-		Interaction:           parent.Interaction,
-		Files:                 parent.Files,
-		Jobs:                  parent.Jobs,
-		WorkflowsAvailable:    parent.WorkflowsAvailable,
+		Cwd:             parent.Cwd,
+		TabID:           parent.TabID,
+		SkipPermissions: true,
+		PlanningMode:    false,
+		IsSubagent:      true,
+		SubagentID:      subagentID,
+		Emit:            parent.Emit,
+		Interaction:     parent.Interaction,
+		Files:           parent.Files,
+		Jobs:            parent.Jobs,
 	}
 	env.Approve = parent.Approve
 	if env.Approve == nil {
@@ -169,92 +156,6 @@ func (env *ToolEnv) AbsPath(p string) string {
 		return filepath.Clean(p)
 	}
 	return filepath.Join(env.Cwd, p)
-}
-
-// MarkWorkflowsChecked disarms the workflow check guard.
-func (env *ToolEnv) MarkWorkflowsChecked() {
-	if env == nil {
-		return
-	}
-	env.wfMu.Lock()
-	env.WorkflowsChecked = true
-	env.wfMu.Unlock()
-}
-
-// MarkWorkflowRunDispatched records that a workflow has been launched.
-func (env *ToolEnv) MarkWorkflowRunDispatched() {
-	if env == nil {
-		return
-	}
-	env.wfMu.Lock()
-	env.WorkflowRunDispatched = true
-	env.wfMu.Unlock()
-}
-
-// WorkflowGuardShouldFire reports whether the workflow check guard should fire.
-func (env *ToolEnv) WorkflowGuardShouldFire() bool {
-	if env == nil {
-		return false
-	}
-	env.wfMu.Lock()
-	defer env.wfMu.Unlock()
-	if !env.WorkflowsAvailable || env.WorkflowsChecked || env.WorkflowGuardFired {
-		return false
-	}
-	env.WorkflowGuardFired = true
-	return true
-}
-
-// WorkflowDecisionGuardShouldFire reports whether the workflow decision guard should fire.
-func (env *ToolEnv) WorkflowDecisionGuardShouldFire() bool {
-	if env == nil {
-		return false
-	}
-	env.wfMu.Lock()
-	defer env.wfMu.Unlock()
-	if !env.WorkflowsAvailable || !env.WorkflowsChecked || env.WorkflowRunDispatched || env.DecisionGuardFired {
-		return false
-	}
-	env.DecisionGuardFired = true
-	return true
-}
-
-// WorkflowGuardNotice returns the steering notice for the workflow guard if it should fire.
-func (env *ToolEnv) WorkflowGuardNotice() string {
-	if env == nil || !env.GateTodosBeforeMutate {
-		return ""
-	}
-	if env.WorkflowGuardShouldFire() {
-		return WorkflowGuardTodosNotice
-	}
-	if env.WorkflowDecisionGuardShouldFire() {
-		return WorkflowDecisionGuardNotice
-	}
-	return ""
-}
-
-// MarkTodosApplied records that a task list has been successfully applied.
-func (env *ToolEnv) MarkTodosApplied() {
-	if env == nil {
-		return
-	}
-	env.wfMu.Lock()
-	env.TodosApplied = true
-	env.wfMu.Unlock()
-}
-
-// RequireTodosNotice returns the notice requiring a task list before file modifications.
-func (env *ToolEnv) RequireTodosNotice() string {
-	if env == nil || !env.GateTodosBeforeMutate {
-		return ""
-	}
-	env.wfMu.Lock()
-	applied := env.TodosApplied
-	env.wfMu.Unlock()
-	if applied {
-		return ""
-	}
-	return RequireTodosBeforeMutateNotice
 }
 
 // CheckReadBeforeMutate enforces read-before-edit semantics on existing files.

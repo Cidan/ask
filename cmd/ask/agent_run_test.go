@@ -55,7 +55,7 @@ func newTestAgentSession(t *testing.T, store *agentSessionStore) *agentSession {
 		sessionID:     "ses-test",
 		store:         store,
 	}
-	s.env = newAgentToolEnv(s.args.Cwd, 1, true, true, s.emit)
+	s.env = newAgentToolEnv(s.args.Cwd, 1, true, s.emit)
 	s.tools = []tools.Tool{
 		tools.NewTypedTool("ping", "test echo tool",
 			func(_ adkagent.Context, in struct {
@@ -533,7 +533,7 @@ func TestAgentSession_MultiTurnResumption(t *testing.T) {
 		sessionID:     "sess-multi-resumption",
 		store:         store,
 	}
-	s1.env = newAgentToolEnv(s1.args.Cwd, 1, true, true, s1.emit)
+	s1.env = newAgentToolEnv(s1.args.Cwd, 1, true, s1.emit)
 	s1.proc = &providerProc{stdin: agentStdin{s: s1}, stderr: &stderrBuf{}, payload: s1}
 	go s1.run()
 
@@ -565,7 +565,7 @@ func TestAgentSession_MultiTurnResumption(t *testing.T) {
 		sessionID:     "sess-multi-resumption",
 		store:         store,
 	}
-	s2.env = newAgentToolEnv(s2.args.Cwd, 1, true, true, s2.emit)
+	s2.env = newAgentToolEnv(s2.args.Cwd, 1, true, s2.emit)
 	s2.proc = &providerProc{stdin: agentStdin{s: s2}, stderr: &stderrBuf{}, payload: s2}
 	go s2.run()
 	defer func() { s2.proc.kill(); drainProviderStream(s2.ch) }()
@@ -627,7 +627,7 @@ func TestAgentRun_AutoCreatesSession(t *testing.T) {
 		sessionID:     freshSessionID,
 		store:         store,
 	}
-	s.env = newAgentToolEnv(s.args.Cwd, 1, true, true, s.emit)
+	s.env = newAgentToolEnv(s.args.Cwd, 1, true, s.emit)
 	s.proc = &providerProc{stdin: agentStdin{s: s}, stderr: &stderrBuf{}, payload: s}
 	go s.run()
 	defer func() { s.proc.kill(); drainProviderStream(s.ch) }()

@@ -28,7 +28,7 @@ func TestCoordinator_RunWorkflowRestoreSession(t *testing.T) {
 		}
 
 		// Create a session and set it as payload so the coordinator can set/remove it
-		env := newAgentToolEnv(args.Cwd, args.TabID, true, true, func(msg tea.Msg) {})
+		env := newAgentToolEnv(args.Cwd, args.TabID, true, func(msg tea.Msg) {})
 		env.PendingEndTurn = &endTurnSignal{Summary: "step completed", Decision: "break"}
 		env.PendingFinishData = &finishWorkflowData{Description: "completed successfully", Artifacts: []string{"art1"}}
 		sess := &agentSession{
@@ -70,7 +70,7 @@ func TestCoordinator_RunWorkflowRestoreSession(t *testing.T) {
 	parentSess := &agentSession{
 		args: ProviderSessionArgs{TabID: 42, Cwd: cwd},
 	}
-	parentSess.env = newAgentToolEnv(parentSess.args.Cwd, 42, true, true, func(msg tea.Msg) {})
+	parentSess.env = newAgentToolEnv(parentSess.args.Cwd, 42, true, func(msg tea.Msg) {})
 
 	// Setup Coordinator and active parent session
 	c := globalCoordinator
@@ -122,7 +122,7 @@ func TestCoordinator_RunWorkflowCancellationStopRetries(t *testing.T) {
 			stdin: &bufferCloser{Buffer: nil},
 		}
 
-		env := newAgentToolEnv(args.Cwd, args.TabID, true, true, func(msg tea.Msg) {})
+		env := newAgentToolEnv(args.Cwd, args.TabID, true, func(msg tea.Msg) {})
 		sess := &agentSession{
 			args:   args,
 			env:    env,
@@ -159,7 +159,7 @@ func TestCoordinator_RunWorkflowCancellationStopRetries(t *testing.T) {
 	parentSess := &agentSession{
 		args: ProviderSessionArgs{TabID: 42, Cwd: cwd},
 	}
-	parentSess.env = newAgentToolEnv(parentSess.args.Cwd, 42, true, true, func(msg tea.Msg) {})
+	parentSess.env = newAgentToolEnv(parentSess.args.Cwd, 42, true, func(msg tea.Msg) {})
 
 	c := globalCoordinator
 	c.SetSession(42, parentSess)
@@ -220,7 +220,7 @@ func TestCoordinator_RunWorkflowUsesOneSessionForTheWholeGraph(t *testing.T) {
 	prov.startSessionFn = func(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
 		atomic.AddInt32(&sessionsStarted, 1)
 		ch := make(chan tea.Msg, 8)
-		env := newAgentToolEnv(args.Cwd, args.TabID, true, true, func(msg tea.Msg) {})
+		env := newAgentToolEnv(args.Cwd, args.TabID, true, func(msg tea.Msg) {})
 		proc := &providerProc{stdin: &bufferCloser{Buffer: nil}}
 		proc.payload = &agentSession{
 			args:   args,
@@ -240,7 +240,7 @@ func TestCoordinator_RunWorkflowUsesOneSessionForTheWholeGraph(t *testing.T) {
 	cwd := t.TempDir()
 	c := globalCoordinator
 	parent := &agentSession{args: ProviderSessionArgs{TabID: 77, Cwd: cwd}}
-	parent.env = newAgentToolEnv(cwd, 77, true, true, func(msg tea.Msg) {})
+	parent.env = newAgentToolEnv(cwd, 77, true, func(msg tea.Msg) {})
 	c.SetSession(77, parent)
 	defer c.RemoveSession(77)
 
@@ -274,7 +274,7 @@ func TestCoordinator_Dispatch_CreatesWorktreeAndChip(t *testing.T) {
 		proc := &providerProc{}
 		sess := &agentSession{
 			args:   args,
-			env:    newAgentToolEnv(args.Cwd, args.TabID, true, false, func(msg tea.Msg) {}),
+			env:    newAgentToolEnv(args.Cwd, args.TabID, true, func(msg tea.Msg) {}),
 			ch:     sessCh,
 			sendCh: make(chan agentTurn, 8),
 			closed: make(chan struct{}),
@@ -339,7 +339,7 @@ func TestCoordinator_Dispatch_NoWorktreeWhenOff(t *testing.T) {
 	sessCh := make(chan tea.Msg, 8)
 	prov.startSessionFn = func(args ProviderSessionArgs) (*providerProc, chan tea.Msg, error) {
 		proc := &providerProc{}
-		sess := &agentSession{args: args, env: newAgentToolEnv(args.Cwd, args.TabID, true, false, func(msg tea.Msg) {}), ch: sessCh, sendCh: make(chan agentTurn, 8), closed: make(chan struct{})}
+		sess := &agentSession{args: args, env: newAgentToolEnv(args.Cwd, args.TabID, true, func(msg tea.Msg) {}), ch: sessCh, sendCh: make(chan agentTurn, 8), closed: make(chan struct{})}
 		proc.payload = sess
 		sess.proc = proc
 		return proc, sessCh, nil
@@ -367,7 +367,7 @@ func workflowStepDoneSession(args ProviderSessionArgs) (*providerProc, chan tea.
 	proc := &providerProc{stdin: &bufferCloser{Buffer: nil}}
 	proc.payload = &agentSession{
 		args:   args,
-		env:    newAgentToolEnv(args.Cwd, args.TabID, true, true, func(tea.Msg) {}),
+		env:    newAgentToolEnv(args.Cwd, args.TabID, true, func(tea.Msg) {}),
 		sendCh: make(chan agentTurn, 8),
 		closed: make(chan struct{}),
 	}

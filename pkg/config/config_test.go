@@ -12,7 +12,6 @@ func TestConfig_LoadAndSave(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
-	gateTrue := true
 	skipPermsTrue := true
 	quietTrue := true
 	blinkFalse := false
@@ -28,13 +27,12 @@ func TestConfig_LoadAndSave(t *testing.T) {
 			"openai": {Model: "gpt-4o", Fields: map[string]string{"apiKey": "sk-test"}},
 		},
 		UI: UIConfig{
-			GateTodosBeforeMutate: &gateTrue,
-			SkipAllPermissions:    &skipPermsTrue,
-			QuietMode:             &quietTrue,
-			CursorBlink:           &blinkFalse,
-			RenderDiffs:           &diffsTrue,
-			ToolOutput:            "short",
-			Theme:                 "dracula",
+			SkipAllPermissions: &skipPermsTrue,
+			QuietMode:          &quietTrue,
+			CursorBlink:        &blinkFalse,
+			RenderDiffs:        &diffsTrue,
+			ToolOutput:         "short",
+			Theme:              "dracula",
 			Retry: &RetryUIConfig{
 				MaxRetries:     &maxRetries,
 				InitialDelayMs: &initialDelay,
@@ -60,9 +58,6 @@ func TestConfig_LoadAndSave(t *testing.T) {
 	}
 	if pc := loaded.ProviderConfig("openai"); pc.Field("apiKey") != "sk-test" || pc.Model != "gpt-4o" {
 		t.Errorf("provider block lost in round trip: %+v", pc)
-	}
-	if loaded.UI.GateTodosBeforeMutate == nil || !*loaded.UI.GateTodosBeforeMutate {
-		t.Errorf("expected GateTodosBeforeMutate true")
 	}
 	if loaded.UI.SkipAllPermissions == nil || !*loaded.UI.SkipAllPermissions {
 		t.Errorf("expected SkipAllPermissions true")

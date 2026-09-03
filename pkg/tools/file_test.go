@@ -17,7 +17,7 @@ func newTestToolEnv(t *testing.T) (*ToolEnv, *[]engine.EngineEvent) {
 	t.Setenv("HOME", t.TempDir())
 	var mu sync.Mutex
 	events := &[]engine.EngineEvent{}
-	env := NewToolEnv(t.TempDir(), 1, true, true, func(ev engine.EngineEvent) {
+	env := NewToolEnv(t.TempDir(), 1, true, func(ev engine.EngineEvent) {
 		mu.Lock()
 		defer mu.Unlock()
 		*events = append(*events, ev)
@@ -136,23 +136,8 @@ func TestWriteAndEditGuards(t *testing.T) {
 	writeTool := WriteTool(env)
 	editTool := EditTool(env)
 
-	// Mutate before todos is rejected when GateTodosBeforeMutate is on.
-	resp := runTool(t, writeTool, WriteParams{FilePath: "out.txt", Content: "hello\n"})
-	if resp.IsError || !strings.Contains(resp.Content, "Before changing any file you must create a task list with the todos tool") {
-		t.Fatalf("write before todos should return notice, got %q (isError=%v)", resp.Content, resp.IsError)
-	}
-
-	// Satisfy todos gate.
-	todosTool := TodosTool(env)
-	tresp := runTool(t, todosTool, TodosParams{
-		Todos: []TodoEntry{{Content: "c1", Status: "in_progress"}},
-	})
-	if tresp.IsError {
-		t.Fatalf("todos failed: %s", tresp.Content)
-	}
-
 	// Write new file
-	resp = runTool(t, writeTool, WriteParams{FilePath: "out.txt", Content: "hello\n"})
+	resp := runTool(t, writeTool, WriteParams{FilePath: "out.txt", Content: "hello\n"})
 	if resp.IsError {
 		t.Fatalf("create write failed: %s", resp.Content)
 	}

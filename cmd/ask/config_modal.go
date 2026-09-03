@@ -52,10 +52,6 @@ func (m model) globalConfigItems() []configItem {
 	if m.skipAllPermissions {
 		skipPerms = "on"
 	}
-	gateTodos := "off"
-	if m.gateTodosBeforeMutate {
-		gateTodos = "on"
-	}
 	// The Default Provider row reflects what's saved on disk, not the
 	// current tab's provider. The picker only writes cfg.Provider and
 	// leaves m.provider alone, so reading m.provider here would show a
@@ -80,7 +76,6 @@ func (m model) globalConfigItems() []configItem {
 		{"Tool Output", toolOut, "toolOutput"},
 		{"Skip All Permissions", skipPerms, "skipAllPermissions"},
 		{"Worktree", worktree, "worktree"},
-		{"Gate Todos Before Mutate", gateTodos, "gateTodosBeforeMutate"},
 		{"Theme", m.themeName, "theme"},
 		{"Default Provider", provName, "provider"},
 		{"Web Search...", webSearch, "webSearch"},
@@ -356,21 +351,6 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 			debugLog("saveConfig err: %v", err)
 		}
 		m = m.applyEffectiveWorktree(saved)
-		return m, nil
-	case "gateTodosBeforeMutate":
-		m.gateTodosBeforeMutate = !m.gateTodosBeforeMutate
-		v := m.gateTodosBeforeMutate
-		if err := withConfigLock(func() error {
-			cfg, _ := loadConfig()
-			cfg.UI.GateTodosBeforeMutate = &v
-			return saveConfig(cfg)
-		}); err != nil {
-			debugLog("saveConfig err: %v", err)
-		}
-		if s := globalCoordinator.GetSession(m.id); s != nil {
-			s.env.GateTodosBeforeMutate = m.gateTodosBeforeMutate
-		}
-		m.killProc()
 		return m, nil
 	case "theme":
 		m = m.openThemePicker()

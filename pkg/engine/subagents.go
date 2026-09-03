@@ -191,7 +191,7 @@ func SubagentsPromptBlock(defs []SubagentDef) string {
 	}
 	b.WriteString("</available_agents>\n")
 	b.WriteString(`<agents_usage>
-Named agents run through the task tool: pass agent:"<name>" with a self-contained prompt. Each runs in its own context with its own instructions (and possibly its own model), and returns one final report. Set run_in_background:true to keep working while it runs, then collect the report with job_output.
+Named agents run through the task tool: pass agent:"<name>" with a complete, self-contained prompt — the agent cannot see this conversation, so state the goal, the relevant files or areas, the constraints to honor, and exactly what to report back. Each runs in its own context with its own instructions (and possibly its own model), and returns one final report. Set run_in_background:true to keep working while it runs, then collect the report with job_output.
 </agents_usage>`)
 	return b.String()
 }

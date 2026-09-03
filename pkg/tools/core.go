@@ -21,7 +21,6 @@ func BuildCoreTools(args engine.ToolFactoryArgs, attachWebSearch bool) []Tool {
 		args.Cwd,
 		args.TabID,
 		args.SkipPermissions,
-		args.GateTodosBeforeMutate,
 		args.EventListener,
 		args.InteractionHandler,
 	)
@@ -41,8 +40,7 @@ func BuildSubagentTools(args engine.ToolFactoryArgs, attachWebSearch bool) []Too
 	env := NewToolEnv(
 		args.Cwd,
 		args.TabID,
-		true,  // SkipPermissions: subagents bypass interactive prompts
-		false, // GateTodosBeforeMutate: false for subagents
+		true, // SkipPermissions: subagents bypass interactive prompts
 		args.EventListener,
 		args.InteractionHandler,
 	)

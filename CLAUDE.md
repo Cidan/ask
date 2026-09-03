@@ -77,7 +77,7 @@ runtime is `pkg/engine`, re-exported as a library by the root package
 | `pkg/engine/CLAUDE.md` | anything under `pkg/engine/` | Runner loop, sessions, prompt assembly, context files, `@`-links, rules discovery. |
 | `pkg/memory/CLAUDE.md` | anything under `pkg/memory/` | The memory store, embedding model, injection points, build prerequisite. |
 | `.claude/rules/providers.md` | `pkg/providers/**`, `pkg/config/**`, the provider-facing TUI files | The `Provider` interface, adding a provider, config blocks, model metadata precedence, pricing. |
-| `.claude/rules/tools.md` | `pkg/tools/**`, `cmd/ask/agent_tools*.go`, `agent_run.go`, `agent_provider.go` | Typed tool contract, core vs deferred registry, description phrases, approval gate, todos/workflow guard, MCP client. |
+| `.claude/rules/tools.md` | `pkg/tools/**`, `cmd/ask/agent_tools*.go`, `agent_run.go`, `agent_provider.go` | Typed tool contract, core vs deferred registry, description phrases, approval gate, MCP client. |
 | `.claude/rules/workflows.md` | `pkg/workflow/**`, `cmd/ask/workflow*.go`, the workflow tools | Schema and scopes, compile to ADK graph and its invariants, progress, artifacts, builder screen, supplant. |
 | `.claude/rules/skills-plugins.md` | `pkg/plugin/**`, skills/subagent files, `skills_browser*.go` | Marketplace format, scopes and state dirs, discovery, publish/pull, the browser. |
 | `.claude/rules/issues.md` | `cmd/ask/issue*.go`, `pr_provider*.go`, `mcp_linear*.go` | Kanban, carry-and-drop, loader, issue providers. |

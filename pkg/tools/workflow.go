@@ -152,7 +152,6 @@ func WorkflowTools(env *ToolEnv) []Tool {
 	return []Tool{
 		NativeBridgeTool("workflow_list", WorkflowListToolDescription,
 			func(_ context.Context, in WorkflowListInput) (*mcp.CallToolResult, WorkflowListOutput, error) {
-				env.MarkWorkflowsChecked()
 				return WorkflowListCore(cwd(), in)
 			}),
 		NativeBridgeTool("workflow_get", WorkflowGetToolDescription,
