@@ -125,6 +125,9 @@ func (ClaudeCode) SupportsImages(modelID string) bool {
 }
 
 func (ClaudeCode) ContextWindow(modelID string) int64 {
+	if w, ok := cachedClaudeCodeContextWindow(modelID); ok {
+		return w
+	}
 	return CatalogContextWindow(ClaudeCodeProviderID, modelID, ClaudeCodeContextWindow)
 }
 
@@ -265,6 +268,33 @@ func cachedClaudeCodeMeta(modelID string) (ccModelMeta, bool) {
 	defer claudeCodeMeta.mu.RUnlock()
 	m, ok := claudeCodeMeta.byID[modelID]
 	return m, ok
+}
+
+// claudeCodeContextWindows caches the authoritative per-model context window
+// the CLI reports in a turn's result-frame modelUsage, keyed by the --model id
+// ask selected (a session's claudeCodeModel.modelID, the same id the context
+// meter queries ContextWindow with). It lets the meter's denominator reflect
+// the real window (e.g. a 1M beta) instead of the static catalog guess. In
+// memory only, like claudeCodeMeta.
+var claudeCodeContextWindows = struct {
+	mu   sync.RWMutex
+	byID map[string]int64
+}{byID: map[string]int64{}}
+
+func observeClaudeCodeContextWindow(modelID string, window int64) {
+	if strings.TrimSpace(modelID) == "" || window <= 0 {
+		return
+	}
+	claudeCodeContextWindows.mu.Lock()
+	claudeCodeContextWindows.byID[modelID] = window
+	claudeCodeContextWindows.mu.Unlock()
+}
+
+func cachedClaudeCodeContextWindow(modelID string) (int64, bool) {
+	claudeCodeContextWindows.mu.RLock()
+	defer claudeCodeContextWindows.mu.RUnlock()
+	w, ok := claudeCodeContextWindows.byID[modelID]
+	return w, ok
 }
 
 var (
