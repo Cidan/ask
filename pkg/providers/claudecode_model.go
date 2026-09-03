@@ -531,7 +531,14 @@ func (m *claudeCodeModel) buildResponse(text, thought string, calls []*genai.Fun
 		TurnComplete: final,
 	}
 	if usage != nil {
-		total := usage.InputTokens + usage.OutputTokens
+		// Anthropic reports input_tokens as only the uncached delta; the bulk
+		// of a turn's context lives in the cache-read and cache-creation
+		// buckets. TotalTokenCount drives the context-usage meter, so it must
+		// fold in every input bucket or the meter barely moves on a cached
+		// turn. PromptTokenCount stays the uncached delta: cost pricing reads
+		// it at the full input rate, and cache reads are billed far cheaper.
+		total := usage.InputTokens + usage.CacheReadInputTokens +
+			usage.CacheCreationInputTokens + usage.OutputTokens
 		resp.UsageMetadata = &genai.GenerateContentResponseUsageMetadata{
 			PromptTokenCount:        int32(usage.InputTokens),
 			CandidatesTokenCount:    int32(usage.OutputTokens),

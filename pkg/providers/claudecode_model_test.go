@@ -269,6 +269,44 @@ func TestClaudeCodeModel_PlainTextTurn(t *testing.T) {
 	}
 }
 
+// TestClaudeCodeModel_CachedTurnTotalTokens: Anthropic reports input_tokens as
+// only the uncached delta, so the context meter (which reads TotalTokenCount)
+// must fold in the cache-read and cache-creation buckets or it barely moves on
+// a cached turn. PromptTokenCount stays the uncached delta so cost pricing is
+// unaffected.
+func TestClaudeCodeModel_CachedTurnTotalTokens(t *testing.T) {
+	fc := newFakeConn(8)
+	prevDial := ccDial
+	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	defer func() { ccDial = prevDial }()
+
+	m := newClaudeCodeModel("claude", "sonnet", "/repo", false, nil)
+	t.Cleanup(func() { _ = m.Close() })
+
+	u := &ccUsage{InputTokens: 12, OutputTokens: 200, CacheReadInputTokens: 30_000, CacheCreationInputTokens: 4_000}
+	u.OutputTokensDetails.ThinkingTokens = 50
+	fc.push(ccFrame{Type: "result", Subtype: "success", Result: "done", Usage: u})
+
+	out := collect(t, m, &model.LLMRequest{
+		Config:   &genai.GenerateContentConfig{},
+		Contents: []*genai.Content{userContent("hi")},
+	})
+
+	got := lastUsage(out)
+	if got == nil {
+		t.Fatal("no usage reported")
+	}
+	if want := int32(12 + 30_000 + 4_000 + 200); got.TotalTokenCount != want {
+		t.Errorf("TotalTokenCount = %d, want %d (cache buckets must be included)", got.TotalTokenCount, want)
+	}
+	if got.PromptTokenCount != 12 {
+		t.Errorf("PromptTokenCount = %d, want 12 (uncached delta, so cost stays correct)", got.PromptTokenCount)
+	}
+	if got.CachedContentTokenCount != 30_000 {
+		t.Errorf("CachedContentTokenCount = %d, want 30000", got.CachedContentTokenCount)
+	}
+}
+
 // TestClaudeCodeModel_HistoryPreamble: a first turn with prior history (a
 // resumed/materialized session) sends the history as one context message plus
 // the new user turn, since the fresh child has no native transcript.
