@@ -61,6 +61,16 @@ type agentSession struct {
 	ch     chan tea.Msg
 	sendCh chan agentTurn
 
+	// chMu serializes sends to ch against its close. ch is closed by run()
+	// on shutdown, but emit is called from background goroutines (post-turn
+	// memory extraction, finished background jobs, subagent tasks) that can
+	// outlive the turn. A plain `select { case ch <- msg: default: }` does
+	// NOT guard against a closed channel — the default only covers a full
+	// one — so an emit racing the close would panic with "send on closed
+	// channel". The lock plus chClosed flag makes the two mutually exclusive.
+	chMu     sync.Mutex
+	chClosed bool
+
 	midTurnQueue *engine.MidTurnQueue
 
 	closed    chan struct{}
@@ -269,10 +279,14 @@ func (s *agentSession) emit(msg tea.Msg) {
 		msg = m
 	}
 	msg = injectTabID(msg, s.args.TabID)
-	select {
-	case s.ch <- msg:
-	default:
+	s.chMu.Lock()
+	if !s.chClosed {
+		select {
+		case s.ch <- msg:
+		default:
+		}
 	}
+	s.chMu.Unlock()
 	agentSendToProgram(msg)
 }
 
@@ -302,7 +316,12 @@ func (s *agentSession) queueTurn(text string, files ...[]engine.FilePart) error 
 }
 
 func (s *agentSession) run() {
-	defer close(s.ch)
+	defer func() {
+		s.chMu.Lock()
+		s.chClosed = true
+		close(s.ch)
+		s.chMu.Unlock()
+	}()
 	first := true
 	for {
 		select {
