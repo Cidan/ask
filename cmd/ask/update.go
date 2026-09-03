@@ -364,7 +364,14 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil
 		}
-		m.lastUsageTokens = msg.tokens
+		// Context fullness is a latest snapshot, not a running sum. Streaming
+		// providers (e.g. Gemini via Vertex) interleave metadata-only chunks
+		// whose token counts are all zero; advancing the reading on those
+		// would snap the meter back to 0% mid-stream and reset it between
+		// turns. Only move it when the step reported real tokens.
+		if msg.tokens > 0 {
+			m.lastUsageTokens = msg.tokens
+		}
 		if msg.costKnown {
 			m.sessionCostUSD += msg.costUSD
 			m.sessionCostKnown = true

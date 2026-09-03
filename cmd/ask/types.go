@@ -62,12 +62,14 @@ type statusRevertMsg struct {
 	seq   int
 }
 
-// usageMsg carries the running context size in tokens pulled from an
-// assistant event's message.usage block, plus that step's estimated
+// usageMsg carries the context-window reading in tokens (the step's
+// total usage, cached + thinking included) plus that step's estimated
 // dollar cost (catwalk pricing; costKnown is false for models the
-// catalog can't price). Emitted once per assistant message; update.go
-// uses it to keep model.lastUsageTokens fresh for the ctx chip segment
-// and to accumulate model.sessionCostUSD for the sidebar cost row.
+// catalog can't price). Emitted for every usage-bearing model event,
+// including the zero-count metadata chunks streaming providers
+// interleave — update.go ignores tokens==0 for the ctx chip segment so
+// the meter never resets mid-stream, and accumulates sessionCostUSD for
+// the sidebar cost row.
 type usageMsg struct {
 	tokens    int
 	costUSD   float64
@@ -742,8 +744,10 @@ type model struct {
 	// the tool_use_id rather than the task_id.
 	bgTasks map[string]string
 
-	// lastUsageTokens is the running context size reported by the
-	// most recent assistant event's message.usage block. Divided by
+	// lastUsageTokens is the latest context-window reading: the total
+	// tokens the model reported for the most recent step that carried
+	// real usage (zero-count streaming chunks are ignored so the value
+	// never snaps back to 0 mid-stream). Divided by
 	// modelContextLimit(modelForContext) for the ctx chip segment.
 	lastUsageTokens int
 

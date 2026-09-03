@@ -572,8 +572,18 @@ func (s *agentSession) runTurn(turn agentTurn) {
 				OutputTokens: int(event.UsageMetadata.CandidatesTokenCount),
 			}
 			cost, known := s.stepCost(usage)
+			// tokens is the context-window reading: prefer the provider's own
+			// total (which folds in cached + thinking tokens) and fall back to
+			// prompt+output when a provider leaves TotalTokenCount unset.
+			// Streaming providers interleave metadata-only chunks whose counts
+			// are all zero; those land here as tokens==0 and update.go ignores
+			// them so the meter never snaps back to 0% mid-stream.
+			tokens := int(event.UsageMetadata.TotalTokenCount)
+			if tokens == 0 {
+				tokens = usage.InputTokens + usage.OutputTokens
+			}
 			s.emit(usageMsg{
-				tokens:    usage.InputTokens + usage.OutputTokens,
+				tokens:    tokens,
 				costUSD:   cost,
 				costKnown: known,
 			})
