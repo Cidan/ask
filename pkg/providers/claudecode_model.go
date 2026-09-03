@@ -285,8 +285,22 @@ func (m *claudeCodeModel) readStep(ctx context.Context, stream bool, yield func(
 					}
 				}
 			case "result":
-				if fr.Usage != nil {
-					usage = fr.Usage
+				// result.usage is CUMULATIVE across every internal API call the
+				// child made this turn: Claude Code re-reads the whole context
+				// from cache on each tool-loop step, so cache_read_input_tokens
+				// sums to a multiple of the live context. It must NOT feed the
+				// context meter. Keep the last per-call assistant usage for the
+				// meter's TotalTokenCount; use the cumulative result usage only
+				// for cost (prompt/candidate tokens). A turn with no assistant
+				// frame (a single API call) falls back to the result usage,
+				// where cumulative equals the one call.
+				costUsage := fr.Usage
+				meterUsage := usage
+				if meterUsage == nil {
+					meterUsage = costUsage
+				}
+				if w := ccContextWindowFromModelUsage(fr.ModelUsage); w > 0 {
+					observeClaudeCodeContextWindow(m.modelID, w)
 				}
 				// result.result is the turn's authoritative final text; the
 				// streamed assistant blocks are its live preview.
@@ -294,7 +308,7 @@ func (m *claudeCodeModel) readStep(ctx context.Context, stream bool, yield func(
 				if finalText == "" {
 					finalText = text.String()
 				}
-				yield(m.buildResponse(finalText, thought.String(), calls, usage, true), nil)
+				yield(m.buildFinalResponse(finalText, thought.String(), calls, meterUsage, costUsage), nil)
 				return
 			}
 		}
@@ -512,9 +526,42 @@ func (m *claudeCodeModel) writeUserText(text string) error {
 	}})
 }
 
-// buildResponse assembles an LLMResponse. A final response always carries
-// content (text and/or function calls) so ADK does not drop it.
+// buildResponse assembles an LLMResponse whose usage (if any) drives both the
+// context meter and cost from a single per-call usage. Partial responses pass
+// usage=nil; the batch-final path passes the step's last per-call assistant
+// usage. A final response always carries content (text and/or function calls)
+// so ADK does not drop it.
 func (m *claudeCodeModel) buildResponse(text, thought string, calls []*genai.FunctionCall, usage *ccUsage, final bool) *model.LLMResponse {
+	if !final {
+		var parts []*genai.Part
+		if thought != "" {
+			parts = append(parts, &genai.Part{Thought: true, Text: thought})
+		}
+		if text != "" {
+			parts = append(parts, &genai.Part{Text: text})
+		}
+		for _, c := range calls {
+			parts = append(parts, &genai.Part{FunctionCall: c})
+		}
+		resp := &model.LLMResponse{
+			Content:      &genai.Content{Role: "model", Parts: parts},
+			Partial:      true,
+			TurnComplete: false,
+		}
+		if md := ccUsageMetadata(usage, usage); md != nil {
+			resp.UsageMetadata = md
+		}
+		return resp
+	}
+	return m.buildFinalResponse(text, thought, calls, usage, usage)
+}
+
+// buildFinalResponse assembles the turn's terminal LLMResponse, splitting the
+// usage that feeds the context meter (meterUsage: the most recent single API
+// call, so TotalTokenCount reflects live context occupancy) from the usage that
+// feeds cost (costUsage: the cumulative result totals, so spend stays right).
+// It is always a final response.
+func (m *claudeCodeModel) buildFinalResponse(text, thought string, calls []*genai.FunctionCall, meterUsage, costUsage *ccUsage) *model.LLMResponse {
 	var parts []*genai.Part
 	if thought != "" {
 		parts = append(parts, &genai.Part{Thought: true, Text: thought})
@@ -527,27 +574,56 @@ func (m *claudeCodeModel) buildResponse(text, thought string, calls []*genai.Fun
 	}
 	resp := &model.LLMResponse{
 		Content:      &genai.Content{Role: "model", Parts: parts},
-		Partial:      !final,
-		TurnComplete: final,
+		Partial:      false,
+		TurnComplete: true,
 	}
-	if usage != nil {
-		// Anthropic reports input_tokens as only the uncached delta; the bulk
-		// of a turn's context lives in the cache-read and cache-creation
-		// buckets. TotalTokenCount drives the context-usage meter, so it must
-		// fold in every input bucket or the meter barely moves on a cached
-		// turn. PromptTokenCount stays the uncached delta: cost pricing reads
-		// it at the full input rate, and cache reads are billed far cheaper.
-		total := usage.InputTokens + usage.CacheReadInputTokens +
-			usage.CacheCreationInputTokens + usage.OutputTokens
-		resp.UsageMetadata = &genai.GenerateContentResponseUsageMetadata{
-			PromptTokenCount:        int32(usage.InputTokens),
-			CandidatesTokenCount:    int32(usage.OutputTokens),
-			TotalTokenCount:         int32(total),
-			CachedContentTokenCount: int32(usage.CacheReadInputTokens),
-			ThoughtsTokenCount:      int32(usage.OutputTokensDetails.ThinkingTokens),
-		}
+	if md := ccUsageMetadata(meterUsage, costUsage); md != nil {
+		resp.UsageMetadata = md
 	}
 	return resp
+}
+
+// ccUsageMetadata builds the ADK usage metadata from two usages: meterUsage
+// drives TotalTokenCount (the context meter) and costUsage drives
+// PromptTokenCount/CandidatesTokenCount (cost). For every caller except the
+// turn's terminal result the two are the same object.
+//
+// Anthropic reports input_tokens as only the uncached delta; the bulk of the
+// context lives in the cache-read and cache-creation buckets, so TotalTokenCount
+// must fold in every input bucket of the most recent call or the meter barely
+// moves on a cached turn. PromptTokenCount stays the uncached delta: cost
+// pricing reads it at the full input rate, and cache reads are billed far
+// cheaper.
+func ccUsageMetadata(meterUsage, costUsage *ccUsage) *genai.GenerateContentResponseUsageMetadata {
+	if meterUsage == nil && costUsage == nil {
+		return nil
+	}
+	md := &genai.GenerateContentResponseUsageMetadata{}
+	if costUsage != nil {
+		md.PromptTokenCount = int32(costUsage.InputTokens)
+		md.CandidatesTokenCount = int32(costUsage.OutputTokens)
+	}
+	if meterUsage != nil {
+		total := meterUsage.InputTokens + meterUsage.CacheReadInputTokens +
+			meterUsage.CacheCreationInputTokens + meterUsage.OutputTokens
+		md.TotalTokenCount = int32(total)
+		md.CachedContentTokenCount = int32(meterUsage.CacheReadInputTokens)
+		md.ThoughtsTokenCount = int32(meterUsage.OutputTokensDetails.ThinkingTokens)
+	}
+	return md
+}
+
+// ccContextWindowFromModelUsage returns the largest contextWindow reported in a
+// result frame's modelUsage map (the turn's primary model has the largest
+// window; any smaller helper model the CLI used stays below it), or 0 if none.
+func ccContextWindowFromModelUsage(mu map[string]ccModelUsage) int64 {
+	var max int64
+	for _, u := range mu {
+		if u.ContextWindow > max {
+			max = u.ContextWindow
+		}
+	}
+	return max
 }
 
 var _ model.LLM = (*claudeCodeModel)(nil)

@@ -52,6 +52,14 @@ func assistantTextFrame(text string) ccFrame {
 	return ccFrame{Type: "assistant", Message: msg}
 }
 
+// assistantUsageFrame is an assistant frame carrying a specific per-call usage,
+// modelling the LAST internal API call of a multi-call turn (the one whose live
+// context the meter must reflect).
+func assistantUsageFrame(text string, u *ccUsage) ccFrame {
+	msg, _ := json.Marshal(ccAssistantMessage{Role: "assistant", Content: []ccContentBlock{{Type: "text", Text: text}}, Usage: u})
+	return ccFrame{Type: "assistant", Message: msg}
+}
+
 func resultFrame(text string) ccFrame {
 	return ccFrame{Type: "result", Subtype: "success", Result: text, Usage: &ccUsage{InputTokens: 20, OutputTokens: 8}}
 }
@@ -274,6 +282,11 @@ func TestClaudeCodeModel_PlainTextTurn(t *testing.T) {
 // must fold in the cache-read and cache-creation buckets or it barely moves on
 // a cached turn. PromptTokenCount stays the uncached delta so cost pricing is
 // unaffected.
+//
+// This is the single-call fallback path: the turn pushes only a result frame
+// (no assistant frame), so meterUsage falls back to the cumulative result usage
+// — for a one-API-call turn cumulative equals the single call, so every value
+// below is identical whether it came from the meter or cost split.
 func TestClaudeCodeModel_CachedTurnTotalTokens(t *testing.T) {
 	fc := newFakeConn(8)
 	prevDial := ccDial
@@ -304,6 +317,107 @@ func TestClaudeCodeModel_CachedTurnTotalTokens(t *testing.T) {
 	}
 	if got.CachedContentTokenCount != 30_000 {
 		t.Errorf("CachedContentTokenCount = %d, want 30000", got.CachedContentTokenCount)
+	}
+}
+
+// TestClaudeCodeModel_MeterUsesLastCallNotCumulative: a multi-call turn emits an
+// assistant frame per internal API call and a terminal result frame whose usage
+// is CUMULATIVE across every call (Claude Code re-reads the whole context from
+// cache each tool-loop step). The context meter reads TotalTokenCount, so it
+// must reflect the LAST per-call assistant usage (live occupancy) and reject the
+// cumulative result totals, which sum cache reads to a multiple of the real
+// context. Cost (PromptTokenCount/CandidatesTokenCount) still reads the
+// cumulative result totals so spend stays correct.
+func TestClaudeCodeModel_MeterUsesLastCallNotCumulative(t *testing.T) {
+	fc := newFakeConn(8)
+	prevDial := ccDial
+	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	defer func() { ccDial = prevDial }()
+
+	m := newClaudeCodeModel("claude", "sonnet", "/repo", false, nil)
+	t.Cleanup(func() { _ = m.Close() })
+
+	// Last per-call usage: the live context of the final API call.
+	last := &ccUsage{InputTokens: 12, OutputTokens: 200, CacheReadInputTokens: 30_000, CacheCreationInputTokens: 4_000}
+	// Cumulative result usage: ~10x the live call because each tool-loop step
+	// re-read the whole context from cache. This must NOT feed the meter.
+	cumulative := &ccUsage{InputTokens: 40, OutputTokens: 900, CacheReadInputTokens: 300_000, CacheCreationInputTokens: 8_000}
+	fc.push(assistantUsageFrame("working", last))
+	fc.push(ccFrame{Type: "result", Subtype: "success", Result: "done", Usage: cumulative})
+
+	out := collect(t, m, &model.LLMRequest{
+		Config:   &genai.GenerateContentConfig{},
+		Contents: []*genai.Content{userContent("hi")},
+	})
+
+	got := lastUsage(out)
+	if got == nil {
+		t.Fatal("no usage reported")
+	}
+	// The meter reflects the LAST call's live total (12+30000+4000+200), not the
+	// cumulative ~309k, which would inflate the context bar to a false multiple.
+	if want := int32(12 + 30_000 + 4_000 + 200); got.TotalTokenCount != want {
+		t.Errorf("TotalTokenCount = %d, want %d (last per-call usage; the cumulative result usage must be rejected)", got.TotalTokenCount, want)
+	}
+	// Cost still reads the cumulative result totals.
+	if got.PromptTokenCount != 40 {
+		t.Errorf("PromptTokenCount = %d, want 40 (cumulative result total for cost)", got.PromptTokenCount)
+	}
+	if got.CandidatesTokenCount != 900 {
+		t.Errorf("CandidatesTokenCount = %d, want 900 (cumulative result total for cost)", got.CandidatesTokenCount)
+	}
+}
+
+// TestClaudeCodeModel_ObservesContextWindow: the result frame's modelUsage map
+// carries the authoritative per-model context window (e.g. a 1M beta). The
+// adapter caches it keyed by the session's --model id so ContextWindow — the
+// meter's denominator — reflects the real window instead of the static catalog.
+func TestClaudeCodeModel_ObservesContextWindow(t *testing.T) {
+	t.Cleanup(func() {
+		claudeCodeContextWindows.mu.Lock()
+		delete(claudeCodeContextWindows.byID, "ctxwin-test-1m")
+		claudeCodeContextWindows.mu.Unlock()
+	})
+
+	fc := newFakeConn(8)
+	prevDial := ccDial
+	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	defer func() { ccDial = prevDial }()
+
+	m := newClaudeCodeModel("claude", "ctxwin-test-1m", "/repo", false, nil)
+	t.Cleanup(func() { _ = m.Close() })
+	fc.push(ccFrame{
+		Type: "result", Subtype: "success", Result: "done",
+		Usage:      &ccUsage{InputTokens: 5, OutputTokens: 5},
+		ModelUsage: map[string]ccModelUsage{"someUniqueModel-1m": {ContextWindow: 1_000_000}},
+	})
+
+	collect(t, m, &model.LLMRequest{
+		Config:   &genai.GenerateContentConfig{},
+		Contents: []*genai.Content{userContent("hi")},
+	})
+
+	if got := (ClaudeCode{}).ContextWindow("ctxwin-test-1m"); got != 1_000_000 {
+		t.Errorf("ContextWindow = %d, want 1000000 (the window the CLI reported in modelUsage)", got)
+	}
+}
+
+// TestCCContextWindowFromModelUsage: the largest contextWindow in a multi-entry
+// modelUsage map wins (the turn's primary model has the largest window), and an
+// empty or nil map yields 0.
+func TestCCContextWindowFromModelUsage(t *testing.T) {
+	mu := map[string]ccModelUsage{
+		"helper-model":  {ContextWindow: 200_000},
+		"primary-model": {ContextWindow: 1_000_000},
+	}
+	if got := ccContextWindowFromModelUsage(mu); got != 1_000_000 {
+		t.Errorf("max window = %d, want 1000000", got)
+	}
+	if got := ccContextWindowFromModelUsage(map[string]ccModelUsage{}); got != 0 {
+		t.Errorf("empty map window = %d, want 0", got)
+	}
+	if got := ccContextWindowFromModelUsage(nil); got != 0 {
+		t.Errorf("nil map window = %d, want 0", got)
 	}
 }
 
