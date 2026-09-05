@@ -38,13 +38,34 @@ type ShellHandle struct {
 // RunShell is the swappable execution hook for shell commands.
 var RunShell = RunShellProcess
 
-// RunShellProcess forks $SHELL -c <command> with its own process group.
-func RunShellProcess(dir, command string, extraEnv ...string) (*ShellHandle, error) {
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/sh"
+// agentShell is the shell the bash tool forks. It is resolved once at
+// process startup (package initialization, before main runs) rather than
+// on the first command, so detection happens at boot. bash and zsh are
+// preferred over the user's $SHELL because LLM agents emit POSIX/bash
+// syntax that non-POSIX interactive shells like fish reject; the agent
+// tool therefore never inherits the user's interactive shell.
+var agentShell = ResolveAgentShell(exec.LookPath, os.Getenv)
+
+// ResolveAgentShell picks the shell for the agent bash tool, preferring
+// bash, then zsh, then the user's $SHELL, then /bin/sh. lookPath and
+// getenv are injected so the preference order is testable without
+// depending on the host's PATH or environment.
+func ResolveAgentShell(lookPath func(string) (string, error), getenv func(string) string) string {
+	for _, name := range []string{"bash", "zsh"} {
+		if path, err := lookPath(name); err == nil && path != "" {
+			return path
+		}
 	}
-	cmd := exec.Command(shell, "-c", command)
+	if sh := getenv("SHELL"); sh != "" {
+		return sh
+	}
+	return "/bin/sh"
+}
+
+// RunShellProcess forks the resolved agent shell (see agentShell) with
+// -c <command> in its own process group.
+func RunShellProcess(dir, command string, extraEnv ...string) (*ShellHandle, error) {
+	cmd := exec.Command(agentShell, "-c", command)
 	cmd.Dir = dir
 	if len(extraEnv) > 0 {
 		cmd.Env = append(os.Environ(), extraEnv...)

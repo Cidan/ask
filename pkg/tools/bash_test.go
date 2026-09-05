@@ -1,12 +1,73 @@
 package tools
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Cidan/ask/pkg/engine"
 )
+
+func TestResolveAgentShell(t *testing.T) {
+	lookPath := func(paths map[string]string) func(string) (string, error) {
+		return func(name string) (string, error) {
+			if p, ok := paths[name]; ok {
+				return p, nil
+			}
+			return "", exec.ErrNotFound
+		}
+	}
+	getenv := func(vals map[string]string) func(string) string {
+		return func(k string) string { return vals[k] }
+	}
+
+	tests := []struct {
+		name    string
+		paths   map[string]string
+		environ map[string]string
+		want    string
+	}{
+		{
+			name:    "prefers bash over zsh and $SHELL",
+			paths:   map[string]string{"bash": "/usr/bin/bash", "zsh": "/usr/bin/zsh"},
+			environ: map[string]string{"SHELL": "/usr/bin/fish"},
+			want:    "/usr/bin/bash",
+		},
+		{
+			name:    "falls back to zsh when bash missing",
+			paths:   map[string]string{"zsh": "/usr/bin/zsh"},
+			environ: map[string]string{"SHELL": "/usr/bin/fish"},
+			want:    "/usr/bin/zsh",
+		},
+		{
+			name:    "uses $SHELL when neither bash nor zsh present",
+			paths:   map[string]string{},
+			environ: map[string]string{"SHELL": "/usr/bin/fish"},
+			want:    "/usr/bin/fish",
+		},
+		{
+			name:    "ignores empty lookPath result and falls through",
+			paths:   map[string]string{"bash": ""},
+			environ: map[string]string{"SHELL": "/usr/bin/fish"},
+			want:    "/usr/bin/fish",
+		},
+		{
+			name:    "falls back to /bin/sh when nothing is available",
+			paths:   map[string]string{},
+			environ: map[string]string{},
+			want:    "/bin/sh",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveAgentShell(lookPath(tt.paths), getenv(tt.environ))
+			if got != tt.want {
+				t.Errorf("ResolveAgentShell() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestBashToolSync(t *testing.T) {
 	env, _ := newTestToolEnv(t)
