@@ -306,6 +306,118 @@ func (e *engine) layoutInline(block *box, group []*box, originX, originY, width 
 	return runs, yCursor
 }
 
+// maxContentWidth returns the natural (shrink-to-fit) border-box width of b and
+// its subtree, ignoring any available-width constraint. It resolves the
+// flex-basis of an auto-width flex item, exactly as CSS resolves an auto basis
+// to the item's max-content size; without it such an item collapses to width 0
+// and its text wraps one word per line.
+func (e *engine) maxContentWidth(b *box) float64 {
+	if b.disp == "none" {
+		return 0
+	}
+	resolveEdges(b, 0)
+	s := b.style
+	if !s.width.isAuto() {
+		w := s.width.resolve(0, 0)
+		var bbw float64
+		if s.boxSizing == "border-box" {
+			bbw = w
+		} else {
+			bbw = w + extra(b)
+		}
+		return clampWidth(b, bbw, 0)
+	}
+	return clampWidth(b, e.contentMaxWidth(b)+extra(b), 0)
+}
+
+// contentMaxWidth is the natural width of b's content box (inside padding and
+// border): a flex row sums its items, a flex column and block flow take the
+// widest child, and an inline run is its widest break-delimited line.
+func (e *engine) contentMaxWidth(b *box) float64 {
+	if b.disp == "flex" {
+		items := flexItems(b)
+		if b.style.flexDirection == "column" {
+			max := 0.0
+			for _, it := range items {
+				resolveEdges(it, 0)
+				if w := e.maxContentWidth(it) + it.ml + it.mr; w > max {
+					max = w
+				}
+			}
+			return max
+		}
+		total := 0.0
+		for _, it := range items {
+			resolveEdges(it, 0)
+			total += e.maxContentWidth(it) + it.ml + it.mr
+		}
+		if len(items) > 1 {
+			total += b.style.gap * float64(len(items)-1)
+		}
+		return total
+	}
+	max := 0.0
+	children := b.children
+	i := 0
+	for i < len(children) {
+		c := children[i]
+		if isInlineLevel(c) {
+			j := i
+			var group []*box
+			for j < len(children) && isInlineLevel(children[j]) {
+				group = append(group, children[j])
+				j++
+			}
+			if w := e.inlineMaxWidth(group); w > max {
+				max = w
+			}
+			i = j
+			continue
+		}
+		resolveEdges(c, 0)
+		if w := e.maxContentWidth(c) + c.ml + c.mr; w > max {
+			max = w
+		}
+		i++
+	}
+	return max
+}
+
+// inlineMaxWidth is the widest single line an inline group produces when it is
+// never wrapped — the widest run of words between forced breaks, mirroring the
+// tokenization in layoutInline so the measured width matches what gets painted.
+func (e *engine) inlineMaxWidth(group []*box) float64 {
+	var frags []inlineFrag
+	flattenInline(group, &frags)
+	max, cur := 0.0, 0.0
+	started := false
+	for _, f := range frags {
+		if f.isBreak {
+			if cur > max {
+				max = cur
+			}
+			cur, started = 0, false
+			continue
+		}
+		s := strings.Join(strings.Fields(f.text), " ")
+		if s == "" {
+			continue
+		}
+		face := getFace(f.style.fontKey(), f.style.fontSize)
+		for _, w := range strings.Split(s, " ") {
+			if started {
+				cur += measureText(face, " ")
+			}
+			cur += measureText(face, w)
+			started = true
+		}
+	}
+	if cur > max {
+		max = cur
+	}
+	return max
+}
+
 func flexItems(b *box) []*box {
 	var items []*box
 	for _, c := range b.children {
@@ -363,6 +475,9 @@ func (e *engine) layoutFlexRow(b *box, cx, cy, cw, explicitH float64) float64 {
 			} else {
 				base[i] = w + extra(it)
 			}
+		} else {
+			base[i] = e.maxContentWidth(it)
+			resolveEdges(it, cw)
 		}
 		base[i] = clampWidth(it, base[i], cw)
 		mainMargin[i] = it.ml + it.mr
@@ -456,7 +571,8 @@ func (e *engine) layoutFlexColumn(b *box, cx, cy, cw, explicitH float64) float64
 				cross = w + extra(it)
 			}
 		} else if b.style.alignItems != "stretch" {
-			cross = cw - crossMargin[i]
+			cross = e.maxContentWidth(it)
+			resolveEdges(it, cw)
 		}
 		crossSizes[i] = clampWidth(it, cross, cw)
 		e.layoutBlock(it, cx, cy, crossSizes[i], -1)
