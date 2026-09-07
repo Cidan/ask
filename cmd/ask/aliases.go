@@ -195,6 +195,9 @@ var (
 	agentWebSearchTool       = tools.WebSearchTool
 	agentLoadMemoryTool      = tools.LoadMemoryTool
 	agentPreloadMemoryTool   = tools.PreloadMemoryTool
+	agentRenderDesignTool    = tools.RenderDesignTool
+	agentImageInjectionHook  = tools.NewImageInjectionHook
+	agentNewImageSink        = tools.NewImageSink
 )
 
 func errResult(text string) *mcp.CallToolResult {

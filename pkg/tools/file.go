@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const ReadToolDescription = `Read a file from the filesystem. Returns the content with 1-based line numbers (cat -n format). Use offset/limit for large files; lines longer than 2000 chars are truncated. Reading a file is required before editing or overwriting it.`
+const ReadToolDescription = `Read a file from the filesystem. Returns the content with 1-based line numbers (cat -n format). Use offset/limit for large files; lines longer than 2000 chars are truncated. Reading a file is required before editing or overwriting it. Image files (png, jpg, gif, webp, bmp, tiff) are decoded and shown to you visually instead of as text, when the model has vision.`
 
 type ReadParams struct {
 	FilePath    string `json:"file_path" jsonschema:"absolute or cwd-relative path of the file to read"`
@@ -45,7 +45,7 @@ func ReadTool(env *ToolEnv) Tool {
 				return ReadResult{}, fmt.Errorf("%s is a directory; use the ls tool instead", path)
 			}
 			if ImageExts[strings.ToLower(filepath.Ext(path))] {
-				return ReadResult{}, errors.New("image files are not supported for raw text reading")
+				return readImageFile(env, path)
 			}
 
 			f, err := os.Open(path)

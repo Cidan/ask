@@ -66,6 +66,7 @@ runtime is `pkg/engine`, re-exported as a library by the root package
 | `pkg/memory/` | sqlite-vec memory store behind an injected `Embedder` (no llama.cpp dependency); `pkg/memory/llamacpp/` is the local llama.cpp embedder (cgo) that only `cmd/ask` imports. |
 | `pkg/config/` | `~/.config/ask/ask.json` shapes, per-provider blocks, legacy migration, worktree helpers. |
 | `pkg/diff/` | Pure-Go Myers unified diff and parser. |
+| `pkg/render/` | Compact in-process HTML/CSS→PNG renderer (tdewolff/canvas + parse, `x/net/html`, embedded Go fonts) behind the `render_design` design-preview tool. |
 | `third_party/sqlite/` | `sqlite3.h` / `sqlite3ext.h` for sqlite-vec's cgo build (no system header assumed); reached through the Makefile's `CGO_CFLAGS`. |
 | `build/` | Gitignored: the llama.cpp checkout and static libraries that `pkg/memory/llamacpp` links against. |
 

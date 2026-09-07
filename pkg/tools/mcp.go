@@ -169,6 +169,7 @@ var MCPTransportFor = func(srv MCPServer, oauth *MCPOAuthHandler) (mcp.Transport
 type MCPManager struct {
 	tabID           int
 	imagesOK        func() bool
+	imageSink       *ImageSink
 	onToolsChanged  func()
 	onStatusChanged func()
 	interaction     engine.InteractionHandler
@@ -180,7 +181,7 @@ type MCPManager struct {
 
 // NewMCPManager creates a new MCPManager. onStatusChanged fires whenever a
 // server's connection/auth state changes (nil is allowed).
-func NewMCPManager(tabID int, imagesOK func() bool, onToolsChanged, onStatusChanged func(), interaction engine.InteractionHandler) *MCPManager {
+func NewMCPManager(tabID int, imagesOK func() bool, imageSink *ImageSink, onToolsChanged, onStatusChanged func(), interaction engine.InteractionHandler) *MCPManager {
 	if imagesOK == nil {
 		imagesOK = func() bool { return false }
 	}
@@ -190,6 +191,7 @@ func NewMCPManager(tabID int, imagesOK func() bool, onToolsChanged, onStatusChan
 	return &MCPManager{
 		tabID:           tabID,
 		imagesOK:        imagesOK,
+		imageSink:       imageSink,
 		onToolsChanged:  onToolsChanged,
 		onStatusChanged: onStatusChanged,
 		interaction:     interaction,
@@ -793,10 +795,17 @@ func (m *mcpAgentTool) convertResult(res *mcp.CallToolResult) ToolResponse {
 		return NewTextErrorResponse(body)
 	}
 	if imageData != nil {
-		if !m.conn.mgr.imagesOK() {
+		switch {
+		case !m.conn.mgr.imagesOK():
 			fmt.Fprintf(&out, "[image result omitted — the current model has no vision: %s, %d bytes]",
 				imageMIME, len(imageData))
 			body = out.String()
+		case m.conn.mgr.imageSink != nil:
+			m.conn.mgr.imageSink.Add(PendingImage{
+				Data:    imageData,
+				MIME:    imageMIME,
+				Caption: m.name + " image result:",
+			})
 		}
 	}
 	if strings.TrimSpace(body) == "" {

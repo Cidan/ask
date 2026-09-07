@@ -53,7 +53,7 @@ only rebuilds the deferred list; `s.coreTools` is fixed).
 
 Core today (`setupAgentSessionTools`): `read`, `write`, `edit`, `glob`,
 `grep`, `ls`, `bash`, `job_output`, `job_kill`, `fetch`, `todos`,
-`load_memory`, `preload_memory`, `task`, `ask_user_question`,
+`load_memory`, `preload_memory`, `render_design`, `task`, `ask_user_question`,
 `end_turn`, `search_tools`, `invoke_tool`, `web_search`; plus
 `finalized_plan` and the six `workflow_*` tools outside a workflow run,
 and `finish_workflow` on a workflow's final step (`save_artifact` /
@@ -76,9 +76,31 @@ name, description, full `input_schema`) and calls them with
 the registry func (engine). A core slot costs context on every call of
 every session; the bar is "the agent cannot work without seeing it
 unprompted". The documented exceptions are `web_search`, `fetch`,
-`finalized_plan`, and the `workflow_*` tools (kept on the wire so the
+`finalized_plan`, the `workflow_*` tools (kept on the wire so the
 model can surface and run workflows without a `search_tools`
-round-trip first).
+round-trip first), and `render_design` (kept on the wire so the model
+reaches for the design-preview canvas while it is making visual
+decisions rather than only after a `search_tools` round-trip; flip it to
+`s.deferredBase` / the registry func to make it discovery-only).
+
+## Images from tools (ImageSink)
+
+Tool results are text/JSON on every provider — ADK stuffs a tool's
+`map[string]any` into `FunctionResponse.Response`, and OpenRouter can
+only carry a string in a `role:"tool"` message — so bytes returned from a
+tool never reach the model as an image. The only cross-provider path is
+an `InlineData` part in a *user* content, which is exactly what pasted
+images use. `ImageSink` (`pkg/tools/toolimage.go`) is the per-session
+handoff: a tool queues a `PendingImage`, and `ImageInjectionHook` — a
+request processor (like `preload_memory`, it implements `ProcessRequest`
+and registers no declaration, so it is invisible to the model) — drains
+the sink before each model call and appends the images as user image
+parts, gated by `env.SupportsImages`. The sink lives on `ToolEnv`
+(`env.ImageSink`) so `render_design`, `read` of an image file
+(`pkg/tools/read_image.go`, decoded and normalized to PNG), and MCP image
+results (`mcp.go` `convertResult`) all feed the one sink. `inject_tool_images`
+is present in the core list as that request processor, not as a callable
+tool.
 
 `invoke_tool` invariants (`pkg/tools/registry.go`):
 

@@ -125,8 +125,8 @@ func TestReadTool(t *testing.T) {
 	}
 
 	writeTestFile(t, env.Cwd, "pic.png", "x")
-	if _, err := runTypedTool[ReadResult](t, tool, ReadParams{FilePath: "pic.png"}); err == nil || !strings.Contains(err.Error(), "image") {
-		t.Errorf("image should be rejected, got %v", err)
+	if res, err := runTypedTool[ReadResult](t, tool, ReadParams{FilePath: "pic.png"}); err != nil || !strings.Contains(res.Content, "image") {
+		t.Errorf("reading an image should return a description, not an error, got res=%q err=%v", res.Content, err)
 	}
 }
 
