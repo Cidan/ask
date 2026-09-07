@@ -30,7 +30,7 @@ func TestMCPManagerReconcile_AttachDetach(t *testing.T) {
 	_, ts2 := newEchoMCPServer(t)
 	toolsChanged := 0
 	statusChanged := 0
-	mgr := NewMCPManager(1, func() bool { return true },
+	mgr := NewMCPManager(1, func() bool { return true }, nil,
 		func() { toolsChanged++ },
 		func() { statusChanged++ },
 		nil,

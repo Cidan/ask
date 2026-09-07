@@ -24,6 +24,7 @@ func BuildCoreTools(args engine.ToolFactoryArgs, attachWebSearch bool) []Tool {
 		args.EventListener,
 		args.InteractionHandler,
 	)
+	env.SupportsImages = args.SupportsImages
 	registry := append(ExtensionTools(env), MemoryTools(env.Cwd, env.ApprovalDenied)...)
 	registryFunc := func() []Tool {
 		return registry
@@ -45,6 +46,7 @@ func BuildSubagentTools(args engine.ToolFactoryArgs, attachWebSearch bool) []Too
 		args.InteractionHandler,
 	)
 	env.IsSubagent = true
+	env.SupportsImages = args.SupportsImages
 	registryFunc := func() []Tool {
 		return nil
 	}
@@ -55,6 +57,9 @@ func BuildSubagentTools(args engine.ToolFactoryArgs, attachWebSearch bool) []Too
 func CoreTools(env *ToolEnv, registry func() []Tool, attachWebSearch bool) []Tool {
 	var isCore func(string) bool
 
+	if env.ImageSink == nil {
+		env.ImageSink = NewImageSink()
+	}
 	tools := []Tool{
 		ReadTool(env),
 		WriteTool(env),
@@ -69,6 +74,8 @@ func CoreTools(env *ToolEnv, registry func() []Tool, attachWebSearch bool) []Too
 		TodosTool(env),
 		LoadMemoryTool(env.Cwd),
 		PreloadMemoryTool(env.Cwd, nil, nil),
+		RenderDesignTool(env.ImageSink),
+		NewImageInjectionHook(env.ImageSink, env.SupportsImages),
 		AskUserQuestionTool(env),
 		EndTurnTool(env),
 		SearchToolsTool(registry),
@@ -101,7 +108,8 @@ func IsCoreTool(name string) bool {
 	case "read", "write", "edit", "glob", "grep", "ls", "bash", "job_output", "job_kill",
 		"fetch", "todos", "task", "ask_user_question", "end_turn", "search_tools", "invoke_tool",
 		"web_search", "workflow_list", "workflow_get", "workflow_create", "workflow_edit",
-		"workflow_delete", "workflow_copy", "load_memory", "preload_memory":
+		"workflow_delete", "workflow_copy", "load_memory", "preload_memory",
+		"render_design", "inject_tool_images":
 		return true
 	default:
 		return false

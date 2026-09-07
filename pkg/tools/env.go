@@ -59,6 +59,18 @@ type ToolEnv struct {
 	// Custom approval function if overriding standard interaction handler.
 	Approve func(ctx context.Context, toolName string, input map[string]any) (bool, error)
 
+	// SupportsImages reports whether the active model can see images. It
+	// gates feeding tool-rendered images (render_design, MCP image results,
+	// read of an image file) back to the model as image parts. Nil means
+	// unknown (treated as capable, so the images are still attached).
+	SupportsImages func() bool
+
+	// ImageSink is the per-session handoff for images a tool produces (a
+	// render, an MCP image result) or opens (read of an image file). The
+	// ImageInjectionHook drains it before each model call and feeds the
+	// images to the model as inline image parts.
+	ImageSink *ImageSink
+
 	PendingEndTurn    *EndTurnSignal
 	PendingFinishData *FinishWorkflowData
 

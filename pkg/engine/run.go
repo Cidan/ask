@@ -110,6 +110,10 @@ type ToolFactoryArgs struct {
 	EventListener      EventListener
 	InteractionHandler InteractionHandler
 	AttachWebSearch    bool
+	// SupportsImages reports whether the run's model can see images; it
+	// gates feeding tool-rendered images back to the model. Nil is treated
+	// as capable.
+	SupportsImages func() bool
 	// WorkflowStep attaches the workflow-step tools (save_artifact,
 	// load_artifacts) so a step can pass data to a later one.
 	WorkflowStep bool
@@ -273,6 +277,7 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			EventListener:      opts.EventListener,
 			InteractionHandler: opts.InteractionHandler,
 			AttachWebSearch:    true,
+			SupportsImages:     func() bool { return prov.SupportsImages(modelID) },
 		})
 	}
 

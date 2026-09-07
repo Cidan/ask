@@ -168,6 +168,12 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 // setupAgentSessionTools assembles the session's tool surface in two tiers.
 func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	env := s.env
+	supportsImages := func() bool {
+		return s.provider != nil && s.provider.SupportsImages(s.modelID)
+	}
+	env.SupportsImages = supportsImages
+	imageSink := agentNewImageSink()
+	env.ImageSink = imageSink
 	s.coreTools = []tools.Tool{
 		agentReadTool(env),
 		agentWriteTool(env),
@@ -182,6 +188,8 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		agentTodosTool(env),
 		agentLoadMemoryTool(s.args.Cwd),
 		agentPreloadMemoryTool(s.args.Cwd, s.currentTopic, s.setTopic),
+		agentRenderDesignTool(imageSink),
+		agentImageInjectionHook(imageSink, supportsImages),
 		agentTaskTool(env,
 			func() *agentSession { return s }),
 		agentAskUserQuestionTool(env),
@@ -210,9 +218,8 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	s.deferredBase = append(s.deferredBase, agentMemoryTools(env)...)
 	s.deferredBase = append(s.deferredBase, agentExtensionTools(env)...)
 	s.mcp = newMCPManager(s.args.TabID,
-		func() bool {
-			return s.provider != nil && s.provider.SupportsImages(s.modelID)
-		},
+		supportsImages,
+		imageSink,
 		s.refreshToolset,
 		func() { s.emit(engine.MCPStatusChangedEvent{BaseEvent: engine.BaseEvent{TabID: s.args.TabID}}) },
 		globalTUIInteractionHandler,
