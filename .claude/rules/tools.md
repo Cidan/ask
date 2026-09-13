@@ -53,13 +53,17 @@ only rebuilds the deferred list; `s.coreTools` is fixed).
 
 Core today (`setupAgentSessionTools`): `read`, `write`, `edit`, `glob`,
 `grep`, `ls`, `bash`, `job_output`, `job_kill`, `fetch`, `todos`,
-`load_memory`, `preload_memory`, `render_design`, `task`, `ask_user_question`,
-`end_turn`, `search_tools`, `invoke_tool`, `web_search`; plus
-`finalized_plan` and the six `workflow_*` tools outside a workflow run,
-and `finish_workflow` on a workflow's final step (`save_artifact` /
-`load_artifacts` on every step, `WorkflowStepTools`). `task` exists only
-in the TUI (`cmd/ask/agent_tools_task.go`); `pkg/tools.CoreTools` is the
-same list without it.
+`load_memory`, `preload_memory`, `render_design`, `task`,
+`search_tools`, `invoke_tool`, `web_search`; plus the six `workflow_*`
+tools outside a workflow run, and — only during a workflow run —
+`end_turn` (the step's log-summary contract) on every step and
+`finish_workflow` on the final step (`save_artifact` / `load_artifacts`
+on every step, `WorkflowStepTools`). `end_turn` is therefore absent from
+ordinary chat turns. `task` exists only in the TUI
+(`cmd/ask/agent_tools_task.go`); `pkg/tools.CoreTools` is the same list
+without it. The `ask_user_question` and `finalized_plan` tools still
+exist in `pkg/tools/ask.go` (and their TUI aliases) but are no longer
+wired into any session's toolset.
 
 Deferred registry (`s.deferredBase` + `s.mcp.Tools()`): the `linear_*`
 twins, the memory set (`memory_index`, `memory_reinforce`,
@@ -76,7 +80,7 @@ name, description, full `input_schema`) and calls them with
 the registry func (engine). A core slot costs context on every call of
 every session; the bar is "the agent cannot work without seeing it
 unprompted". The documented exceptions are `web_search`, `fetch`,
-`finalized_plan`, the `workflow_*` tools (kept on the wire so the
+the `workflow_*` tools (kept on the wire so the
 model can surface and run workflows without a `search_tools`
 round-trip first), and `render_design` (kept on the wire so the model
 reaches for the design-preview canvas while it is making visual
@@ -246,20 +250,22 @@ tool.
 
 ## Modal tools (`pkg/tools/ask.go`)
 
+These constructors still exist but are no longer wired into any
+session's toolset:
+
 - `ask_user_question` → `Interaction.AskQuestion`; a headless reply
   (workflow tab) returns `WorkflowHeadlessAskNotice` so the model
-  proceeds on its own instead of reading "cancelled".
+  proceeds on its own instead of reading "cancelled". Not registered.
+- `finalized_plan` presents a self-contained markdown plan through
+  `Interaction.ConfirmPlan`. Not registered.
+
+Still wired, workflow-only:
+
 - `end_turn` records `PendingEndTurn{Summary, Decision}`. Nothing reads
   it: the workflow progress adapter takes the summary from the event
   stream, and `decision` has no effect (loop control is `exit_loop`).
 - `finish_workflow` records `PendingFinishData{Description, Artifacts}`;
   final step only.
-- `finalized_plan` presents a self-contained markdown plan through
-  `Interaction.ConfirmPlan`. The TUI modal (`cmd/ask/finalized_plan.go`)
-  offers: execute in the suggested workflow, pick another workflow,
-  execute inline, or keep talking. A workflow pick runs
-  `env.WorkflowRunner` (the coordinator) and returns its outcome as the
-  tool result; inline approval just returns approval so the model proceeds.
 
 ## Sub-agents (`cmd/ask/agent_tools_task.go`)
 

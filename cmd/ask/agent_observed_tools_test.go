@@ -97,6 +97,41 @@ func TestSetupAgentSessionTools_WebSearchTogglesOnNativeFallback(t *testing.T) {
 	}
 }
 
+// ask_user_question and finalized_plan are no longer wired into the TUI
+// session toolset, and end_turn only rides along during a workflow run.
+func TestSetupAgentSessionTools_ModalToolsGating(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("BRAVE_API_KEY", "")
+
+	build := func(inWorkflow bool) []tools.Tool {
+		env, _ := newTestToolEnv(t)
+		s := &agentSession{
+			args:     ProviderSessionArgs{Cwd: t.TempDir(), TabID: 1, InWorkflow: inWorkflow},
+			env:      env,
+			provider: providers.Vertex{},
+		}
+		setupAgentSessionTools(s, askConfig{})
+		return s.coreTools
+	}
+
+	chat := build(false)
+	for _, gone := range []string{"ask_user_question", "finalized_plan", "end_turn"} {
+		if hasToolNamed(chat, gone) {
+			t.Errorf("%s must not be on the wire in an ordinary chat turn", gone)
+		}
+	}
+
+	wf := build(true)
+	if !hasToolNamed(wf, "end_turn") {
+		t.Error("end_turn must be on the wire during a workflow run")
+	}
+	for _, gone := range []string{"ask_user_question", "finalized_plan"} {
+		if hasToolNamed(wf, gone) {
+			t.Errorf("%s must not be on the wire during a workflow run", gone)
+		}
+	}
+}
+
 func hasToolNamed(ts []tools.Tool, name string) bool {
 	for _, tl := range ts {
 		if tl.Name() == name {
