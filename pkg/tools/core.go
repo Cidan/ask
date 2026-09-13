@@ -31,6 +31,9 @@ func BuildCoreTools(args engine.ToolFactoryArgs, attachWebSearch bool) []Tool {
 	}
 	core := CoreTools(env, registryFunc, attachWebSearch)
 	if args.WorkflowStep {
+		// end_turn records each step's workflow-log summary, so it is only
+		// on the wire during a workflow run — never in an ordinary turn.
+		core = append(core, EndTurnTool(env))
 		core = append(core, WorkflowStepTools(env, args.WorkflowFinalStep)...)
 	}
 	return core
@@ -76,8 +79,6 @@ func CoreTools(env *ToolEnv, registry func() []Tool, attachWebSearch bool) []Too
 		PreloadMemoryTool(env.Cwd, nil, nil),
 		RenderDesignTool(env.ImageSink),
 		NewImageInjectionHook(env.ImageSink, env.SupportsImages),
-		AskUserQuestionTool(env),
-		EndTurnTool(env),
 		SearchToolsTool(registry),
 	}
 
@@ -106,7 +107,7 @@ func CoreTools(env *ToolEnv, registry func() []Tool, attachWebSearch bool) []Too
 func IsCoreTool(name string) bool {
 	switch name {
 	case "read", "write", "edit", "glob", "grep", "ls", "bash", "job_output", "job_kill",
-		"fetch", "todos", "task", "ask_user_question", "end_turn", "search_tools", "invoke_tool",
+		"fetch", "todos", "task", "end_turn", "search_tools", "invoke_tool",
 		"web_search", "workflow_list", "workflow_get", "workflow_create", "workflow_edit",
 		"workflow_delete", "workflow_copy", "load_memory", "preload_memory",
 		"render_design", "inject_tool_images":

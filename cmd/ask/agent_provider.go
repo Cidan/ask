@@ -192,13 +192,13 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		agentImageInjectionHook(imageSink, supportsImages),
 		agentTaskTool(env,
 			func() *agentSession { return s }),
-		agentAskUserQuestionTool(env),
-		agentEndTurnTool(env),
 		agentSearchToolsTool(s.deferredTools),
 		agentInvokeToolTool(s.deferredTools, s.isCoreToolName, env),
 	}
-	if !s.args.InWorkflow {
-		s.coreTools = append(s.coreTools, agentFinalizedPlanTool(env))
+	// end_turn records each step's workflow-log summary, so it is only on
+	// the wire during a workflow run — never in an ordinary chat turn.
+	if s.args.InWorkflow {
+		s.coreTools = append(s.coreTools, agentEndTurnTool(env))
 	}
 	if s.args.IsWorkflowFinalStep {
 		s.coreTools = append(s.coreTools, agentFinishWorkflowTool(env))
