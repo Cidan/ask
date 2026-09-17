@@ -82,6 +82,25 @@ func TestConfig_LoadAndSave(t *testing.T) {
 	}
 }
 
+func TestConfig_DeslopRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	enabled := true
+	if err := Save(Config{Deslop: DeslopConfig{Enabled: &enabled, Provider: "openrouter", Model: "some/model"}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.Deslop.Enabled == nil || !*loaded.Deslop.Enabled {
+		t.Errorf("Deslop.Enabled lost in round trip: %+v", loaded.Deslop)
+	}
+	if loaded.Deslop.Provider != "openrouter" || loaded.Deslop.Model != "some/model" {
+		t.Errorf("Deslop provider/model lost in round trip: %+v", loaded.Deslop)
+	}
+}
+
 func TestConfig_ProjectSettings(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)

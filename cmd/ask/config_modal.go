@@ -69,6 +69,7 @@ func (m model) globalConfigItems() []configItem {
 	if pv := loadProjectConfig(cfg, m.cwd).Worktree; pv != nil {
 		worktree += " (project: " + onOff(*pv) + ")"
 	}
+	deslop := onOff(cfg.Deslop.Enabled != nil && *cfg.Deslop.Enabled)
 	items := []configItem{
 		{"Quiet Mode", quiet, "quiet"},
 		{"Cursor Blink", blink, "cursorBlink"},
@@ -80,6 +81,8 @@ func (m model) globalConfigItems() []configItem {
 		{"Default Provider", provName, "provider"},
 		{"Web Search...", webSearch, "webSearch"},
 		{"Memory...", memoryConfigSummary(cfg), "memory"},
+		{"Deslop Output", deslop, "deslop"},
+		{"Deslop Model...", deslopConfigSummary(cfg), "deslopModel"},
 	}
 	// One settings row per registered provider, generated from the
 	// registry: the row reads "on" once the provider has its credentials.
@@ -363,6 +366,18 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "memory":
 		return m.openMemoryModelPicker()
+	case "deslop":
+		if err := withConfigLock(func() error {
+			cfg, _ := loadConfig()
+			v := cfg.Deslop.Enabled == nil || !*cfg.Deslop.Enabled
+			cfg.Deslop.Enabled = &v
+			return saveConfig(cfg)
+		}); err != nil {
+			debugLog("saveConfig err: %v", err)
+		}
+		return m, nil
+	case "deslopModel":
+		return m.openDeslopModelPicker()
 	case "keybindings":
 		m = m.openConfigKeybindingsPicker()
 		return m, nil

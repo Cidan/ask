@@ -137,6 +137,11 @@ type modelPickerState struct {
 	// that clears the override back to the session provider + cheapest model.
 	// See openMemoryModelPicker.
 	memoryTarget bool
+	// deslopTarget retargets the picker for /config → Deslop Model: when true,
+	// choosing an entry writes cfg.Deslop.Provider/Model (the display-time
+	// rewrite model) instead of switching the live tab. See
+	// openDeslopModelPicker.
+	deslopTarget bool
 }
 
 // memoryAutoGroupID / memoryAutoGroupName / memoryAutoRowDisplay identify the
@@ -496,6 +501,9 @@ func (m model) applyModelPickerEntry(entry modelPickerEntry) (tea.Model, tea.Cmd
 	}
 	if m.modelPicker != nil && m.modelPicker.memoryTarget {
 		return m.applyModelPickerToMemory(entry)
+	}
+	if m.modelPicker != nil && m.modelPicker.deslopTarget {
+		return m.applyModelPickerToDeslop(entry)
 	}
 	modelID := entry.modelID
 	if strings.EqualFold(modelID, "default") {

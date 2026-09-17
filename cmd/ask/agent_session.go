@@ -72,7 +72,7 @@ func (st *agentSessionStore) loadTranscript(id string) ([]transcriptItem, error)
 	if err != nil {
 		return nil, err
 	}
-	return loadTranscriptFromEvents(file.Events)
+	return loadTranscriptFromEvents(file.Events, st.loadDeslop(id, file.Cwd))
 }
 
 // loadTranscriptFromEvents maps a slice of session.Event to the faithful,
@@ -83,7 +83,11 @@ func (st *agentSessionStore) loadTranscript(id string) ([]transcriptItem, error)
 // interim assistant block is collapsed; filtering is entirely the
 // projection's job (projectItem), which is what makes live streaming and
 // /resume replay share a single mapping.
-func loadTranscriptFromEvents(events []*session.Event) ([]transcriptItem, error) {
+//
+// deslop, when non-empty, maps a raw assistant block's hash to its display-time
+// rewrite. A matching block is shown desloped, exactly as it was live; the raw
+// text (from the untouched session file) is still what's keyed and hashed.
+func loadTranscriptFromEvents(events []*session.Event, deslop map[string]string) ([]transcriptItem, error) {
 	var items []transcriptItem
 
 	for _, e := range events {
@@ -152,7 +156,11 @@ func loadTranscriptFromEvents(events []*session.Event) ([]transcriptItem, error)
 		}
 		msgText := strings.TrimSpace(strings.Join(nonThoughtTexts, ""))
 		if msgText != "" {
-			items = append(items, transcriptItem{kind: trAssistant, text: msgText})
+			shown := msgText
+			if d, ok := deslop[deslopBlockKey(msgText)]; ok {
+				shown = d
+			}
+			items = append(items, transcriptItem{kind: trAssistant, text: shown})
 		}
 
 		for _, p := range content.Parts {

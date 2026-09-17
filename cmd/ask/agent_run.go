@@ -482,6 +482,37 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		llm = &streamToADKModel{modelID: s.modelID}
 	}
 
+	// Display-time deslop: when enabled, each user-facing assistant block is
+	// rewritten through a secondary model before it reaches the UI. The raw
+	// ADK transcript is left untouched; a sidecar keyed by block hash lets
+	// /resume show the same cleaned text later. Skipped when off, unconfigured,
+	// or pointed at this session's own model. Fail-open: a build error here
+	// just leaves deslop off for the turn.
+	var (
+		deslopLLM     adkmodel.LLM
+		deslopModelID string
+		deslopNew     map[string]string
+	)
+	if dc, _ := loadConfig(); engine.DeslopEnabled(toPkgConfig(dc)) {
+		dprov, dmodel := engine.DeslopModel(toPkgConfig(dc))
+		sessProv := ""
+		if s.provider != nil {
+			sessProv = s.provider.ID()
+		}
+		if dprov != "" && !engine.SameModel(dprov, dmodel, sessProv, s.modelID) {
+			if p, ok := providers.Get(dprov); ok {
+				if built, berr := engine.ModelBuilder(ctx, p, toPkgConfig(dc), dmodel); berr == nil {
+					deslopLLM = built
+					deslopModelID = dmodel
+					deslopNew = make(map[string]string)
+					defer engine.CloseModel(deslopLLM)
+				} else {
+					debugLog("deslop build: %v", berr)
+				}
+			}
+		}
+	}
+
 	var toolsets []adktool.Toolset
 	if s.mcp != nil {
 		toolsets = append(toolsets, s.mcp.Toolsets()...)
@@ -590,6 +621,23 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		}
 
 		if event.LLMResponse.Content != nil {
+			// The deslop unit is the whole event's assistant block — the
+			// trimmed join of its non-thought text parts — which is exactly
+			// what /resume reconstructs (loadTranscriptFromEvents), so the
+			// live rewrite and the replay lookup share one key. Emit the
+			// rewritten block once, at the first text part's position, so a
+			// preamble still lands before its tool call.
+			var deslopBlock string
+			if deslopLLM != nil {
+				var b strings.Builder
+				for _, part := range event.LLMResponse.Content.Parts {
+					if part != nil && !part.Thought && part.Text != "" {
+						b.WriteString(part.Text)
+					}
+				}
+				deslopBlock = strings.TrimSpace(b.String())
+			}
+			deslopEmitted := false
 			for _, part := range event.LLMResponse.Content.Parts {
 				if part == nil {
 					continue
@@ -600,7 +648,21 @@ func (s *agentSession) runTurn(turn agentTurn) {
 					}
 					s.emit(streamStatusMsg{status: "thinking…"})
 				} else if part.Text != "" {
-					s.emit(assistantTextMsg{text: part.Text})
+					if deslopLLM != nil && deslopBlock != "" {
+						if !deslopEmitted {
+							deslopEmitted = true
+							cleaned, derr := engine.Deslop(ctx, deslopLLM, deslopModelID, deslopBlock)
+							if derr != nil {
+								debugLog("deslop: %v", derr)
+							}
+							if cleaned != deslopBlock {
+								deslopNew[deslopBlockKey(deslopBlock)] = cleaned
+							}
+							s.emit(assistantTextMsg{text: cleaned})
+						}
+					} else {
+						s.emit(assistantTextMsg{text: part.Text})
+					}
 				}
 				if part.FunctionCall != nil {
 					inputMap := part.FunctionCall.Args
@@ -672,6 +734,15 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	}
 
 	_ = latestThoughtSig
+
+	// Persist the turn's raw→desloped map next to the raw session file so
+	// /resume can replay the cleaned display text. The session .json itself is
+	// never touched by this.
+	if len(deslopNew) > 0 && s.store != nil {
+		if err := s.store.mergeDeslop(s.sessionID, s.args.Cwd, deslopNew); err != nil {
+			debugLog("deslop sidecar save: %v", err)
+		}
+	}
 
 	respText := strings.TrimSpace(finalResponseText.String())
 	s.emit(providerDoneMsg{

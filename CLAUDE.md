@@ -148,7 +148,7 @@ make clean
 | Location | Holds |
 |----------|-------|
 | `~/.config/ask/ask.json` | Config: provider blocks, UI toggles, keybindings, MCP servers, recent models, the `memory` block (extraction provider/model), per-project blocks (issues, MCP tokens, user-scope workflows). |
-| `~/.config/ask/agent-sessions/<provider>/` | ADK transcripts behind `/resume`. `~/.config/ask/sessions.json` is the virtual-session index. |
+| `~/.config/ask/agent-sessions/<provider>/` | ADK transcripts behind `/resume` (raw model output). A sibling `<sessionID>.deslop.json` sidecar maps raw assistant-block hashes to their display-time desloped rewrites; the transcript file is never rewritten. `~/.config/ask/sessions.json` is the virtual-session index. |
 | `~/.config/ask/{skills,agents,workflows}/` | User-scope skills, subagents, workflows. |
 | `~/.config/ask/plugins/` | Known marketplaces, installed plugins, publications, the plugin cache. |
 | `~/.config/ask/cache/models-dev.json` | models.dev snapshot (24h TTL). |

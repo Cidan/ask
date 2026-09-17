@@ -88,6 +88,56 @@ func memoryConfigSummary(cfg askConfig) string {
 	return "session provider (cheapest)"
 }
 
+// deslopConfigSummary is the /config row value for the deslop rewrite model.
+func deslopConfigSummary(cfg askConfig) string {
+	switch {
+	case cfg.Deslop.Provider != "" && cfg.Deslop.Model != "":
+		return cfg.Deslop.Provider + "/" + cfg.Deslop.Model
+	case cfg.Deslop.Provider != "":
+		return cfg.Deslop.Provider + " (cheapest)"
+	}
+	return "(not set)"
+}
+
+// openDeslopModelPicker opens the shared model picker retargeted at the deslop
+// rewrite model: a pick writes cfg.Deslop.Provider/Model instead of switching
+// the live tab. Opened from /config → Global Options → Deslop Model; on close
+// the picker returns to modeConfig.
+func (m model) openDeslopModelPicker() (model, tea.Cmd) {
+	cfg, _ := loadConfig()
+	s := buildModelPickerState(cfg)
+	s.deslopTarget = true
+	s.seedCursor(cfg.Deslop.Provider, cfg.Deslop.Model)
+	m.modelPicker = s
+	m.mode = modeModelPicker
+	return m, m.modelPickerLoadCmd(false)
+}
+
+// applyModelPickerToDeslop is the deslop-targeted terminal action for the
+// shared picker: it writes the chosen provider+model onto cfg.Deslop, persists,
+// and returns to /config. Called from applyModelPickerEntry when
+// modelPicker.deslopTarget is set.
+func (m model) applyModelPickerToDeslop(entry modelPickerEntry) (tea.Model, tea.Cmd) {
+	provider := entry.providerID
+	modelID := entry.modelID
+	if strings.EqualFold(modelID, "default") {
+		modelID = ""
+	}
+	if err := withConfigLock(func() error {
+		cfg, _ := loadConfig()
+		cfg.Deslop.Provider = provider
+		cfg.Deslop.Model = modelID
+		return saveConfig(cfg)
+	}); err != nil {
+		debugLog("deslop model saveConfig: %v", err)
+		m = m.closeModelPickerToConfig()
+		return m, m.toast.show("deslop: save: " + err.Error())
+	}
+	m = m.closeModelPickerToConfig()
+	cfg, _ := loadConfig()
+	return m, m.toast.show("deslop: rewrite model → " + deslopConfigSummary(cfg))
+}
+
 // openMemoryModelPicker opens the shared full-frame model picker
 // (model_picker.go) retargeted at the memory extraction override: a pick
 // writes cfg.Memory.Provider/Model instead of switching the live tab, and the

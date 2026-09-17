@@ -38,12 +38,24 @@ type Config struct {
 	RecentModels []RecentModelRef         `json:"recentModels,omitempty"`
 	Projects     map[string]ProjectConfig `json:"projects,omitempty"`
 	Memory       MemoryConfig             `json:"memory,omitempty"`
+	Deslop       DeslopConfig             `json:"deslop,omitempty"`
 }
 
 // MemoryConfig picks the model that runs the post-turn concept
 // extraction. Empty Provider means the session's provider; empty Model
 // means that provider's cheapest listed model.
 type MemoryConfig struct {
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+// DeslopConfig picks a secondary model that rewrites assistant output for
+// display only, stripping euphemisms and grandiose phrasing before the user
+// reads it. The underlying session transcript keeps the raw model output. When
+// Enabled is nil or false the feature is off; Provider/Model name the rewriter,
+// and a rewrite is skipped when they resolve to the session's own model.
+type DeslopConfig struct {
+	Enabled  *bool  `json:"enabled,omitempty"`
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
 }
