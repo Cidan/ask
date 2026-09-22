@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/providers"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
@@ -51,6 +52,7 @@ type Session struct {
 	sessionID     string
 	sessSvc       session.Service
 	runner        *runner.Runner
+	compactor     *Compactor
 }
 
 func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, listener EventListener, interaction InteractionHandler) *Session {
@@ -82,6 +84,23 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 		s.sessionID = "ses-" + modelID
 	}
 
+	// The provider check is fixed for the session's life; the user-facing
+	// toggle is read per call in compactBeforeModel so flipping it takes
+	// effect without restarting the session.
+	s.compactor = NewCompactor(CompactOptions{
+		ContextWindow: contextWindow,
+		Disabled:      providers.ManagesOwnContext(prov),
+		Notify: func(r CompactionResult) {
+			s.Emit(ContextCompactedEvent{
+				BaseEvent:     BaseEvent{TabID: args.TabID},
+				Dropped:       r.DroppedContents,
+				BeforeTokens:  r.BeforeTokens,
+				AfterTokens:   r.AfterTokens,
+				ContextWindow: r.ContextWindow,
+			})
+		},
+	})
+
 	genConfig := &genai.GenerateContentConfig{
 		MaxOutputTokens: int32(providers.MaxOutputTokensGemini),
 	}
@@ -109,8 +128,11 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 		InstructionProvider:   instructionProvider,
 		Tools:                 adkTools,
 		GenerateContentConfig: genConfig,
+		// Order matters only in that the two touch opposite ends: the drain
+		// appends steering to the tail, the compactor trims the head.
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 			s.beforeModelCallback,
+			s.compactBeforeModel,
 		},
 	})
 	if err == nil {
@@ -187,6 +209,19 @@ func (s *Session) beforeModelCallback(ctx agent.Context, llmRequest *model.LLMRe
 	})
 
 	return nil, nil
+}
+
+// compactBeforeModel keeps the outgoing request inside the model's context
+// window. It runs after beforeModelCallback: the drain appends steering to
+// the end of req.Contents and compaction trims the front, so the two never
+// contend, and draining first means a message queued this instant is measured
+// by the cut rather than smuggled past it.
+func (s *Session) compactBeforeModel(ctx agent.Context, req *model.LLMRequest) (*model.LLMResponse, error) {
+	cfg, _ := config.Load()
+	if !AutoCompactEnabled(cfg) {
+		return nil, nil
+	}
+	return s.compactor.BeforeModel(ctx, req)
 }
 
 func (s *Session) QueueTurn(text string, files ...[]FilePart) error {
@@ -361,6 +396,11 @@ func (s *Session) runTurn(turn Turn) {
 		}
 
 		if event.UsageMetadata != nil {
+			total := int(event.UsageMetadata.TotalTokenCount)
+			if total == 0 {
+				total = int(event.UsageMetadata.PromptTokenCount) + int(event.UsageMetadata.CandidatesTokenCount)
+			}
+			s.compactor.ObserveUsage(int(event.UsageMetadata.PromptTokenCount), total)
 			s.Emit(UsageEvent{
 				BaseEvent:    BaseEvent{TabID: s.args.TabID},
 				InputTokens:  int(event.UsageMetadata.PromptTokenCount),

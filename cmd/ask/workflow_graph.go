@@ -146,7 +146,7 @@ func tuiWorkflowCompileConfig(sess *agentSession, def workflow.Def, src workflow
 			}
 			return toolsets, nil
 		},
-		BeforeModelCallbacks: []llmagent.BeforeModelCallback{sess.beforeModelCallback},
+		BeforeModelCallbacks: []llmagent.BeforeModelCallback{sess.beforeModelCallback, sess.compactBeforeModel},
 	}
 }
 

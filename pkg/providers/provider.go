@@ -81,6 +81,27 @@ type CheapModeler interface {
 	CheapModel() string
 }
 
+// ContextManagedProvider is the optional capability of a provider that owns
+// the conversation itself. ask's auto-compaction rewrites the outgoing
+// request's history when the context window fills; a provider that reports
+// true is skipped, because ask is not the one tracking what the model has
+// seen. Claude Code implements this — the history lives in its child process
+// and its model keeps an absolute cursor into req.Contents, which a truncated
+// head would invalidate. Vertex and OpenRouter do not.
+type ContextManagedProvider interface {
+	ManagesOwnContext() bool
+}
+
+// ManagesOwnContext reports whether p tracks the conversation itself and must
+// not have its request history rewritten. A nil provider reports false.
+func ManagesOwnContext(p Provider) bool {
+	if p == nil {
+		return false
+	}
+	m, ok := p.(ContextManagedProvider)
+	return ok && m.ManagesOwnContext()
+}
+
 // SettingField is one configuration field a provider declares. The
 // /config → <provider> screen is rendered from these, one row per field.
 type SettingField struct {

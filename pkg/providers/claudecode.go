@@ -101,6 +101,10 @@ func (ClaudeCode) BuildModel(ctx context.Context, pc config.ProviderConfig, mode
 // NativeWebSearchProvider.
 func (ClaudeCode) HasNativeWebSearch() bool { return true }
 
+// ManagesOwnContext reports that the child process holds the conversation, so
+// ask must leave the request history alone; see ContextManagedProvider.
+func (ClaudeCode) ManagesOwnContext() bool { return true }
+
 func (ClaudeCode) CanonicalModelID(modelID, fallback string) string {
 	return CanonicalClaudeCodeModelID(modelID, fallback)
 }
@@ -301,6 +305,7 @@ var (
 	_ Provider                = ClaudeCode{}
 	_ ModelLister             = ClaudeCode{}
 	_ NativeWebSearchProvider = ClaudeCode{}
+	_ ContextManagedProvider  = ClaudeCode{}
 )
 
 // ClaudeCodeResolveBinary: config value wins, then ASK_CLAUDE_BIN, then the

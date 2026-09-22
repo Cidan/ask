@@ -223,6 +223,9 @@ func injectTabID(msg tea.Msg, tabID int) tea.Msg {
 	case queuedMessageDrainedMsg:
 		m.tabID = tabID
 		return m
+	case contextCompactedMsg:
+		m.tabID = tabID
+		return m
 	}
 	return msg
 }

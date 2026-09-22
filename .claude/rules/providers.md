@@ -28,10 +28,13 @@ the registry; nothing outside `pkg/providers` may name a provider.
 
 - `providers.Provider` is a Go **interface**. Every method is required.
   Optional behaviour is a separate interface discovered by type
-  assertion (`ModelLister`, `NativeWebSearchProvider`, `CheapModeler`
-  today; `CheapModeler` names the cheapest model for background calls
-  such as memory extraction when the catalog carries no prices —
-  `providers.CheapestModel` consults it before list prices). Never model
+  assertion (`ModelLister`, `NativeWebSearchProvider`, `CheapModeler`,
+  `ContextManagedProvider` today; `CheapModeler` names the cheapest
+  model for background calls such as memory extraction when the catalog
+  carries no prices — `providers.CheapestModel` consults it before list
+  prices; `ContextManagedProvider` marks a provider that owns the
+  conversation itself, which `providers.ManagesOwnContext` reads to keep
+  auto-compaction from rewriting its request history). Never model
   a provider as a struct
   of func fields with nil-means-default — that is the design this
   replaced, and it produced the same field nil-checked in one caller
