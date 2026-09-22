@@ -262,6 +262,35 @@ func TestUpdate_QueuedMessageDrainedMsg(t *testing.T) {
 	}
 }
 
+func TestUpdate_ContextCompactedMsgAppendsNotice(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	before := len(m.transcript)
+
+	m2, _ := runUpdate(t, m, contextCompactedMsg{summary: "compacted context", proc: m.proc})
+	if len(m2.transcript) != before+1 {
+		t.Fatalf("transcript grew by %d, want 1", len(m2.transcript)-before)
+	}
+	it := m2.transcript[len(m2.transcript)-1]
+	if it.kind != trPrerendered {
+		t.Errorf("notice kind = %v, want trPrerendered", it.kind)
+	}
+	if !strings.Contains(it.text, "compacted context") {
+		t.Errorf("notice text lost the summary: %q", it.text)
+	}
+}
+
+func TestUpdate_ContextCompactedMsgIgnoredForStaleProc(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m.proc = &providerProc{}
+	before := len(m.transcript)
+
+	m2, _ := runUpdate(t, m, contextCompactedMsg{summary: "compacted context", proc: &providerProc{}})
+	if len(m2.transcript) != before {
+		t.Errorf("transcript grew by %d for a foreign proc, want 0", len(m2.transcript)-before)
+	}
+}
+
 func TestUpdate_DispatchWhileBusyQueuesUserBar(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.proc = &providerProc{}

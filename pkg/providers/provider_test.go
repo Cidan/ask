@@ -157,6 +157,24 @@ func TestBuiltinSettings_AreWellFormed(t *testing.T) {
 	}
 }
 
+func TestManagesOwnContext(t *testing.T) {
+	var cm ContextManagedProvider = ClaudeCode{}
+	if !cm.ManagesOwnContext() {
+		t.Error("ClaudeCode must satisfy ContextManagedProvider and report true")
+	}
+	if !ManagesOwnContext(ClaudeCode{}) {
+		t.Error("the child process owns Claude Code's history — compaction must skip it")
+	}
+	for _, p := range []Provider{Vertex{}, OpenRouter{}, stubProvider{id: "s"}} {
+		if ManagesOwnContext(p) {
+			t.Errorf("%s does not manage its own context", p.ID())
+		}
+	}
+	if ManagesOwnContext(nil) {
+		t.Error("a nil provider must report false")
+	}
+}
+
 func TestSettingValue_StoredThenEnvThenDefault(t *testing.T) {
 	f := SettingField{Key: "k", EnvKey: "ASK_TEST_SETTING", Default: "dflt"}
 	t.Setenv("ASK_TEST_SETTING", "")

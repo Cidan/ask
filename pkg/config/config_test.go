@@ -101,6 +101,39 @@ func TestConfig_DeslopRoundTrip(t *testing.T) {
 	}
 }
 
+func TestConfig_AutoCompactOmittedWhenUnset(t *testing.T) {
+	data, err := json.Marshal(Config{})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, present := raw["autoCompact"]; present {
+		t.Errorf("nil AutoCompact must be omitted, got %s", data)
+	}
+}
+
+func TestConfig_AutoCompactRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	off := false
+	if err := Save(Config{AutoCompact: &off}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.AutoCompact == nil {
+		t.Fatalf("AutoCompact lost in round trip")
+	}
+	if *loaded.AutoCompact {
+		t.Errorf("AutoCompact should round trip as false, got true")
+	}
+}
+
 func TestConfig_ProjectSettings(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)

@@ -81,13 +81,45 @@ Related: `.claude/rules/tools.md`, `.claude/rules/providers.md`,
   `AssistantTextEvent` (one per completed text), status, tool call /
   result / diff, usage, cost, model info, todos, subagent and background
   task start/end, `DoneEvent`, `TurnCompleteEvent`, `ExitedEvent`,
-  `MidTurnDrainedEvent`, `Workflow*Event`, `ExtensionsChangedEvent`,
-  `MCPStatusChangedEvent`.
+  `MidTurnDrainedEvent`, `ContextCompactedEvent`, `Workflow*Event`,
+  `ExtensionsChangedEvent`, `MCPStatusChangedEvent`.
 - Ordering contract: every turn ends with `DoneEvent` then
   `TurnCompleteEvent`, on success and on error. `cmd/ask/event_adapter.go`
   depends on it.
 - Loop detection is `checkLoopDetection` in `cmd/ask/agent_run.go`, not
-  here. There is no transcript compaction.
+  here.
+
+## Auto-compaction (`compact.go`)
+
+- `Compactor` keeps a conversation inside its context window. It is a
+  `BeforeModelCallback` registered wherever an `llmagent` is built —
+  `session.go`, `run.go`, `cmd/ask/agent_run.go`,
+  `cmd/ask/workflow_graph.go` — and is fed by `ObserveUsage` at each of
+  those sites' usage readings.
+- **It rewrites `LLMRequest.Contents` only; the transcript is never
+  touched.** ADK rebuilds `Contents` from the append-only event log on
+  every model call, so the cut is a view the model sees and `/resume`
+  does not. `ContextCompactedEvent` tells the UI it happened.
+- Trigger `CompactTriggerRatio` (0.90) of the window, target
+  `CompactTargetRatio` (0.50), both hardcoded; `AutoCompactEnabled`
+  reads the one config toggle (`config.AutoCompact`, on when nil).
+  A provider satisfying `providers.ContextManagedProvider` (Claude Code)
+  is skipped — its child process owns the history.
+- **The cut point is only ever a genuine user turn**: role `user` with
+  no `FunctionCall` or `FunctionResponse` part. Role alone is wrong —
+  ADK builds tool-result contents with the user role too. Cutting
+  elsewhere orphans a tool call, which no provider repairs and which
+  OpenRouter rejects with a non-retryable 400.
+- Index 0 is pinned (the original request) and an elision notice is
+  spliced in behind it.
+- The boundary is remembered as a `contentMark` (fingerprint plus
+  ordinal, since a transcript can repeat a content verbatim). Without
+  that watermark the next call would observe the reduced usage, not
+  trigger, send the full history again, and oscillate across 90%.
+- Sizing is a local char estimate calibrated per call by
+  `PromptTokenCount / <estimate of the request that produced it>`. The
+  system instruction and tool declarations are not in `Contents` and
+  cannot be dropped, so they are subtracted from the target as a floor.
 
 ## Tools
 

@@ -70,6 +70,7 @@ func (m model) globalConfigItems() []configItem {
 		worktree += " (project: " + onOff(*pv) + ")"
 	}
 	deslop := onOff(cfg.Deslop.Enabled != nil && *cfg.Deslop.Enabled)
+	autoCompact := onOff(cfg.AutoCompact == nil || *cfg.AutoCompact)
 	items := []configItem{
 		{"Quiet Mode", quiet, "quiet"},
 		{"Cursor Blink", blink, "cursorBlink"},
@@ -77,6 +78,7 @@ func (m model) globalConfigItems() []configItem {
 		{"Tool Output", toolOut, "toolOutput"},
 		{"Skip All Permissions", skipPerms, "skipAllPermissions"},
 		{"Worktree", worktree, "worktree"},
+		{"Auto-Compact", autoCompact, "autoCompact"},
 		{"Theme", m.themeName, "theme"},
 		{"Default Provider", provName, "provider"},
 		{"Web Search...", webSearch, "webSearch"},
@@ -354,6 +356,16 @@ func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
 			debugLog("saveConfig err: %v", err)
 		}
 		m = m.applyEffectiveWorktree(saved)
+		return m, nil
+	case "autoCompact":
+		if err := withConfigLock(func() error {
+			cfg, _ := loadConfig()
+			v := cfg.AutoCompact != nil && !*cfg.AutoCompact
+			cfg.AutoCompact = &v
+			return saveConfig(cfg)
+		}); err != nil {
+			debugLog("saveConfig err: %v", err)
+		}
 		return m, nil
 	case "theme":
 		m = m.openThemePicker()

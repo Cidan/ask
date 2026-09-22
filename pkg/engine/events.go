@@ -22,6 +22,7 @@ const (
 	EventKindExited          EventKind = "exited"
 	EventKindTurnComplete    EventKind = "turn_complete"
 	EventKindMidTurnDrained  EventKind = "mid_turn_drained"
+	EventKindContextCompact  EventKind = "context_compacted"
 	EventKindWorkflowStarted EventKind = "workflow_started"
 	EventKindWorkflowStep    EventKind = "workflow_step"
 	EventKindWorkflowDone    EventKind = "workflow_done"
@@ -215,6 +216,19 @@ type MidTurnDrainedEvent struct {
 }
 
 func (MidTurnDrainedEvent) Kind() EventKind { return EventKindMidTurnDrained }
+
+// ContextCompactedEvent is emitted when the oldest turns were dropped from the
+// model's view to keep the conversation inside the context window. The stored
+// transcript is unchanged.
+type ContextCompactedEvent struct {
+	BaseEvent
+	Dropped       int   `json:"dropped"`
+	BeforeTokens  int   `json:"before_tokens"`
+	AfterTokens   int   `json:"after_tokens"`
+	ContextWindow int64 `json:"context_window"`
+}
+
+func (ContextCompactedEvent) Kind() EventKind { return EventKindContextCompact }
 
 // WorkflowStartedEvent is emitted when a workflow begins execution.
 type WorkflowStartedEvent struct {

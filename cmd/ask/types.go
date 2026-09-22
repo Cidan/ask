@@ -116,6 +116,15 @@ type queuedMessageDrainedMsg struct {
 	proc  *providerProc
 }
 
+// contextCompactedMsg reports that the oldest turns were dropped from the
+// model's view of the conversation. The stored transcript is untouched; the
+// notice only tells the user what the model can no longer see.
+type contextCompactedMsg struct {
+	summary string
+	tabID   int
+	proc    *providerProc
+}
+
 type todoItem struct {
 	Content    string
 	ActiveForm string

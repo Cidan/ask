@@ -12,7 +12,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/tools"
+	adkmodel "google.golang.org/adk/v2/model"
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
@@ -279,6 +281,116 @@ func TestAgentSession_ToolRoundTrip(t *testing.T) {
 		if len(events) < 4 {
 			t.Errorf("expected at least 4 events in session, got %d", len(events))
 		}
+	}
+}
+
+// compactTestContents is a transcript long enough that a compaction has
+// something to drop: contents[0] is pinned, so the cut has to land on a later
+// user turn, and each entry is fat enough that the retained tail cannot fit
+// the target budget by accident.
+func compactTestContents() []*genai.Content {
+	big := strings.Repeat("x", 4000)
+	return []*genai.Content{
+		genai.NewContentFromText("original request "+big, genai.RoleUser),
+		genai.NewContentFromText("reply one "+big, genai.RoleModel),
+		genai.NewContentFromText("follow up "+big, genai.RoleUser),
+		genai.NewContentFromText("reply two "+big, genai.RoleModel),
+		genai.NewContentFromText("latest ask "+big, genai.RoleUser),
+		genai.NewContentFromText("reply three "+big, genai.RoleModel),
+	}
+}
+
+// runCompactBeforeModel drives one session's compaction callback over a
+// transcript already past the trigger, and reports what the model would have
+// been sent plus everything the session emitted.
+func runCompactBeforeModel(t *testing.T, prov providers.Provider) ([]*genai.Content, []tea.Msg) {
+	t.Helper()
+	var emitted []tea.Msg
+	prev := agentSendToProgram
+	agentSendToProgram = func(msg tea.Msg) bool {
+		emitted = append(emitted, msg)
+		return true
+	}
+	t.Cleanup(func() { agentSendToProgram = prev })
+
+	s := &agentSession{
+		args:          ProviderSessionArgs{Cwd: t.TempDir(), TabID: 1},
+		provider:      prov,
+		contextWindow: 1000,
+	}
+	s.compactor = s.newCompactor()
+	s.compactor.ObserveUsage(950, 950)
+
+	req := &adkmodel.LLMRequest{Contents: compactTestContents()}
+	if _, err := s.compactBeforeModel(nil, req); err != nil {
+		t.Fatalf("compactBeforeModel: %v", err)
+	}
+	return req.Contents, emitted
+}
+
+func countContextCompactedMsgs(msgs []tea.Msg) int {
+	n := 0
+	for _, m := range msgs {
+		if _, ok := m.(contextCompactedMsg); ok {
+			n++
+		}
+	}
+	return n
+}
+
+func TestAgentSession_CompactorSkipsContextManagedProvider(t *testing.T) {
+	isolateHome(t)
+
+	full := len(compactTestContents())
+
+	got, emitted := runCompactBeforeModel(t, providers.Vertex{})
+	if len(got) >= full {
+		t.Errorf("vertex: contents = %d, want fewer than %d", len(got), full)
+	}
+	if n := countContextCompactedMsgs(emitted); n != 1 {
+		t.Errorf("vertex: emitted %d contextCompactedMsg, want 1", n)
+	}
+
+	// Claude Code owns its own conversation: its history must come through
+	// byte-for-byte, and the user must not be told anything was dropped.
+	got, emitted = runCompactBeforeModel(t, providers.ClaudeCode{})
+	if len(got) != full {
+		t.Errorf("claude-code: contents = %d, want %d untouched", len(got), full)
+	}
+	if n := countContextCompactedMsgs(emitted); n != 0 {
+		t.Errorf("claude-code: emitted %d contextCompactedMsg, want 0", n)
+	}
+}
+
+func TestAgentSession_CompactorHonoursAutoCompactConfig(t *testing.T) {
+	isolateHome(t)
+
+	cfg, _ := loadConfig()
+	off := false
+	cfg.AutoCompact = &off
+	if err := saveConfig(cfg); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+
+	full := len(compactTestContents())
+	got, emitted := runCompactBeforeModel(t, providers.Vertex{})
+	if len(got) != full {
+		t.Errorf("autoCompact off: contents = %d, want %d untouched", len(got), full)
+	}
+	if n := countContextCompactedMsgs(emitted); n != 0 {
+		t.Errorf("autoCompact off: emitted %d contextCompactedMsg, want 0", n)
+	}
+
+	// The gate is read per call, so flipping it back on takes effect on the
+	// same live session rather than waiting for a restart.
+	on := true
+	cfg.AutoCompact = &on
+	if err := saveConfig(cfg); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	got, _ = runCompactBeforeModel(t, providers.Vertex{})
+	if len(got) >= full {
+		t.Errorf("autoCompact on: contents = %d, want fewer than %d", len(got), full)
 	}
 }
 

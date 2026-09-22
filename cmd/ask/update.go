@@ -667,6 +667,13 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		return m, nil
 
+	case contextCompactedMsg:
+		if !m.matchesTabID(msg.tabID, msg.proc) {
+			return m, nil
+		}
+		m.appendHistory(outputStyle.Render(dimStyle.Render("⟳ " + msg.summary)))
+		return m, nil
+
 	case turnCompleteMsg:
 		if !m.matchesTabID(msg.tabID, msg.proc) {
 			return m, nil

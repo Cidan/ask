@@ -73,6 +73,11 @@ type agentSession struct {
 
 	midTurnQueue *engine.MidTurnQueue
 
+	// compactor trims the oldest turns out of the outgoing request when the
+	// conversation approaches the model's context window. Nil-receiver-safe,
+	// so a session built without one (tests) simply never compacts.
+	compactor *engine.Compactor
+
 	closed    chan struct{}
 	closeOnce sync.Once
 
@@ -274,6 +279,9 @@ func (s *agentSession) emit(msg tea.Msg) {
 	case queuedMessageDrainedMsg:
 		m.proc = s.proc
 		msg = m
+	case contextCompactedMsg:
+		m.proc = s.proc
+		msg = m
 	case tabTopicMsg:
 		m.proc = s.proc
 		msg = m
@@ -420,6 +428,38 @@ func (s *agentSession) beforeModelCallback(ctx adkagent.Context, req *adkmodel.L
 	return nil, nil
 }
 
+// newCompactor builds this session's context compactor. The provider check
+// is fixed for the session's life — a provider that owns its own
+// conversation must never have its request history rewritten — so it is
+// baked in here; the user-facing on/off switch is read per call in
+// compactBeforeModel instead.
+func (s *agentSession) newCompactor() *engine.Compactor {
+	return engine.NewCompactor(engine.CompactOptions{
+		ContextWindow: s.contextWindow,
+		Disabled:      providers.ManagesOwnContext(s.provider),
+		Notify: func(r engine.CompactionResult) {
+			s.emit(contextCompactedMsg{summary: engine.CompactionSummary(r)})
+		},
+	})
+}
+
+// compactBeforeModel keeps the outgoing request inside the model's context
+// window. It runs after beforeModelCallback: the drain appends a steering
+// message to the end of req.Contents and compaction trims the front, so the
+// two never contend, and draining first means a message queued this instant
+// is measured by the cut rather than smuggled past it.
+//
+// The config is read per call, the way the deslop gate in runTurn is, so
+// flipping auto-compaction in /config takes effect on a live session instead
+// of waiting for a restart. That also covers the workflow graph, whose agent
+// is compiled once at workflow start and never rebuilt per turn.
+func (s *agentSession) compactBeforeModel(ctx adkagent.Context, req *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+	if cfg, _ := loadConfig(); !engine.AutoCompactEnabled(toPkgConfig(cfg)) {
+		return nil, nil
+	}
+	return s.compactor.BeforeModel(ctx, req)
+}
+
 func (s *agentSession) runTurn(turn agentTurn) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.setTurnCancel(cancel)
@@ -534,6 +574,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 			GenerateContentConfig: genaiConfig,
 			BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 				s.beforeModelCallback,
+				s.compactBeforeModel,
 			},
 		})
 	}
@@ -613,6 +654,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 			if tokens == 0 {
 				tokens = usage.InputTokens + usage.OutputTokens
 			}
+			s.compactor.ObserveUsage(usage.InputTokens, tokens)
 			s.emit(usageMsg{
 				tokens:    tokens,
 				costUSD:   cost,

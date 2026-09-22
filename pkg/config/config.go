@@ -39,6 +39,14 @@ type Config struct {
 	Projects     map[string]ProjectConfig `json:"projects,omitempty"`
 	Memory       MemoryConfig             `json:"memory,omitempty"`
 	Deslop       DeslopConfig             `json:"deslop,omitempty"`
+	// AutoCompact keeps a long session alive instead of failing it: once the
+	// conversation reaches 90% of the model's context window, the oldest turns
+	// are dropped from the request sent to the model until it fits in roughly
+	// half the window. Only the outgoing request shrinks — the stored
+	// transcript is untouched and /resume still shows every turn. nil means
+	// enabled; set it to false to turn compaction off and let an oversized
+	// conversation hit the provider's limit.
+	AutoCompact *bool `json:"autoCompact,omitempty"`
 }
 
 // MemoryConfig picks the model that runs the post-turn concept

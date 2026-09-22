@@ -76,3 +76,23 @@ func TestConfigToggle_QuietReprojectsSynchronously(t *testing.T) {
 		t.Errorf("quiet entries wrong: %+v", mm.history)
 	}
 }
+
+// Auto-compact is on unless the user turned it off, so an unset config
+// toggles to explicit off first and back to explicit on second.
+func TestConfigToggle_AutoCompactWritesConfig(t *testing.T) {
+	isolateHome(t)
+	m := newTestModel(t, newFakeProvider())
+
+	res, _ := m.handleGlobalConfigEnter("autoCompact")
+	cfg, _ := loadConfig()
+	if cfg.AutoCompact == nil || *cfg.AutoCompact {
+		t.Fatalf("first toggle should disable auto-compact, got %v", cfg.AutoCompact)
+	}
+
+	mm := res.(model)
+	_, _ = mm.handleGlobalConfigEnter("autoCompact")
+	cfg, _ = loadConfig()
+	if cfg.AutoCompact == nil || !*cfg.AutoCompact {
+		t.Fatalf("second toggle should re-enable auto-compact, got %v", cfg.AutoCompact)
+	}
+}

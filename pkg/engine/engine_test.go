@@ -517,3 +517,22 @@ func TestSession_MidTurnQueueInjection(t *testing.T) {
 		t.Error("expected MidTurnDrainedEvent to be emitted")
 	}
 }
+
+func TestAutoCompactEnabled(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  config.Config
+		want bool
+	}{
+		{"unset", config.Config{}, true},
+		{"on", config.Config{AutoCompact: boolPtr(true)}, true},
+		{"off", config.Config{AutoCompact: boolPtr(false)}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AutoCompactEnabled(tc.cfg); got != tc.want {
+				t.Fatalf("AutoCompactEnabled=%v want %v", got, tc.want)
+			}
+		})
+	}
+}

@@ -32,6 +32,35 @@ func TestEngineEventToTeaMsg_ToolDiffParsesHunks(t *testing.T) {
 	}
 }
 
+func TestEngineEventToTeaMsg_ContextCompacted(t *testing.T) {
+	ev := engine.ContextCompactedEvent{
+		BaseEvent:     engine.BaseEvent{TabID: 7},
+		Dropped:       12,
+		BeforeTokens:  950_000,
+		AfterTokens:   480_000,
+		ContextWindow: 1_048_576,
+	}
+	msg, ok := EngineEventToTeaMsg(ev).(contextCompactedMsg)
+	if !ok {
+		t.Fatalf("expected contextCompactedMsg, got %T", EngineEventToTeaMsg(ev))
+	}
+	if msg.tabID != 7 {
+		t.Errorf("tabID = %d, want 7", msg.tabID)
+	}
+	if msg.summary == "" {
+		t.Error("summary must not be empty")
+	}
+	want := engine.CompactionSummary(engine.CompactionResult{
+		DroppedContents: 12,
+		BeforeTokens:    950_000,
+		AfterTokens:     480_000,
+		ContextWindow:   1_048_576,
+	})
+	if msg.summary != want {
+		t.Errorf("summary = %q, want %q", msg.summary, want)
+	}
+}
+
 func TestEngineEventToTeaMsg_ToolCallAndResult(t *testing.T) {
 	call, ok := EngineEventToTeaMsg(engine.ToolCallEvent{
 		BaseEvent: engine.BaseEvent{TabID: 1},
