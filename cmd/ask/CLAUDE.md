@@ -119,6 +119,30 @@ lockstep (`.claude/rules/issues.md`).
   `✗`/`✓` workflow failed/done, `●` busy), provider/model, context %
   and session spend (`sidebarCost`), activity (workflow step,
   in_progress todo, stream status, idle).
+- **Context and cost meters** (`sidebarCost`). Every model call's
+  usage record (`providers.Usage`, attached by `engine.ModelBuilder`'s
+  wrapper and read with `engine.ResponseUsage`) arrives as a `usageMsg`
+  carrying its context reading, the provider/model that made it, and its
+  cost. `lastUsageTokens` is divided by *that* model's window
+  (`usageProvider`/`usageModel`), so a workflow step on another model is
+  measured against its own. A model swap keeps the reading as an
+  estimate (`usageEstimated`, shown `~N%` against the new model's window)
+  until the new model reports; a provider swap with no conversation to
+  carry clears it. `/new` and `/clear` call `clearUsage`. Cost is the
+  provider's reported figure, else the catalog price (cache and thinking
+  rates included); `costKnownUpfront` shows `$0.00` from the start for a
+  priceable model or a `providers.CostReporter` (Claude Code,
+  OpenRouter). Calls made on the session's behalf outside its own model
+  calls — sub-agents (`RunResult.Usage`), deslop, memory extraction, the
+  tab title — go through `agentSession.recordSpend` (or
+  `appendSpendCmd`), which posts a `costMsg` and appends to the usage
+  ledger, `<sessionID>.usage.json` beside the session file. `/resume`
+  (`historyLoadedMsg.usage`, and the translation path's
+  `virtualSessionMaterializedMsg.usage`) restores both meters through the
+  `usageLoader` capability: the last recorded reading (estimated when it
+  came from another model) and the sum of recorded costs. Sessions saved
+  before usage records restore nothing — never a guess from raw provider
+  counts.
 - When any tab runs the `claude-code` provider, a usage footer pins to
   the bottom of the column (`claude_usage.go`): colour-coded 5h / weekly
   / Opus / Sonnet limit percentages plus resets and any extra-usage
@@ -275,11 +299,9 @@ lockstep (`.claude/rules/issues.md`).
   topic only seeds an empty `tabTopic`, while `tabTopicMsg` from the
   session (the recall hook's inference each turn, the extractor's
   choice after it) always applies; `pushTopicToSession` hands the tab's
-  topic to `agentSession.setTopic`), usage.go
-  (`stepCostUSD` → `providers.StepCostUSD`; `usageMsg`/`costMsg`/
-  `tabTitleMsg` feed `sessionCostUSD`; the extraction call posts a
-  `costMsg`; unpriceable models show no cost; the meter resets with the
-  conversation). agent_run.go: a finished chat turn (not a workflow
+  topic to `agentSession.setTopic`), usage.go + usage_ledger.go (the
+  context and cost meters; see "Context and cost meters" below).
+  agent_run.go: a finished chat turn (not a workflow
   step) calls `enqueueMemoryTurn` → `engine.EnqueueMemoryTurn` with the
   prompt, answer, touched files, and topic. memory_screen.go: the
   `/memory` overlay (`modeMemory`, `memoryBrowserState`, composited in

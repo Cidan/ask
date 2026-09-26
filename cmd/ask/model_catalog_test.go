@@ -79,6 +79,11 @@ func TestModelCatalogRefreshCmd_RetriesWhileModelsDevFails(t *testing.T) {
 	resetModelCatalog()
 	t.Cleanup(resetModelCatalog)
 	stubModelsDev(t, errors.New("offline"))
+	// The refresh lists every registered provider; the real ones would fork
+	// the claude CLI and call Vertex and OpenRouter.
+	lister := newFakeProvider()
+	lister.id = "lister"
+	withRegisteredProviders(t, listingProvider{fakeProvider: lister, ids: []string{"m"}})
 
 	cmd := modelCatalogRefreshCmd(false)
 	if cmd == nil {

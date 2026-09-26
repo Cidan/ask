@@ -280,7 +280,11 @@ type virtualSessionMaterializedMsg struct {
 	nativeSessionID string
 	nativeCwd       string
 	transcript      []transcriptItem
-	err             error
+	// usage is the source session's stored accounting: its spend carries
+	// over, and its last context reading stands as an estimate until the
+	// target model reports its own.
+	usage *sessionUsage
+	err   error
 }
 
 // translateVSCmd runs cross-provider translation off the UI thread:
@@ -293,6 +297,7 @@ func translateVSCmd(req translateVSReq) tea.Cmd {
 	return func() tea.Msg {
 		turns := req.directTurns
 		var transcript []transcriptItem
+		var usage *sessionUsage
 		if req.source != nil && req.sourceSessionID != "" {
 			loaded, err := req.source.LoadHistory(req.sourceSessionID)
 			if err != nil {
@@ -300,6 +305,7 @@ func translateVSCmd(req translateVSReq) tea.Cmd {
 			}
 			transcript = loaded
 			turns = neutralTurnsFromTranscript(loaded)
+			usage = loadUsageFor(req.source, req.sourceSessionID)
 		}
 		if len(turns) == 0 {
 			return virtualSessionMaterializedMsg{
@@ -328,6 +334,7 @@ func translateVSCmd(req translateVSReq) tea.Cmd {
 			nativeSessionID: newID,
 			nativeCwd:       nativeCwd,
 			transcript:      transcript,
+			usage:           usage,
 		}
 	}
 }

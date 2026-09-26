@@ -30,7 +30,7 @@ func nextStreamCmd(ch chan tea.Msg) tea.Cmd {
 func loadHistoryCmd(tabID int, p Provider, sessionID, vsID string, silent bool) tea.Cmd {
 	return func() tea.Msg {
 		items, err := p.LoadHistory(sessionID)
-		return historyLoadedMsg{
+		msg := historyLoadedMsg{
 			tabID:            tabID,
 			sessionID:        sessionID,
 			virtualSessionID: vsID,
@@ -38,6 +38,10 @@ func loadHistoryCmd(tabID int, p Provider, sessionID, vsID string, silent bool) 
 			err:              err,
 			silent:           silent,
 		}
+		if err == nil {
+			msg.usage = loadUsageFor(p, sessionID)
+		}
+		return msg
 	}
 }
 

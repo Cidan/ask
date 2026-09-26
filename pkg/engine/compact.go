@@ -135,18 +135,16 @@ func (c *Compactor) ObserveUsage(totalTokens int) {
 	c.mu.Unlock()
 }
 
-// AfterModel is an llmagent.AfterModelCallback that feeds ObserveUsage from
-// every response. It never replaces the response.
+// AfterModel is an llmagent.AfterModelCallback that feeds ObserveUsage the
+// context reading of every response's usage record. It never replaces the
+// response.
 func (c *Compactor) AfterModel(_ agent.Context, resp *model.LLMResponse, _ error) (*model.LLMResponse, error) {
-	if c == nil || resp == nil || resp.UsageMetadata == nil {
+	if c == nil {
 		return nil, nil
 	}
-	md := resp.UsageMetadata
-	total := int(md.TotalTokenCount)
-	if total == 0 {
-		total = int(md.PromptTokenCount) + int(md.CandidatesTokenCount)
+	if u, ok := ResponseUsage(resp); ok {
+		c.ObserveUsage(u.ContextTokens)
 	}
-	c.ObserveUsage(total)
 	return nil, nil
 }
 

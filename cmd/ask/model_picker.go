@@ -643,7 +643,7 @@ func (m model) applyProviderModelSwitch(newProv Provider, model string) (tea.Mod
 		debugLog("persist default provider err: %v", err)
 	}
 
-	m.lastUsageTokens = 0
+	m.estimateUsageAfterSwap()
 	m.modelForContext = ""
 	var historyCmd tea.Cmd
 	if !sameProvider {
@@ -652,6 +652,9 @@ func (m model) applyProviderModelSwitch(newProv Provider, model string) (tea.Mod
 		m.resumeCwd = ""
 		if m.virtualSessionID != "" {
 			historyCmd = m.applyVSProviderSwap(oldProvName, newProv)
+		} else {
+			// No conversation carries over to the new provider.
+			m.lastUsageTokens, m.usageEstimated = 0, false
 		}
 	}
 

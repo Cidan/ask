@@ -257,13 +257,22 @@ func (m *model) sidebarCost() string {
 	if m.provider != nil {
 		providerID = m.provider.ID()
 	}
+	// A reading is measured against the window of the model that made it
+	// (a workflow step can run on another); an estimate carried over from
+	// another model is measured against the current one.
+	if m.usageProvider != "" && !m.usageEstimated {
+		providerID, mdl = m.usageProvider, m.usageModel
+	}
 	ctxPct := contextPercent(m.lastUsageTokens, modelContextLimit(providerID, mdl))
 	pctStr := fmt.Sprintf("%d%%", ctxPct)
+	if m.usageEstimated {
+		pctStr = "~" + pctStr
+	}
 
 	cost := ""
 	if m.sessionCostKnown {
 		cost = formatUSD(m.sessionCostUSD)
-	} else if m.provider != nil && modelPricingKnown(m.provider.ID(), m.effectiveModelID()) {
+	} else if m.provider != nil && costKnownUpfront(m.provider.ID(), m.effectiveModelID()) {
 		cost = formatUSD(0)
 	}
 

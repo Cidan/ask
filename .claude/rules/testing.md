@@ -42,6 +42,13 @@ real-model memory test skips itself unless
 
 ## Isolation
 
+- Every package whose tests touch config, sessions, or `~/.claude` runs
+  under `internal/testhome.Main` (a `TestMain` in `main_test.go` /
+  `testmain_test.go`): `$HOME` and the XDG dirs point at a temp dir for
+  the whole binary, and `cmd/ask` and `pkg/engine` also point
+  `ASK_CLAUDE_BIN` at nothing (`testhome.NoClaude`) so no test starts
+  the real CLI. A new such package adds the same `TestMain`. Opt-in live
+  tests that drive real tools call `testhome.UseRealHome(t)`.
 - `t.TempDir()` for every file-system test; `t.Chdir(...)` when cwd
   matters.
 - `isolateHome(t)` (`cmd/ask/testhelpers_test.go`) pins `$HOME` to a
@@ -50,7 +57,8 @@ real-model memory test skips itself unless
   `~/.config/ask`, `~/.claude`, or `~/.local/share/ask`.
 - No subprocesses. The only `exec.Command` calls in tests are `git` and
   `jj` in `cmd/ask/testhelpers_test.go` (`runGit`, `runJJ`, `initGitRepo`,
-  `initJJRepo`, gated by `gitAvailable` / `jjAvailable`) and
+  `initJJRepo`, gated by `gitAvailable` / `jjAvailable` — the latter also
+  requires `jj git`, which some builds lack) and
   `cmd/ask/worktree_lifecycle_test.go`.
 - Network goes through `net/http/httptest` servers (MCP, Brave, OpenRouter,
   models.dev, marketplaces) — never a real host.

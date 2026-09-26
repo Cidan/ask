@@ -101,6 +101,9 @@ func (ClaudeCode) BuildModel(ctx context.Context, pc config.ProviderConfig, mode
 // NativeWebSearchProvider.
 func (ClaudeCode) HasNativeWebSearch() bool { return true }
 
+// ReportsCost: every result frame carries the CLI's own total_cost_usd.
+func (ClaudeCode) ReportsCost() bool { return true }
+
 func (ClaudeCode) CanonicalModelID(modelID, fallback string) string {
 	return CanonicalClaudeCodeModelID(modelID, fallback)
 }
@@ -301,6 +304,7 @@ var (
 	_ Provider                = ClaudeCode{}
 	_ ModelLister             = ClaudeCode{}
 	_ NativeWebSearchProvider = ClaudeCode{}
+	_ CostReporter            = ClaudeCode{}
 )
 
 // ClaudeCodeResolveBinary: config value wins, then ASK_CLAUDE_BIN, then the

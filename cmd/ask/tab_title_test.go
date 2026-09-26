@@ -15,7 +15,7 @@ import (
 	"google.golang.org/genai"
 )
 
-func swapTitleGenerator(t *testing.T, fn func(providerID, modelID, prompt string, topics []string) (string, TokenUsage, error)) {
+func swapTitleGenerator(t *testing.T, fn func(providerID, modelID, prompt string, topics []string) (string, providers.Usage, error)) {
 	t.Helper()
 	prev := generateTabTitleText
 	generateTabTitleText = fn
@@ -54,8 +54,8 @@ func TestSanitizeTabTitle(t *testing.T) {
 }
 
 func TestMaybeStartTabTitleGating(t *testing.T) {
-	swapTitleGenerator(t, func(_, _, _ string, _ []string) (string, TokenUsage, error) {
-		return "Generated title\ntopic: Auth Tests", TokenUsage{}, nil
+	swapTitleGenerator(t, func(_, _, _ string, _ []string) (string, providers.Usage, error) {
+		return "Generated title\ntopic: Auth Tests", providers.Usage{}, nil
 	})
 
 	// Seeds the fallback and returns the async cmd.
@@ -95,8 +95,8 @@ func TestMaybeStartTabTitleGating(t *testing.T) {
 }
 
 func TestGenerateTabTitleCmdSwallowsErrors(t *testing.T) {
-	swapTitleGenerator(t, func(_, _, _ string, _ []string) (string, TokenUsage, error) {
-		return "", TokenUsage{}, errors.New("network down")
+	swapTitleGenerator(t, func(_, _, _ string, _ []string) (string, providers.Usage, error) {
+		return "", providers.Usage{}, errors.New("network down")
 	})
 	msg := generateTabTitleCmd(7, "fake", "", t.TempDir(), "prompt")().(tabTitleMsg)
 	if msg.tabID != 7 || msg.title != "" {

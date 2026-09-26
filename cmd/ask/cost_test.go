@@ -19,57 +19,73 @@ import (
 	"google.golang.org/genai"
 )
 
-func TestStepCostUSD_KnownModel(t *testing.T) {
-	// Gemini 2.5 Pro list price: $1.25 in, $10 out, $0.125 cached input per 1M.
-	got, ok := stepCostUSD("vertex", "gemini-2.5-pro", TokenUsage{
-		InputTokens:         1_000_000,
-		OutputTokens:        1_000_000,
-		CacheCreationTokens: 1_000_000,
-		CacheReadTokens:     1_000_000,
+func priced(providerID, modelID string, u providers.Usage) providers.Usage {
+	u.Provider, u.Model = providerID, modelID
+	return providers.PriceUsage(u)
+}
+
+func TestPriceUsage_KnownModel(t *testing.T) {
+	// Gemini 2.5 Pro list price: $1.25 in, $10 out, $0.125 cached input per
+	// 1M, and no cache-write rate — so writes are charged the input rate.
+	got := priced("vertex", "gemini-2.5-pro", providers.Usage{
+		InputTokens:      1_000_000,
+		OutputTokens:     1_000_000,
+		CacheWriteTokens: 1_000_000,
+		CacheReadTokens:  1_000_000,
 	})
-	if !ok {
+	if !got.CostKnown() {
 		t.Fatal("catalog model must be priceable")
 	}
-	if want := 1.25 + 10 + 0.125; got < want-1e-9 || got > want+1e-9 {
-		t.Errorf("cost = %v, want %v (per-model list price, not a flat rate)", got, want)
+	if want := 1.25 + 10 + 1.25 + 0.125; got.CostUSD < want-1e-9 || got.CostUSD > want+1e-9 {
+		t.Errorf("cost = %v, want %v (per-model list price, not a flat rate)", got.CostUSD, want)
 	}
 
 	// A different model carries a different price — the old meter charged
 	// every Vertex model the Flash rate.
-	flash, _ := stepCostUSD("vertex", "gemini-2.5-flash", TokenUsage{InputTokens: 1_000_000})
-	pro, _ := stepCostUSD("vertex", "gemini-2.5-pro", TokenUsage{InputTokens: 1_000_000})
-	if flash >= pro {
-		t.Errorf("flash (%v) must be cheaper than pro (%v)", flash, pro)
+	flash := priced("vertex", "gemini-2.5-flash", providers.Usage{InputTokens: 1_000_000})
+	pro := priced("vertex", "gemini-2.5-pro", providers.Usage{InputTokens: 1_000_000})
+	if flash.CostUSD >= pro.CostUSD {
+		t.Errorf("flash (%v) must be cheaper than pro (%v)", flash.CostUSD, pro.CostUSD)
 	}
 
 	// Zero usage on a known model is a known $0.
-	got, ok = stepCostUSD("vertex", "gemini-2.5-pro", TokenUsage{})
-	if !ok || got != 0 {
-		t.Errorf("zero usage = %v ok=%v, want 0 true", got, ok)
+	if got := priced("vertex", "gemini-2.5-pro", providers.Usage{}); !got.CostKnown() || got.CostUSD != 0 {
+		t.Errorf("zero usage = %+v, want a known 0", got)
 	}
 }
 
-func TestStepCostUSD_Unpriceable(t *testing.T) {
-	if _, ok := stepCostUSD("vertex", "my-custom-model", TokenUsage{InputTokens: 5}); ok {
+func TestPriceUsage_Unpriceable(t *testing.T) {
+	if priced("vertex", "my-custom-model", providers.Usage{InputTokens: 5}).CostKnown() {
 		t.Error("custom model id must be unpriceable")
 	}
-	if _, ok := stepCostUSD("fake", "gemini-2.5-pro", TokenUsage{InputTokens: 5}); ok {
+	if priced("fake", "gemini-2.5-pro", providers.Usage{InputTokens: 5}).CostKnown() {
 		t.Error("provider without a catalog must be unpriceable")
 	}
-	if modelPricingKnown("fake", "whatever") {
+	if costKnownUpfront("fake", "whatever") {
 		t.Error("fake provider should have unknown pricing")
 	}
 	// A catalog hit without a published price stays unpriceable rather than
 	// being billed at some other model's rate.
-	if _, ok := stepCostUSD("vertex", "gemini-3-pro-preview", TokenUsage{InputTokens: 5}); ok {
+	if priced("vertex", "gemini-3-pro-preview", providers.Usage{InputTokens: 5}).CostKnown() {
 		t.Error("model without a list price must be unpriceable")
+	}
+}
+
+// Providers that report what each call costs have a known cost up front
+// even for a model the catalog cannot price.
+func TestCostKnownUpfront_ReportingProviders(t *testing.T) {
+	if !costKnownUpfront(providers.ClaudeCodeProviderID, "default") {
+		t.Error("Claude Code reports its cost, so its sessions show one from the start")
+	}
+	if !costKnownUpfront(providers.OpenRouterProviderID, "vendor/unknown") {
+		t.Error("OpenRouter reports its cost, so its sessions show one from the start")
 	}
 }
 
 // The meter reads the same layered metadata as the picker, so a price that
 // arrives from models.dev or a live listing is billed without any meter
 // changes. Swap the lookup to stand in for those layers.
-func TestStepCostUSD_UsesLayeredMetadata(t *testing.T) {
+func TestPriceUsage_UsesLayeredMetadata(t *testing.T) {
 	prev := providers.ModelMetaLookup
 	providers.ModelMetaLookup = func(providerID, modelID string) (providers.ModelMeta, bool) {
 		if providerID == "openrouter" && modelID == "vendor/live" {
@@ -79,14 +95,14 @@ func TestStepCostUSD_UsesLayeredMetadata(t *testing.T) {
 	}
 	t.Cleanup(func() { providers.ModelMetaLookup = prev })
 
-	got, ok := stepCostUSD("openrouter", "vendor/live", TokenUsage{
-		InputTokens: 500_000, OutputTokens: 250_000, CacheCreationTokens: 100_000, CacheReadTokens: 1_000_000,
+	got := priced("openrouter", "vendor/live", providers.Usage{
+		InputTokens: 500_000, OutputTokens: 250_000, CacheWriteTokens: 100_000, CacheReadTokens: 1_000_000,
 	})
-	if !ok {
+	if !got.CostKnown() {
 		t.Fatal("live pricing must be billable")
 	}
-	if want := 1 + 2 + 0.25 + 0.5; got < want-1e-9 || got > want+1e-9 {
-		t.Errorf("cost = %v want %v", got, want)
+	if want := 1 + 2 + 0.25 + 0.5; got.CostUSD < want-1e-9 || got.CostUSD > want+1e-9 {
+		t.Errorf("cost = %v want %v", got.CostUSD, want)
 	}
 }
 
@@ -148,31 +164,54 @@ func TestTabTitleMsgAddsCost(t *testing.T) {
 	m := newTestModel(t, newFakeProvider())
 	m.tabTitle = "seed"
 
-	m2, _ := runUpdate(t, m, tabTitleMsg{tabID: m.id, title: "Title", costUSD: 0.5, costKnown: true})
+	m2, _ := runUpdate(t, m, tabTitleMsg{tabID: m.id, title: "Title", usage: providers.Usage{CostUSD: 0.5, CostSource: providers.CostPriced}})
 	if m2.sessionCostUSD != 0.5 || !m2.sessionCostKnown {
 		t.Fatalf("title cost not counted: %v", m2.sessionCostUSD)
 	}
 
 	// The call was billed even when the title is discarded.
-	m3, _ := runUpdate(t, m2, tabTitleMsg{tabID: m.id, costUSD: 0.25, costKnown: true})
+	m3, _ := runUpdate(t, m2, tabTitleMsg{tabID: m.id, usage: providers.Usage{CostUSD: 0.25, CostSource: providers.CostReported}})
 	if m3.sessionCostUSD != 0.75 {
 		t.Fatalf("discarded-title cost not counted: %v", m3.sessionCostUSD)
 	}
 
 	// Foreign tab: nothing.
-	m4, _ := runUpdate(t, m3, tabTitleMsg{tabID: 999, costUSD: 1, costKnown: true})
+	m4, _ := runUpdate(t, m3, tabTitleMsg{tabID: 999, usage: providers.Usage{CostUSD: 1, CostSource: providers.CostPriced}})
 	if m4.sessionCostUSD != 0.75 {
 		t.Fatal("foreign tabTitleMsg cost applied")
 	}
 }
 
-func TestGenerateTabTitleCmdPricesCall(t *testing.T) {
-	swapTitleGenerator(t, func(_, _, _ string, _ []string) (string, TokenUsage, error) {
-		return "A title", TokenUsage{InputTokens: 1_000_000}, nil
+// The title call is priced for the provider and model it ran on, even
+// through a model ModelBuilder did not wrap.
+func TestGenerateTabTitleText_PricesCall(t *testing.T) {
+	isolateHome(t)
+	prev := engine.ModelBuilder
+	t.Cleanup(func() { engine.ModelBuilder = prev })
+	engine.ModelBuilder = func(context.Context, providers.Provider, config.Config, string) (adkmodel.LLM, error) {
+		return &mockADKModel{name: "m", generateFunc: func(context.Context, *adkmodel.LLMRequest, bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+			return func(yield func(*adkmodel.LLMResponse, error) bool) {
+				yield(&adkmodel.LLMResponse{
+					Content:       genai.NewContentFromText("A title", genai.RoleModel),
+					UsageMetadata: &genai.GenerateContentResponseUsageMetadata{PromptTokenCount: 1_000_000, TotalTokenCount: 1_000_000},
+				}, nil)
+			}
+		}}, nil
+	}
+	raw, usage, err := generateTabTitleText("vertex", "gemini-2.5-flash", "prompt", nil)
+	if err != nil || raw != "A title" {
+		t.Fatalf("title = %q, err %v", raw, err)
+	}
+	if usage.Provider != "vertex" || usage.Model != "gemini-2.5-flash" || !usage.CostKnown() || usage.CostUSD < 0.3-1e-9 || usage.CostUSD > 0.3+1e-9 {
+		t.Fatalf("title usage = %+v, want 1M input tokens of Flash priced at $0.30", usage)
+	}
+
+	// An unpriceable model: cost unknown, title still delivered.
+	swapTitleGenerator(t, func(_, _, _ string, _ []string) (string, providers.Usage, error) {
+		return "A title", providers.Usage{InputTokens: 1_000_000}, nil
 	})
-	// Unpriceable model: cost unknown, title still delivered.
 	msg := generateTabTitleCmd(3, "vertex", "my-custom", t.TempDir(), "prompt")().(tabTitleMsg)
-	if msg.costKnown || msg.title != "A title" {
+	if msg.usage.CostKnown() || msg.title != "A title" {
 		t.Fatalf("custom-model title msg = %+v", msg)
 	}
 }
@@ -182,10 +221,14 @@ func TestNewAndClearResetCostMeter(t *testing.T) {
 		m := newTestModel(t, newFakeProvider())
 		m.sessionCostUSD = 1.25
 		m.sessionCostKnown = true
+		m.lastUsageTokens, m.usageProvider, m.usageModel = 90_000, "vertex", "gemini-2.5-pro"
 		next, _ := m.handleCommand(cmd)
 		mi := next.(model)
 		if mi.sessionCostUSD != 0 || mi.sessionCostKnown {
 			t.Errorf("%s: cost meter survived: %v known=%v", cmd, mi.sessionCostUSD, mi.sessionCostKnown)
+		}
+		if mi.lastUsageTokens != 0 || mi.usageProvider != "" || mi.usageEstimated {
+			t.Errorf("%s: context meter survived: %d %q estimated=%v", cmd, mi.lastUsageTokens, mi.usageProvider, mi.usageEstimated)
 		}
 	}
 }
@@ -199,10 +242,24 @@ func TestProviderModelSwapCostMeter(t *testing.T) {
 	m := newTestModel(t, p)
 	m.sessionCostUSD = 0.42
 	m.sessionCostKnown = true
+	m.lastUsageTokens, m.usageProvider, m.usageModel = 50_000, "vertex", "gemini-2.5-flash"
 	next, _ := m.applyProviderModelSwitch(p, "gemini-2.5-pro")
 	mi := next.(model)
 	if mi.sessionCostUSD != 0.42 || !mi.sessionCostKnown {
 		t.Errorf("same-provider swap dropped cost: %v known=%v", mi.sessionCostUSD, mi.sessionCostKnown)
+	}
+	// The conversation is the same, so its reading carries over — but the
+	// new model counts it differently, so only as an estimate.
+	if mi.lastUsageTokens != 50_000 || !mi.usageEstimated {
+		t.Errorf("swap reading = %d estimated=%v, want 50000 kept as an estimate", mi.lastUsageTokens, mi.usageEstimated)
+	}
+	if got := mi.sidebarCost(); !strings.HasPrefix(got, "~") {
+		t.Errorf("an estimated reading must show as approximate, got %q", got)
+	}
+	// The next real reading replaces it.
+	mi2, _ := runUpdate(t, mi, usageMsg{tokens: 60_000, provider: "vertex", model: "gemini-2.5-pro"})
+	if mi2.usageEstimated || mi2.lastUsageTokens != 60_000 {
+		t.Errorf("real reading did not replace the estimate: %d estimated=%v", mi2.lastUsageTokens, mi2.usageEstimated)
 	}
 }
 
@@ -280,7 +337,7 @@ func TestTaskToolBackgroundExecution(t *testing.T) {
 		}, nil
 	}
 
-	env, events := newTestToolEnv(t)
+	env, events := newTestToolEnvSnapshot(t)
 	tool := agentTaskTool(env, func() *agentSession { return nil })
 	resp := runTool(t, tool, agentTaskParams{
 		Prompt:          "bg search",
@@ -293,9 +350,20 @@ func TestTaskToolBackgroundExecution(t *testing.T) {
 	if !strings.Contains(resp.Content, "started background") {
 		t.Errorf("unexpected background response: %q", resp.Content)
 	}
+	// The sub-agent keeps running after the tool returns; let it finish —
+	// its last emit is the job's end — before the deferred seam restore,
+	// which it would otherwise race.
+	waitFor(t, func() bool {
+		for _, ev := range events() {
+			if _, ok := ev.(bgTaskEndedMsg); ok {
+				return true
+			}
+		}
+		return false
+	})
 
 	startedFound := false
-	for _, ev := range *events {
+	for _, ev := range events() {
 		if s, ok := ev.(subagentStartedMsg); ok && s.background {
 			startedFound = true
 		}

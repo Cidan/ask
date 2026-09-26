@@ -202,11 +202,29 @@ func (s *agentSession) setTurnCancel(fn context.CancelFunc) {
 	s.turnCancel = fn
 }
 
-func (s *agentSession) stepCost(u TokenUsage) (float64, bool) {
-	if s.provider == nil {
-		return 0, false
+// recordSpend adds calls made on the session's behalf outside its own model
+// calls — sub-agents, deslop, memory extraction — to the tab's cost meter and
+// to the session's usage ledger, so /resume restores the whole spend.
+func (s *agentSession) recordSpend(kind string, records ...providers.Usage) {
+	var cost float64
+	known := false
+	entries := make([]usageLedgerEntry, 0, len(records))
+	for _, u := range records {
+		if u.CostKnown() {
+			cost += u.CostUSD
+			known = true
+		}
+		entries = append(entries, usageLedgerEntry{Kind: kind, Usage: u})
 	}
-	return stepCostUSD(s.provider.ID(), s.modelID, u)
+	if known {
+		s.emit(costMsg{costUSD: cost})
+	}
+	if s.store == nil {
+		return
+	}
+	if err := s.store.appendUsageLedger(s.sessionID, s.args.Cwd, entries...); err != nil {
+		debugLog("usage ledger %s: %v", s.sessionID, err)
+	}
 }
 
 func (s *agentSession) interruptTurn() bool {
@@ -536,9 +554,10 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	// or pointed at this session's own model. Fail-open: a build error here
 	// just leaves deslop off for the turn.
 	var (
-		deslopLLM     adkmodel.LLM
-		deslopModelID string
-		deslopNew     map[string]string
+		deslopLLM      adkmodel.LLM
+		deslopProvider string
+		deslopModelID  string
+		deslopNew      map[string]string
 	)
 	if dc, _ := loadConfig(); engine.DeslopEnabled(toPkgConfig(dc)) {
 		dprov, dmodel := engine.DeslopModel(toPkgConfig(dc))
@@ -550,7 +569,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 			if p, ok := providers.Get(dprov); ok {
 				if built, berr := engine.ModelBuilder(ctx, p, toPkgConfig(dc), dmodel); berr == nil {
 					deslopLLM = built
-					deslopModelID = dmodel
+					deslopProvider, deslopModelID = dprov, dmodel
 					deslopNew = make(map[string]string)
 					defer engine.CloseModel(deslopLLM)
 				} else {
@@ -647,26 +666,16 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		}
 		s.workflowProgress.Observe(event)
 
-		if event.UsageMetadata != nil {
-			usage := TokenUsage{
-				InputTokens:  int(event.UsageMetadata.PromptTokenCount),
-				OutputTokens: int(event.UsageMetadata.CandidatesTokenCount),
-			}
-			cost, known := s.stepCost(usage)
-			// tokens is the context-window reading: prefer the provider's own
-			// total (which folds in cached + thinking tokens) and fall back to
-			// prompt+output when a provider leaves TotalTokenCount unset.
-			// Streaming providers interleave metadata-only chunks whose counts
-			// are all zero; those land here as tokens==0 and update.go ignores
-			// them so the meter never snaps back to 0% mid-stream.
-			tokens := int(event.UsageMetadata.TotalTokenCount)
-			if tokens == 0 {
-				tokens = usage.InputTokens + usage.OutputTokens
-			}
+		// Every final model response carries its usage record, priced for
+		// the provider and model that made it — which, in a workflow, is the
+		// step's, not the session's.
+		if u, ok := engine.ResponseUsage(&event.LLMResponse); ok && !event.Partial {
 			s.emit(usageMsg{
-				tokens:    tokens,
-				costUSD:   cost,
-				costKnown: known,
+				tokens:    u.ContextTokens,
+				provider:  u.Provider,
+				model:     u.Model,
+				costUSD:   u.CostUSD,
+				costKnown: u.CostKnown(),
 			})
 		}
 
@@ -701,10 +710,11 @@ func (s *agentSession) runTurn(turn agentTurn) {
 					if deslopLLM != nil && deslopBlock != "" {
 						if !deslopEmitted {
 							deslopEmitted = true
-							cleaned, derr := engine.Deslop(ctx, deslopLLM, deslopModelID, deslopBlock)
+							cleaned, dusage, derr := engine.Deslop(ctx, deslopLLM, deslopModelID, deslopBlock)
 							if derr != nil {
 								debugLog("deslop: %v", derr)
 							}
+							s.recordSpend(spendDeslop, engine.StampUsage(dusage, deslopProvider, deslopModelID))
 							if cleaned != deslopBlock {
 								deslopNew[deslopBlockKey(deslopBlock)] = cleaned
 							}
@@ -822,10 +832,8 @@ func (s *agentSession) enqueueMemoryTurn(prompt, response string, files []string
 		Topic:    s.currentTopic(),
 		Files:    files,
 		Provider: providerID,
-		OnUsage: func(pid, mid string, in, out int) {
-			if cost, known := stepCostUSD(pid, mid, TokenUsage{InputTokens: in, OutputTokens: out}); known {
-				s.emit(costMsg{costUSD: cost})
-			}
+		OnUsage: func(u providers.Usage) {
+			s.recordSpend(spendMemory, u)
 		},
 		OnTopic: s.setTopic,
 	})

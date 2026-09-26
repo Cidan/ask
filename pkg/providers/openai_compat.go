@@ -281,16 +281,23 @@ func (m *openAICompatModel) complete(ctx context.Context, params openai.ChatComp
 	if len(resp.Choices) == 0 {
 		return
 	}
-	yield(m.toLLMResponse(resp.Choices[0].Message, &resp.Usage, true), nil)
+	yield(m.toLLMResponse(resp.Choices[0].Message, &resp.Usage, resp.Usage.RawJSON(), true), nil)
 }
 
 func (m *openAICompatModel) stream(ctx context.Context, params openai.ChatCompletionNewParams, yield func(*model.LLMResponse, error) bool) {
 	params.StreamOptions.IncludeUsage = openai.Bool(true)
 	st := m.client.Chat.Completions.NewStreaming(ctx, params)
 	acc := openai.ChatCompletionAccumulator{}
+	// The accumulator keeps the typed usage but not the provider's extra
+	// fields (OpenRouter's cost), so the raw usage of the chunk that carries
+	// it is kept alongside.
+	var rawUsage string
 	for st.Next() {
 		chunk := st.Current()
 		acc.AddChunk(chunk)
+		if chunk.Usage.TotalTokens > 0 {
+			rawUsage = chunk.Usage.RawJSON()
+		}
 		if len(chunk.Choices) == 0 {
 			continue
 		}
@@ -319,10 +326,20 @@ func (m *openAICompatModel) stream(ctx context.Context, params openai.ChatComple
 	if len(acc.Choices) == 0 {
 		return
 	}
-	yield(m.toLLMResponse(acc.Choices[0].Message, &acc.Usage, true), nil)
+	yield(m.toLLMResponse(acc.Choices[0].Message, &acc.Usage, rawUsage, true), nil)
 }
 
-func (m *openAICompatModel) toLLMResponse(msg openai.ChatCompletionMessage, usage *openai.CompletionUsage, final bool) *model.LLMResponse {
+// compatUsageExtras are the usage fields an OpenAI-protocol provider may add
+// beyond the SDK's typed ones. OpenRouter reports what it charged (`cost`, in
+// USD credits) and the tokens it wrote to a prompt cache.
+type compatUsageExtras struct {
+	Cost                *float64 `json:"cost"`
+	PromptTokensDetails struct {
+		CacheWriteTokens int `json:"cache_write_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
+func (m *openAICompatModel) toLLMResponse(msg openai.ChatCompletionMessage, usage *openai.CompletionUsage, rawUsage string, final bool) *model.LLMResponse {
 	var parts []*genai.Part
 	if r := extraReasoning(msg.JSON.ExtraFields); r != "" {
 		parts = append(parts, &genai.Part{Thought: true, Text: r})
@@ -353,13 +370,35 @@ func (m *openAICompatModel) toLLMResponse(msg openai.ChatCompletionMessage, usag
 		TurnComplete: final,
 	}
 	if usage != nil && usage.TotalTokens > 0 {
+		// Gemini's semantics, which every adapter follows: completion tokens
+		// include the reasoning, candidates do not.
+		reasoning := int(usage.CompletionTokensDetails.ReasoningTokens)
+		cached := int(usage.PromptTokensDetails.CachedTokens)
 		resp.UsageMetadata = &genai.GenerateContentResponseUsageMetadata{
 			PromptTokenCount:        int32(usage.PromptTokens),
-			CandidatesTokenCount:    int32(usage.CompletionTokens),
+			CandidatesTokenCount:    int32(max(int(usage.CompletionTokens)-reasoning, 0)),
 			TotalTokenCount:         int32(usage.TotalTokens),
-			CachedContentTokenCount: int32(usage.PromptTokensDetails.CachedTokens),
-			ThoughtsTokenCount:      int32(usage.CompletionTokensDetails.ReasoningTokens),
+			CachedContentTokenCount: int32(cached),
+			ThoughtsTokenCount:      int32(reasoning),
 		}
+		var extras compatUsageExtras
+		if rawUsage != "" {
+			_ = json.Unmarshal([]byte(rawUsage), &extras)
+		}
+		write := extras.PromptTokensDetails.CacheWriteTokens
+		u := Usage{
+			ContextTokens:    int(usage.TotalTokens),
+			InputTokens:      max(int(usage.PromptTokens)-cached-write, 0),
+			CacheReadTokens:  cached,
+			CacheWriteTokens: write,
+			OutputTokens:     int(usage.CompletionTokens),
+			ThinkingTokens:   reasoning,
+		}
+		if extras.Cost != nil {
+			u.CostUSD = *extras.Cost
+			u.CostSource = CostReported
+		}
+		AttachUsage(resp, u)
 	}
 	return resp
 }

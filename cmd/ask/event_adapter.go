@@ -44,8 +44,12 @@ func EngineEventToTeaMsg(event engine.EngineEvent) tea.Msg {
 		}
 	case engine.UsageEvent:
 		return usageMsg{
-			tokens: ev.TotalTokens,
-			tabID:  tabID,
+			tokens:    ev.TotalTokens,
+			provider:  ev.Usage.Provider,
+			model:     ev.Usage.Model,
+			costUSD:   ev.Usage.CostUSD,
+			costKnown: ev.Usage.CostKnown(),
+			tabID:     tabID,
 		}
 	case engine.CostEvent:
 		return costMsg{

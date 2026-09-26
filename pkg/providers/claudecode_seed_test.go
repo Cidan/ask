@@ -194,6 +194,7 @@ func TestClaudeCodeModel_RebaseMidTurnSeedsToolResultAndNudges(t *testing.T) {
 	defer func() { ccBatchWindow = prev }()
 
 	first, second := newFakeConn(16), newFakeConn(16)
+	first.answerInterrupts(0.07)
 	rec := recordDials(t, first, second)
 	m := newClaudeCodeModel("claude", "opus", "/repo", false, nil)
 	t.Cleanup(func() { _ = m.Close() })
@@ -228,8 +229,17 @@ func TestClaudeCodeModel_RebaseMidTurnSeedsToolResultAndNudges(t *testing.T) {
 	if len(rec.launches) != 2 {
 		t.Fatalf("launches = %d, want 2", len(rec.launches))
 	}
-	if toolResultsSent(second) != 0 || toolResultsSent(first) != 0 {
+	// The old child's pending call is failed as interrupted so it unwinds;
+	// the real result reaches neither child over the bridge.
+	if sentToolResult(first, "package main") || toolResultsSent(second) != 0 {
 		t.Fatal("the tool result must ride the seed, not the MCP bridge")
+	}
+	if !sentToolResult(first, "interrupted") {
+		t.Fatal("the replaced child's pending call was not failed")
+	}
+	// What the replaced child had already spent is carried, not lost.
+	if u, ok := UsageOf(out[len(out)-1]); !ok || u.CostSource != CostReported || u.CostUSD < 0.07-1e-9 {
+		t.Fatalf("replaced child's cost was not carried: %+v %v", u, ok)
 	}
 	seed := rec.seeds[1]
 	if len(seed) != 3 {

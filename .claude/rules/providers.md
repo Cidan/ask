@@ -36,6 +36,10 @@ the registry; nothing outside `pkg/providers` may name a provider.
   of func fields with nil-means-default — that is the design this
   replaced, and it produced the same field nil-checked in one caller
   and called blind in another.
+- `CostReporter` marks a provider whose calls report what they cost
+  (Claude Code, OpenRouter); `providers.ReportsCost(id)` reads it so the
+  sidebar shows a cost from the start even for a model the catalog cannot
+  price.
 - Models have one optional capability of their own: `HistoryRebaser`, for
   a model that holds the conversation outside the request (Claude Code's
   child). Auto-compaction applies to every provider alike and calls
@@ -74,7 +78,8 @@ ClaudeCode{}}`; Vertex is `DefaultProviderID()`. All three implement
   provider is another thin config over `OpenAICompatConfig` — do not
   write a second Chat Completions translator.
 - **Claude Code** (`claudecode.go`, `claudecode_wire.go`,
-  `claudecode_child.go`, `claudecode_model.go`, `claudecode_seed.go`): forks `claude -p` in
+  `claudecode_child.go`, `claudecode_model.go`, `claudecode_seed.go`,
+  `claudecode_accounting.go`): forks `claude -p` in
   stream-json mode and runs it with ask's tools, not Claude's. Not the
   Anthropic API — a subprocess. Setting `binary` (env `ASK_CLAUDE_BIN`,
   default `claude`); no `Secret` field — auth lives in the binary
@@ -141,11 +146,53 @@ ClaudeCode{}}`; Vertex is `DefaultProviderID()`. All three implement
   scripted `ccConn` in tests — frame level, no process) and
   `ClaudeCodeStart` (swap for a fake `ClaudeCodeProcess` speaking NDJSON —
   what `pkg/engine`'s end-to-end compaction test uses). Opt-in live tests
-  (`ASK_CC_LIVE=1`) cover a real rebuild mid-turn. Known v1 limits: the
+  (`ASK_CC_LIVE=1`, run against the real `$HOME` via
+  `testhome.UseRealHome`) cover a real rebuild mid-turn and the usage and
+  cost accounting against the CLI's own. Known v1 limits: the
   system prompt is captured at spawn (a mid-session change — only
   workflow state blocks — is not restarted; each workflow step gets a
   fresh child anyway); tab-title and workflow-step children are closed
   by their run, chat/session children by `Session.Close`.
+
+## Usage and cost (`usage.go`)
+
+- **Every adapter fills genai usage metadata with Gemini's semantics**:
+  `PromptTokenCount` counts every input token, cached ones included;
+  `CachedContentTokenCount` is the cached-read subset;
+  `CandidatesTokenCount` excludes thinking, which is
+  `ThoughtsTokenCount` (billed as output); `TotalTokenCount` is the
+  context the model holds after the call. `UsageFromMetadata` reads that
+  into a `providers.Usage`.
+- `providers.Usage` is the one accounting record: `Provider`/`Model`,
+  `ContextTokens`, `InputTokens` (full-rate input only),
+  `CacheReadTokens`, `CacheWriteTokens`, `OutputTokens` (thinking
+  included), `ThinkingTokens`, `CostUSD` + `CostSource` (`reported` by the
+  provider — authoritative; `priced` from the catalog; empty = unknown).
+  It rides `LLMResponse.CustomMetadata` (`AttachUsage` / `UsageOf`, which
+  also decodes it back from a stored event). An adapter that knows more
+  than the metadata can hold attaches its own; `engine.ModelBuilder`'s
+  wrapper completes and prices the rest.
+- `StepCostUSD` / `PriceUsage` price cache reads and writes at their own
+  rates; a model that lists none is charged the input rate for them,
+  never nothing.
+- **OpenRouter** (`openai_compat.go`): usage always carries `cost` (USD
+  credits) and `prompt_tokens_details.cache_write_tokens`; both land in
+  the record (reported cost). Completion tokens include reasoning, so
+  candidates are completion − reasoning.
+- **Claude Code** (`claudecode_accounting.go`): a step's calls are read
+  off the stream — `message_start` for input and cache buckets,
+  `message_delta` for the real output count (assistant frames carry a
+  1–3 token placeholder). A step sums its calls; its context is the last
+  call's input plus output. `result.total_cost_usd` is cumulative over
+  the child's life; each turn is charged the difference (`takeResult`),
+  as a reported cost on the turn's final response. An interrupt ends the
+  CLI's turn with a result frame of its own: `interruptLocked` counts it
+  (`staleResults`) so the next read skips it rather than ending the next
+  turn empty, and its cost is carried to the next response. Replacing a
+  child (`stopLocked(settle)`) interrupts a turn in progress and reads its
+  result first, so a rebuilt child's predecessor's spend is not lost.
+  The context reading is the CLI's own count
+  (`get_context_usage`) plus the call's reply.
 
 ## Retry
 

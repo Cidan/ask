@@ -201,8 +201,8 @@ func TestOpenAICompat_ResponseTranslation(t *testing.T) {
 		w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"finish_reason":"tool_calls",
 			"message":{"role":"assistant","content":"the answer","reasoning":"let me think",
 			"tool_calls":[{"id":"call_abc","type":"function","function":{"name":"do_it","arguments":"{\"x\":1}"}}]}}],
-			"usage":{"prompt_tokens":100,"completion_tokens":40,"total_tokens":140,
-			"prompt_tokens_details":{"cached_tokens":20},"completion_tokens_details":{"reasoning_tokens":10}}}`))
+			"usage":{"prompt_tokens":100,"completion_tokens":40,"total_tokens":140,"cost":0.0042,
+			"prompt_tokens_details":{"cached_tokens":20,"cache_write_tokens":30},"completion_tokens_details":{"reasoning_tokens":10}}}`))
 	}))
 	defer server.Close()
 
@@ -220,11 +220,20 @@ func TestOpenAICompat_ResponseTranslation(t *testing.T) {
 	if r.UsageMetadata == nil {
 		t.Fatalf("usage metadata missing")
 	}
-	if r.UsageMetadata.PromptTokenCount != 100 || r.UsageMetadata.CandidatesTokenCount != 40 || r.UsageMetadata.TotalTokenCount != 140 {
+	// Gemini's semantics: the candidates exclude the reasoning, which is
+	// reported apart as thoughts.
+	if r.UsageMetadata.PromptTokenCount != 100 || r.UsageMetadata.CandidatesTokenCount != 30 || r.UsageMetadata.TotalTokenCount != 140 {
 		t.Errorf("usage = %+v", r.UsageMetadata)
 	}
 	if r.UsageMetadata.CachedContentTokenCount != 20 || r.UsageMetadata.ThoughtsTokenCount != 10 {
 		t.Errorf("usage details = %+v", r.UsageMetadata)
+	}
+	// The record carries what the metadata cannot: cache writes and the cost
+	// OpenRouter reported charging.
+	u, ok := UsageOf(r)
+	want := Usage{ContextTokens: 140, InputTokens: 50, CacheReadTokens: 20, CacheWriteTokens: 30, OutputTokens: 40, ThinkingTokens: 10, CostUSD: 0.0042, CostSource: CostReported}
+	if !ok || u != want {
+		t.Errorf("usage record = %+v %v, want %+v", u, ok, want)
 	}
 
 	var gotThought, gotText string
@@ -259,7 +268,7 @@ func TestOpenAICompat_Streaming(t *testing.T) {
 		io.WriteString(w, "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hel\"}}]}\n\n")
 		io.WriteString(w, "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"}}]}\n\n")
 		io.WriteString(w, "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_s\",\"type\":\"function\",\"function\":{\"name\":\"go\",\"arguments\":\"{}\"}}]}}]}\n\n")
-		io.WriteString(w, "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n")
+		io.WriteString(w, "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5,\"cost\":0.5}}\n\n")
 		io.WriteString(w, "data: [DONE]\n\n")
 	}))
 	defer server.Close()
@@ -306,6 +315,9 @@ func TestOpenAICompat_Streaming(t *testing.T) {
 	}
 	if final.UsageMetadata == nil || final.UsageMetadata.TotalTokenCount != 5 {
 		t.Errorf("final usage = %+v", final.UsageMetadata)
+	}
+	if u, ok := UsageOf(final); !ok || u.CostUSD != 0.5 || u.CostSource != CostReported {
+		t.Errorf("streamed usage record lost the reported cost: %+v %v", u, ok)
 	}
 }
 

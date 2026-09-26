@@ -1,5 +1,7 @@
 package engine
 
+import "github.com/Cidan/ask/pkg/providers"
+
 // EventKind identifies the type of an EngineEvent.
 type EventKind string
 
@@ -100,12 +102,27 @@ type ToolDiffEvent struct {
 
 func (ToolDiffEvent) Kind() EventKind { return EventKindToolDiff }
 
-// UsageEvent records token consumption for an API step.
+// UsageEvent records one model call's token accounting. Usage is the full
+// normalized record (providers.Usage), cost included when known; the three
+// counts are its totals: every input token (cached or not), every output
+// token (thinking included), and the context the model held afterwards.
 type UsageEvent struct {
 	BaseEvent
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	InputTokens  int             `json:"input_tokens"`
+	OutputTokens int             `json:"output_tokens"`
+	TotalTokens  int             `json:"total_tokens"`
+	Usage        providers.Usage `json:"usage"`
+}
+
+// NewUsageEvent builds the UsageEvent for one call's record.
+func NewUsageEvent(tabID int, u providers.Usage) UsageEvent {
+	return UsageEvent{
+		BaseEvent:    BaseEvent{TabID: tabID},
+		InputTokens:  u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens,
+		OutputTokens: u.OutputTokens,
+		TotalTokens:  u.ContextTokens,
+		Usage:        u,
+	}
 }
 
 func (UsageEvent) Kind() EventKind { return EventKindUsage }

@@ -40,8 +40,19 @@ Related: `.claude/rules/tools.md`, `.claude/rules/providers.md`,
 ## Model and runner construction
 
 - `ModelBuilder` (swappable) calls `p.BuildModel` and wraps it in
-  `retryingModel` (retry.go). Every model in the process — tab titles,
-  sub-agents, workflow steps — goes through it.
+  `usageModel` (usage.go) and `retryingModel` (retry.go). Every model in
+  the process — tab titles, sub-agents, workflow steps — goes through it.
+- `usageModel` completes the `providers.Usage` record on every final
+  response — derived from the metadata when the adapter attached none,
+  stamped with the build's provider and model, priced unless the
+  provider reported a cost — so it is persisted with the session event.
+  Read a response's record with `ResponseUsage` (falls back to the
+  metadata for a model not built here); `StampUsage` attributes and
+  prices one from a caller that knows its model (the memory extractor,
+  deslop, tab titles). `UsageEvent` carries the record (`NewUsageEvent`);
+  `RunResult.Usage`/`CostUSD` total a headless run's calls, which the
+  TUI charges to the parent session for a sub-agent. Both wrappers
+  forward `io.Closer` and `providers.HistoryRebaser`.
 - `CloseModel(m)` closes a model that holds resources (the Claude Code
   provider forks a `claude -p` child on first use and implements
   `io.Closer`; `retryingModel` forwards `Close`). Callers that own a
@@ -132,7 +143,7 @@ Related: `.claude/rules/tools.md`, `.claude/rules/providers.md`,
   model then replaces its child with one seeded from the cut view.
   `retryingModel` forwards `RebaseHistory`.
 - Sizing is a local char estimate calibrated per call against the
-  provider's **total** token reading — what the model held after its
+  usage record's `ContextTokens` (the provider's total) reading — what the model held after its
   latest reply, i.e. the view up to the request's last model content.
   Never the prompt count: Claude Code reports only the uncached slice
   there. Before any reading (a resumed session) the raw estimate
@@ -296,7 +307,7 @@ turn touched. `DebugLog` is the engine's debug seam (the TUI points it at
 ## File map
 
 - Runtime: `engine.go`, `run.go`, `session.go`, `coordinator.go`,
-  `retry.go`, `plugins.go`, `workflow_run.go`.
+  `retry.go`, `usage.go`, `compact.go`, `plugins.go`, `workflow_run.go`.
 - Contracts: `interaction.go`, `events.go`, `types.go`.
 - Prompt: `prompt.go`, `prompt_links.go`, `rules.go`, `glob.go`.
 - Discovery: `skills.go`, `skill_store.go`, `subagents.go`.

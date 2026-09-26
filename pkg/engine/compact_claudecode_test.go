@@ -21,8 +21,11 @@ import (
 // starts. Each child speaks the stream-json protocol over pipes, loads its
 // --resume seed, and counts every token it holds the way the real child's
 // context grows: system prompt, seed, user frames, tool results, and its own
-// output. A task is a run of tool calls through ask's MCP bridge that
-// survives a child being replaced mid-task.
+// output. It reports each API call on message_start / message_delta stream
+// events, prices it, and keeps a cumulative total_cost_usd like the CLI; an
+// interrupt ends its turn with a result frame, as the CLI's does. A task is a
+// run of tool calls through ask's MCP bridge that survives a child being
+// replaced mid-task.
 type fakeClaude struct {
 	t            *testing.T
 	callsPerTask []int
@@ -36,6 +39,19 @@ type fakeClaude struct {
 	sysFiles   []string
 	nudges     int
 	children   []*fakeClaudeChild
+}
+
+// fakeCostPerToken is what the fake charges per token of context read, so a
+// session's cost is a known sum across every child.
+const fakeCostPerToken = 1e-6
+
+// totalCost is what every child reported spending, in all.
+func (f *fakeClaude) totalCost() float64 {
+	var total float64
+	for _, c := range f.children {
+		total += c.cost
+	}
+	return total
 }
 
 // fakeTokens is the fake's own tokenizer: a third of the text, denser than
@@ -79,6 +95,9 @@ type fakeClaudeChild struct {
 	stdinR, stdoutR *io.PipeReader
 	stdinW, stdoutW *io.PipeWriter
 	context         int
+	cost            float64
+	busy            bool
+	interrupted     bool
 	done            chan struct{}
 }
 
@@ -134,6 +153,12 @@ func (c *fakeClaudeChild) run() {
 			continue
 		}
 		switch fr["type"] {
+		case "control_request":
+			req, _ := fr["request"].(map[string]any)
+			if req["subtype"] == "interrupt" && c.busy {
+				c.busy, c.interrupted = false, true
+				c.emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "total_cost_usd": c.cost})
+			}
 		case "user":
 			msg, _ := json.Marshal(fr["message"])
 			c.context += fakeTokens(string(msg))
@@ -153,8 +178,12 @@ func (c *fakeClaudeChild) run() {
 				c.f.task++
 			}
 			c.f.mu.Unlock()
+			c.interrupted = false
 			c.step()
 		case "control_response":
+			if c.interrupted {
+				continue
+			}
 			resp, _ := fr["response"].(map[string]any)
 			inner, _ := resp["response"].(map[string]any)
 			if mcp, ok := inner["mcp_response"].(map[string]any); ok {
@@ -181,18 +210,25 @@ func (c *fakeClaudeChild) step() {
 	}
 	c.f.mu.Unlock()
 
-	usage := map[string]any{"input_tokens": c.context, "output_tokens": 20}
+	start := map[string]any{"input_tokens": c.context, "output_tokens": 1}
+	c.emit(map[string]any{"type": "stream_event", "event": map[string]any{"type": "message_start", "message": map[string]any{"usage": start}}})
+	c.cost += float64(c.context) * fakeCostPerToken
 	c.context += 20
+	delta := map[string]any{"type": "stream_event", "event": map[string]any{"type": "message_delta", "usage": map[string]any{"output_tokens": 20}}}
 	if !more {
+		c.busy = false
 		c.emit(map[string]any{"type": "assistant", "message": map[string]any{
-			"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "finished"}}, "usage": usage,
+			"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "finished"}}, "usage": start,
 		}})
-		c.emit(map[string]any{"type": "result", "subtype": "success", "result": "finished", "usage": usage})
+		c.emit(delta)
+		c.emit(map[string]any{"type": "result", "subtype": "success", "result": "finished", "total_cost_usd": c.cost})
 		return
 	}
+	c.busy = true
 	c.emit(map[string]any{"type": "assistant", "message": map[string]any{
-		"role": "assistant", "content": []any{map[string]any{"type": "text", "text": fmt.Sprintf("reading %d", n)}}, "usage": usage,
+		"role": "assistant", "content": []any{map[string]any{"type": "text", "text": fmt.Sprintf("reading %d", n)}}, "usage": start,
 	}})
+	c.emit(delta)
 	call, _ := json.Marshal(map[string]any{
 		"jsonrpc": "2.0", "id": n, "method": "tools/call",
 		"params": map[string]any{
@@ -237,6 +273,7 @@ func TestScenario_ClaudeCodeChildRebuiltOnCompaction(t *testing.T) {
 	var mu sync.Mutex
 	var compactions int
 	var failures []string
+	var reported float64
 	turnDone := make(chan struct{}, 4)
 	var toolRuns atomic.Int64
 	sess := NewSession(
@@ -248,6 +285,10 @@ func TestScenario_ClaudeCodeChildRebuiltOnCompaction(t *testing.T) {
 			switch e := ev.(type) {
 			case ContextCompactedEvent:
 				compactions++
+			case UsageEvent:
+				if e.Usage.CostSource == providers.CostReported {
+					reported += e.Usage.CostUSD
+				}
 			case DoneEvent:
 				if e.Result.IsError {
 					failures = append(failures, e.Result.Result)
@@ -286,6 +327,11 @@ func TestScenario_ClaudeCodeChildRebuiltOnCompaction(t *testing.T) {
 	}
 	if fake.nudges == 0 {
 		t.Fatal("no child was rebuilt mid-task; the long task should outgrow the window")
+	}
+	// Every child's spend reached the session, including what the children
+	// replaced mid-task had spent.
+	if want := fake.totalCost(); want == 0 || reported < want-1e-9 || reported > want+1e-9 {
+		t.Fatalf("session saw $%.6f reported, the children spent $%.6f", reported, want)
 	}
 	if toolRuns.Load() != 36 || fake.calls != 36 {
 		t.Fatalf("tool ran %d times for %d calls, want 36 each — none lost, none repeated", toolRuns.Load(), fake.calls)

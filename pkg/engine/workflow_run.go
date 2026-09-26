@@ -185,13 +185,8 @@ func emitAgentEvent(listener EventListener, tabID int, event *session.Event) {
 	if listener == nil || event == nil {
 		return
 	}
-	if event.UsageMetadata != nil {
-		listener(UsageEvent{
-			BaseEvent:    BaseEvent{TabID: tabID},
-			InputTokens:  int(event.UsageMetadata.PromptTokenCount),
-			OutputTokens: int(event.UsageMetadata.CandidatesTokenCount),
-			TotalTokens:  int(event.UsageMetadata.TotalTokenCount),
-		})
+	if u, ok := ResponseUsage(&event.LLMResponse); ok && !event.Partial {
+		listener(NewUsageEvent(tabID, u))
 	}
 	if event.LLMResponse.Content == nil {
 		return

@@ -33,12 +33,12 @@ Rules:
 var tabTitleTimeout = 30 * time.Second
 
 // generateTabTitleText runs the one-shot LLM title call, returning the
-// raw reply text and the call's token usage. topics are the memory
-// topics already known for the project, offered for reuse.
-var generateTabTitleText = func(providerID, modelID, prompt string, topics []string) (string, TokenUsage, error) {
+// raw reply text and the call's usage record, priced. topics are the
+// memory topics already known for the project, offered for reuse.
+var generateTabTitleText = func(providerID, modelID, prompt string, topics []string) (string, providers.Usage, error) {
 	p, ok := providers.Get(providerID)
 	if !ok {
-		return "", TokenUsage{}, fmt.Errorf("tab title: unknown provider %q", providerID)
+		return "", providers.Usage{}, fmt.Errorf("tab title: unknown provider %q", providerID)
 	}
 	cfg, _ := loadConfig()
 	if modelID == "" {
@@ -50,7 +50,7 @@ var generateTabTitleText = func(providerID, modelID, prompt string, topics []str
 
 	llm, err := engine.ModelBuilder(ctx, p, toPkgConfig(cfg), modelID)
 	if err != nil {
-		return "", TokenUsage{}, err
+		return "", providers.Usage{}, err
 	}
 	// One-shot: a subprocess-backed provider forks a child for this single
 	// call, so close it when the title is done.
@@ -76,7 +76,7 @@ var generateTabTitleText = func(providerID, modelID, prompt string, topics []str
 	// One non-streaming call: a streamed run yields deltas and then the
 	// aggregated final message, and concatenating both doubles the title.
 	var sb strings.Builder
-	var usage TokenUsage
+	var usage providers.Usage
 	for resp, err := range llm.GenerateContent(ctx, req, false) {
 		if err != nil {
 			return "", usage, err
@@ -84,9 +84,8 @@ var generateTabTitleText = func(providerID, modelID, prompt string, topics []str
 		if resp == nil {
 			continue
 		}
-		if resp.UsageMetadata != nil {
-			usage.InputTokens = int(resp.UsageMetadata.PromptTokenCount)
-			usage.OutputTokens = int(resp.UsageMetadata.CandidatesTokenCount)
+		if u, ok := engine.ResponseUsage(resp); ok && !resp.Partial {
+			usage = engine.StampUsage(u, providerID, modelID)
 		}
 		if resp.Content == nil {
 			continue
@@ -114,17 +113,10 @@ func generateTabTitleCmd(tabID int, providerID, modelID, cwd, prompt string) tea
 		raw, usage, err := generateTabTitleText(providerID, modelID, prompt, topics)
 		if err != nil {
 			debugLog("tab title generation: %v", err)
-			return tabTitleMsg{tabID: tabID}
+			return tabTitleMsg{tabID: tabID, usage: usage}
 		}
-		costModel := modelID
-		if costModel == "" {
-			if p, ok := providers.Get(providerID); ok {
-				costModel = p.DefaultModel()
-			}
-		}
-		cost, known := stepCostUSD(providerID, costModel, usage)
 		title, topic := splitTitleAndTopic(raw)
-		return tabTitleMsg{tabID: tabID, title: title, topic: topic, costUSD: cost, costKnown: known}
+		return tabTitleMsg{tabID: tabID, title: title, topic: topic, usage: usage}
 	}
 }
 

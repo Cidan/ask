@@ -81,6 +81,23 @@ type CheapModeler interface {
 	CheapModel() string
 }
 
+// CostReporter is the optional capability of a provider whose calls report
+// what they cost (Claude Code's total_cost_usd, OpenRouter's usage.cost), so a
+// session on it has a known cost even for a model the catalog cannot price.
+type CostReporter interface {
+	ReportsCost() bool
+}
+
+// ReportsCost reports whether provider id's calls report their own cost.
+func ReportsCost(id string) bool {
+	p, ok := Get(id)
+	if !ok {
+		return false
+	}
+	r, ok := p.(CostReporter)
+	return ok && r.ReportsCost()
+}
+
 // HistoryRebaser is the optional capability of a model that holds the
 // conversation outside the request — Claude Code's child process keeps its own
 // transcript and is only ever sent what ADK appended since the last call.

@@ -104,18 +104,27 @@ func (m ModelInfo) modelMeta() ModelMeta {
 var ModelMetaLookup = ModelMetaFor
 
 // StepCostUSD prices one call's token usage against the model's per-1M
-// rates: cache reads at the cached-input rate, cache writes at the
-// cache-write rate (crush's formula). ok=false when no price is known.
+// rates. inputTokens is input at the full rate only; cache reads and writes
+// are priced at their own rates, and a model that lists no cache rate is
+// charged the full input rate for them rather than nothing. ok=false when no
+// price is known.
 func StepCostUSD(providerID, modelID string, inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens int) (float64, bool) {
 	meta, ok := ModelMetaLookup(providerID, modelID)
 	if !ok || meta.Pricing == nil {
 		return 0, false
 	}
 	p := meta.Pricing
+	readRate, writeRate := p.CachedInputPer1M, p.CacheWritePer1M
+	if readRate == 0 {
+		readRate = p.InputPer1M
+	}
+	if writeRate == 0 {
+		writeRate = p.InputPer1M
+	}
 	cost := p.InputPer1M*float64(inputTokens) +
 		p.OutputPer1M*float64(outputTokens) +
-		p.CacheWritePer1M*float64(cacheWriteTokens) +
-		p.CachedInputPer1M*float64(cacheReadTokens)
+		writeRate*float64(cacheWriteTokens) +
+		readRate*float64(cacheReadTokens)
 	return cost / 1e6, true
 }
 

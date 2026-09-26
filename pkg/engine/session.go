@@ -396,13 +396,8 @@ func (s *Session) runTurn(turn Turn) {
 			continue
 		}
 
-		if event.UsageMetadata != nil {
-			s.Emit(UsageEvent{
-				BaseEvent:    BaseEvent{TabID: s.args.TabID},
-				InputTokens:  int(event.UsageMetadata.PromptTokenCount),
-				OutputTokens: int(event.UsageMetadata.CandidatesTokenCount),
-				TotalTokens:  int(event.UsageMetadata.TotalTokenCount),
-			})
+		if u, ok := ResponseUsage(&event.LLMResponse); ok && !event.Partial {
+			s.Emit(NewUsageEvent(s.args.TabID, u))
 		}
 
 		if event.LLMResponse.Content != nil {

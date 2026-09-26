@@ -114,10 +114,10 @@ func TestContextMeter_ZeroUsagePreservesCost(t *testing.T) {
 
 // TestContextMeter_StreamingAcrossTurns drives the real ADK streaming path
 // (through the engine.GenerateStream seam) for two consecutive turns, each
-// opening with the zero-usage artifact. It proves: (1) the real event stream
-// does emit a tokens==0 usageMsg per turn, (2) the real reading is emitted, and
-// (3) replaying the stream through the model update leaves the meter correct and
-// never reset to 0% between turns.
+// opening with the zero-usage artifact. It proves: (1) the artifact yields no
+// usage record, so no zero reading is emitted at all, (2) the real reading is
+// emitted, and (3) replaying the stream through the model update leaves the
+// meter correct and never reset to 0% between turns.
 func TestContextMeter_StreamingAcrossTurns(t *testing.T) {
 	mock := &mockScriptedStream{
 		turns: [][]*genai.GenerateContentResponse{
@@ -138,8 +138,8 @@ func TestContextMeter_StreamingAcrossTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	turn1 := collectUsageTokens(readSessionMsgs(t, s.ch, isTurnComplete))
-	if !contains(turn1, 0) {
-		t.Fatalf("turn 1 never emitted the zero-usage artifact: %v", turn1)
+	if contains(turn1, 0) {
+		t.Fatalf("turn 1 emitted a zero reading for the metadata-only chunk: %v", turn1)
 	}
 	if last := lastNonZero(turn1); last != 100_000 {
 		t.Fatalf("turn 1 real reading = %d want 100000 (all: %v)", last, turn1)
@@ -159,19 +159,17 @@ func TestContextMeter_StreamingAcrossTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	turn2 := collectUsageTokens(readSessionMsgs(t, s.ch, isTurnComplete))
-	if len(turn2) == 0 || turn2[0] != 0 {
-		t.Fatalf("turn 2 must open with the zero-usage artifact, got %v", turn2)
+	if len(turn2) == 0 || contains(turn2, 0) {
+		t.Fatalf("turn 2 must emit only its real reading, got %v", turn2)
 	}
 
-	// The exact "reset between turns" moment: applying turn 2's leading zero
-	// chunk must NOT drop the meter to 0%.
-	m, _ = runUpdate(t, m, usageMsg{tokens: turn2[0]})
-	if m.lastUsageTokens != 100_000 || m.sidebarCost() != "50%" {
-		t.Fatalf("turn 2 leading zero reset the meter: tokens=%d cost=%q want 100000/50%%", m.lastUsageTokens, m.sidebarCost())
-	}
-	// The rest of turn 2 advances it to the new reading.
-	for _, tok := range turn2[1:] {
+	// Turn 2's readings advance the meter straight to the new reading; it
+	// never passes through 0%.
+	for _, tok := range turn2 {
 		m, _ = runUpdate(t, m, usageMsg{tokens: tok})
+		if m.lastUsageTokens == 0 {
+			t.Fatal("the meter dropped to 0 between turns")
+		}
 	}
 	if m.lastUsageTokens != 150_000 || m.sidebarCost() != "75%" {
 		t.Fatalf("after turn 2: tokens=%d cost=%q want 150000/75%%", m.lastUsageTokens, m.sidebarCost())
