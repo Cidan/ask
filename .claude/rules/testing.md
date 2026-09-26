@@ -74,6 +74,7 @@ Swap the package-level var in the test and restore it with `t.Cleanup`.
 | `providers.VertexPrepareCredentials`, `VertexModel`, `ListVertexModels` | `pkg/providers/vertex.go` | Vertex auth, model, listing |
 | `providers.ListOpenRouterModels`, `OpenRouterModelBuilder` | `pkg/providers/openrouter.go` | OpenRouter listing, model |
 | `providers.ModelsDevURL`, `ModelsDevHTTPClient`, `ModelsDevCachePath` | `pkg/providers/modelsdev.go` | models.dev fetch + cache |
+| `providers.ClaudeCodeStart` | `pkg/providers/claudecode_child.go` | the `claude` child process (a fake `ClaudeCodeProcess` speaking NDJSON; `fakeClaude` in `pkg/engine/compact_claudecode_test.go`) |
 | `plugin.RunGit`, `plugin.HTTPClient`, `plugin.ClaudeHome`, `plugin.Now` | `pkg/plugin` | git, HTTP, `~/.claude`, clock |
 
 Shared helpers in `cmd/ask/testhelpers_test.go`: `fakeProvider`

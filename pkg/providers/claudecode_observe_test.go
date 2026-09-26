@@ -50,7 +50,7 @@ func userToolResultFrame(toolUseID, content string, isErr bool) ccFrame {
 // child has no built-in tools; with it on only WebSearch is available and it is
 // pre-approved.
 func TestCCArgv_NativeWebSearch(t *testing.T) {
-	off := ccArgv("opus", "", "SYS", false)
+	off := ccArgv("opus", "", "SYS", "", false)
 	if i := indexOf(off, "--tools"); i < 0 || off[i+1] != "" {
 		t.Errorf("fallback off: --tools must be empty; got %v", off)
 	}
@@ -58,7 +58,7 @@ func TestCCArgv_NativeWebSearch(t *testing.T) {
 		t.Errorf("fallback off: --allowedTools = %q, want mcp__ask", off[indexOf(off, "--allowedTools")+1])
 	}
 
-	on := ccArgv("opus", "", "SYS", true)
+	on := ccArgv("opus", "", "SYS", "", true)
 	if i := indexOf(on, "--tools"); i < 0 || on[i+1] != "WebSearch" {
 		t.Errorf("fallback on: --tools = %q, want WebSearch", on[indexOf(on, "--tools")+1])
 	}
@@ -126,7 +126,7 @@ func TestClaudeCodeModel_ObservesNativeTools(t *testing.T) {
 
 	fc := newFakeConn(16)
 	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
 	sink := &fakeSink{}
@@ -170,7 +170,7 @@ func TestClaudeCodeModel_ObservesNativeTools(t *testing.T) {
 func TestClaudeCodeModel_NoSinkNoObservation(t *testing.T) {
 	fc := newFakeConn(8)
 	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "opus", "/repo", true, nil)

@@ -112,7 +112,7 @@ func TestClaudeCodeModel_SystemPromptFileLifecycle(t *testing.T) {
 	fc := newFakeConn(4)
 	prevDial := ccDial
 	var gotArgv []string
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) {
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) {
 		gotArgv = args.Argv
 		return fc, nil
 	}
@@ -121,11 +121,18 @@ func TestClaudeCodeModel_SystemPromptFileLifecycle(t *testing.T) {
 	m := newClaudeCodeModel("claude", "opus", "/repo", false, nil)
 
 	const sysPrompt = "You are ask.\nThis is a large system prompt.\n"
-	req := &model.LLMRequest{Config: &genai.GenerateContentConfig{
-		SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: sysPrompt}}},
-	}}
-	if err := m.ensure(req); err != nil {
-		t.Fatalf("ensure: %v", err)
+	req := &model.LLMRequest{
+		Config: &genai.GenerateContentConfig{
+			SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: sysPrompt}}},
+		},
+		Contents: []*genai.Content{userContent("hi")},
+	}
+	if err := m.send(req); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	// A single-message history needs no seed.
+	if indexOf(gotArgv, "--resume") >= 0 || m.seedPath != "" {
+		t.Errorf("a fresh one-message turn must not seed the child; argv %v, seed %q", gotArgv, m.seedPath)
 	}
 
 	// The child was dialed with --system-prompt-file, never the inline flag.
@@ -173,7 +180,7 @@ func TestClaudeCodeModel_ToolCallLockStep(t *testing.T) {
 	fc := newFakeConn(16)
 	prevDial := ccDial
 	var gotArgv []string
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) {
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) {
 		gotArgv = args.Argv
 		return fc, nil
 	}
@@ -257,7 +264,7 @@ func TestClaudeCodeModel_ToolCallLockStep(t *testing.T) {
 func TestClaudeCodeModel_PlainTextTurn(t *testing.T) {
 	fc := newFakeConn(8)
 	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "haiku", "/repo", false, nil)
@@ -290,7 +297,7 @@ func TestClaudeCodeModel_PlainTextTurn(t *testing.T) {
 func TestClaudeCodeModel_CachedTurnTotalTokens(t *testing.T) {
 	fc := newFakeConn(8)
 	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "sonnet", "/repo", false, nil)
@@ -331,7 +338,7 @@ func TestClaudeCodeModel_CachedTurnTotalTokens(t *testing.T) {
 func TestClaudeCodeModel_MeterUsesLastCallNotCumulative(t *testing.T) {
 	fc := newFakeConn(8)
 	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "sonnet", "/repo", false, nil)
@@ -381,7 +388,7 @@ func TestClaudeCodeModel_ObservesContextWindow(t *testing.T) {
 
 	fc := newFakeConn(8)
 	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "ctxwin-test-1m", "/repo", false, nil)
@@ -421,46 +428,6 @@ func TestCCContextWindowFromModelUsage(t *testing.T) {
 	}
 }
 
-// TestClaudeCodeModel_HistoryPreamble: a first turn with prior history (a
-// resumed/materialized session) sends the history as one context message plus
-// the new user turn, since the fresh child has no native transcript.
-func TestClaudeCodeModel_HistoryPreamble(t *testing.T) {
-	fc := newFakeConn(8)
-	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
-	defer func() { ccDial = prevDial }()
-
-	m := newClaudeCodeModel("claude", "opus", "/repo", false, nil)
-	t.Cleanup(func() { _ = m.Close() })
-	fc.push(resultFrame("ok"))
-
-	collect(t, m, &model.LLMRequest{
-		Config: &genai.GenerateContentConfig{},
-		Contents: []*genai.Content{
-			userContent("first question"),
-			{Role: "model", Parts: []*genai.Part{{Text: "first answer"}}},
-			userContent("second question"),
-		},
-	})
-
-	// Two user frames: the flattened history preamble, then the new turn.
-	var userTexts []string
-	for _, s := range fc.sent {
-		if s["type"] == "user" {
-			userTexts = append(userTexts, userFrameText(s))
-		}
-	}
-	if len(userTexts) != 2 {
-		t.Fatalf("want 2 user frames (history + new turn), got %d: %v", len(userTexts), userTexts)
-	}
-	if !contains(userTexts[0], "first question") || !contains(userTexts[0], "first answer") {
-		t.Errorf("history preamble missing prior turns: %q", userTexts[0])
-	}
-	if userTexts[1] != "second question" {
-		t.Errorf("new turn = %q", userTexts[1])
-	}
-}
-
 // TestClaudeCodeModel_NonStreamingNoPartials: when ADK asks for non-streaming
 // (RunConfig without SSE, the TUI's default), the model must not yield partial
 // deltas — the consumer accumulates every text event, so a partial plus the
@@ -469,7 +436,7 @@ func TestClaudeCodeModel_HistoryPreamble(t *testing.T) {
 func TestClaudeCodeModel_NonStreamingNoPartials(t *testing.T) {
 	fc := newFakeConn(8)
 	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "haiku", "/repo", false, nil)
@@ -517,7 +484,7 @@ func TestClaudeCodeModel_NonStreamingNoPartials(t *testing.T) {
 func TestClaudeCodeModel_StreamingYieldsPartials(t *testing.T) {
 	fc := newFakeConn(8)
 	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "haiku", "/repo", false, nil)
@@ -548,7 +515,7 @@ func TestProbeClaudeCodeModels_ParsesInitResponse(t *testing.T) {
 	fc := newFakeConn(4)
 	prevDial := ccDial
 	var gotArgv []string
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) {
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) {
 		gotArgv = args.Argv
 		return fc, nil
 	}
@@ -600,7 +567,7 @@ func TestProbeClaudeCodeModels_ParsesInitResponse(t *testing.T) {
 // static catalog rather than an empty picker.
 func TestClaudeCode_ListModels_FallsBackToCatalog(t *testing.T) {
 	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) {
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) {
 		return nil, errChildExited
 	}
 	defer func() { ccDial = prevDial }()

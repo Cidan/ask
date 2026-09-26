@@ -11,9 +11,12 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/tools"
+	"github.com/Cidan/ask/pkg/workflow"
+	"google.golang.org/adk/v2/agent/llmagent"
 	adkmodel "google.golang.org/adk/v2/model"
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
@@ -46,6 +49,9 @@ func (m *mockScriptedStream) Next() iter.Seq2[*genai.GenerateContentResponse, er
 
 func newTestAgentSession(t *testing.T, store *agentSessionStore) *agentSession {
 	t.Helper()
+	// runTurn reads config (deslop, auto-compaction); the real one would
+	// route turns through whatever models the developer configured.
+	isolateHome(t)
 	s := &agentSession{
 		args:          ProviderSessionArgs{Cwd: t.TempDir(), TabID: 1, SkipAllPermissions: true},
 		system:        "test system prompt",
@@ -300,32 +306,126 @@ func compactTestContents() []*genai.Content {
 	}
 }
 
-// runCompactBeforeModel drives one session's compaction callback over a
-// transcript already past the trigger, and reports what the model would have
-// been sent plus everything the session emitted.
-func runCompactBeforeModel(t *testing.T, prov providers.Provider) ([]*genai.Content, []tea.Msg) {
+// rebasingModel stands in for a model that holds its own history (Claude
+// Code), counting the rebuilds compaction asks of it.
+type rebasingModel struct {
+	mockADKModel
+	rebases int
+}
+
+func (m *rebasingModel) RebaseHistory() { m.rebases++ }
+
+// compactHarness is a session whose coder agent calls llm with an 8000-token
+// window, capturing everything the session emits.
+type compactHarness struct {
+	s       *agentSession
+	emitted []tea.Msg
+}
+
+func newCompactHarness(t *testing.T, llm adkmodel.LLM) *compactHarness {
 	t.Helper()
-	var emitted []tea.Msg
+	h := &compactHarness{}
 	prev := agentSendToProgram
 	agentSendToProgram = func(msg tea.Msg) bool {
-		emitted = append(emitted, msg)
+		h.emitted = append(h.emitted, msg)
 		return true
 	}
 	t.Cleanup(func() { agentSendToProgram = prev })
-
-	s := &agentSession{
+	h.s = &agentSession{
 		args:          ProviderSessionArgs{Cwd: t.TempDir(), TabID: 1},
-		provider:      prov,
-		contextWindow: 1000,
+		contextWindow: 8000,
 	}
-	s.compactor = s.newCompactor()
-	s.compactor.ObserveUsage(950, 950)
+	h.s.compactor = h.s.newCompactor(h.s.contextWindow, llm)
+	return h
+}
 
-	req := &adkmodel.LLMRequest{Contents: compactTestContents()}
-	if _, err := s.compactBeforeModel(nil, req); err != nil {
-		t.Fatalf("compactBeforeModel: %v", err)
+// call runs the coder agent's compaction callbacks around one model call
+// that reports usedTokens, and returns what the model was sent.
+func (h *compactHarness) call(t *testing.T, contents []*genai.Content, usedTokens int) []*genai.Content {
+	t.Helper()
+	before, after := compactCallbacks(h.s.compactor)
+	return callAround(t, before, after, contents, usedTokens)
+}
+
+// callAround runs one agent's model callbacks around a model call that
+// reports usedTokens, and returns what the model was sent.
+func callAround(t *testing.T, before llmagent.BeforeModelCallback, after llmagent.AfterModelCallback, contents []*genai.Content, usedTokens int) []*genai.Content {
+	t.Helper()
+	req := &adkmodel.LLMRequest{Contents: contents}
+	if _, err := before(nil, req); err != nil {
+		t.Fatalf("before: %v", err)
 	}
-	return req.Contents, emitted
+	resp := &adkmodel.LLMResponse{UsageMetadata: &genai.GenerateContentResponseUsageMetadata{TotalTokenCount: int32(usedTokens)}}
+	if _, err := after(nil, resp, nil); err != nil {
+		t.Fatalf("after: %v", err)
+	}
+	return req.Contents
+}
+
+// windowProvider is a registry entry whose only interesting property is its
+// context window.
+type windowProvider struct {
+	id     string
+	window int64
+}
+
+func (p windowProvider) ID() string                          { return p.id }
+func (p windowProvider) DisplayName() string                 { return p.id }
+func (windowProvider) DefaultModel() string                  { return "m" }
+func (windowProvider) ModelOptions() []string                { return []string{"m"} }
+func (windowProvider) EffortOptions() []string               { return nil }
+func (windowProvider) Settings() []providers.SettingField    { return nil }
+func (windowProvider) Configured(config.ProviderConfig) bool { return true }
+func (windowProvider) SupportsImages(string) bool            { return false }
+func (windowProvider) MaxOutputTokens(string) int64          { return 1024 }
+func (p windowProvider) ContextWindow(string) int64          { return p.window }
+func (windowProvider) CanonicalModelID(modelID, _ string) string {
+	if modelID == "" {
+		return "m"
+	}
+	return modelID
+}
+func (windowProvider) CallOptions(string, string) (*genai.GenerateContentConfig, *float64) {
+	return nil, nil
+}
+func (windowProvider) BuildModel(context.Context, config.ProviderConfig, string) (adkmodel.LLM, error) {
+	return nil, nil
+}
+
+// Each workflow step compacts against its own model: sized to that step's
+// window and rebuilding that step's model, not the session's coder.
+func TestWorkflowStep_CompactsAgainstItsOwnModel(t *testing.T) {
+	isolateHome(t)
+	providers.Register(windowProvider{id: "wf-small", window: 8000})
+	h := newCompactHarness(t, nil)
+	cfg := tuiWorkflowCompileConfig(h.s, workflow.Def{Name: "wf"}, workflow.NewTextSource(1, "src"), t.TempDir(), 1)
+
+	stepModel := &rebasingModel{mockADKModel: mockADKModel{name: "step"}}
+	before, after := cfg.ModelCallbacksBuilder(workflow.Step{Name: "s", Provider: "wf-small"}, stepModel)
+	if len(before) != 1 || len(after) != 1 {
+		t.Fatalf("step callbacks = %d before, %d after; want one compactor pair", len(before), len(after))
+	}
+	callAround(t, before[0], after[0], compactTestContents(), 7500)
+	got := callAround(t, before[0], after[0], compactTestContents(), 7500)
+	if len(got) >= len(compactTestContents()) {
+		t.Fatalf("step on an 8000-token window was not compacted: %d contents", len(got))
+	}
+	if stepModel.rebases != 1 {
+		t.Fatalf("step model rebuilt %d times, want 1", stepModel.rebases)
+	}
+	if n := countContextCompactedMsgs(h.emitted); n != 1 {
+		t.Fatalf("emitted %d compaction notices, want 1", n)
+	}
+
+	// A second step gets a compactor of its own: nothing carries over.
+	other := &rebasingModel{mockADKModel: mockADKModel{name: "other"}}
+	b2, a2 := cfg.ModelCallbacksBuilder(workflow.Step{Name: "t", Provider: "wf-small"}, other)
+	if got := callAround(t, b2[0], a2[0], compactTestContents()[:2], 100); len(got) != 2 {
+		t.Fatalf("a fresh step inherited another step's cut: %d contents", len(got))
+	}
+	if other.rebases != 0 {
+		t.Fatalf("the fresh step's model was rebuilt %d times", other.rebases)
+	}
 }
 
 func countContextCompactedMsgs(msgs []tea.Msg) int {
@@ -338,59 +438,72 @@ func countContextCompactedMsgs(msgs []tea.Msg) int {
 	return n
 }
 
-func TestAgentSession_CompactorSkipsContextManagedProvider(t *testing.T) {
+// Compaction is the same for every provider: a stateless model is sent the
+// cut history, and a model that holds its own history is sent the same cut
+// and told to rebuild from it.
+func TestAgentSession_CompactsEveryProviderAlike(t *testing.T) {
 	isolateHome(t)
-
 	full := len(compactTestContents())
 
-	got, emitted := runCompactBeforeModel(t, providers.Vertex{})
-	if len(got) >= full {
-		t.Errorf("vertex: contents = %d, want fewer than %d", len(got), full)
-	}
-	if n := countContextCompactedMsgs(emitted); n != 1 {
-		t.Errorf("vertex: emitted %d contextCompactedMsg, want 1", n)
-	}
-
-	// Claude Code owns its own conversation: its history must come through
-	// byte-for-byte, and the user must not be told anything was dropped.
-	got, emitted = runCompactBeforeModel(t, providers.ClaudeCode{})
-	if len(got) != full {
-		t.Errorf("claude-code: contents = %d, want %d untouched", len(got), full)
-	}
-	if n := countContextCompactedMsgs(emitted); n != 0 {
-		t.Errorf("claude-code: emitted %d contextCompactedMsg, want 0", n)
+	for _, tc := range []struct {
+		name string
+		llm  adkmodel.LLM
+	}{
+		{"stateless", &mockADKModel{name: "m"}},
+		{"holds history", &rebasingModel{mockADKModel: mockADKModel{name: "m"}}},
+	} {
+		h := newCompactHarness(t, tc.llm)
+		h.call(t, compactTestContents(), 7500)
+		got := h.call(t, compactTestContents(), 7500)
+		if len(got) >= full {
+			t.Errorf("%s: contents = %d, want fewer than %d", tc.name, len(got), full)
+		}
+		if n := countContextCompactedMsgs(h.emitted); n != 1 {
+			t.Errorf("%s: emitted %d contextCompactedMsg, want 1", tc.name, n)
+		}
+		if rm, ok := tc.llm.(*rebasingModel); ok && rm.rebases != 1 {
+			t.Errorf("%s: model rebuilt %d times, want once for one cut", tc.name, rm.rebases)
+		}
 	}
 }
 
 func TestAgentSession_CompactorHonoursAutoCompactConfig(t *testing.T) {
 	isolateHome(t)
-
-	cfg, _ := loadConfig()
-	off := false
-	cfg.AutoCompact = &off
-	if err := saveConfig(cfg); err != nil {
-		t.Fatalf("saveConfig: %v", err)
+	setAutoCompact := func(on bool) {
+		cfg, _ := loadConfig()
+		cfg.AutoCompact = &on
+		if err := saveConfig(cfg); err != nil {
+			t.Fatalf("saveConfig: %v", err)
+		}
 	}
-
 	full := len(compactTestContents())
-	got, emitted := runCompactBeforeModel(t, providers.Vertex{})
-	if len(got) != full {
+	llm := &rebasingModel{mockADKModel: mockADKModel{name: "m"}}
+	h := newCompactHarness(t, llm)
+
+	setAutoCompact(false)
+	h.call(t, compactTestContents(), 7500)
+	if got := h.call(t, compactTestContents(), 7500); len(got) != full {
 		t.Errorf("autoCompact off: contents = %d, want %d untouched", len(got), full)
 	}
-	if n := countContextCompactedMsgs(emitted); n != 0 {
+	if n := countContextCompactedMsgs(h.emitted); n != 0 {
 		t.Errorf("autoCompact off: emitted %d contextCompactedMsg, want 0", n)
 	}
 
-	// The gate is read per call, so flipping it back on takes effect on the
-	// same live session rather than waiting for a restart.
-	on := true
-	cfg.AutoCompact = &on
-	if err := saveConfig(cfg); err != nil {
-		t.Fatalf("saveConfig: %v", err)
-	}
-	got, _ = runCompactBeforeModel(t, providers.Vertex{})
-	if len(got) >= full {
+	// The gate is read per call, so flipping it takes effect on the same
+	// live session rather than waiting for a restart.
+	setAutoCompact(true)
+	if got := h.call(t, compactTestContents(), 7500); len(got) >= full {
 		t.Errorf("autoCompact on: contents = %d, want fewer than %d", len(got), full)
+	}
+
+	// Switched off again, the standing cut is dropped and the model that
+	// holds the cut history is told to rebuild from the whole of it.
+	setAutoCompact(false)
+	if got := h.call(t, compactTestContents(), 7500); len(got) != full {
+		t.Errorf("autoCompact off again: contents = %d, want %d", len(got), full)
+	}
+	if llm.rebases != 2 {
+		t.Errorf("model rebuilt %d times, want 2 (cut, then uncut)", llm.rebases)
 	}
 }
 

@@ -28,17 +28,21 @@ the registry; nothing outside `pkg/providers` may name a provider.
 
 - `providers.Provider` is a Go **interface**. Every method is required.
   Optional behaviour is a separate interface discovered by type
-  assertion (`ModelLister`, `NativeWebSearchProvider`, `CheapModeler`,
-  `ContextManagedProvider` today; `CheapModeler` names the cheapest
-  model for background calls such as memory extraction when the catalog
-  carries no prices — `providers.CheapestModel` consults it before list
-  prices; `ContextManagedProvider` marks a provider that owns the
-  conversation itself, which `providers.ManagesOwnContext` reads to keep
-  auto-compaction from rewriting its request history). Never model
+  assertion (`ModelLister`, `NativeWebSearchProvider`, `CheapModeler`
+  today; `CheapModeler` names the cheapest model for background calls
+  such as memory extraction when the catalog carries no prices —
+  `providers.CheapestModel` consults it before list prices). Never model
   a provider as a struct
   of func fields with nil-means-default — that is the design this
   replaced, and it produced the same field nil-checked in one caller
   and called blind in another.
+- Models have one optional capability of their own: `HistoryRebaser`, for
+  a model that holds the conversation outside the request (Claude Code's
+  child). Auto-compaction applies to every provider alike and calls
+  `providers.RebaseHistory(m)` whenever it moves its cut; such a model
+  must then rebuild what it holds from its next request. Wrappers
+  (`retryingModel`) forward it. There is no per-provider compaction
+  opt-out.
 - Pin every implementation: `var _ Provider = Name{}` (and
   `var _ ModelLister = Name{}` when it lists models).
 - `Register` panics on a malformed provider (empty id; a setting key
@@ -70,7 +74,7 @@ ClaudeCode{}}`; Vertex is `DefaultProviderID()`. All three implement
   provider is another thin config over `OpenAICompatConfig` — do not
   write a second Chat Completions translator.
 - **Claude Code** (`claudecode.go`, `claudecode_wire.go`,
-  `claudecode_child.go`, `claudecode_model.go`): forks `claude -p` in
+  `claudecode_child.go`, `claudecode_model.go`, `claudecode_seed.go`): forks `claude -p` in
   stream-json mode and runs it with ask's tools, not Claude's. Not the
   Anthropic API — a subprocess. Setting `binary` (env `ASK_CLAUDE_BIN`,
   default `claude`); no `Secret` field — auth lives in the binary
@@ -103,22 +107,45 @@ ClaudeCode{}}`; Vertex is `DefaultProviderID()`. All three implement
   aren't rendered. Claude's own CLAUDE.md/auto-memory/skills are
   switched off (`--setting-sources "" --settings
   '{"autoMemoryEnabled":false}'`) so only ask's `BuildSystemPrompt`
-  reaches the model; the child runs `--no-session-persistence` and holds
-  history in memory, so cross-process `/resume` replays the transcript as
-  one context message rather than using native `--resume`. The child is
+  reaches the model. **The CLI's own compaction is off**
+  (`DISABLE_COMPACT=1` in `ccSessionEnv`): `--setting-sources ""` does
+  not stop it reading `autoCompactEnabled` from the legacy
+  `~/.claude.json`, and a child that compacted itself would hold a history
+  ask never sent. **History:** the child runs `--no-session-persistence`
+  and holds the conversation in memory; a running child is sent only
+  what follows the last request content it was sent (`consumed`, a mark
+  keyed on role + first part, because request hooks add one-off contents
+  and parts that the next request no longer carries — falling back to
+  the child's latest reply). Whenever it must start from history — the
+  first call of a resumed or materialized session, a request sharing
+  nothing with the child (a workflow loop's next iteration), or the call
+  after `RebaseHistory` (ask's compaction moved its cut) — the old child
+  is killed and a new one is started with `--resume <tmp>.jsonl`: the
+  request history written as a Claude Code transcript
+  (`writeClaudeSeedFile`; lines need only `type`, `uuid`, `parentUuid`,
+  `sessionId`, `timestamp`, `message`), with real `tool_use` /
+  `tool_result` blocks, tool ids minted fresh and paired, thoughts
+  dropped (no signatures), consecutive user contents merged tool-results
+  first. The newest user content starts the turn over stdin; a history
+  ending mid-turn on a tool result is seeded whole and restarted with
+  `ccSeedNudge` — an unanswered `tool_use` at the end of a seed is re-run
+  by the CLI, never answered. The child is
   killed through the `io.Closer` capability (`engine.CloseModel`, forwarded
-  by `retryingModel`). `ListModels` forks a short-lived child, reads the
+  by `retryingModel`); the system-prompt and seed temp files go with it.
+  `ListModels` forks a short-lived child, reads the
   account's models out of the `initialize` control response's `models`
   array (`probeClaudeCodeModels`), and caches each model's live metadata
   (`cacheClaudeCodeMeta`, layered by `ModelMetaFor` through
   `mergeProviderNative`); it falls back to the static catalog on a probe
-  failure so the picker is never empty. Seam: `ccDial` (swap for a
-  scripted `ccConn` in tests — no process). Known v1 limits: the system
-  prompt is captured at
-  spawn (a mid-session change — only workflow state blocks — is not
-  restarted; each workflow step gets a fresh child anyway); tab-title and
-  workflow-step children are closed by their run, chat/session children by
-  `Session.Close`.
+  failure so the picker is never empty. Seams: `ccDial` (swap for a
+  scripted `ccConn` in tests — frame level, no process) and
+  `ClaudeCodeStart` (swap for a fake `ClaudeCodeProcess` speaking NDJSON —
+  what `pkg/engine`'s end-to-end compaction test uses). Opt-in live tests
+  (`ASK_CC_LIVE=1`) cover a real rebuild mid-turn. Known v1 limits: the
+  system prompt is captured at spawn (a mid-session change — only
+  workflow state blocks — is not restarted; each workflow step gets a
+  fresh child anyway); tab-title and workflow-step children are closed
+  by their run, chat/session children by `Session.Close`.
 
 ## Retry
 

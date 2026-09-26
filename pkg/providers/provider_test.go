@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"iter"
 	"strings"
 	"testing"
 
@@ -43,6 +44,14 @@ func (s stubProvider) CallOptions(string, string) (*genai.GenerateContentConfig,
 func (s stubProvider) SupportsImages(string) bool   { return false }
 func (s stubProvider) ContextWindow(string) int64   { return 1 }
 func (s stubProvider) MaxOutputTokens(string) int64 { return 1 }
+
+// stubLLM is a stateless model: every request carries the full history.
+type stubLLM struct{}
+
+func (*stubLLM) Name() string { return "stub" }
+func (*stubLLM) GenerateContent(context.Context, *model.LLMRequest, bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(func(*model.LLMResponse, error) bool) {}
+}
 
 // withRegistry swaps the package registry for the test's duration.
 func withRegistry(t *testing.T, provs ...Provider) {
@@ -157,21 +166,24 @@ func TestBuiltinSettings_AreWellFormed(t *testing.T) {
 	}
 }
 
-func TestManagesOwnContext(t *testing.T) {
-	var cm ContextManagedProvider = ClaudeCode{}
-	if !cm.ManagesOwnContext() {
-		t.Error("ClaudeCode must satisfy ContextManagedProvider and report true")
+// Claude Code's model holds the conversation in its child, so compaction must
+// be able to tell it to rebuild; a stateless model is left alone.
+func TestRebaseHistory_OnlyModelsThatHoldHistory(t *testing.T) {
+	cc := newClaudeCodeModel("claude", "opus", "/repo", false, nil)
+	if !RebaseHistory(cc) {
+		t.Fatal("the Claude Code model must implement HistoryRebaser")
 	}
-	if !ManagesOwnContext(ClaudeCode{}) {
-		t.Error("the child process owns Claude Code's history — compaction must skip it")
+	cc.mu.Lock()
+	rebase := cc.rebase
+	cc.mu.Unlock()
+	if !rebase {
+		t.Fatal("RebaseHistory did not mark the Claude Code model for a rebuild")
 	}
-	for _, p := range []Provider{Vertex{}, OpenRouter{}, stubProvider{id: "s"}} {
-		if ManagesOwnContext(p) {
-			t.Errorf("%s does not manage its own context", p.ID())
-		}
+	if RebaseHistory(&stubLLM{}) {
+		t.Fatal("a model without held history reported a rebase")
 	}
-	if ManagesOwnContext(nil) {
-		t.Error("a nil provider must report false")
+	if RebaseHistory(nil) {
+		t.Fatal("a nil model reported a rebase")
 	}
 }
 

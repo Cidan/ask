@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/tool"
 )
@@ -344,6 +345,39 @@ type closableLLM struct {
 }
 
 func (f *closableLLM) Close() error { *f.closed = true; return nil }
+
+// Each step — loop inner steps included — gets its own model callbacks,
+// bound to its own model, so per-model state such as auto-compaction is
+// never shared between steps.
+func TestCompileWorkflow_ModelCallbacksPerStepModel(t *testing.T) {
+	def := Def{Name: "wf", Steps: []Step{
+		{Name: "plan", Prompt: "p"},
+		{Name: "review-loop", Kind: "loop", MaxIterations: 2, Steps: []Step{
+			{Name: "review", Prompt: "r"},
+			{Name: "fix", Prompt: "f"},
+		}},
+	}}
+	models := map[string]model.LLM{}
+	bound := map[string]model.LLM{}
+	cfg := testCompileConfig(def)
+	cfg.ModelBuilder = func(ctx context.Context, step Step) (model.LLM, error) {
+		m := &fakeLLM{name: step.Name}
+		models[step.Name] = m
+		return m, nil
+	}
+	cfg.ModelCallbacksBuilder = func(step Step, llm model.LLM) ([]llmagent.BeforeModelCallback, []llmagent.AfterModelCallback) {
+		bound[step.Name] = llm
+		return nil, nil
+	}
+	if _, err := CompileWorkflow(context.Background(), cfg); err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	for _, name := range []string{"plan", "review", "fix"} {
+		if bound[name] == nil || bound[name] != models[name] {
+			t.Errorf("step %q callbacks bound to %v, want its own model %v", name, bound[name], models[name])
+		}
+	}
+}
 
 func TestCompiledClose_ClosesEveryStepModel(t *testing.T) {
 	var flags []*bool

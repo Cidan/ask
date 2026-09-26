@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Cidan/ask/pkg/providers"
 	"google.golang.org/adk/v2/model"
 )
 
@@ -49,6 +50,12 @@ func (r *retryingModel) Close() error {
 		return c.Close()
 	}
 	return nil
+}
+
+// RebaseHistory forwards to the wrapped model, so compaction reaches a model
+// that holds its own history (providers.HistoryRebaser) through the wrapper.
+func (r *retryingModel) RebaseHistory() {
+	providers.RebaseHistory(r.inner)
 }
 
 func (r *retryingModel) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {

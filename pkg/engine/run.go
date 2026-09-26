@@ -313,7 +313,8 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 
 	compactor := NewCompactor(CompactOptions{
 		ContextWindow: prov.ContextWindow(modelID),
-		Disabled:      providers.ManagesOwnContext(prov) || !AutoCompactEnabled(opts.Config),
+		Disabled:      !AutoCompactEnabled(opts.Config),
+		Model:         llm,
 		Notify: func(r CompactionResult) {
 			if opts.EventListener == nil {
 				return
@@ -338,6 +339,7 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 			compactor.BeforeModel,
 		},
+		AfterModelCallbacks: []llmagent.AfterModelCallback{compactor.AfterModel},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ADK agent: %w", err)
@@ -400,14 +402,6 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		}
 		if event == nil {
 			continue
-		}
-
-		if event.UsageMetadata != nil {
-			total := int(event.UsageMetadata.TotalTokenCount)
-			if total == 0 {
-				total = int(event.UsageMetadata.PromptTokenCount) + int(event.UsageMetadata.CandidatesTokenCount)
-			}
-			compactor.ObserveUsage(int(event.UsageMetadata.PromptTokenCount), total)
 		}
 
 		if event.UsageMetadata != nil && opts.EventListener != nil {

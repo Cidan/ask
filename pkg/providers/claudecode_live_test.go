@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,6 +148,86 @@ func TestClaudeCodeModel_LiveMultiTurn(t *testing.T) {
 	t.Logf("turn 2: %q", turn("Now reply with exactly the word RECOVERED."))
 	if got := turn("Reply with exactly the word DONE."); got == "" {
 		t.Fatal("third turn produced no text — the child did not survive")
+	}
+}
+
+// TestClaudeCodeModel_LiveRebaseMidTurn drives the real CLI through ask's
+// compaction: a turn is mid tool call when the history is rewritten (the
+// original request pinned, the elision notice, the call and its result), the
+// child is replaced by one resumed from that history, and it carries the task
+// on without calling the tool again. A fact that only lives in the pinned
+// request must survive into the next turn.
+func TestClaudeCodeModel_LiveRebaseMidTurn(t *testing.T) {
+	if os.Getenv("ASK_CC_LIVE") != "1" {
+		t.Skip("set ASK_CC_LIVE=1 to run the live claude -p smoke test")
+	}
+	m := newClaudeCodeModel("claude", "haiku", t.TempDir(), false, nil)
+	t.Cleanup(func() { _ = m.Close() })
+	cfg := &genai.GenerateContentConfig{
+		Tools: []*genai.Tool{{FunctionDeclarations: []*genai.FunctionDeclaration{{
+			Name:                 "read_notes",
+			Description:          "Returns the project notes.",
+			ParametersJsonSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+		}}}},
+		SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: "You are a terse test agent."}}},
+	}
+	run := func(contents []*genai.Content) (string, *genai.FunctionCall) {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		var text string
+		var call *genai.FunctionCall
+		for resp, err := range m.GenerateContent(ctx, &model.LLMRequest{Config: cfg, Contents: contents}, false) {
+			if err != nil {
+				t.Fatalf("GenerateContent: %v", err)
+			}
+			if resp == nil || resp.Content == nil {
+				continue
+			}
+			for _, p := range resp.Content.Parts {
+				switch {
+				case p == nil:
+				case p.FunctionCall != nil:
+					call = p.FunctionCall
+				case !p.Thought && p.Text != "":
+					text = p.Text
+				}
+			}
+		}
+		return text, call
+	}
+
+	request := &genai.Content{Role: "user", Parts: []*genai.Part{{Text: "Our project codename is PINEAPPLE. Call read_notes, then tell me the launch date it gives."}}}
+	_, call := run([]*genai.Content{request})
+	if call == nil || call.Name != "read_notes" {
+		t.Fatalf("first step made no read_notes call: %+v", call)
+	}
+
+	m.RebaseHistory()
+	history := []*genai.Content{
+		request,
+		{Role: "user", Parts: []*genai.Part{{Text: "[Earlier turns in this conversation were elided to fit the context window.]"}}},
+		{Role: "model", Parts: []*genai.Part{{FunctionCall: call}}},
+		{Role: "user", Parts: []*genai.Part{{FunctionResponse: &genai.FunctionResponse{
+			ID: call.ID, Name: call.Name, Response: map[string]any{"content": "Launch date: March 3rd."},
+		}}}},
+	}
+	answer, again := run(history)
+	t.Logf("rebuilt child answered %q", answer)
+	if again != nil {
+		t.Fatalf("the rebuilt child called %s again instead of using the seeded result", again.Name)
+	}
+	if !strings.Contains(strings.ToLower(answer), "march") {
+		t.Fatalf("the rebuilt child did not carry the task on from the seeded result: %q", answer)
+	}
+
+	history = append(history,
+		&genai.Content{Role: "model", Parts: []*genai.Part{{Text: answer}}},
+		&genai.Content{Role: "user", Parts: []*genai.Part{{Text: "What is our project codename? One word."}}},
+	)
+	codename, _ := run(history)
+	t.Logf("next turn answered %q", codename)
+	if !strings.Contains(strings.ToUpper(codename), "PINEAPPLE") {
+		t.Fatalf("the pinned request did not survive the rebuild: %q", codename)
 	}
 }
 

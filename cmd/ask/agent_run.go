@@ -73,9 +73,11 @@ type agentSession struct {
 
 	midTurnQueue *engine.MidTurnQueue
 
-	// compactor trims the oldest turns out of the outgoing request when the
-	// conversation approaches the model's context window. Nil-receiver-safe,
-	// so a session built without one (tests) simply never compacts.
+	// compactor trims the oldest turns out of the coder agent's outgoing
+	// request when the conversation approaches the model's context window.
+	// Workflow steps get their own (tuiWorkflowCompileConfig).
+	// Nil-receiver-safe, so a session built without one (tests) simply never
+	// compacts.
 	compactor *engine.Compactor
 
 	closed    chan struct{}
@@ -428,36 +430,41 @@ func (s *agentSession) beforeModelCallback(ctx adkagent.Context, req *adkmodel.L
 	return nil, nil
 }
 
-// newCompactor builds this session's context compactor. The provider check
-// is fixed for the session's life — a provider that owns its own
-// conversation must never have its request history rewritten — so it is
-// baked in here; the user-facing on/off switch is read per call in
-// compactBeforeModel instead.
-func (s *agentSession) newCompactor() *engine.Compactor {
+// newCompactor builds a context compactor for one agent of this session — the
+// coder, or one workflow step — calling llm with the given window. Every
+// provider compacts the same way; a model that holds its own history is
+// rebuilt from the cut view (providers.HistoryRebaser).
+func (s *agentSession) newCompactor(window int64, llm adkmodel.LLM) *engine.Compactor {
 	return engine.NewCompactor(engine.CompactOptions{
-		ContextWindow: s.contextWindow,
-		Disabled:      providers.ManagesOwnContext(s.provider),
+		ContextWindow: window,
+		Model:         llm,
 		Notify: func(r engine.CompactionResult) {
 			s.emit(contextCompactedMsg{summary: engine.CompactionSummary(r)})
 		},
 	})
 }
 
-// compactBeforeModel keeps the outgoing request inside the model's context
-// window. It runs after beforeModelCallback: the drain appends a steering
-// message to the end of req.Contents and compaction trims the front, so the
-// two never contend, and draining first means a message queued this instant
-// is measured by the cut rather than smuggled past it.
+// compactCallbacks adapts c to an llmagent. The before-callback keeps the
+// outgoing request inside the model's context window; register it after
+// beforeModelCallback: the drain appends a steering message to the end of
+// req.Contents and compaction trims the front, so the two never contend, and
+// draining first means a message queued this instant is measured by the cut
+// rather than smuggled past it. The after-callback feeds c the model's usage.
 //
 // The config is read per call, the way the deslop gate in runTurn is, so
 // flipping auto-compaction in /config takes effect on a live session instead
-// of waiting for a restart. That also covers the workflow graph, whose agent
-// is compiled once at workflow start and never rebuilt per turn.
-func (s *agentSession) compactBeforeModel(ctx adkagent.Context, req *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
-	if cfg, _ := loadConfig(); !engine.AutoCompactEnabled(toPkgConfig(cfg)) {
-		return nil, nil
+// of waiting for a restart — including a workflow graph, whose agents are
+// compiled once at workflow start. Switched off, a standing cut is dropped so
+// the whole history goes out again.
+func compactCallbacks(c *engine.Compactor) (llmagent.BeforeModelCallback, llmagent.AfterModelCallback) {
+	before := func(ctx adkagent.Context, req *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+		if cfg, _ := loadConfig(); !engine.AutoCompactEnabled(toPkgConfig(cfg)) {
+			c.Reset()
+			return nil, nil
+		}
+		return c.BeforeModel(ctx, req)
 	}
-	return s.compactor.BeforeModel(ctx, req)
+	return before, c.AfterModel
 }
 
 func (s *agentSession) runTurn(turn agentTurn) {
@@ -565,6 +572,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	if s.workflowAgent != nil {
 		agentInstance = s.workflowAgent
 	} else {
+		compactBefore, compactAfter := compactCallbacks(s.compactor)
 		agentInstance, err = llmagent.New(llmagent.Config{
 			Name:                  "ask_coder",
 			Model:                 llm,
@@ -574,8 +582,9 @@ func (s *agentSession) runTurn(turn agentTurn) {
 			GenerateContentConfig: genaiConfig,
 			BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 				s.beforeModelCallback,
-				s.compactBeforeModel,
+				compactBefore,
 			},
+			AfterModelCallbacks: []llmagent.AfterModelCallback{compactAfter},
 		})
 	}
 	if err != nil {
@@ -654,7 +663,6 @@ func (s *agentSession) runTurn(turn agentTurn) {
 			if tokens == 0 {
 				tokens = usage.InputTokens + usage.OutputTokens
 			}
-			s.compactor.ObserveUsage(usage.InputTokens, tokens)
 			s.emit(usageMsg{
 				tokens:    tokens,
 				costUSD:   cost,
