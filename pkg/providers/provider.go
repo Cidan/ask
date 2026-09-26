@@ -81,25 +81,43 @@ type CheapModeler interface {
 	CheapModel() string
 }
 
-// ContextManagedProvider is the optional capability of a provider that owns
-// the conversation itself. ask's auto-compaction rewrites the outgoing
-// request's history when the context window fills; a provider that reports
-// true is skipped, because ask is not the one tracking what the model has
-// seen. Claude Code implements this — the history lives in its child process
-// and its model keeps an absolute cursor into req.Contents, which a truncated
-// head would invalidate. Vertex and OpenRouter do not.
-type ContextManagedProvider interface {
-	ManagesOwnContext() bool
+// CostReporter is the optional capability of a provider whose calls report
+// what they cost (Claude Code's total_cost_usd, OpenRouter's usage.cost), so a
+// session on it has a known cost even for a model the catalog cannot price.
+type CostReporter interface {
+	ReportsCost() bool
 }
 
-// ManagesOwnContext reports whether p tracks the conversation itself and must
-// not have its request history rewritten. A nil provider reports false.
-func ManagesOwnContext(p Provider) bool {
-	if p == nil {
+// ReportsCost reports whether provider id's calls report their own cost.
+func ReportsCost(id string) bool {
+	p, ok := Get(id)
+	if !ok {
 		return false
 	}
-	m, ok := p.(ContextManagedProvider)
-	return ok && m.ManagesOwnContext()
+	r, ok := p.(CostReporter)
+	return ok && r.ReportsCost()
+}
+
+// HistoryRebaser is the optional capability of a model that holds the
+// conversation outside the request — Claude Code's child process keeps its own
+// transcript and is only ever sent what ADK appended since the last call.
+// ask's auto-compaction rewrites the history it sends; after a rewrite it calls
+// RebaseHistory, and the model's next GenerateContent must rebuild what it
+// holds from that call's req.Contents instead of appending to it. Models whose
+// every request carries the full history (Vertex, OpenRouter) do not implement
+// it, and wrappers (the retry decorator) forward it.
+type HistoryRebaser interface {
+	RebaseHistory()
+}
+
+// RebaseHistory tells m to rebuild its held conversation from its next
+// request, when m holds one. It reports whether m did.
+func RebaseHistory(m model.LLM) bool {
+	r, ok := m.(HistoryRebaser)
+	if ok {
+		r.RebaseHistory()
+	}
+	return ok
 }
 
 // SettingField is one configuration field a provider declares. The

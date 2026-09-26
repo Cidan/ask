@@ -73,9 +73,11 @@ type agentSession struct {
 
 	midTurnQueue *engine.MidTurnQueue
 
-	// compactor trims the oldest turns out of the outgoing request when the
-	// conversation approaches the model's context window. Nil-receiver-safe,
-	// so a session built without one (tests) simply never compacts.
+	// compactor trims the oldest turns out of the coder agent's outgoing
+	// request when the conversation approaches the model's context window.
+	// Workflow steps get their own (tuiWorkflowCompileConfig).
+	// Nil-receiver-safe, so a session built without one (tests) simply never
+	// compacts.
 	compactor *engine.Compactor
 
 	closed    chan struct{}
@@ -200,11 +202,29 @@ func (s *agentSession) setTurnCancel(fn context.CancelFunc) {
 	s.turnCancel = fn
 }
 
-func (s *agentSession) stepCost(u TokenUsage) (float64, bool) {
-	if s.provider == nil {
-		return 0, false
+// recordSpend adds calls made on the session's behalf outside its own model
+// calls — sub-agents, deslop, memory extraction — to the tab's cost meter and
+// to the session's usage ledger, so /resume restores the whole spend.
+func (s *agentSession) recordSpend(kind string, records ...providers.Usage) {
+	var cost float64
+	known := false
+	entries := make([]usageLedgerEntry, 0, len(records))
+	for _, u := range records {
+		if u.CostKnown() {
+			cost += u.CostUSD
+			known = true
+		}
+		entries = append(entries, usageLedgerEntry{Kind: kind, Usage: u})
 	}
-	return stepCostUSD(s.provider.ID(), s.modelID, u)
+	if known {
+		s.emit(costMsg{costUSD: cost})
+	}
+	if s.store == nil {
+		return
+	}
+	if err := s.store.appendUsageLedger(s.sessionID, s.args.Cwd, entries...); err != nil {
+		debugLog("usage ledger %s: %v", s.sessionID, err)
+	}
 }
 
 func (s *agentSession) interruptTurn() bool {
@@ -428,36 +448,41 @@ func (s *agentSession) beforeModelCallback(ctx adkagent.Context, req *adkmodel.L
 	return nil, nil
 }
 
-// newCompactor builds this session's context compactor. The provider check
-// is fixed for the session's life — a provider that owns its own
-// conversation must never have its request history rewritten — so it is
-// baked in here; the user-facing on/off switch is read per call in
-// compactBeforeModel instead.
-func (s *agentSession) newCompactor() *engine.Compactor {
+// newCompactor builds a context compactor for one agent of this session — the
+// coder, or one workflow step — calling llm with the given window. Every
+// provider compacts the same way; a model that holds its own history is
+// rebuilt from the cut view (providers.HistoryRebaser).
+func (s *agentSession) newCompactor(window int64, llm adkmodel.LLM) *engine.Compactor {
 	return engine.NewCompactor(engine.CompactOptions{
-		ContextWindow: s.contextWindow,
-		Disabled:      providers.ManagesOwnContext(s.provider),
+		ContextWindow: window,
+		Model:         llm,
 		Notify: func(r engine.CompactionResult) {
 			s.emit(contextCompactedMsg{summary: engine.CompactionSummary(r)})
 		},
 	})
 }
 
-// compactBeforeModel keeps the outgoing request inside the model's context
-// window. It runs after beforeModelCallback: the drain appends a steering
-// message to the end of req.Contents and compaction trims the front, so the
-// two never contend, and draining first means a message queued this instant
-// is measured by the cut rather than smuggled past it.
+// compactCallbacks adapts c to an llmagent. The before-callback keeps the
+// outgoing request inside the model's context window; register it after
+// beforeModelCallback: the drain appends a steering message to the end of
+// req.Contents and compaction trims the front, so the two never contend, and
+// draining first means a message queued this instant is measured by the cut
+// rather than smuggled past it. The after-callback feeds c the model's usage.
 //
 // The config is read per call, the way the deslop gate in runTurn is, so
 // flipping auto-compaction in /config takes effect on a live session instead
-// of waiting for a restart. That also covers the workflow graph, whose agent
-// is compiled once at workflow start and never rebuilt per turn.
-func (s *agentSession) compactBeforeModel(ctx adkagent.Context, req *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
-	if cfg, _ := loadConfig(); !engine.AutoCompactEnabled(toPkgConfig(cfg)) {
-		return nil, nil
+// of waiting for a restart — including a workflow graph, whose agents are
+// compiled once at workflow start. Switched off, a standing cut is dropped so
+// the whole history goes out again.
+func compactCallbacks(c *engine.Compactor) (llmagent.BeforeModelCallback, llmagent.AfterModelCallback) {
+	before := func(ctx adkagent.Context, req *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+		if cfg, _ := loadConfig(); !engine.AutoCompactEnabled(toPkgConfig(cfg)) {
+			c.Reset()
+			return nil, nil
+		}
+		return c.BeforeModel(ctx, req)
 	}
-	return s.compactor.BeforeModel(ctx, req)
+	return before, c.AfterModel
 }
 
 func (s *agentSession) runTurn(turn agentTurn) {
@@ -529,9 +554,10 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	// or pointed at this session's own model. Fail-open: a build error here
 	// just leaves deslop off for the turn.
 	var (
-		deslopLLM     adkmodel.LLM
-		deslopModelID string
-		deslopNew     map[string]string
+		deslopLLM      adkmodel.LLM
+		deslopProvider string
+		deslopModelID  string
+		deslopNew      map[string]string
 	)
 	if dc, _ := loadConfig(); engine.DeslopEnabled(toPkgConfig(dc)) {
 		dprov, dmodel := engine.DeslopModel(toPkgConfig(dc))
@@ -543,7 +569,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 			if p, ok := providers.Get(dprov); ok {
 				if built, berr := engine.ModelBuilder(ctx, p, toPkgConfig(dc), dmodel); berr == nil {
 					deslopLLM = built
-					deslopModelID = dmodel
+					deslopProvider, deslopModelID = dprov, dmodel
 					deslopNew = make(map[string]string)
 					defer engine.CloseModel(deslopLLM)
 				} else {
@@ -565,6 +591,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	if s.workflowAgent != nil {
 		agentInstance = s.workflowAgent
 	} else {
+		compactBefore, compactAfter := compactCallbacks(s.compactor)
 		agentInstance, err = llmagent.New(llmagent.Config{
 			Name:                  "ask_coder",
 			Model:                 llm,
@@ -574,8 +601,9 @@ func (s *agentSession) runTurn(turn agentTurn) {
 			GenerateContentConfig: genaiConfig,
 			BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 				s.beforeModelCallback,
-				s.compactBeforeModel,
+				compactBefore,
 			},
+			AfterModelCallbacks: []llmagent.AfterModelCallback{compactAfter},
 		})
 	}
 	if err != nil {
@@ -638,27 +666,16 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		}
 		s.workflowProgress.Observe(event)
 
-		if event.UsageMetadata != nil {
-			usage := TokenUsage{
-				InputTokens:  int(event.UsageMetadata.PromptTokenCount),
-				OutputTokens: int(event.UsageMetadata.CandidatesTokenCount),
-			}
-			cost, known := s.stepCost(usage)
-			// tokens is the context-window reading: prefer the provider's own
-			// total (which folds in cached + thinking tokens) and fall back to
-			// prompt+output when a provider leaves TotalTokenCount unset.
-			// Streaming providers interleave metadata-only chunks whose counts
-			// are all zero; those land here as tokens==0 and update.go ignores
-			// them so the meter never snaps back to 0% mid-stream.
-			tokens := int(event.UsageMetadata.TotalTokenCount)
-			if tokens == 0 {
-				tokens = usage.InputTokens + usage.OutputTokens
-			}
-			s.compactor.ObserveUsage(usage.InputTokens, tokens)
+		// Every final model response carries its usage record, priced for
+		// the provider and model that made it — which, in a workflow, is the
+		// step's, not the session's.
+		if u, ok := engine.ResponseUsage(&event.LLMResponse); ok && !event.Partial {
 			s.emit(usageMsg{
-				tokens:    tokens,
-				costUSD:   cost,
-				costKnown: known,
+				tokens:    u.ContextTokens,
+				provider:  u.Provider,
+				model:     u.Model,
+				costUSD:   u.CostUSD,
+				costKnown: u.CostKnown(),
 			})
 		}
 
@@ -693,10 +710,11 @@ func (s *agentSession) runTurn(turn agentTurn) {
 					if deslopLLM != nil && deslopBlock != "" {
 						if !deslopEmitted {
 							deslopEmitted = true
-							cleaned, derr := engine.Deslop(ctx, deslopLLM, deslopModelID, deslopBlock)
+							cleaned, dusage, derr := engine.Deslop(ctx, deslopLLM, deslopModelID, deslopBlock)
 							if derr != nil {
 								debugLog("deslop: %v", derr)
 							}
+							s.recordSpend(spendDeslop, engine.StampUsage(dusage, deslopProvider, deslopModelID))
 							if cleaned != deslopBlock {
 								deslopNew[deslopBlockKey(deslopBlock)] = cleaned
 							}
@@ -814,10 +832,8 @@ func (s *agentSession) enqueueMemoryTurn(prompt, response string, files []string
 		Topic:    s.currentTopic(),
 		Files:    files,
 		Provider: providerID,
-		OnUsage: func(pid, mid string, in, out int) {
-			if cost, known := stepCostUSD(pid, mid, TokenUsage{InputTokens: in, OutputTokens: out}); known {
-				s.emit(costMsg{costUSD: cost})
-			}
+		OnUsage: func(u providers.Usage) {
+			s.recordSpend(spendMemory, u)
 		},
 		OnTopic: s.setTopic,
 	})

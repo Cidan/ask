@@ -41,6 +41,12 @@ type WorkflowAgentConfig struct {
 	MaxRetries int
 	// BeforeModelCallbacks run before every LLM invocation.
 	BeforeModelCallbacks []llmagent.BeforeModelCallback
+	// ModelCallbacksBuilder, when set, supplies callbacks bound to one step's
+	// model; its before-callbacks run after BeforeModelCallbacks. Each step
+	// agent gets its own set, so per-model state — auto-compaction, sized to
+	// that model's window and rebuilding that model when the cut moves — is
+	// never shared across steps.
+	ModelCallbacksBuilder func(step Step, llm model.LLM) ([]llmagent.BeforeModelCallback, []llmagent.AfterModelCallback)
 }
 
 // workflowDefaultMaxRetries is the per-node retry budget. Replaces the
@@ -289,6 +295,14 @@ func buildStepAgent(ctx context.Context, cfg WorkflowAgentConfig, step Step, ste
 	}
 	out.AgentInfo[name] = info
 
+	before := append([]llmagent.BeforeModelCallback(nil), cfg.BeforeModelCallbacks...)
+	var after []llmagent.AfterModelCallback
+	if cfg.ModelCallbacksBuilder != nil {
+		b, a := cfg.ModelCallbacksBuilder(step, llm)
+		before = append(before, b...)
+		after = a
+	}
+
 	return llmagent.New(llmagent.Config{
 		Name:        name,
 		Description: firstLine(step.Prompt),
@@ -300,7 +314,8 @@ func buildStepAgent(ctx context.Context, cfg WorkflowAgentConfig, step Step, ste
 		IncludeContents:      llmagent.IncludeContentsNone,
 		Tools:                tools,
 		Toolsets:             toolsets,
-		BeforeModelCallbacks: cfg.BeforeModelCallbacks,
+		BeforeModelCallbacks: before,
+		AfterModelCallbacks:  after,
 	})
 }
 

@@ -146,16 +146,21 @@ func tuiWorkflowCompileConfig(sess *agentSession, def workflow.Def, src workflow
 			}
 			return toolsets, nil
 		},
-		BeforeModelCallbacks: []llmagent.BeforeModelCallback{sess.beforeModelCallback, sess.compactBeforeModel},
+		BeforeModelCallbacks: []llmagent.BeforeModelCallback{sess.beforeModelCallback},
+		ModelCallbacksBuilder: func(step workflow.Step, llm adkmodel.LLM) ([]llmagent.BeforeModelCallback, []llmagent.AfterModelCallback) {
+			var window int64
+			if prov, modelID, err := workflowStepTarget(sess, step); err == nil {
+				window = prov.ContextWindow(modelID)
+			}
+			before, after := compactCallbacks(sess.newCompactor(window, llm))
+			return []llmagent.BeforeModelCallback{before}, []llmagent.AfterModelCallback{after}
+		},
 	}
 }
 
-// workflowStepModel resolves a step's LLM, falling back to the session's
-// own model when the step pins nothing.
-//
-// Swappable so tests can compile a graph without reaching a real
-// provider, the same seam agentRunShell and agentGitStatus use.
-var workflowStepModel = func(ctx context.Context, sess *agentSession, step workflow.Step) (adkmodel.LLM, error) {
+// workflowStepTarget resolves the provider and model a step runs on: the
+// step's own, falling back to the session's when the step pins nothing.
+func workflowStepTarget(sess *agentSession, step workflow.Step) (providers.Provider, string, error) {
 	providerID := step.Provider
 	if providerID == "" && sess.provider != nil {
 		providerID = sess.provider.ID()
@@ -165,12 +170,25 @@ var workflowStepModel = func(ctx context.Context, sess *agentSession, step workf
 	}
 	prov, ok := providers.Get(providerID)
 	if !ok {
-		return nil, fmt.Errorf("unknown provider %q for step %q", providerID, step.Name)
+		return nil, "", fmt.Errorf("unknown provider %q for step %q", providerID, step.Name)
 	}
 	modelID := strings.TrimSpace(step.Model)
 	if modelID == "" && sess.modelID != "" && sess.provider != nil && providerID == sess.provider.ID() {
 		modelID = sess.modelID
 	}
+	return prov, prov.CanonicalModelID(modelID, ""), nil
+}
+
+// workflowStepModel resolves a step's LLM, falling back to the session's
+// own model when the step pins nothing.
+//
+// Swappable so tests can compile a graph without reaching a real
+// provider, the same seam agentRunShell and agentGitStatus use.
+var workflowStepModel = func(ctx context.Context, sess *agentSession, step workflow.Step) (adkmodel.LLM, error) {
+	prov, modelID, err := workflowStepTarget(sess, step)
+	if err != nil {
+		return nil, err
+	}
 	cfg, _ := loadConfig()
-	return engine.ModelBuilder(ctx, prov, toPkgConfig(cfg), prov.CanonicalModelID(modelID, ""))
+	return engine.ModelBuilder(ctx, prov, toPkgConfig(cfg), modelID)
 }

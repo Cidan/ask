@@ -223,10 +223,22 @@ func gitAvailable() bool {
 	return err == nil
 }
 
+// jjAvailable reports whether a jj that can host these tests is installed:
+// they create repos with `jj git init`, which some builds do not ship.
 func jjAvailable() bool {
-	_, err := exec.LookPath("jj")
-	return err == nil
+	jjOnce.Do(func() {
+		if _, err := exec.LookPath("jj"); err != nil {
+			return
+		}
+		jjUsable = exec.Command("jj", "git", "--help").Run() == nil
+	})
+	return jjUsable
 }
+
+var (
+	jjOnce   sync.Once
+	jjUsable bool
+)
 
 func initGitRepo(t *testing.T) string {
 	t.Helper()
@@ -360,6 +372,25 @@ func newTestToolEnv(t *testing.T) (*agentToolEnv, *[]tea.Msg) {
 		*msgs = append(*msgs, m)
 	})
 	return env, msgs
+}
+
+// newTestToolEnvSnapshot is newTestToolEnv for a tool that keeps emitting
+// from another goroutine (a background sub-agent): events returns a copy
+// taken under the lock.
+func newTestToolEnvSnapshot(t *testing.T) (*agentToolEnv, func() []tea.Msg) {
+	t.Helper()
+	var mu sync.Mutex
+	var msgs []tea.Msg
+	env := newAgentToolEnv(t.TempDir(), 1, true, func(m tea.Msg) {
+		mu.Lock()
+		defer mu.Unlock()
+		msgs = append(msgs, m)
+	})
+	return env, func() []tea.Msg {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]tea.Msg(nil), msgs...)
+	}
 }
 
 func drainCh(ch <-chan tea.Msg) []tea.Msg {

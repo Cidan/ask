@@ -371,6 +371,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		// turns. Only move it when the step reported real tokens.
 		if msg.tokens > 0 {
 			m.lastUsageTokens = msg.tokens
+			m.usageProvider, m.usageModel = msg.provider, msg.model
+			m.usageEstimated = false
 		}
 		if msg.costKnown {
 			m.sessionCostUSD += msg.costUSD
@@ -839,6 +841,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		m.transcript = msg.transcript
 		m.responseActive = false
+		if msg.usage != nil {
+			m.restoreUsage(*msg.usage)
+		}
 		if !msg.silent {
 			m.transcript = append(m.transcript, transcriptItem{
 				kind: trPrerendered,
@@ -872,6 +877,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		m.sessionID = msg.nativeSessionID
 		m.resumeCwd = msg.nativeCwd
+		if msg.usage != nil {
+			m.restoreUsage(*msg.usage)
+		}
 		if msg.transcript != nil {
 			m.transcript = msg.transcript
 			m.responseActive = false
@@ -1063,17 +1071,22 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		// The title call was billed regardless of whether its text is
-		// usable — count it before any early return.
-		if msg.costKnown {
-			m.sessionCostUSD += msg.costUSD
+		// usable — count it, and ledger it with the session, before any
+		// early return.
+		if msg.usage.CostKnown() {
+			m.sessionCostUSD += msg.usage.CostUSD
 			m.sessionCostKnown = true
+		}
+		var ledgerCmd tea.Cmd
+		if m.provider != nil && m.sessionID != "" && (msg.usage.ContextTokens > 0 || msg.usage.CostKnown()) {
+			ledgerCmd = appendSpendCmd(m.provider.ID(), m.sessionID, m.sessionArgs().Cwd, spendTitle, msg.usage)
 		}
 		// Empty title = generation failed; keep the first-prompt
 		// fallback already seeded by maybeStartTabTitle. A /new or
 		// /clear between dispatch and arrival cleared tabTitle, in
 		// which case the stale title must not resurrect.
 		if strings.TrimSpace(msg.title) == "" || m.tabTitle == "" {
-			return m, nil
+			return m, ledgerCmd
 		}
 		m.tabTitle = msg.title
 		// The title call's topic only seeds: a topic the session has
@@ -1083,7 +1096,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			(&m).pushTopicToSession()
 		}
 		(&m).persistTabTitle()
-		return m, nil
+		return m, ledgerCmd
 
 	case tabTopicMsg:
 		if !m.matchesTabID(msg.tabID, msg.proc) {
@@ -2100,11 +2113,10 @@ func (m model) resumeVirtualSession(entry sessionEntry) (tea.Model, tea.Cmd) {
 	m.transcript = nil
 	m.responseActive = false
 	m.addedDirs = append([]string(nil), vs.AddedDirs...)
-	// The tab now hosts a different conversation: restart the spend
-	// meter. Historical spend isn't persisted, so a resumed session
-	// counts dollars since resume only.
-	m.sessionCostUSD = 0
-	m.sessionCostKnown = false
+	// The tab now hosts a different conversation: clear the meters. The
+	// history load that follows restores them from the session's usage
+	// records.
+	m.clearUsage()
 	// Rehydrate the sidebar-card title: the persisted LLM title when
 	// one was generated, else the recorded first-prompt preview.
 	m.tabTitle = vs.Title
@@ -2253,8 +2265,7 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 		m.pendingWorkflow = nil
 		m.tabTitle = ""
 		m.tabTopic = ""
-		m.sessionCostUSD = 0
-		m.sessionCostKnown = false
+		m.clearUsage()
 		(&m).clearSelection()
 		m.appendHistory(outputStyle.Render(promptStyle.Render("✓ new session")))
 		return m, nil

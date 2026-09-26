@@ -28,17 +28,25 @@ the registry; nothing outside `pkg/providers` may name a provider.
 
 - `providers.Provider` is a Go **interface**. Every method is required.
   Optional behaviour is a separate interface discovered by type
-  assertion (`ModelLister`, `NativeWebSearchProvider`, `CheapModeler`,
-  `ContextManagedProvider` today; `CheapModeler` names the cheapest
-  model for background calls such as memory extraction when the catalog
-  carries no prices — `providers.CheapestModel` consults it before list
-  prices; `ContextManagedProvider` marks a provider that owns the
-  conversation itself, which `providers.ManagesOwnContext` reads to keep
-  auto-compaction from rewriting its request history). Never model
+  assertion (`ModelLister`, `NativeWebSearchProvider`, `CheapModeler`
+  today; `CheapModeler` names the cheapest model for background calls
+  such as memory extraction when the catalog carries no prices —
+  `providers.CheapestModel` consults it before list prices). Never model
   a provider as a struct
   of func fields with nil-means-default — that is the design this
   replaced, and it produced the same field nil-checked in one caller
   and called blind in another.
+- `CostReporter` marks a provider whose calls report what they cost
+  (Claude Code, OpenRouter); `providers.ReportsCost(id)` reads it so the
+  sidebar shows a cost from the start even for a model the catalog cannot
+  price.
+- Models have one optional capability of their own: `HistoryRebaser`, for
+  a model that holds the conversation outside the request (Claude Code's
+  child). Auto-compaction applies to every provider alike and calls
+  `providers.RebaseHistory(m)` whenever it moves its cut; such a model
+  must then rebuild what it holds from its next request. Wrappers
+  (`retryingModel`) forward it. There is no per-provider compaction
+  opt-out.
 - Pin every implementation: `var _ Provider = Name{}` (and
   `var _ ModelLister = Name{}` when it lists models).
 - `Register` panics on a malformed provider (empty id; a setting key
@@ -70,7 +78,8 @@ ClaudeCode{}}`; Vertex is `DefaultProviderID()`. All three implement
   provider is another thin config over `OpenAICompatConfig` — do not
   write a second Chat Completions translator.
 - **Claude Code** (`claudecode.go`, `claudecode_wire.go`,
-  `claudecode_child.go`, `claudecode_model.go`): forks `claude -p` in
+  `claudecode_child.go`, `claudecode_model.go`, `claudecode_seed.go`,
+  `claudecode_accounting.go`): forks `claude -p` in
   stream-json mode and runs it with ask's tools, not Claude's. Not the
   Anthropic API — a subprocess. Setting `binary` (env `ASK_CLAUDE_BIN`,
   default `claude`); no `Secret` field — auth lives in the binary
@@ -103,22 +112,87 @@ ClaudeCode{}}`; Vertex is `DefaultProviderID()`. All three implement
   aren't rendered. Claude's own CLAUDE.md/auto-memory/skills are
   switched off (`--setting-sources "" --settings
   '{"autoMemoryEnabled":false}'`) so only ask's `BuildSystemPrompt`
-  reaches the model; the child runs `--no-session-persistence` and holds
-  history in memory, so cross-process `/resume` replays the transcript as
-  one context message rather than using native `--resume`. The child is
+  reaches the model. **The CLI's own compaction is off**
+  (`DISABLE_COMPACT=1` in `ccSessionEnv`): `--setting-sources ""` does
+  not stop it reading `autoCompactEnabled` from the legacy
+  `~/.claude.json`, and a child that compacted itself would hold a history
+  ask never sent. **History:** the child runs `--no-session-persistence`
+  and holds the conversation in memory; a running child is sent only
+  what follows the last request content it was sent (`consumed`, a mark
+  keyed on role + first part, because request hooks add one-off contents
+  and parts that the next request no longer carries — falling back to
+  the child's latest reply). Whenever it must start from history — the
+  first call of a resumed or materialized session, a request sharing
+  nothing with the child (a workflow loop's next iteration), or the call
+  after `RebaseHistory` (ask's compaction moved its cut) — the old child
+  is killed and a new one is started with `--resume <tmp>.jsonl`: the
+  request history written as a Claude Code transcript
+  (`writeClaudeSeedFile`; lines need only `type`, `uuid`, `parentUuid`,
+  `sessionId`, `timestamp`, `message`), with real `tool_use` /
+  `tool_result` blocks, tool ids minted fresh and paired, thoughts
+  dropped (no signatures), consecutive user contents merged tool-results
+  first. The newest user content starts the turn over stdin; a history
+  ending mid-turn on a tool result is seeded whole and restarted with
+  `ccSeedNudge` — an unanswered `tool_use` at the end of a seed is re-run
+  by the CLI, never answered. The child is
   killed through the `io.Closer` capability (`engine.CloseModel`, forwarded
-  by `retryingModel`). `ListModels` forks a short-lived child, reads the
+  by `retryingModel`); the system-prompt and seed temp files go with it.
+  `ListModels` forks a short-lived child, reads the
   account's models out of the `initialize` control response's `models`
   array (`probeClaudeCodeModels`), and caches each model's live metadata
   (`cacheClaudeCodeMeta`, layered by `ModelMetaFor` through
   `mergeProviderNative`); it falls back to the static catalog on a probe
-  failure so the picker is never empty. Seam: `ccDial` (swap for a
-  scripted `ccConn` in tests — no process). Known v1 limits: the system
-  prompt is captured at
-  spawn (a mid-session change — only workflow state blocks — is not
-  restarted; each workflow step gets a fresh child anyway); tab-title and
-  workflow-step children are closed by their run, chat/session children by
-  `Session.Close`.
+  failure so the picker is never empty. Seams: `ccDial` (swap for a
+  scripted `ccConn` in tests — frame level, no process) and
+  `ClaudeCodeStart` (swap for a fake `ClaudeCodeProcess` speaking NDJSON —
+  what `pkg/engine`'s end-to-end compaction test uses). Opt-in live tests
+  (`ASK_CC_LIVE=1`, run against the real `$HOME` via
+  `testhome.UseRealHome`) cover a real rebuild mid-turn and the usage and
+  cost accounting against the CLI's own. Known v1 limits: the
+  system prompt is captured at spawn (a mid-session change — only
+  workflow state blocks — is not restarted; each workflow step gets a
+  fresh child anyway); tab-title and workflow-step children are closed
+  by their run, chat/session children by `Session.Close`.
+
+## Usage and cost (`usage.go`)
+
+- **Every adapter fills genai usage metadata with Gemini's semantics**:
+  `PromptTokenCount` counts every input token, cached ones included;
+  `CachedContentTokenCount` is the cached-read subset;
+  `CandidatesTokenCount` excludes thinking, which is
+  `ThoughtsTokenCount` (billed as output); `TotalTokenCount` is the
+  context the model holds after the call. `UsageFromMetadata` reads that
+  into a `providers.Usage`.
+- `providers.Usage` is the one accounting record: `Provider`/`Model`,
+  `ContextTokens`, `InputTokens` (full-rate input only),
+  `CacheReadTokens`, `CacheWriteTokens`, `OutputTokens` (thinking
+  included), `ThinkingTokens`, `CostUSD` + `CostSource` (`reported` by the
+  provider — authoritative; `priced` from the catalog; empty = unknown).
+  It rides `LLMResponse.CustomMetadata` (`AttachUsage` / `UsageOf`, which
+  also decodes it back from a stored event). An adapter that knows more
+  than the metadata can hold attaches its own; `engine.ModelBuilder`'s
+  wrapper completes and prices the rest.
+- `StepCostUSD` / `PriceUsage` price cache reads and writes at their own
+  rates; a model that lists none is charged the input rate for them,
+  never nothing.
+- **OpenRouter** (`openai_compat.go`): usage always carries `cost` (USD
+  credits) and `prompt_tokens_details.cache_write_tokens`; both land in
+  the record (reported cost). Completion tokens include reasoning, so
+  candidates are completion − reasoning.
+- **Claude Code** (`claudecode_accounting.go`): a step's calls are read
+  off the stream — `message_start` for input and cache buckets,
+  `message_delta` for the real output count (assistant frames carry a
+  1–3 token placeholder). A step sums its calls; its context is the last
+  call's input plus output. `result.total_cost_usd` is cumulative over
+  the child's life; each turn is charged the difference (`takeResult`),
+  as a reported cost on the turn's final response. An interrupt ends the
+  CLI's turn with a result frame of its own: `interruptLocked` counts it
+  (`staleResults`) so the next read skips it rather than ending the next
+  turn empty, and its cost is carried to the next response. Replacing a
+  child (`stopLocked(settle)`) interrupts a turn in progress and reads its
+  result first, so a rebuilt child's predecessor's spend is not lost.
+  The context reading is the CLI's own count
+  (`get_context_usage`) plus the call's reply.
 
 ## Retry
 

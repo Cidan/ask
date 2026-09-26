@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Cidan/ask/pkg/diff"
+	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/tools"
 
 	"charm.land/bubbles/v2/spinner"
@@ -62,16 +63,18 @@ type statusRevertMsg struct {
 	seq   int
 }
 
-// usageMsg carries the context-window reading in tokens (the step's
-// total usage, cached + thinking included) plus that step's estimated
-// dollar cost (catwalk pricing; costKnown is false for models the
-// catalog can't price). Emitted for every usage-bearing model event,
-// including the zero-count metadata chunks streaming providers
-// interleave — update.go ignores tokens==0 for the ctx chip segment so
-// the meter never resets mid-stream, and accumulates sessionCostUSD for
-// the sidebar cost row.
+// usageMsg carries one model call's usage record: the context-window
+// reading in tokens (everything the model held after the call, cached and
+// thinking included), the provider and model that made it — the meter
+// measures a reading against that model's window — and the call's cost
+// (costKnown is false when the provider reported none and the catalog can't
+// price the model). update.go ignores tokens==0 for the ctx chip segment so
+// the meter never resets mid-stream, and accumulates sessionCostUSD for the
+// sidebar cost row.
 type usageMsg struct {
 	tokens    int
+	provider  string
+	model     string
 	costUSD   float64
 	costKnown bool
 	tabID     int
@@ -79,9 +82,9 @@ type usageMsg struct {
 }
 
 // costMsg adds an out-of-band spend increment to the session cost
-// meter: API calls that don't flow through the main loop's
-// OnStepFinish (task sub-agents, the compaction summarizer). Only
-// emitted when the catalog could price the call.
+// meter: API calls that don't flow through the main loop (sub-agents,
+// deslop rewrites, memory extraction). Only emitted when the call's cost
+// is known; the call itself is recorded in the session's usage ledger.
 type costMsg struct {
 	costUSD float64
 	tabID   int
@@ -352,8 +355,11 @@ type historyLoadedMsg struct {
 	// which would otherwise fail the sessionID gate.
 	virtualSessionID string
 	transcript       []transcriptItem
-	err              error
-	silent           bool
+	// usage is the loaded session's stored accounting, when its provider
+	// records one.
+	usage  *sessionUsage
+	err    error
+	silent bool
 }
 
 type frameCache struct {
@@ -379,14 +385,13 @@ type focusTabMsg struct {
 // tabTitleMsg delivers the asynchronously-generated tab title
 // (tab_title.go). An empty title means generation failed — the
 // handler keeps the first-prompt fallback already on the model. The
-// cost fields carry the title call's own spend (it is a real API
-// call) so the session cost meter counts it.
+// usage carries the title call's own record (it is a real API call) so
+// the session cost meter and the usage ledger count it.
 type tabTitleMsg struct {
-	tabID     int
-	title     string
-	topic     string
-	costUSD   float64
-	costKnown bool
+	tabID int
+	title string
+	topic string
+	usage providers.Usage
 }
 
 // tabTopicMsg carries the topic the session settled on for the
@@ -752,22 +757,30 @@ type model struct {
 	// the tool_use_id rather than the task_id.
 	bgTasks map[string]string
 
-	// lastUsageTokens is the latest context-window reading: the total
-	// tokens the model reported for the most recent step that carried
-	// real usage (zero-count streaming chunks are ignored so the value
-	// never snaps back to 0 mid-stream). Divided by
-	// modelContextLimit(modelForContext) for the ctx chip segment.
+	// lastUsageTokens is the latest context-window reading: the context
+	// the model held after the most recent call that carried real usage
+	// (zero-count streaming chunks are ignored so the value never snaps
+	// back to 0 mid-stream). usageProvider/usageModel name the model that
+	// made the reading; the ctx chip divides by that model's window, so a
+	// workflow step on another model is measured against its own.
+	// usageEstimated marks a reading carried over from another model (a
+	// model swap, a translated session): the chip shows it approximate,
+	// against the current model's window, until the new model reports.
+	// Reset on /new and /clear; restored from the session's usage records
+	// on /resume.
 	lastUsageTokens int
+	usageProvider   string
+	usageModel      string
+	usageEstimated  bool
 
-	// sessionCostUSD accumulates the estimated API spend (dollars) of
-	// this tab's session: every main-loop step, plus the off-loop
-	// calls (task sub-agents, the compaction summarizer, the tab-title
-	// call). Priced from the catwalk catalog — sessionCostKnown stays
-	// false until at least one priceable call lands, so the sidebar
-	// never shows a $0.00 that actually means "unpriceable model".
-	// Reset only on /new, /clear, and /resume pick — not on provider or
-	// model swaps. A resumed session counts spend since resume only
-	// (historical spend is not persisted).
+	// sessionCostUSD accumulates the API spend (dollars) of this tab's
+	// session: every main-loop call, plus the off-loop calls (sub-agents,
+	// deslop, memory extraction, the tab title). A call's cost is what its
+	// provider reported, else its catalog price — sessionCostKnown stays
+	// false until one lands (or the model is known priceable up front), so
+	// the sidebar never shows a $0.00 that means "unpriceable". Reset on
+	// /new and /clear, not on provider or model swaps; restored on /resume
+	// from the session's usage records and ledger.
 	sessionCostUSD   float64
 	sessionCostKnown bool
 

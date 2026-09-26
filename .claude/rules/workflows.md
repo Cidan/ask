@@ -81,6 +81,14 @@ only converts at the boundary (`workflow_store.go` aliases
   prose) and `InstructionProvider: literalInstruction(...)` (never
   `Config.Instruction` — step prompts are user-authored, contain braces,
   and ADK interpolates that field and fails the run on the first one).
+- `BeforeModelCallbacks` are shared by every step (the TUI's mid-turn
+  drain). `ModelCallbacksBuilder(step, llm)` is called once per step
+  agent, loop inner steps included, with that step's own model; its
+  callbacks run after the shared ones. Both TUI and headless configs use
+  it to give every step its own auto-compactor, sized to the step's
+  provider/model window (`workflowStepTarget` / `stepTarget`, the same
+  resolution as the step's model) and rebuilding that step's model when
+  the cut moves — never one compactor shared across steps.
 - `nodeConfig` attaches `RetryConfig` with `MaxRetries` attempts
   (default 3; negative disables).
 - `agentNamer` sanitises and de-duplicates step names into ADK agent

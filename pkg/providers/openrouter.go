@@ -84,9 +84,13 @@ func (OpenRouter) ListModels(ctx context.Context, pc config.ProviderConfig) ([]s
 	return ListOpenRouterModels(ctx, pc)
 }
 
+// ReportsCost: every response's usage carries what OpenRouter charged.
+func (OpenRouter) ReportsCost() bool { return true }
+
 var (
-	_ Provider    = OpenRouter{}
-	_ ModelLister = OpenRouter{}
+	_ Provider     = OpenRouter{}
+	_ ModelLister  = OpenRouter{}
+	_ CostReporter = OpenRouter{}
 )
 
 // ResolveOpenRouterAPIKey: config value wins, then OPENROUTER_API_KEY.

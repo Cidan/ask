@@ -8,6 +8,7 @@ import (
 
 	"github.com/Cidan/ask/pkg/config"
 	"google.golang.org/adk/v2/model"
+	"google.golang.org/genai"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -53,14 +54,20 @@ func TestSameModel(t *testing.T) {
 
 func TestDeslopRewrites(t *testing.T) {
 	llm := &mockLLM{name: "cleaner", generateFunc: func(_ context.Context, _ *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
-		return mockLLMSequence(textResponse("plain and clear"))
+		resp := textResponse("plain and clear")
+		resp.UsageMetadata = &genai.GenerateContentResponseUsageMetadata{PromptTokenCount: 40, CandidatesTokenCount: 8, TotalTokenCount: 48}
+		return mockLLMSequence(resp)
 	}}
-	got, err := Deslop(context.Background(), llm, "cleaner", "a rock-solid, belt-and-suspenders seam")
+	got, usage, err := Deslop(context.Background(), llm, "cleaner", "a rock-solid, belt-and-suspenders seam")
 	if err != nil {
 		t.Fatalf("Deslop err: %v", err)
 	}
 	if got != "plain and clear" {
 		t.Fatalf("Deslop=%q want cleaned rewrite", got)
+	}
+	// The rewrite is a billed call; its usage comes back for the cost meter.
+	if usage.InputTokens != 40 || usage.OutputTokens != 8 {
+		t.Fatalf("Deslop usage = %+v", usage)
 	}
 }
 
@@ -70,7 +77,7 @@ func TestDeslopFailsOpenOnError(t *testing.T) {
 			yield(nil, errors.New("boom"))
 		}
 	}}
-	got, err := Deslop(context.Background(), llm, "cleaner", "original text")
+	got, _, err := Deslop(context.Background(), llm, "cleaner", "original text")
 	if err == nil {
 		t.Fatal("Deslop must surface the model error")
 	}
@@ -83,7 +90,7 @@ func TestDeslopFailsOpenOnEmptyRewrite(t *testing.T) {
 	llm := &mockLLM{name: "cleaner", generateFunc: func(_ context.Context, _ *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
 		return mockLLMSequence(textResponse("   "))
 	}}
-	got, err := Deslop(context.Background(), llm, "cleaner", "original text")
+	got, _, err := Deslop(context.Background(), llm, "cleaner", "original text")
 	if err != nil {
 		t.Fatalf("Deslop err: %v", err)
 	}

@@ -122,6 +122,11 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 					SkipAllPermissions: true,
 					SkipMemory:         true,
 				})
+				// A sub-agent's calls are the parent session's spend, failed
+				// run or not.
+				if res != nil && sess != nil {
+					sess.recordSpend(spendSubagent, res.Usage...)
+				}
 				if err != nil {
 					return "", err
 				}

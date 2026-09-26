@@ -18,6 +18,9 @@ type fakeConn struct {
 	in     chan ccFrame
 	sent   []map[string]any
 	closed bool
+	// onInterrupt, when set, runs for every interrupt the model sends — the
+	// real CLI answers one by ending the turn with a result frame.
+	onInterrupt func(c *fakeConn)
 }
 
 func newFakeConn(buf int) *fakeConn { return &fakeConn{in: make(chan ccFrame, buf)} }
@@ -27,7 +30,18 @@ func (c *fakeConn) send(v any) error {
 	var m map[string]any
 	_ = json.Unmarshal(b, &m)
 	c.sent = append(c.sent, m)
+	if req, ok := m["request"].(map[string]any); ok && m["type"] == "control_request" && req["subtype"] == "interrupt" && c.onInterrupt != nil {
+		c.onInterrupt(c)
+	}
 	return nil
+}
+
+// answerInterrupts makes c end an interrupted turn the way the CLI does: a
+// result frame carrying the child's cumulative cost.
+func (c *fakeConn) answerInterrupts(totalCost float64) {
+	c.onInterrupt = func(c *fakeConn) {
+		c.push(ccFrame{Type: "result", Subtype: "error_during_execution", IsError: true, TotalCostUSD: totalCost})
+	}
 }
 func (c *fakeConn) frames() <-chan ccFrame { return c.in }
 func (c *fakeConn) stderrTail() string     { return "" }
@@ -112,7 +126,7 @@ func TestClaudeCodeModel_SystemPromptFileLifecycle(t *testing.T) {
 	fc := newFakeConn(4)
 	prevDial := ccDial
 	var gotArgv []string
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) {
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) {
 		gotArgv = args.Argv
 		return fc, nil
 	}
@@ -121,11 +135,18 @@ func TestClaudeCodeModel_SystemPromptFileLifecycle(t *testing.T) {
 	m := newClaudeCodeModel("claude", "opus", "/repo", false, nil)
 
 	const sysPrompt = "You are ask.\nThis is a large system prompt.\n"
-	req := &model.LLMRequest{Config: &genai.GenerateContentConfig{
-		SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: sysPrompt}}},
-	}}
-	if err := m.ensure(req); err != nil {
-		t.Fatalf("ensure: %v", err)
+	req := &model.LLMRequest{
+		Config: &genai.GenerateContentConfig{
+			SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: sysPrompt}}},
+		},
+		Contents: []*genai.Content{userContent("hi")},
+	}
+	if err := m.send(req); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	// A single-message history needs no seed.
+	if indexOf(gotArgv, "--resume") >= 0 || m.seedPath != "" {
+		t.Errorf("a fresh one-message turn must not seed the child; argv %v, seed %q", gotArgv, m.seedPath)
 	}
 
 	// The child was dialed with --system-prompt-file, never the inline flag.
@@ -173,7 +194,7 @@ func TestClaudeCodeModel_ToolCallLockStep(t *testing.T) {
 	fc := newFakeConn(16)
 	prevDial := ccDial
 	var gotArgv []string
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) {
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) {
 		gotArgv = args.Argv
 		return fc, nil
 	}
@@ -257,7 +278,7 @@ func TestClaudeCodeModel_ToolCallLockStep(t *testing.T) {
 func TestClaudeCodeModel_PlainTextTurn(t *testing.T) {
 	fc := newFakeConn(8)
 	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "haiku", "/repo", false, nil)
@@ -272,25 +293,23 @@ func TestClaudeCodeModel_PlainTextTurn(t *testing.T) {
 	if txt := lastText(out); txt != "hello there" {
 		t.Errorf("final text = %q", txt)
 	}
-	if u := lastUsage(out); u == nil || u.PromptTokenCount != 20 {
+	if u := lastUsage(out); u == nil || u.PromptTokenCount != 10 || u.TotalTokenCount != 15 {
 		t.Errorf("usage not reported: %+v", u)
 	}
 }
 
 // TestClaudeCodeModel_CachedTurnTotalTokens: Anthropic reports input_tokens as
-// only the uncached delta, so the context meter (which reads TotalTokenCount)
-// must fold in the cache-read and cache-creation buckets or it barely moves on
-// a cached turn. PromptTokenCount stays the uncached delta so cost pricing is
-// unaffected.
+// only the uncached slice; the bulk of the context lives in the cache-read and
+// cache-creation buckets. The metadata follows Gemini's semantics like every
+// adapter's — the prompt counts every input bucket — and the usage record
+// keeps the buckets apart for pricing.
 //
 // This is the single-call fallback path: the turn pushes only a result frame
-// (no assistant frame), so meterUsage falls back to the cumulative result usage
-// — for a one-API-call turn cumulative equals the single call, so every value
-// below is identical whether it came from the meter or cost split.
+// (no assistant frame, no stream events), so its usage stands for the one call.
 func TestClaudeCodeModel_CachedTurnTotalTokens(t *testing.T) {
 	fc := newFakeConn(8)
 	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "sonnet", "/repo", false, nil)
@@ -312,35 +331,34 @@ func TestClaudeCodeModel_CachedTurnTotalTokens(t *testing.T) {
 	if want := int32(12 + 30_000 + 4_000 + 200); got.TotalTokenCount != want {
 		t.Errorf("TotalTokenCount = %d, want %d (cache buckets must be included)", got.TotalTokenCount, want)
 	}
-	if got.PromptTokenCount != 12 {
-		t.Errorf("PromptTokenCount = %d, want 12 (uncached delta, so cost stays correct)", got.PromptTokenCount)
+	if want := int32(12 + 30_000 + 4_000); got.PromptTokenCount != want {
+		t.Errorf("PromptTokenCount = %d, want %d (every input bucket)", got.PromptTokenCount, want)
 	}
-	if got.CachedContentTokenCount != 30_000 {
-		t.Errorf("CachedContentTokenCount = %d, want 30000", got.CachedContentTokenCount)
+	if got.CachedContentTokenCount != 30_000 || got.CandidatesTokenCount != 150 || got.ThoughtsTokenCount != 50 {
+		t.Errorf("metadata = %+v", got)
+	}
+	rec, ok := UsageOf(out[len(out)-1])
+	want := Usage{Model: "sonnet", ContextTokens: 34_212, InputTokens: 12, CacheReadTokens: 30_000, CacheWriteTokens: 4_000, OutputTokens: 200, ThinkingTokens: 50, CostSource: CostReported}
+	if !ok || rec != want {
+		t.Errorf("usage record = %+v, want %+v", rec, want)
 	}
 }
 
-// TestClaudeCodeModel_MeterUsesLastCallNotCumulative: a multi-call turn emits an
-// assistant frame per internal API call and a terminal result frame whose usage
-// is CUMULATIVE across every call (Claude Code re-reads the whole context from
-// cache each tool-loop step). The context meter reads TotalTokenCount, so it
-// must reflect the LAST per-call assistant usage (live occupancy) and reject the
-// cumulative result totals, which sum cache reads to a multiple of the real
-// context. Cost (PromptTokenCount/CandidatesTokenCount) still reads the
-// cumulative result totals so spend stays correct.
+// TestClaudeCodeModel_MeterUsesLastCallNotCumulative: a turn's result frame
+// carries usage CUMULATIVE across every internal API call (Claude Code re-reads
+// the whole context from cache each tool-loop step). It must not feed anything
+// once the turn reported calls of its own: the metadata and the record come
+// from the last call, which is the live context.
 func TestClaudeCodeModel_MeterUsesLastCallNotCumulative(t *testing.T) {
 	fc := newFakeConn(8)
 	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "sonnet", "/repo", false, nil)
 	t.Cleanup(func() { _ = m.Close() })
 
-	// Last per-call usage: the live context of the final API call.
 	last := &ccUsage{InputTokens: 12, OutputTokens: 200, CacheReadInputTokens: 30_000, CacheCreationInputTokens: 4_000}
-	// Cumulative result usage: ~10x the live call because each tool-loop step
-	// re-read the whole context from cache. This must NOT feed the meter.
 	cumulative := &ccUsage{InputTokens: 40, OutputTokens: 900, CacheReadInputTokens: 300_000, CacheCreationInputTokens: 8_000}
 	fc.push(assistantUsageFrame("working", last))
 	fc.push(ccFrame{Type: "result", Subtype: "success", Result: "done", Usage: cumulative})
@@ -354,17 +372,14 @@ func TestClaudeCodeModel_MeterUsesLastCallNotCumulative(t *testing.T) {
 	if got == nil {
 		t.Fatal("no usage reported")
 	}
-	// The meter reflects the LAST call's live total (12+30000+4000+200), not the
-	// cumulative ~309k, which would inflate the context bar to a false multiple.
 	if want := int32(12 + 30_000 + 4_000 + 200); got.TotalTokenCount != want {
-		t.Errorf("TotalTokenCount = %d, want %d (last per-call usage; the cumulative result usage must be rejected)", got.TotalTokenCount, want)
+		t.Errorf("TotalTokenCount = %d, want %d (the cumulative result usage must be rejected)", got.TotalTokenCount, want)
 	}
-	// Cost still reads the cumulative result totals.
-	if got.PromptTokenCount != 40 {
-		t.Errorf("PromptTokenCount = %d, want 40 (cumulative result total for cost)", got.PromptTokenCount)
+	if got.PromptTokenCount != 34_012 || got.CandidatesTokenCount != 200 {
+		t.Errorf("metadata = %+v, want the last call's", got)
 	}
-	if got.CandidatesTokenCount != 900 {
-		t.Errorf("CandidatesTokenCount = %d, want 900 (cumulative result total for cost)", got.CandidatesTokenCount)
+	if rec, _ := UsageOf(out[len(out)-1]); rec.CacheReadTokens != 30_000 || rec.OutputTokens != 200 {
+		t.Errorf("record = %+v, want the last call's", rec)
 	}
 }
 
@@ -381,7 +396,7 @@ func TestClaudeCodeModel_ObservesContextWindow(t *testing.T) {
 
 	fc := newFakeConn(8)
 	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "ctxwin-test-1m", "/repo", false, nil)
@@ -421,46 +436,6 @@ func TestCCContextWindowFromModelUsage(t *testing.T) {
 	}
 }
 
-// TestClaudeCodeModel_HistoryPreamble: a first turn with prior history (a
-// resumed/materialized session) sends the history as one context message plus
-// the new user turn, since the fresh child has no native transcript.
-func TestClaudeCodeModel_HistoryPreamble(t *testing.T) {
-	fc := newFakeConn(8)
-	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
-	defer func() { ccDial = prevDial }()
-
-	m := newClaudeCodeModel("claude", "opus", "/repo", false, nil)
-	t.Cleanup(func() { _ = m.Close() })
-	fc.push(resultFrame("ok"))
-
-	collect(t, m, &model.LLMRequest{
-		Config: &genai.GenerateContentConfig{},
-		Contents: []*genai.Content{
-			userContent("first question"),
-			{Role: "model", Parts: []*genai.Part{{Text: "first answer"}}},
-			userContent("second question"),
-		},
-	})
-
-	// Two user frames: the flattened history preamble, then the new turn.
-	var userTexts []string
-	for _, s := range fc.sent {
-		if s["type"] == "user" {
-			userTexts = append(userTexts, userFrameText(s))
-		}
-	}
-	if len(userTexts) != 2 {
-		t.Fatalf("want 2 user frames (history + new turn), got %d: %v", len(userTexts), userTexts)
-	}
-	if !contains(userTexts[0], "first question") || !contains(userTexts[0], "first answer") {
-		t.Errorf("history preamble missing prior turns: %q", userTexts[0])
-	}
-	if userTexts[1] != "second question" {
-		t.Errorf("new turn = %q", userTexts[1])
-	}
-}
-
 // TestClaudeCodeModel_NonStreamingNoPartials: when ADK asks for non-streaming
 // (RunConfig without SSE, the TUI's default), the model must not yield partial
 // deltas — the consumer accumulates every text event, so a partial plus the
@@ -469,7 +444,7 @@ func TestClaudeCodeModel_HistoryPreamble(t *testing.T) {
 func TestClaudeCodeModel_NonStreamingNoPartials(t *testing.T) {
 	fc := newFakeConn(8)
 	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "haiku", "/repo", false, nil)
@@ -517,7 +492,7 @@ func TestClaudeCodeModel_NonStreamingNoPartials(t *testing.T) {
 func TestClaudeCodeModel_StreamingYieldsPartials(t *testing.T) {
 	fc := newFakeConn(8)
 	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) { return fc, nil }
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) { return fc, nil }
 	defer func() { ccDial = prevDial }()
 
 	m := newClaudeCodeModel("claude", "haiku", "/repo", false, nil)
@@ -548,7 +523,7 @@ func TestProbeClaudeCodeModels_ParsesInitResponse(t *testing.T) {
 	fc := newFakeConn(4)
 	prevDial := ccDial
 	var gotArgv []string
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) {
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) {
 		gotArgv = args.Argv
 		return fc, nil
 	}
@@ -600,7 +575,7 @@ func TestProbeClaudeCodeModels_ParsesInitResponse(t *testing.T) {
 // static catalog rather than an empty picker.
 func TestClaudeCode_ListModels_FallsBackToCatalog(t *testing.T) {
 	prevDial := ccDial
-	ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) {
+	ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) {
 		return nil, errChildExited
 	}
 	defer func() { ccDial = prevDial }()

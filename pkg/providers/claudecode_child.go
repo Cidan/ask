@@ -33,22 +33,34 @@ type ccConn interface {
 	close() error
 }
 
-// ccDialArgs is what ccDial needs to launch a child. Kept as a struct so the
-// test seam has a stable signature.
-type ccDialArgs struct {
+// ClaudeCodeStartArgs is what launching a child needs.
+type ClaudeCodeStartArgs struct {
 	Binary string
 	Argv   []string
 	Dir    string
 	Env    []string
 }
 
-// ccDial launches `claude` and returns a conn over its stdio. Swappable in
-// tests.
-var ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) {
+// ClaudeCodeProcess is a running `claude` child as ask sees it: NDJSON frames
+// in on stdin, NDJSON frames out on stdout.
+type ClaudeCodeProcess interface {
+	Stdin() io.WriteCloser
+	// Stdout reaches EOF when the child exits.
+	Stdout() io.Reader
+	// StderrTail returns the end of the child's stderr, for an exit error.
+	StderrTail() string
+	// Stop closes stdin, kills the child, and waits for it to exit.
+	Stop() error
+}
+
+// ClaudeCodeStart launches a `claude` child. Swappable in tests, which stand
+// in a fake child speaking the same NDJSON protocol so a whole session —
+// compaction and child rebuilds included — runs with no process.
+var ClaudeCodeStart = func(ctx context.Context, args ClaudeCodeStartArgs) (ClaudeCodeProcess, error) {
 	cmd := exec.CommandContext(ctx, args.Binary, args.Argv...)
 	cmd.Dir = args.Dir
 	cmd.Env = args.Env
-	// Kill the whole process group when ctx is cancelled or close() runs, so
+	// Kill the whole process group when ctx is cancelled or Stop runs, so
 	// no orphaned node lingers.
 	cmd.Cancel = func() error { return cmd.Process.Kill() }
 
@@ -66,17 +78,44 @@ var ccDial = func(ctx context.Context, args ccDialArgs) (ccConn, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("claude-code: start %s: %w", args.Binary, err)
 	}
+	return &execProcess{cmd: cmd, stdin: stdin, stdout: stdout, stderr: stderr}, nil
+}
 
-	c := &procConn{cmd: cmd, stdin: stdin, stderr: stderr, ch: make(chan ccFrame, 64)}
-	go c.read(stdout)
+// execProcess is the real ClaudeCodeProcess.
+type execProcess struct {
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout io.Reader
+	stderr *ringBuffer
+}
+
+func (p *execProcess) Stdin() io.WriteCloser { return p.stdin }
+func (p *execProcess) Stdout() io.Reader     { return p.stdout }
+func (p *execProcess) StderrTail() string    { return p.stderr.String() }
+
+func (p *execProcess) Stop() error {
+	_ = p.stdin.Close()
+	if p.cmd.Process != nil {
+		_ = p.cmd.Process.Kill()
+	}
+	return p.cmd.Wait()
+}
+
+// ccDial launches a child and returns a frame-level conn over its stdio.
+// Swappable in tests that script frames directly.
+var ccDial = func(ctx context.Context, args ClaudeCodeStartArgs) (ccConn, error) {
+	proc, err := ClaudeCodeStart(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	c := &procConn{proc: proc, ch: make(chan ccFrame, 64)}
+	go c.read(proc.Stdout())
 	return c, nil
 }
 
 // procConn is the real ccConn.
 type procConn struct {
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	stderr  *ringBuffer
+	proc    ClaudeCodeProcess
 	ch      chan ccFrame
 	writeMu sync.Mutex
 }
@@ -106,20 +145,13 @@ func (c *procConn) send(v any) error {
 	b = append(b, '\n')
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	_, err = c.stdin.Write(b)
+	_, err = c.proc.Stdin().Write(b)
 	return err
 }
 
 func (c *procConn) frames() <-chan ccFrame { return c.ch }
-func (c *procConn) stderrTail() string     { return c.stderr.String() }
-
-func (c *procConn) close() error {
-	_ = c.stdin.Close()
-	if c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
-	}
-	return c.cmd.Wait()
-}
+func (c *procConn) stderrTail() string     { return c.proc.StderrTail() }
+func (c *procConn) close() error           { return c.proc.Stop() }
 
 // ringBuffer keeps the last max bytes written; the child's stderr goes here so
 // an exit error can carry the tail without unbounded growth.
@@ -239,4 +271,13 @@ func currentEnvMinusClaude() []string {
 	}
 	out = append(out, "CLAUDE_CODE_ENTRYPOINT=sdk-ts")
 	return out
+}
+
+// ccSessionEnv is the environment of a session child. DISABLE_COMPACT switches
+// off every compaction the CLI would do on its own (auto, manual, and its
+// in-loop check): ask compacts the conversation itself, the same way on every
+// provider, and rebuilds the child from the result (see writeClaudeSeedFile).
+// A child that also compacted would hold a history ask never sent.
+func ccSessionEnv() []string {
+	return append(currentEnvMinusClaude(), "DISABLE_COMPACT=1")
 }

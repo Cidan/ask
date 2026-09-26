@@ -100,6 +100,12 @@ type RunResult struct {
 
 	// Error contains the failure error, if any.
 	Error error `json:"error,omitempty"`
+
+	// Usage is every model call's accounting, in order. CostUSD sums the
+	// calls' known costs; CostKnown reports whether any call had one.
+	Usage     []providers.Usage `json:"usage,omitempty"`
+	CostUSD   float64           `json:"cost_usd,omitempty"`
+	CostKnown bool              `json:"cost_known,omitempty"`
 }
 
 // ToolFactoryArgs provides configuration parameters to construct the agent toolset.
@@ -145,9 +151,10 @@ func GetDefaultToolFactory() ToolFactory {
 	return defaultToolFactory
 }
 
-// ModelBuilder builds the ADK LLM for a provider and wraps it in the
-// transient-error retry decorator. Swappable so tests can hand back a
-// scripted model.
+// ModelBuilder builds the ADK LLM for a provider and wraps it in the usage
+// wrapper (usage.go), which completes and prices every response's usage
+// record, and the transient-error retry decorator. Swappable so tests can hand
+// back a scripted model.
 var ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
 	if p == nil {
 		return nil, errors.New("provider is nil")
@@ -161,7 +168,7 @@ var ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Co
 		return nil, err
 	}
 	_, initialDelay, backoff := config.AgentRetryOptions(cfg)
-	return newRetryingModel(llm, initialDelay, backoff), nil
+	return newRetryingModel(newUsageModel(llm, p.ID(), modelID), initialDelay, backoff), nil
 }
 
 // RunnerBuilder allows customizing or mocking the ADK runner in tests.
@@ -313,7 +320,8 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 
 	compactor := NewCompactor(CompactOptions{
 		ContextWindow: prov.ContextWindow(modelID),
-		Disabled:      providers.ManagesOwnContext(prov) || !AutoCompactEnabled(opts.Config),
+		Disabled:      !AutoCompactEnabled(opts.Config),
+		Model:         llm,
 		Notify: func(r CompactionResult) {
 			if opts.EventListener == nil {
 				return
@@ -338,6 +346,7 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 			compactor.BeforeModel,
 		},
+		AfterModelCallbacks: []llmagent.AfterModelCallback{compactor.AfterModel},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ADK agent: %w", err)
@@ -367,6 +376,7 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	}
 
 	var finalResponseText strings.Builder
+	var spend RunResult
 	var touchedFiles []string
 
 	for event, err := range r.Run(ctx, "user", sessionID, userMsg, agent.RunConfig{}) {
@@ -396,27 +406,24 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 				IsError:   true,
 				Error:     err,
 				Messages:  errMessages,
+				Usage:     spend.Usage,
+				CostUSD:   spend.CostUSD,
+				CostKnown: spend.CostKnown,
 			}, err
 		}
 		if event == nil {
 			continue
 		}
 
-		if event.UsageMetadata != nil {
-			total := int(event.UsageMetadata.TotalTokenCount)
-			if total == 0 {
-				total = int(event.UsageMetadata.PromptTokenCount) + int(event.UsageMetadata.CandidatesTokenCount)
+		if u, ok := ResponseUsage(&event.LLMResponse); ok && !event.Partial {
+			spend.Usage = append(spend.Usage, u)
+			if u.CostKnown() {
+				spend.CostUSD += u.CostUSD
+				spend.CostKnown = true
 			}
-			compactor.ObserveUsage(int(event.UsageMetadata.PromptTokenCount), total)
-		}
-
-		if event.UsageMetadata != nil && opts.EventListener != nil {
-			opts.EventListener(UsageEvent{
-				BaseEvent:    BaseEvent{TabID: 0},
-				InputTokens:  int(event.UsageMetadata.PromptTokenCount),
-				OutputTokens: int(event.UsageMetadata.CandidatesTokenCount),
-				TotalTokens:  int(event.UsageMetadata.TotalTokenCount),
-			})
+			if opts.EventListener != nil {
+				opts.EventListener(NewUsageEvent(0, u))
+			}
 		}
 
 		if event.LLMResponse.Content != nil {
@@ -529,6 +536,9 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		Response:  respText,
 		Messages:  resultMessages,
 		IsError:   false,
+		Usage:     spend.Usage,
+		CostUSD:   spend.CostUSD,
+		CostKnown: spend.CostKnown,
 	}, nil
 }
 

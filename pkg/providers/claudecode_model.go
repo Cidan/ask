@@ -26,7 +26,8 @@ var ccBatchWindow = 30 * time.Millisecond
 // the contents ADK added since the last call to the child, then reads the
 // child until a batch of tool calls (yielded as FunctionCalls) or the turn's
 // result (yielded as final text). The child holds its own conversation
-// history, so only new content is ever sent.
+// history, so only new content is ever sent — until RebaseHistory, after which
+// the next call replaces the child with one seeded from that call's request.
 type claudeCodeModel struct {
 	binary  string
 	modelID string
@@ -39,8 +40,13 @@ type claudeCodeModel struct {
 	conn       ccConn
 	procCancel context.CancelFunc // cancels the child's own lifetime context
 	started    bool
-	tools      []ccTool // served on the child's tools/list
-	cursor     int      // how far into req.Contents has been sent to the child
+	// rebase makes the next GenerateContent rebuild the child from its
+	// request (see RebaseHistory).
+	rebase bool
+	tools  []ccTool // served on the child's tools/list
+	// consumed marks the last request content the child has been sent. The
+	// next call sends what follows it; see drainLocked.
+	consumed ccMark
 	// pending maps a tool_use id to the control-request id ask must answer
 	// with that tool's result.
 	pending map[string]ccPending
@@ -48,10 +54,26 @@ type claudeCodeModel struct {
 	// later tool_result frame can be matched and surfaced. Only touched from
 	// readStep (one GenerateContent at a time), so it needs no lock.
 	nativeCalls map[string]string
-	sysSent     string // system prompt captured at spawn
 	// sysPromptPath is the temp file passed to the child as
-	// --system-prompt-file; removed on Close (and on a failed spawn).
+	// --system-prompt-file; seedPath the transcript passed as --resume.
+	// Both are removed when the child is torn down (and on a failed spawn).
 	sysPromptPath string
+	seedPath      string
+
+	// inTurn is set while the child is running a turn: from the user frame
+	// that starts one to the result frame that ends it.
+	inTurn bool
+	// staleResults counts result frames still to come from turns ask
+	// interrupted. The CLI answers an interrupt with a result frame; left
+	// unread it would end the next turn before that turn's own frames.
+	staleResults int
+	// costSeen is the child's cumulative total_cost_usd at its last result
+	// frame. costCarry is reported cost not yet attached to a response — an
+	// interrupted turn's, or a replaced child's — and costPending marks that
+	// a result frame's cost is waiting to be attached, even a zero one.
+	costSeen    float64
+	costCarry   float64
+	costPending bool
 }
 
 type ccPending struct {
@@ -77,32 +99,22 @@ func (m *claudeCodeModel) Name() string { return m.modelID }
 func (m *claudeCodeModel) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.sysPromptPath != "" {
-		_ = os.Remove(m.sysPromptPath)
-		m.sysPromptPath = ""
-	}
-	if m.conn == nil {
-		return nil
-	}
-	// Best-effort interrupt so any in-flight turn unwinds before the kill.
-	_ = m.conn.send(ccControlEnvelope{Type: "control_request", RequestID: "close", Request: map[string]any{"subtype": "interrupt"}})
-	err := m.conn.close()
-	if m.procCancel != nil {
-		m.procCancel()
-		m.procCancel = nil
-	}
-	m.conn = nil
-	m.started = false
-	return err
+	return m.stopLocked(false)
+}
+
+// RebaseHistory implements HistoryRebaser: ask rewrote the history it sends
+// (compaction), so the next GenerateContent replaces the child with one
+// seeded from that call's request rather than appending to what the current
+// child holds.
+func (m *claudeCodeModel) RebaseHistory() {
+	m.mu.Lock()
+	m.rebase = true
+	m.mu.Unlock()
 }
 
 func (m *claudeCodeModel) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
-		if err := m.ensure(req); err != nil {
-			yield(nil, err)
-			return
-		}
-		if err := m.drainContents(req); err != nil {
+		if err := m.send(req); err != nil {
 			yield(nil, err)
 			return
 		}
@@ -110,45 +122,69 @@ func (m *claudeCodeModel) GenerateContent(ctx context.Context, req *model.LLMReq
 	}
 }
 
-// ensure spawns the child on the first call and sends the initialize control
-// request. The child's MCP initialize/tools_list and the system/init frame are
-// served lazily by readStep as they arrive, so ensure never blocks on them.
-func (m *claudeCodeModel) ensure(req *model.LLMRequest) error {
+// send hands the child what this call adds. A running child is sent only the
+// contents that follow what it already holds; a first call, the first after
+// RebaseHistory, or a request that shares nothing with the child (a workflow
+// loop's next iteration) starts a child from the request's whole history.
+func (m *claudeCodeModel) send(req *model.LLMRequest) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.tools = ccToolsFromRequest(reqTools(req))
-	if m.started && m.conn != nil {
-		return nil
+	if m.started && m.conn != nil && !m.rebase {
+		if start, ok := m.anchorLocked(req.Contents); ok {
+			return m.drainLocked(req.Contents, start)
+		}
 	}
-	sys := reqSystemPrompt(req)
-	sysPath, err := writeClaudeSystemPromptFile(sys)
+	// The old child is killed, so its exit status is always an error.
+	_ = m.stopLocked(true)
+	m.rebase = false
+	return m.spawnLocked(req)
+}
+
+// spawnLocked starts a child seeded with req's history and writes the user
+// message that runs its first turn: the request's newest user content, or
+// ccSeedNudge when the history ends mid-turn on a tool result. The child's MCP
+// initialize/tools_list and the system/init frame are served lazily by
+// readStep as they arrive, so spawning never blocks on them. Caller holds
+// m.mu.
+func (m *claudeCodeModel) spawnLocked(req *model.LLMRequest) error {
+	seed, input := ccSplitSeed(req.Contents)
+	sysPath, err := writeClaudeSystemPromptFile(reqSystemPrompt(req))
 	if err != nil {
 		return err
 	}
-	argv := ccArgv(m.modelID, reqEffort(req), sysPath, m.nativeWebSearch)
+	seedPath, err := writeClaudeSeedFile(seed, m.cwd)
+	if err != nil {
+		_ = os.Remove(sysPath)
+		return err
+	}
+	argv := ccArgv(m.modelID, reqEffort(req), sysPath, seedPath, m.nativeWebSearch)
 	// The child lives for the model's lifetime, not one turn: dial with a
 	// context derived from Background and cancelled only by Close. Binding it
 	// to the per-turn ctx (which the TUI cancels at turn end) would kill the
 	// child between turns and the next write would hit a broken pipe.
 	procCtx, cancel := context.WithCancel(context.Background())
-	conn, err := ccDial(procCtx, ccDialArgs{
+	conn, err := ccDial(procCtx, ClaudeCodeStartArgs{
 		Binary: m.binary,
 		Argv:   argv,
 		Dir:    m.cwd,
-		Env:    currentEnvMinusClaude(),
+		Env:    ccSessionEnv(),
 	})
 	if err != nil {
 		cancel()
 		_ = os.Remove(sysPath)
+		if seedPath != "" {
+			_ = os.Remove(seedPath)
+		}
 		return err
 	}
 	m.conn = conn
 	m.procCancel = cancel
 	m.started = true
-	m.sysSent = sys
 	m.sysPromptPath = sysPath
-	m.cursor = 0
+	m.seedPath = seedPath
 	m.pending = map[string]ccPending{}
+	m.nativeCalls = map[string]string{}
 	if err := conn.send(ccControlEnvelope{
 		Type:      "control_request",
 		RequestID: "init",
@@ -156,35 +192,49 @@ func (m *claudeCodeModel) ensure(req *model.LLMRequest) error {
 	}); err != nil {
 		return err
 	}
+	wrote, err := m.writeUserContent(input)
+	if err != nil {
+		return err
+	}
+	if !wrote {
+		if err := m.writeUserText(ccSeedNudge); err != nil {
+			return err
+		}
+	}
+	if n := len(req.Contents); n > 0 {
+		m.consumed = ccMarkAt(req.Contents, n-1)
+	}
 	return nil
 }
 
-// drainContents sends everything ADK added to req.Contents since the last
-// call: function responses answer pending tool calls; a fresh user turn is
-// written as a user frame (interrupting any abandoned pending calls first).
-// On the very first turn a resumed/materialized history (more than one entry)
-// is flattened into a single context message so the child has the prior
-// conversation without native resume.
-func (m *claudeCodeModel) drainContents(req *model.LLMRequest) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	contents := req.Contents
-	if m.cursor == 0 && len(contents) > 1 {
-		if err := m.writeUserText(ccHistoryPreamble(contents[:len(contents)-1])); err != nil {
-			return err
-		}
-		if err := m.writeUserContent(contents[len(contents)-1]); err != nil {
-			return err
-		}
-		m.cursor = len(contents)
-		return nil
+// anchorLocked finds where the child's history ends in contents: the last
+// content it was sent, or — when that content is gone — its latest reply. It
+// reports false when contents carry neither, so the child holds nothing the
+// request does.
+//
+// The boundary is a mark, not a count: request hooks add one-off contents
+// that the next request no longer carries (a tool-rendered image), so a count
+// drifts, and a mark on such a content no longer resolves. Caller holds m.mu.
+func (m *claudeCodeModel) anchorLocked(contents []*genai.Content) (int, bool) {
+	if i, ok := ccLocateMark(contents, m.consumed); ok {
+		return i, true
 	}
+	for i := len(contents) - 1; i >= 0; i-- {
+		if isModelContent(contents[i]) {
+			return i, true
+		}
+	}
+	return 0, false
+}
 
-	for _, c := range contents[m.cursor:] {
+// drainLocked sends what follows contents[start]: function responses answer
+// pending tool calls; a user content is written as a user frame (interrupting
+// any abandoned pending calls first); model contents are the child's own
+// replies and are skipped. Caller holds m.mu.
+func (m *claudeCodeModel) drainLocked(contents []*genai.Content, start int) error {
+	for _, c := range contents[start+1:] {
 		switch {
 		case isModelContent(c):
-			// Claude produced this; it already holds it. Skip.
 		case hasFunctionResponses(c):
 			for _, p := range c.Parts {
 				if p != nil && p.FunctionResponse != nil {
@@ -195,13 +245,79 @@ func (m *claudeCodeModel) drainContents(req *model.LLMRequest) error {
 			if len(m.pending) > 0 {
 				m.interruptLocked() // ADK abandoned the turn; unblock the child
 			}
-			if err := m.writeUserContent(c); err != nil {
+			if _, err := m.writeUserContent(c); err != nil {
 				return err
 			}
 		}
 	}
-	m.cursor = len(contents)
+	if n := len(contents); n > 0 {
+		m.consumed = ccMarkAt(contents, n-1)
+	}
 	return nil
+}
+
+// ccSettleGrace bounds how long replacing a child waits for the result frames
+// of the turns it interrupts. The CLI answers an interrupt at once; the wait
+// only matters for a child that has stopped answering.
+var ccSettleGrace = 2 * time.Second
+
+// stopLocked tears down the child, if any, and removes its temp files. With
+// settle, a child being replaced mid-turn is interrupted and its outstanding
+// result frames read first, so the cost of the calls it already made is
+// carried to the next response instead of dying with it. Caller holds m.mu.
+func (m *claudeCodeModel) stopLocked(settle bool) error {
+	for _, p := range []*string{&m.sysPromptPath, &m.seedPath} {
+		if *p != "" {
+			_ = os.Remove(*p)
+			*p = ""
+		}
+	}
+	m.consumed = ccMark{}
+	if m.conn == nil {
+		return nil
+	}
+	if settle {
+		m.interruptLocked()
+		m.settleLocked()
+	} else {
+		// Best-effort interrupt so any in-flight turn unwinds before the kill.
+		_ = m.conn.send(ccControlEnvelope{Type: "control_request", RequestID: "close", Request: map[string]any{"subtype": "interrupt"}})
+	}
+	err := m.conn.close()
+	if m.procCancel != nil {
+		m.procCancel()
+		m.procCancel = nil
+	}
+	m.conn = nil
+	m.started = false
+	m.pending = map[string]ccPending{}
+	m.inTurn, m.staleResults, m.costSeen = false, 0, 0
+	return err
+}
+
+// settleLocked reads the child's outstanding result frames — one per turn ask
+// interrupted — and carries their cost. Caller holds m.mu, and no read is in
+// flight: it only runs between steps.
+func (m *claudeCodeModel) settleLocked() {
+	deadline := time.After(ccSettleGrace)
+	for m.staleResults > 0 {
+		select {
+		case <-deadline:
+			return
+		case fr, ok := <-m.conn.frames():
+			if !ok {
+				return
+			}
+			if fr.Type != "result" {
+				continue
+			}
+			if fr.TotalCostUSD > m.costSeen {
+				m.costCarry += fr.TotalCostUSD - m.costSeen
+				m.costSeen = fr.TotalCostUSD
+			}
+			m.staleResults--
+		}
+	}
 }
 
 // readStep reads child frames until a tool-call batch or the turn result,
@@ -218,11 +334,11 @@ func (m *claudeCodeModel) readStep(ctx context.Context, stream bool, yield func(
 
 	var text, thought strings.Builder
 	var calls []*genai.FunctionCall
-	var usage *ccUsage
+	var step ccStep
 	var batch <-chan time.Time
 
 	final := func() *model.LLMResponse {
-		return m.buildResponse(text.String(), thought.String(), calls, usage, true)
+		return m.finalResponse(text.String(), thought.String(), calls, &step, nil)
 	}
 
 	for {
@@ -245,6 +361,7 @@ func (m *claudeCodeModel) readStep(ctx context.Context, stream bool, yield func(
 			}
 			switch fr.Type {
 			case "stream_event":
+				step.observeEvent(fr.Event)
 				// Partial deltas are live-display only, and only when ADK asked
 				// for streaming (RunConfig StreamingModeSSE). In non-streaming
 				// mode ADK/consumers accumulate every text event, so yielding
@@ -255,10 +372,10 @@ func (m *claudeCodeModel) readStep(ctx context.Context, stream bool, yield func(
 				}
 				if d, t := ccDelta(fr.Event); d != "" {
 					if t == "thinking" {
-						if !yield(m.buildResponse("", d, nil, nil, false), nil) {
+						if !yield(partialResponse("", d), nil) {
 							return
 						}
-					} else if !yield(m.buildResponse(d, "", nil, nil, false), nil) {
+					} else if !yield(partialResponse(d, ""), nil) {
 						return
 					}
 				}
@@ -266,9 +383,7 @@ func (m *claudeCodeModel) readStep(ctx context.Context, stream bool, yield func(
 				at, ath, u := ccAssistantContent(fr.Message)
 				text.WriteString(at)
 				thought.WriteString(ath)
-				if u != nil {
-					usage = u
-				}
+				step.observeFrame(u)
 				m.observeToolUses(fr.Message)
 			case "user":
 				// The child echoes results of tools it ran natively (its
@@ -285,30 +400,23 @@ func (m *claudeCodeModel) readStep(ctx context.Context, stream bool, yield func(
 					}
 				}
 			case "result":
-				// result.usage is CUMULATIVE across every internal API call the
-				// child made this turn: Claude Code re-reads the whole context
-				// from cache on each tool-loop step, so cache_read_input_tokens
-				// sums to a multiple of the live context. It must NOT feed the
-				// context meter. Keep the last per-call assistant usage for the
-				// meter's TotalTokenCount; use the cumulative result usage only
-				// for cost (prompt/candidate tokens). A turn with no assistant
-				// frame (a single API call) falls back to the result usage,
-				// where cumulative equals the one call.
-				costUsage := fr.Usage
-				meterUsage := usage
-				if meterUsage == nil {
-					meterUsage = costUsage
+				if m.takeResult(fr.TotalCostUSD) {
+					// The answer to an interrupt ask sent earlier, not this
+					// turn's end: its cost is kept, the frame is not.
+					continue
 				}
 				if w := ccContextWindowFromModelUsage(fr.ModelUsage); w > 0 {
 					observeClaudeCodeContextWindow(m.modelID, w)
 				}
 				// result.result is the turn's authoritative final text; the
-				// streamed assistant blocks are its live preview.
+				// streamed assistant blocks are its live preview. result.usage
+				// is cumulative across every call of the turn, so it only
+				// stands in for a turn that reported no call of its own.
 				finalText := fr.Result
 				if finalText == "" {
 					finalText = text.String()
 				}
-				yield(m.buildFinalResponse(finalText, thought.String(), calls, meterUsage, costUsage), nil)
+				yield(m.finalResponse(finalText, thought.String(), calls, &step, fr.Usage), nil)
 				return
 			}
 		}
@@ -428,12 +536,17 @@ func (m *claudeCodeModel) interrupt() {
 }
 
 // interruptLocked sends an interrupt and fails every pending call so the child
-// unwinds the turn. Caller holds m.mu.
+// unwinds the turn. A turn it cuts short still ends with a result frame, which
+// the next read must skip rather than take for its own. Caller holds m.mu.
 func (m *claudeCodeModel) interruptLocked() {
 	if m.conn == nil {
 		return
 	}
 	_ = m.conn.send(ccControlEnvelope{Type: "control_request", RequestID: "int", Request: map[string]any{"subtype": "interrupt"}})
+	if m.inTurn {
+		m.inTurn = false
+		m.staleResults++
+	}
 	for id, p := range m.pending {
 		_ = m.conn.send(ccControlEnvelope{Type: "control_response", Response: map[string]any{
 			"subtype": "success", "request_id": p.requestID,
@@ -492,9 +605,11 @@ func (m *claudeCodeModel) exitError() error {
 
 // ---- writers (caller holds m.mu) ----
 
-func (m *claudeCodeModel) writeUserContent(c *genai.Content) error {
+// writeUserContent writes c's text and images as one user frame. It reports
+// false, writing nothing, when c carries neither.
+func (m *claudeCodeModel) writeUserContent(c *genai.Content) (bool, error) {
 	if c == nil {
-		return nil
+		return false, nil
 	}
 	var blocks []ccBlock
 	for _, p := range c.Parts {
@@ -512,56 +627,43 @@ func (m *claudeCodeModel) writeUserContent(c *genai.Content) error {
 		}
 	}
 	if len(blocks) == 0 {
-		return nil
+		return false, nil
 	}
-	return m.conn.send(ccUserFrame{Type: "user", Message: ccUserMessage{Role: "user", Content: blocks}})
+	m.inTurn = true
+	return true, m.conn.send(ccUserFrame{Type: "user", Message: ccUserMessage{Role: "user", Content: blocks}})
 }
 
 func (m *claudeCodeModel) writeUserText(text string) error {
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
+	m.inTurn = true
 	return m.conn.send(ccUserFrame{Type: "user", Message: ccUserMessage{
 		Role: "user", Content: []ccBlock{{Type: "text", Text: text}},
 	}})
 }
 
-// buildResponse assembles an LLMResponse whose usage (if any) drives both the
-// context meter and cost from a single per-call usage. Partial responses pass
-// usage=nil; the batch-final path passes the step's last per-call assistant
-// usage. A final response always carries content (text and/or function calls)
-// so ADK does not drop it.
-func (m *claudeCodeModel) buildResponse(text, thought string, calls []*genai.FunctionCall, usage *ccUsage, final bool) *model.LLMResponse {
-	if !final {
-		var parts []*genai.Part
-		if thought != "" {
-			parts = append(parts, &genai.Part{Thought: true, Text: thought})
-		}
-		if text != "" {
-			parts = append(parts, &genai.Part{Text: text})
-		}
-		for _, c := range calls {
-			parts = append(parts, &genai.Part{FunctionCall: c})
-		}
-		resp := &model.LLMResponse{
-			Content:      &genai.Content{Role: "model", Parts: parts},
-			Partial:      true,
-			TurnComplete: false,
-		}
-		if md := ccUsageMetadata(usage, usage); md != nil {
-			resp.UsageMetadata = md
-		}
-		return resp
+// partialResponse is a live streaming delta: display only, no usage.
+func partialResponse(text, thought string) *model.LLMResponse {
+	var parts []*genai.Part
+	if thought != "" {
+		parts = append(parts, &genai.Part{Thought: true, Text: thought})
 	}
-	return m.buildFinalResponse(text, thought, calls, usage, usage)
+	if text != "" {
+		parts = append(parts, &genai.Part{Text: text})
+	}
+	return &model.LLMResponse{
+		Content: &genai.Content{Role: "model", Parts: parts},
+		Partial: true,
+	}
 }
 
-// buildFinalResponse assembles the turn's terminal LLMResponse, splitting the
-// usage that feeds the context meter (meterUsage: the most recent single API
-// call, so TotalTokenCount reflects live context occupancy) from the usage that
-// feeds cost (costUsage: the cumulative result totals, so spend stays right).
-// It is always a final response.
-func (m *claudeCodeModel) buildFinalResponse(text, thought string, calls []*genai.FunctionCall, meterUsage, costUsage *ccUsage) *model.LLMResponse {
+// finalResponse assembles a step's final LLMResponse: its content, the genai
+// usage metadata of the step's last call, and the step's usage record, which
+// carries the cost the CLI reported when one is due (see takeResult).
+// fallback stands for the step's only call when the child reported no other
+// usage for it (a result frame alone).
+func (m *claudeCodeModel) finalResponse(text, thought string, calls []*genai.FunctionCall, step *ccStep, fallback *ccUsage) *model.LLMResponse {
 	var parts []*genai.Part
 	if thought != "" {
 		parts = append(parts, &genai.Part{Thought: true, Text: thought})
@@ -577,40 +679,49 @@ func (m *claudeCodeModel) buildFinalResponse(text, thought string, calls []*gena
 		Partial:      false,
 		TurnComplete: true,
 	}
-	if md := ccUsageMetadata(meterUsage, costUsage); md != nil {
+	u, md, ok := step.usage(fallback)
+	if ok {
 		resp.UsageMetadata = md
+	}
+	if cost, pending := m.takeCost(); pending {
+		u.CostUSD = cost
+		u.CostSource = CostReported
+		ok = true
+	}
+	if ok {
+		u.Model = m.modelID
+		AttachUsage(resp, u)
 	}
 	return resp
 }
 
-// ccUsageMetadata builds the ADK usage metadata from two usages: meterUsage
-// drives TotalTokenCount (the context meter) and costUsage drives
-// PromptTokenCount/CandidatesTokenCount (cost). For every caller except the
-// turn's terminal result the two are the same object.
-//
-// Anthropic reports input_tokens as only the uncached delta; the bulk of the
-// context lives in the cache-read and cache-creation buckets, so TotalTokenCount
-// must fold in every input bucket of the most recent call or the meter barely
-// moves on a cached turn. PromptTokenCount stays the uncached delta: cost
-// pricing reads it at the full input rate, and cache reads are billed far
-// cheaper.
-func ccUsageMetadata(meterUsage, costUsage *ccUsage) *genai.GenerateContentResponseUsageMetadata {
-	if meterUsage == nil && costUsage == nil {
-		return nil
+// takeResult accounts a result frame's cost and reports whether the frame is
+// the late answer to an interrupt (so not the end of the turn being read).
+// total_cost_usd is cumulative over the child's life, so a turn's cost is the
+// difference from the last one seen.
+func (m *claudeCodeModel) takeResult(total float64) (stale bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if total > m.costSeen {
+		m.costCarry += total - m.costSeen
+		m.costSeen = total
 	}
-	md := &genai.GenerateContentResponseUsageMetadata{}
-	if costUsage != nil {
-		md.PromptTokenCount = int32(costUsage.InputTokens)
-		md.CandidatesTokenCount = int32(costUsage.OutputTokens)
+	m.costPending = true
+	if m.staleResults > 0 {
+		m.staleResults--
+		return true
 	}
-	if meterUsage != nil {
-		total := meterUsage.InputTokens + meterUsage.CacheReadInputTokens +
-			meterUsage.CacheCreationInputTokens + meterUsage.OutputTokens
-		md.TotalTokenCount = int32(total)
-		md.CachedContentTokenCount = int32(meterUsage.CacheReadInputTokens)
-		md.ThoughtsTokenCount = int32(meterUsage.OutputTokensDetails.ThinkingTokens)
-	}
-	return md
+	m.inTurn = false
+	return false
+}
+
+// takeCost hands over the reported cost waiting to be attached to a response.
+func (m *claudeCodeModel) takeCost() (float64, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cost, pending := m.costCarry, m.costPending || m.costCarry > 0
+	m.costCarry, m.costPending = 0, false
+	return cost, pending
 }
 
 // ccContextWindowFromModelUsage returns the largest contextWindow reported in a

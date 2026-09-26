@@ -66,19 +66,21 @@ func SameModel(providerA, modelA, providerB, modelB string) bool {
 }
 
 // Deslop rewrites one assistant text block through the given model and returns
-// the cleaned text. It is fail-open: on any error, or an empty rewrite, it
-// returns the original text so user-facing output is never lost or blanked.
-func Deslop(ctx context.Context, llm model.LLM, modelID, text string) (string, error) {
+// the cleaned text with the rewrite call's usage record. It is fail-open: on
+// any error, or an empty rewrite, it returns the original text so user-facing
+// output is never lost or blanked — the call is still billed, so its usage is
+// returned either way.
+func Deslop(ctx context.Context, llm model.LLM, modelID, text string) (string, providers.Usage, error) {
 	if strings.TrimSpace(text) == "" {
-		return text, nil
+		return text, providers.Usage{}, nil
 	}
-	out, _, _, err := generateOnce(ctx, llm, modelID, DeslopInstruction, text)
+	out, usage, err := generateOnce(ctx, llm, modelID, DeslopInstruction, text)
 	if err != nil {
-		return text, err
+		return text, usage, err
 	}
 	out = strings.TrimSpace(out)
 	if out == "" {
-		return text, nil
+		return text, usage, nil
 	}
-	return out, nil
+	return out, usage, nil
 }

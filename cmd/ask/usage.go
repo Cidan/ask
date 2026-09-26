@@ -7,14 +7,6 @@ import (
 	"github.com/Cidan/ask/pkg/providers"
 )
 
-// TokenUsage models token consumption for a generation step.
-type TokenUsage struct {
-	InputTokens         int
-	OutputTokens        int
-	CacheCreationTokens int
-	CacheReadTokens     int
-}
-
 // modelContextLimit is the model's context window: the provider's answer
 // when the provider is known, else a name heuristic.
 func modelContextLimit(providerID, model string) int {
@@ -45,17 +37,61 @@ func contextPercent(used, limit int) int {
 	return p
 }
 
-// stepCostUSD prices one API call's token usage in dollars using the same
-// layered metadata the model picker shows (static catalog, models.dev, the
-// provider's live listing), so the meter and the picker never disagree.
-func stepCostUSD(providerID, modelID string, u TokenUsage) (float64, bool) {
-	return providers.StepCostUSD(providerID, modelID, u.InputTokens, u.OutputTokens, u.CacheCreationTokens, u.CacheReadTokens)
+// costKnownUpfront reports whether a session on providerID/modelID has a
+// known cost before any call lands: the catalog can price the model (with
+// the same layered metadata the model picker shows, so the two never
+// disagree), or the provider reports what each call costs.
+func costKnownUpfront(providerID, modelID string) bool {
+	if providers.ReportsCost(providerID) {
+		return true
+	}
+	_, ok := providers.StepCostUSD(providerID, modelID, 0, 0, 0, 0)
+	return ok
 }
 
-// modelPricingKnown reports whether stepCostUSD can price calls for this provider/model pair.
-func modelPricingKnown(providerID, modelID string) bool {
-	_, ok := stepCostUSD(providerID, modelID, TokenUsage{})
-	return ok
+// clearUsage resets the context and cost meters for a tab that now hosts a
+// different conversation.
+func (m *model) clearUsage() {
+	m.lastUsageTokens = 0
+	m.usageProvider, m.usageModel = "", ""
+	m.usageEstimated = false
+	m.sessionCostUSD = 0
+	m.sessionCostKnown = false
+}
+
+// restoreUsage installs a stored session's accounting. Its context reading
+// is exact only against the model that made it; on any other model the chip
+// shows it approximate until that model reports.
+func (m *model) restoreUsage(u sessionUsage) {
+	m.lastUsageTokens = u.contextTokens
+	m.usageProvider, m.usageModel = u.provider, u.model
+	m.usageEstimated = u.contextTokens > 0 && !m.readingIsCurrentModel(u.provider, u.model)
+	m.sessionCostUSD = u.costUSD
+	m.sessionCostKnown = u.costKnown
+}
+
+// readingIsCurrentModel reports whether a reading made by provider/model came
+// from the model this tab now runs.
+func (m *model) readingIsCurrentModel(provider, model string) bool {
+	if m.provider == nil || provider != m.provider.ID() {
+		return false
+	}
+	current := m.modelForContext
+	if current == "" {
+		current = m.effectiveModelID()
+	}
+	if p, ok := providers.Get(provider); ok {
+		return p.CanonicalModelID(model, "") == p.CanonicalModelID(current, "")
+	}
+	return model == current
+}
+
+// estimateUsageAfterSwap keeps the last reading across a model swap as an
+// approximation: the conversation is the same, but the new model tokenizes
+// it differently and may have another window.
+func (m *model) estimateUsageAfterSwap() {
+	m.usageEstimated = m.lastUsageTokens > 0
+	m.usageProvider, m.usageModel = "", ""
 }
 
 // formatUSD renders a dollar amount as dollars-and-cents ("$0.07").

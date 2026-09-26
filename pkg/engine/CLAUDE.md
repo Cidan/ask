@@ -40,8 +40,19 @@ Related: `.claude/rules/tools.md`, `.claude/rules/providers.md`,
 ## Model and runner construction
 
 - `ModelBuilder` (swappable) calls `p.BuildModel` and wraps it in
-  `retryingModel` (retry.go). Every model in the process — tab titles,
-  sub-agents, workflow steps — goes through it.
+  `usageModel` (usage.go) and `retryingModel` (retry.go). Every model in
+  the process — tab titles, sub-agents, workflow steps — goes through it.
+- `usageModel` completes the `providers.Usage` record on every final
+  response — derived from the metadata when the adapter attached none,
+  stamped with the build's provider and model, priced unless the
+  provider reported a cost — so it is persisted with the session event.
+  Read a response's record with `ResponseUsage` (falls back to the
+  metadata for a model not built here); `StampUsage` attributes and
+  prices one from a caller that knows its model (the memory extractor,
+  deslop, tab titles). `UsageEvent` carries the record (`NewUsageEvent`);
+  `RunResult.Usage`/`CostUSD` total a headless run's calls, which the
+  TUI charges to the parent session for a sub-agent. Both wrappers
+  forward `io.Closer` and `providers.HistoryRebaser`.
 - `CloseModel(m)` closes a model that holds resources (the Claude Code
   provider forks a `claude -p` child on first use and implements
   `io.Closer`; `retryingModel` forwards `Close`). Callers that own a
@@ -91,35 +102,61 @@ Related: `.claude/rules/tools.md`, `.claude/rules/providers.md`,
 
 ## Auto-compaction (`compact.go`)
 
-- `Compactor` keeps a conversation inside its context window. It is a
-  `BeforeModelCallback` registered wherever an `llmagent` is built —
-  `session.go`, `run.go`, `cmd/ask/agent_run.go`,
-  `cmd/ask/workflow_graph.go` — and is fed by `ObserveUsage` at each of
-  those sites' usage readings.
+- `Compactor` keeps one agent's conversation inside its model's context
+  window, **the same way on every provider** — no provider is exempt.
+  One compactor per agent and model: `BeforeModel` cuts, `AfterModel`
+  (an `llmagent.AfterModelCallback`) records the model's usage. Built in
+  `session.go`, `run.go`, `workflow_run.go` (one per workflow step, via
+  `workflow.WorkflowAgentConfig.ModelCallbacksBuilder`),
+  `cmd/ask/agent_run.go` (`newCompactor` + `compactCallbacks`) and
+  `cmd/ask/workflow_graph.go` (one per step). Never share one across
+  agents: its watermark and usage reading belong to one model.
 - **It rewrites `LLMRequest.Contents` only; the transcript is never
   touched.** ADK rebuilds `Contents` from the append-only event log on
   every model call, so the cut is a view the model sees and `/resume`
   does not. `ContextCompactedEvent` tells the UI it happened.
 - Trigger `CompactTriggerRatio` (0.90) of the window, target
   `CompactTargetRatio` (0.50), both hardcoded; `AutoCompactEnabled`
-  reads the one config toggle (`config.AutoCompact`, on when nil).
-  A provider satisfying `providers.ContextManagedProvider` (Claude Code)
-  is skipped — its child process owns the history.
-- **The cut point is only ever a genuine user turn**: role `user` with
-  no `FunctionCall` or `FunctionResponse` part. Role alone is wrong —
-  ADK builds tool-result contents with the user role too. Cutting
-  elsewhere orphans a tool call, which no provider repairs and which
-  OpenRouter rejects with a non-retryable 400.
+  reads the one config toggle (`config.AutoCompact`, on when nil). The
+  TUI and `Session` read it per call; switched off, they call `Reset`,
+  which drops a standing cut so the whole history goes out again.
+- **A cut may land anywhere except on a tool result**: at a user
+  message, or at a model reply — between two tool round-trips of one
+  turn, the only place a long agentic turn (one prompt, many tool calls)
+  can be cut at all. ADK puts a result in the content right after its
+  call, so this never orphans a call; cutting on a result would, and
+  OpenRouter rejects that with a non-retryable 400.
 - Index 0 is pinned (the original request) and an elision notice is
-  spliced in behind it.
+  spliced in behind it. Everything else, mid-turn steering included, is
+  dropped oldest first.
 - The boundary is remembered as a `contentMark` (fingerprint plus
   ordinal, since a transcript can repeat a content verbatim). Without
   that watermark the next call would observe the reduced usage, not
-  trigger, send the full history again, and oscillate across 90%.
-- Sizing is a local char estimate calibrated per call by
-  `PromptTokenCount / <estimate of the request that produced it>`. The
-  system instruction and tool declarations are not in `Contents` and
-  cannot be dropped, so they are subtracted from the target as a floor.
+  trigger, send the full history again, and oscillate across 90%. The
+  fingerprint is role plus **first part only**: the memory recall hook
+  appends a `<memory>` part to the latest user message on every request
+  (not persisted), and that must not stop a watermark resolving a turn
+  later.
+- **Model that holds its own history**: whenever the view's start moves
+  (a new cut, a watermark that no longer resolves, a `Reset`) the
+  compactor calls `providers.RebaseHistory(opts.Model)`; Claude Code's
+  model then replaces its child with one seeded from the cut view.
+  `retryingModel` forwards `RebaseHistory`.
+- Sizing is a local char estimate calibrated per call against the
+  usage record's `ContextTokens` (the provider's total) reading — what the model held after its
+  latest reply, i.e. the view up to the request's last model content.
+  Never the prompt count: Claude Code reports only the uncached slice
+  there. Before any reading (a resumed session) the raw estimate
+  triggers on its own. The system instruction and tool declarations
+  (including `ParametersJsonSchema`, where ADK's function tools keep
+  their schema) are not in `Contents` and cannot be dropped, so they are
+  subtracted from the target as a floor.
+- Tests (`compact_test.go`): unit tests plus `TestScenario_*`, real
+  `Session`s over a 10k-token window whose scripted model counts tokens
+  denser than the estimator. `compact_claudecode_test.go` runs the real
+  Claude Code model against a fake `claude` child
+  (`providers.ClaudeCodeStart`); `compact_workflow_integration_test.go`
+  compacts a headless workflow step.
 
 ## Tools
 
@@ -270,7 +307,7 @@ turn touched. `DebugLog` is the engine's debug seam (the TUI points it at
 ## File map
 
 - Runtime: `engine.go`, `run.go`, `session.go`, `coordinator.go`,
-  `retry.go`, `plugins.go`, `workflow_run.go`.
+  `retry.go`, `usage.go`, `compact.go`, `plugins.go`, `workflow_run.go`.
 - Contracts: `interaction.go`, `events.go`, `types.go`.
 - Prompt: `prompt.go`, `prompt_links.go`, `rules.go`, `glob.go`.
 - Discovery: `skills.go`, `skill_store.go`, `subagents.go`.

@@ -8,6 +8,7 @@ import (
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/workflow"
 	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/llmagent"
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
@@ -49,10 +50,36 @@ func WorkflowCompileConfig(e *Engine, cwd string, tabID int, def workflow.Def, s
 			}
 			return toolsets, nil
 		},
+		ModelCallbacksBuilder: func(step workflow.Step, llm adkmodel.LLM) ([]llmagent.BeforeModelCallback, []llmagent.AfterModelCallback) {
+			var window int64
+			if prov, modelID, err := stepTarget(e, step); err == nil {
+				window = prov.ContextWindow(modelID)
+			}
+			c := NewCompactor(CompactOptions{
+				ContextWindow: window,
+				Disabled:      !AutoCompactEnabled(e.opts.Config),
+				Model:         llm,
+				Notify: func(r CompactionResult) {
+					if e.opts.EventListener == nil {
+						return
+					}
+					e.opts.EventListener(ContextCompactedEvent{
+						BaseEvent:     BaseEvent{TabID: tabID},
+						Dropped:       r.DroppedContents,
+						BeforeTokens:  r.BeforeTokens,
+						AfterTokens:   r.AfterTokens,
+						ContextWindow: r.ContextWindow,
+					})
+				},
+			})
+			return []llmagent.BeforeModelCallback{c.BeforeModel}, []llmagent.AfterModelCallback{c.AfterModel}
+		},
 	}
 }
 
-func buildStepModel(ctx context.Context, e *Engine, step workflow.Step) (adkmodel.LLM, error) {
+// stepTarget resolves the provider and model a workflow step runs on: the
+// step's own, else the engine config's, else the default provider.
+func stepTarget(e *Engine, step workflow.Step) (providers.Provider, string, error) {
 	providerID := step.Provider
 	if providerID == "" {
 		providerID = e.opts.Config.Provider
@@ -62,9 +89,17 @@ func buildStepModel(ctx context.Context, e *Engine, step workflow.Step) (adkmode
 	}
 	prov, ok := providers.Get(providerID)
 	if !ok {
-		return nil, fmt.Errorf("unknown provider %q", providerID)
+		return nil, "", fmt.Errorf("unknown provider %q", providerID)
 	}
-	return ModelBuilder(ctx, prov, e.opts.Config, providers.ResolveModelID(prov, step.Model, e.opts.Config))
+	return prov, providers.ResolveModelID(prov, step.Model, e.opts.Config), nil
+}
+
+func buildStepModel(ctx context.Context, e *Engine, step workflow.Step) (adkmodel.LLM, error) {
+	prov, modelID, err := stepTarget(e, step)
+	if err != nil {
+		return nil, err
+	}
+	return ModelBuilder(ctx, prov, e.opts.Config, modelID)
 }
 
 // CompileWorkflow compiles a workflow definition into an executable ADK
@@ -150,13 +185,8 @@ func emitAgentEvent(listener EventListener, tabID int, event *session.Event) {
 	if listener == nil || event == nil {
 		return
 	}
-	if event.UsageMetadata != nil {
-		listener(UsageEvent{
-			BaseEvent:    BaseEvent{TabID: tabID},
-			InputTokens:  int(event.UsageMetadata.PromptTokenCount),
-			OutputTokens: int(event.UsageMetadata.CandidatesTokenCount),
-			TotalTokens:  int(event.UsageMetadata.TotalTokenCount),
-		})
+	if u, ok := ResponseUsage(&event.LLMResponse); ok && !event.Partial {
+		listener(NewUsageEvent(tabID, u))
 	}
 	if event.LLMResponse.Content == nil {
 		return

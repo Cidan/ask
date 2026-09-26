@@ -84,12 +84,11 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 		s.sessionID = "ses-" + modelID
 	}
 
-	// The provider check is fixed for the session's life; the user-facing
-	// toggle is read per call in compactBeforeModel so flipping it takes
-	// effect without restarting the session.
+	// The user-facing toggle is read per call in compactBeforeModel so
+	// flipping it takes effect without restarting the session.
 	s.compactor = NewCompactor(CompactOptions{
 		ContextWindow: contextWindow,
-		Disabled:      providers.ManagesOwnContext(prov),
+		Model:         llm,
 		Notify: func(r CompactionResult) {
 			s.Emit(ContextCompactedEvent{
 				BaseEvent:     BaseEvent{TabID: args.TabID},
@@ -134,6 +133,7 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 			s.beforeModelCallback,
 			s.compactBeforeModel,
 		},
+		AfterModelCallbacks: []llmagent.AfterModelCallback{s.compactor.AfterModel},
 	})
 	if err == nil {
 		s.sessSvc = NewFileSessionService(args.Provider, args.Cwd)
@@ -219,6 +219,7 @@ func (s *Session) beforeModelCallback(ctx agent.Context, llmRequest *model.LLMRe
 func (s *Session) compactBeforeModel(ctx agent.Context, req *model.LLMRequest) (*model.LLMResponse, error) {
 	cfg, _ := config.Load()
 	if !AutoCompactEnabled(cfg) {
+		s.compactor.Reset()
 		return nil, nil
 	}
 	return s.compactor.BeforeModel(ctx, req)
@@ -395,18 +396,8 @@ func (s *Session) runTurn(turn Turn) {
 			continue
 		}
 
-		if event.UsageMetadata != nil {
-			total := int(event.UsageMetadata.TotalTokenCount)
-			if total == 0 {
-				total = int(event.UsageMetadata.PromptTokenCount) + int(event.UsageMetadata.CandidatesTokenCount)
-			}
-			s.compactor.ObserveUsage(int(event.UsageMetadata.PromptTokenCount), total)
-			s.Emit(UsageEvent{
-				BaseEvent:    BaseEvent{TabID: s.args.TabID},
-				InputTokens:  int(event.UsageMetadata.PromptTokenCount),
-				OutputTokens: int(event.UsageMetadata.CandidatesTokenCount),
-				TotalTokens:  int(event.UsageMetadata.TotalTokenCount),
-			})
+		if u, ok := ResponseUsage(&event.LLMResponse); ok && !event.Partial {
+			s.Emit(NewUsageEvent(s.args.TabID, u))
 		}
 
 		if event.LLMResponse.Content != nil {

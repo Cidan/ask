@@ -144,8 +144,8 @@ func TestMemoryExtractorFilesConceptsAndTopic(t *testing.T) {
 	t.Cleanup(ex.Close)
 
 	var usageMu sync.Mutex
-	var usageProvider, usageModel, gotTopic string
-	var in, out int
+	var gotTopic string
+	var usage providers.Usage
 	ok := ex.EnqueueTurn(MemoryTurn{
 		Cwd:      cwd,
 		Prompt:   "short answers please",
@@ -153,10 +153,10 @@ func TestMemoryExtractorFilesConceptsAndTopic(t *testing.T) {
 		Topic:    "previous",
 		Files:    []string{"a.go"},
 		Provider: providers.VertexProviderID,
-		OnUsage: func(p, m string, i, o int) {
+		OnUsage: func(u providers.Usage) {
 			usageMu.Lock()
 			defer usageMu.Unlock()
-			usageProvider, usageModel, in, out = p, m, i, o
+			usage = u
 		},
 		OnTopic: func(topic string) {
 			usageMu.Lock()
@@ -191,8 +191,8 @@ func TestMemoryExtractorFilesConceptsAndTopic(t *testing.T) {
 
 	usageMu.Lock()
 	defer usageMu.Unlock()
-	if usageProvider != providers.VertexProviderID || usageModel == "" || in != 120 || out != 30 {
-		t.Errorf("OnUsage = %s/%s %d/%d", usageProvider, usageModel, in, out)
+	if usage.Provider != providers.VertexProviderID || usage.Model == "" || usage.InputTokens != 120 || usage.OutputTokens != 30 {
+		t.Errorf("OnUsage = %+v", usage)
 	}
 	if gotTopic != "style" {
 		t.Errorf("OnTopic = %q", gotTopic)

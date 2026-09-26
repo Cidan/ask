@@ -60,8 +60,8 @@ type MemoryTurn struct {
 	// Provider is the session's provider, used when the config names
 	// none for memory.
 	Provider string
-	// OnUsage reports the extraction call's own token usage.
-	OnUsage func(providerID, modelID string, inputTokens, outputTokens int)
+	// OnUsage reports the extraction call's own usage record, priced.
+	OnUsage func(providers.Usage)
 	// OnTopic receives the topic the model settled on for the turn.
 	OnTopic func(topic string)
 }
@@ -293,9 +293,9 @@ func (e *MemoryExtractor) process(ctx context.Context, turn MemoryTurn) error {
 	topics := svc.TopicNames(ctx, turn.Cwd, memory.DefaultTopicK)
 	content := MemoryExtractContent(turn, nearest.Concepts, topics)
 
-	raw, in, out, err := generateOnce(ctx, llm, modelID, memoryExtractInstruction, content)
-	if turn.OnUsage != nil && (in > 0 || out > 0) {
-		turn.OnUsage(providerID, modelID, in, out)
+	raw, usage, err := generateOnce(ctx, llm, modelID, memoryExtractInstruction, content)
+	if turn.OnUsage != nil && (usage.ContextTokens > 0 || usage.CostKnown()) {
+		turn.OnUsage(StampUsage(usage, providerID, modelID))
 	}
 	if err != nil {
 		return err
@@ -409,9 +409,9 @@ func applyMemoryExtraction(ctx context.Context, svc *memory.Service, turn Memory
 	return firstErr
 }
 
-// generateOnce runs one non-streaming call and returns the reply text
-// with its token usage.
-func generateOnce(ctx context.Context, llm model.LLM, modelID, instruction, content string) (string, int, int, error) {
+// generateOnce runs one non-streaming call and returns the reply text with
+// the call's usage record (zero when the model reported none).
+func generateOnce(ctx context.Context, llm model.LLM, modelID, instruction, content string) (string, providers.Usage, error) {
 	req := &model.LLMRequest{
 		Model:    modelID,
 		Contents: []*genai.Content{genai.NewContentFromText(content, genai.RoleUser)},
@@ -420,17 +420,16 @@ func generateOnce(ctx context.Context, llm model.LLM, modelID, instruction, cont
 		},
 	}
 	var sb strings.Builder
-	var in, out int
+	var usage providers.Usage
 	for resp, err := range llm.GenerateContent(ctx, req, false) {
 		if err != nil {
-			return "", in, out, err
+			return "", usage, err
 		}
 		if resp == nil {
 			continue
 		}
-		if resp.UsageMetadata != nil {
-			in = int(resp.UsageMetadata.PromptTokenCount)
-			out = int(resp.UsageMetadata.CandidatesTokenCount)
+		if u, ok := ResponseUsage(resp); ok && !resp.Partial {
+			usage = u
 		}
 		if resp.Content == nil {
 			continue
@@ -441,7 +440,7 @@ func generateOnce(ctx context.Context, llm model.LLM, modelID, instruction, cont
 			}
 		}
 	}
-	return sb.String(), in, out, nil
+	return sb.String(), usage, nil
 }
 
 // AppendTouchedFile records the file_path of a read/write/edit call,

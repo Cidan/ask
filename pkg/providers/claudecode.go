@@ -101,9 +101,8 @@ func (ClaudeCode) BuildModel(ctx context.Context, pc config.ProviderConfig, mode
 // NativeWebSearchProvider.
 func (ClaudeCode) HasNativeWebSearch() bool { return true }
 
-// ManagesOwnContext reports that the child process holds the conversation, so
-// ask must leave the request history alone; see ContextManagedProvider.
-func (ClaudeCode) ManagesOwnContext() bool { return true }
+// ReportsCost: every result frame carries the CLI's own total_cost_usd.
+func (ClaudeCode) ReportsCost() bool { return true }
 
 func (ClaudeCode) CanonicalModelID(modelID, fallback string) string {
 	return CanonicalClaudeCodeModelID(modelID, fallback)
@@ -162,7 +161,7 @@ func probeClaudeCodeModels(ctx context.Context, binary string) ([]string, error)
 	pctx, cancel := context.WithTimeout(ctx, ccListTimeout)
 	defer cancel()
 
-	conn, err := ccDial(pctx, ccDialArgs{Binary: binary, Argv: ccProbeArgv(), Env: currentEnvMinusClaude()})
+	conn, err := ccDial(pctx, ClaudeCodeStartArgs{Binary: binary, Argv: ccProbeArgv(), Env: currentEnvMinusClaude()})
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +304,7 @@ var (
 	_ Provider                = ClaudeCode{}
 	_ ModelLister             = ClaudeCode{}
 	_ NativeWebSearchProvider = ClaudeCode{}
-	_ ContextManagedProvider  = ClaudeCode{}
+	_ CostReporter            = ClaudeCode{}
 )
 
 // ClaudeCodeResolveBinary: config value wins, then ASK_CLAUDE_BIN, then the
@@ -338,7 +337,9 @@ func CanonicalClaudeCodeModelID(modelID string, fallback ...string) string {
 // nativeWebSearch is set (no Brave key, so ask's web_search is off) the
 // child's built-in WebSearch is made available and pre-approved; every other
 // built-in stays stripped. Its calls are observed off the stream, not bridged.
-func ccArgv(modelID, effort, systemPromptPath string, nativeWebSearch bool) []string {
+// A non-empty seedPath starts the child from that transcript file (see
+// writeClaudeSeedFile) instead of an empty conversation.
+func ccArgv(modelID, effort, systemPromptPath, seedPath string, nativeWebSearch bool) []string {
 	mcp, _ := json.Marshal(map[string]any{
 		"mcpServers": map[string]any{"ask": map[string]any{"type": "sdk", "name": "ask"}},
 	})
@@ -368,6 +369,9 @@ func ccArgv(modelID, effort, systemPromptPath string, nativeWebSearch bool) []st
 	}
 	if e := ccEffortFlag(effort); e != "" {
 		argv = append(argv, "--effort", e)
+	}
+	if seedPath != "" {
+		argv = append(argv, "--resume", seedPath)
 	}
 	return argv
 }
@@ -450,43 +454,6 @@ func hasFunctionResponses(c *genai.Content) bool {
 		}
 	}
 	return false
-}
-
-// ccHistoryPreamble flattens prior conversation into one readable context
-// message for a fresh child (cross-provider resume / materialize; the child
-// has no native transcript because ask runs with --no-session-persistence).
-func ccHistoryPreamble(contents []*genai.Content) string {
-	var b strings.Builder
-	b.WriteString("Conversation so far (for context; do not re-answer, continue from the newest user message):\n\n")
-	for _, c := range contents {
-		if c == nil {
-			continue
-		}
-		role := "User"
-		if isModelContent(c) {
-			role = "Assistant"
-		}
-		var line strings.Builder
-		for _, p := range c.Parts {
-			if p == nil {
-				continue
-			}
-			switch {
-			case p.Text != "":
-				line.WriteString(p.Text)
-			case p.FunctionCall != nil:
-				line.WriteString("[called " + p.FunctionCall.Name + "]")
-			case p.FunctionResponse != nil:
-				if t, _ := ccToolResultText(p.FunctionResponse.Response); t != "" {
-					line.WriteString("[" + p.FunctionResponse.Name + " result]")
-				}
-			}
-		}
-		if s := strings.TrimSpace(line.String()); s != "" {
-			b.WriteString(role + ": " + s + "\n\n")
-		}
-	}
-	return strings.TrimSpace(b.String())
 }
 
 // ccDelta extracts a text or thinking delta from a stream_event frame's event.

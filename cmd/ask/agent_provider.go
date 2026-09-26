@@ -123,7 +123,6 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 		sessSvc:         engine.NewFileSessionService(p.prov.ID(), args.Cwd),
 		topic:           memory.NormalizeTopic(args.Topic),
 	}
-	session.compactor = session.newCompactor()
 	// Build the model up front so a provider that cannot run fails here, with
 	// its own message, instead of on the first turn. Thread an observed-tool
 	// sink so tools the provider runs natively (Claude Code's WebSearch
@@ -135,6 +134,7 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 		return nil, nil, fmt.Errorf("%s: %w", p.prov.ID(), err)
 	}
 	session.model = llm
+	session.compactor = session.newCompactor(session.contextWindow, llm)
 	session.retryMaxRetries, session.retryInitialDelay, session.retryBackoffFactor = agentRetryOptions(cfg)
 
 	switch {

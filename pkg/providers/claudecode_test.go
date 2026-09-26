@@ -109,7 +109,7 @@ func TestClaudeCode_CatalogAndLimits(t *testing.T) {
 }
 
 func TestCCArgv_LocksDownClaudeContext(t *testing.T) {
-	argv := ccArgv("opus", "high", "/tmp/ask-claude-system-abc.txt", false)
+	argv := ccArgv("opus", "high", "/tmp/ask-claude-system-abc.txt", "", false)
 	joined := strings.Join(argv, " ")
 	// The three flags that overwrite Claude's tools with ask's.
 	for _, want := range []string{
@@ -185,12 +185,27 @@ func TestWriteClaudeSystemPromptFile(t *testing.T) {
 }
 
 func TestCCArgv_DefaultModelOmitsModelFlag(t *testing.T) {
-	argv := ccArgv("default", "", "/tmp/ask-claude-system-xyz.txt", false)
+	argv := ccArgv("default", "", "/tmp/ask-claude-system-xyz.txt", "", false)
 	if indexOf(argv, "--model") >= 0 {
 		t.Errorf("the default model must not pass --model; got %v", argv)
 	}
 	if indexOf(argv, "--effort") >= 0 {
 		t.Errorf("empty effort must not pass --effort; got %v", argv)
+	}
+	if indexOf(argv, "--resume") >= 0 {
+		t.Errorf("no seed must not pass --resume; got %v", argv)
+	}
+}
+
+// A seeded child resumes from the transcript file, and still persists
+// nothing of its own.
+func TestCCArgv_SeedResumesFromFile(t *testing.T) {
+	argv := ccArgv("opus", "", "/tmp/sys.txt", "/tmp/ask-claude-seed-1.jsonl", false)
+	if i := indexOf(argv, "--resume"); i < 0 || argv[i+1] != "/tmp/ask-claude-seed-1.jsonl" {
+		t.Fatalf("--resume must carry the seed path; got %v", argv)
+	}
+	if indexOf(argv, "--no-session-persistence") < 0 {
+		t.Fatalf("a seeded child must still not persist a session; got %v", argv)
 	}
 }
 
