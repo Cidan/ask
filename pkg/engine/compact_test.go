@@ -169,7 +169,7 @@ func TestCompactor_NoOpBelowTrigger(t *testing.T) {
 	c.ObserveUsage(12_000)
 	req := requestWith(append(toolTurn("a", "grep"), toolTurn("b", "grep")...), "system")
 	before := len(req.Contents)
-	c.Apply(req)
+	c.Apply(context.Background(), req)
 	if len(req.Contents) != before {
 		t.Fatalf("contents changed at 12%% usage: %d -> %d", before, len(req.Contents))
 	}
@@ -180,7 +180,7 @@ func TestCompactor_DisabledIsPassThrough(t *testing.T) {
 	c.ObserveUsage(99_000)
 	req := requestWith(agenticTurn("task", 30), "system")
 	before := len(req.Contents)
-	c.Apply(req)
+	c.Apply(context.Background(), req)
 	if len(req.Contents) != before {
 		t.Fatalf("disabled compactor rewrote contents: %d -> %d", before, len(req.Contents))
 	}
@@ -191,7 +191,7 @@ func TestCompactor_NoWindowIsPassThrough(t *testing.T) {
 	c.ObserveUsage(99_000)
 	req := requestWith(agenticTurn("task", 30), "system")
 	before := len(req.Contents)
-	c.Apply(req)
+	c.Apply(context.Background(), req)
 	if len(req.Contents) != before {
 		t.Fatalf("compactor with no context window rewrote contents: %d -> %d", before, len(req.Contents))
 	}
@@ -211,7 +211,7 @@ func TestCompactor_CompactsAtTriggerAndPinsFirstTurn(t *testing.T) {
 		Notify:        func(r CompactionResult) { notified = append(notified, r) },
 	})
 	c.ObserveUsage(used)
-	c.Apply(req)
+	c.Apply(context.Background(), req)
 
 	if len(req.Contents) >= before {
 		t.Fatalf("no compaction at 95%% of a %d-token window: %d -> %d", window, before, len(req.Contents))
@@ -239,7 +239,7 @@ func TestCompactor_CutsInsideALongAgenticTurn(t *testing.T) {
 	window, used := windowAt(req, 0.95)
 	c := NewCompactor(CompactOptions{ContextWindow: window})
 	c.ObserveUsage(used)
-	c.Apply(req)
+	c.Apply(context.Background(), req)
 
 	if len(req.Contents) >= before {
 		t.Fatalf("a long agentic turn was not compacted: %d -> %d", before, len(req.Contents))
@@ -271,7 +271,7 @@ func TestCompactor_ParallelCallsStayWithTheirResults(t *testing.T) {
 	window, used := windowAt(req, 0.97)
 	c := NewCompactor(CompactOptions{ContextWindow: window})
 	c.ObserveUsage(used)
-	c.Apply(req)
+	c.Apply(context.Background(), req)
 	if len(req.Contents) >= len(contents) {
 		t.Fatal("parallel-call history was not compacted")
 	}
@@ -315,7 +315,7 @@ func TestCompactor_WatermarkPreventsOscillation(t *testing.T) {
 	window, used := windowAt(req, 0.96)
 	c := NewCompactor(CompactOptions{ContextWindow: window})
 	c.ObserveUsage(used)
-	c.Apply(req)
+	c.Apply(context.Background(), req)
 	compacted := len(req.Contents)
 	if compacted >= len(contents) {
 		t.Fatal("first Apply did not compact")
@@ -326,7 +326,7 @@ func TestCompactor_WatermarkPreventsOscillation(t *testing.T) {
 	// compactor would send everything again and bounce straight back.
 	req2 := requestWith(contents, "system")
 	c.ObserveUsage(used / 2)
-	c.Apply(req2)
+	c.Apply(context.Background(), req2)
 	if len(req2.Contents) > compacted {
 		t.Fatalf("history grew back after compaction: %d -> %d", compacted, len(req2.Contents))
 	}
@@ -345,7 +345,7 @@ func TestCompactor_WatermarkAdvancesOnSecondCompaction(t *testing.T) {
 	window, used := windowAt(req, 0.96)
 	c := NewCompactor(CompactOptions{ContextWindow: window})
 	c.ObserveUsage(used)
-	c.Apply(req)
+	c.Apply(context.Background(), req)
 	firstCut := fingerprintContent(req.Contents[2])
 
 	// More turns arrive under the standing cut, and the model's reading is
@@ -359,7 +359,7 @@ func TestCompactor_WatermarkAdvancesOnSecondCompaction(t *testing.T) {
 		t.Fatal("the first cut's watermark does not resolve")
 	}
 	c.ObserveUsage(viewTokens(contents, wm, len(contents)) + estimateOverheadTokens(req2))
-	c.Apply(req2)
+	c.Apply(context.Background(), req2)
 	if fingerprintContent(req2.Contents[2]) == firstCut {
 		t.Fatal("watermark did not advance on the second compaction")
 	}
@@ -394,7 +394,7 @@ func TestCompactor_WatermarkSurvivesHookAppendedParts(t *testing.T) {
 	window, used := windowAt(req, 0.96)
 	c := NewCompactor(CompactOptions{ContextWindow: window})
 	c.ObserveUsage(used)
-	c.Apply(req)
+	c.Apply(context.Background(), req)
 	compacted := len(req.Contents)
 	if compacted >= len(view) {
 		t.Fatal("first Apply did not compact")
@@ -404,7 +404,7 @@ func TestCompactor_WatermarkSurvivesHookAppendedParts(t *testing.T) {
 	next[len(next)-1] = withMemory(next[len(next)-1])
 	req2 := requestWith(next, "system")
 	c.ObserveUsage(used / 2)
-	c.Apply(req2)
+	c.Apply(context.Background(), req2)
 	if req2.Contents[1].Parts[0].Text != compactElisionNotice || len(req2.Contents) > compacted+1 {
 		t.Fatalf("cut was lost once the memory part moved: %d contents (was %d)", len(req2.Contents), compacted)
 	}
@@ -419,12 +419,12 @@ func TestCompactor_UnresolvableWatermarkResets(t *testing.T) {
 	window, used := windowAt(req, 0.96)
 	c := NewCompactor(CompactOptions{ContextWindow: window})
 	c.ObserveUsage(used)
-	c.Apply(req)
+	c.Apply(context.Background(), req)
 
 	fresh := []*genai.Content{userContent("brand new"), modelText("hi")}
 	req2 := requestWith(fresh, "system")
 	c.ObserveUsage(800)
-	c.Apply(req2)
+	c.Apply(context.Background(), req2)
 	if len(req2.Contents) != len(fresh) {
 		t.Fatalf("stale watermark mangled a fresh conversation: %d -> %d", len(fresh), len(req2.Contents))
 	}
@@ -436,7 +436,7 @@ func TestCompactor_CompactsBeforeAnyUsageReading(t *testing.T) {
 	req := requestWith(agenticTurn("resumed", 40), "system")
 	window, _ := windowAt(req, 1.4)
 	c := NewCompactor(CompactOptions{ContextWindow: window})
-	c.Apply(req)
+	c.Apply(context.Background(), req)
 	if got := estimateContentsTokens(req.Contents); float64(got) > 0.6*float64(window) {
 		t.Fatalf("resumed history over the window went out at %d tokens of %d", got, window)
 	}
@@ -452,7 +452,7 @@ func TestCompactor_SizesFromTotalNotPromptCount(t *testing.T) {
 	_, _ = c.AfterModel(nil, &model.LLMResponse{UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
 		PromptTokenCount: 10, TotalTokenCount: int32(used),
 	}}, nil)
-	c.Apply(req)
+	c.Apply(context.Background(), req)
 	if got := estimateContentsTokens(req.Contents); float64(got) > 0.6*float64(window) {
 		t.Fatalf("cut to %d tokens of a %d window — sized from the prompt count", got, window)
 	}
@@ -494,12 +494,12 @@ func TestCompactor_RebasesTheModelOnlyWhenTheCutMoves(t *testing.T) {
 	c := NewCompactor(CompactOptions{ContextWindow: window, Model: newRetryingModel(llm, 0, 0)})
 
 	c.ObserveUsage(used)
-	c.Apply(req)
+	c.Apply(context.Background(), req)
 	if llm.rebases != 1 {
 		t.Fatalf("first cut: %d rebases, want 1 (through the retry wrapper)", llm.rebases)
 	}
 	c.ObserveUsage(used / 2)
-	c.Apply(requestWith(contents, "system"))
+	c.Apply(context.Background(), requestWith(contents, "system"))
 	if llm.rebases != 1 {
 		t.Fatalf("re-applying a standing cut rebased the model: %d", llm.rebases)
 	}
@@ -512,10 +512,56 @@ func TestCompactor_RebasesTheModelOnlyWhenTheCutMoves(t *testing.T) {
 		t.Fatalf("Reset with no cut standing rebased: %d", llm.rebases)
 	}
 	c.ObserveUsage(used)
-	c.Apply(requestWith(contents, "system"))
-	c.Apply(requestWith([]*genai.Content{userContent("unrelated")}, "system"))
+	c.Apply(context.Background(), requestWith(contents, "system"))
+	c.Apply(context.Background(), requestWith([]*genai.Content{userContent("unrelated")}, "system"))
 	if llm.rebases != 4 {
 		t.Fatalf("a new cut then an unresolvable one: %d rebases, want 4", llm.rebases)
+	}
+}
+
+// windowModel knows its own context window, the way a model whose provider
+// learns it mid-session does.
+type windowModel struct {
+	mockLLM
+	window int64
+}
+
+func (w *windowModel) ResolveContextWindow(context.Context) int64 { return w.window }
+
+// The window is asked of the model on every call, so a stale one the
+// compactor was built with never trips it early; a model that cannot tell is
+// measured against the one it was built with.
+func TestCompactor_MeasuresAgainstTheModelsCurrentWindow(t *testing.T) {
+	contents := agenticTurn("task", 30)
+	window, used := windowAt(requestWith(contents, "system"), 0.95)
+	llm := &windowModel{window: 2 * window}
+	var results []CompactionResult
+	notify := func(r CompactionResult) { results = append(results, r) }
+	c := NewCompactor(CompactOptions{ContextWindow: window, Model: newRetryingModel(llm, 0, 0), Notify: notify})
+
+	c.ObserveUsage(used)
+	req := requestWith(contents, "system")
+	c.Apply(context.Background(), req)
+	if len(req.Contents) != len(contents) || len(results) != 0 {
+		t.Fatalf("cut at under half the model's window: %d of %d contents kept", len(req.Contents), len(contents))
+	}
+
+	llm.window = window
+	req = requestWith(contents, "system")
+	c.Apply(context.Background(), req)
+	if len(req.Contents) >= len(contents) || len(results) != 1 {
+		t.Fatalf("at 95%% of the window the model now reports: %d of %d contents kept", len(req.Contents), len(contents))
+	}
+	if results[0].ContextWindow != window {
+		t.Fatalf("the notice reports a %d-token window, the model's is %d", results[0].ContextWindow, window)
+	}
+
+	fallback := NewCompactor(CompactOptions{ContextWindow: window, Model: &windowModel{}})
+	fallback.ObserveUsage(used)
+	req = requestWith(contents, "system")
+	fallback.Apply(context.Background(), req)
+	if len(req.Contents) >= len(contents) {
+		t.Fatal("a model with no window of its own was not measured against the compactor's")
 	}
 }
 

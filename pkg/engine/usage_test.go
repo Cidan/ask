@@ -92,6 +92,30 @@ func TestUsageModel_ForwardsCapabilities(t *testing.T) {
 	}
 }
 
+// A built model reports its context window as it stands at call time: its own
+// when it knows it, else its provider's current one, which a live listing can
+// correct after the model was built.
+func TestUsageModel_ReportsTheCurrentContextWindow(t *testing.T) {
+	ctx := context.Background()
+	providers.Register(usageStubProvider{compactStubProvider{window: 5000}})
+	blind := newRetryingModel(newUsageModel(&mockLLM{}, "usagetest", "priced-model"), time.Millisecond, 2)
+	if w, ok := providers.ResolveContextWindow(ctx, blind); !ok || w != 5000 {
+		t.Fatalf("resolved %d (ok=%v), want the provider's 5000", w, ok)
+	}
+	providers.Register(usageStubProvider{compactStubProvider{window: 9000}})
+	if w, _ := providers.ResolveContextWindow(ctx, blind); w != 9000 {
+		t.Fatalf("the provider now says 9000; the built model still reports %d", w)
+	}
+
+	own := newRetryingModel(newUsageModel(&windowModel{window: 1234}, "usagetest", "priced-model"), time.Millisecond, 2)
+	if w, _ := providers.ResolveContextWindow(ctx, own); w != 1234 {
+		t.Fatalf("resolved %d; the model's own 1234 must win over the provider's", w)
+	}
+	if w, ok := providers.ResolveContextWindow(ctx, newUsageModel(&mockLLM{}, "unregistered", "m")); ok {
+		t.Fatalf("a model of an unknown provider reported a %d-token window", w)
+	}
+}
+
 // The record rides the response into the session file, so it survives a
 // restart.
 func TestUsageRecords_PersistWithSessionEvents(t *testing.T) {

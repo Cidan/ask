@@ -58,6 +58,13 @@ func (r *retryingModel) RebaseHistory() {
 	providers.RebaseHistory(r.inner)
 }
 
+// ResolveContextWindow forwards to the wrapped model (see
+// providers.ContextWindowResolver).
+func (r *retryingModel) ResolveContextWindow(ctx context.Context) int64 {
+	w, _ := providers.ResolveContextWindow(ctx, r.inner)
+	return w
+}
+
 func (r *retryingModel) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
 		for attempt := 0; ; attempt++ {

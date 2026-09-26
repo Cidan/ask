@@ -112,6 +112,14 @@ func (m *claudeCodeModel) RebaseHistory() {
 	m.mu.Unlock()
 }
 
+// ResolveContextWindow implements ContextWindowResolver. It first waits,
+// bounded by ctx, for the probe BuildModel started, so the first call of a
+// resumed session is not measured against the catalog's guess.
+func (m *claudeCodeModel) ResolveContextWindow(ctx context.Context) int64 {
+	awaitClaudeCodeWindowProbe(ctx, m.modelID)
+	return ClaudeCode{}.ContextWindow(m.modelID)
+}
+
 func (m *claudeCodeModel) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
 		if err := m.send(req); err != nil {
@@ -400,13 +408,14 @@ func (m *claudeCodeModel) readStep(ctx context.Context, stream bool, yield func(
 					}
 				}
 			case "result":
-				if m.takeResult(fr.TotalCostUSD) {
-					// The answer to an interrupt ask sent earlier, not this
-					// turn's end: its cost is kept, the frame is not.
-					continue
-				}
 				if w := ccContextWindowFromModelUsage(fr.ModelUsage); w > 0 {
 					observeClaudeCodeContextWindow(m.modelID, w)
+				}
+				if m.takeResult(fr.TotalCostUSD) {
+					// The answer to an interrupt ask sent earlier, not this
+					// turn's end: its cost and window are kept, the frame is
+					// not.
+					continue
 				}
 				// result.result is the turn's authoritative final text; the
 				// streamed assistant blocks are its live preview. result.usage
@@ -737,4 +746,8 @@ func ccContextWindowFromModelUsage(mu map[string]ccModelUsage) int64 {
 	return max
 }
 
-var _ model.LLM = (*claudeCodeModel)(nil)
+var (
+	_ model.LLM             = (*claudeCodeModel)(nil)
+	_ HistoryRebaser        = (*claudeCodeModel)(nil)
+	_ ContextWindowResolver = (*claudeCodeModel)(nil)
+)

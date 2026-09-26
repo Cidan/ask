@@ -7,11 +7,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/workflow"
 	"google.golang.org/adk/v2/model"
+	"google.golang.org/genai"
 )
 
 func TestEngine_InitializationAndPrompt(t *testing.T) {
@@ -534,5 +536,58 @@ func TestAutoCompactEnabled(t *testing.T) {
 				t.Fatalf("AutoCompactEnabled=%v want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// A turn cancelled while the listener is still handling an answer ends with
+// the cancel, so a caller can tell it from a failure. ADK cannot deliver the
+// answer once the turn is gone, and reports that its own way.
+func TestSession_InterruptWhileListenerBusyReportsTheCancel(t *testing.T) {
+	isolateTestHome(t)
+	answer := textResponse("the answer")
+	answer.UsageMetadata = &genai.GenerateContentResponseUsageMetadata{PromptTokenCount: 100, TotalTokenCount: 110}
+	mockModel := &mockLLM{name: "mock-model", generateFunc: func(context.Context, *model.LLMRequest, bool) iter.Seq2[*model.LLMResponse, error] {
+		return mockLLMSequence(answer)
+	}}
+
+	var sess *Session
+	var interrupt sync.Once
+	dones := make(chan DoneEvent, 1)
+	turnDone := make(chan struct{})
+	sess = NewSession(
+		SessionArgs{TabID: 1, Cwd: t.TempDir(), Model: "mock-model"},
+		mockModel, "system prompt", nil,
+		func(ev EngineEvent) {
+			switch e := ev.(type) {
+			case UsageEvent:
+				interrupt.Do(func() {
+					sess.InterruptTurn()
+					time.Sleep(50 * time.Millisecond)
+				})
+			case DoneEvent:
+				dones <- e
+			case TurnCompleteEvent:
+				close(turnDone)
+			}
+		},
+		HeadlessInteractionHandler{AutoApproveTools: true},
+	)
+	defer sess.Close()
+
+	if err := sess.QueueTurn("hi"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-turnDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the interrupted turn never completed")
+	}
+	select {
+	case done := <-dones:
+		if !errors.Is(done.Error, context.Canceled) {
+			t.Fatalf("the turn ended with %v, want the cancel", done.Error)
+		}
+	default:
+		t.Fatal("an interrupted turn reported no outcome")
 	}
 }

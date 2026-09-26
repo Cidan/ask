@@ -557,6 +557,67 @@ func TestAgentSession_InterruptCleanTurnEnd(t *testing.T) {
 	}
 }
 
+// slowDeslopProvider rewrites through a model that holds the turn until it is
+// cancelled, then takes a moment to unwind the way an HTTP client does.
+type slowDeslopProvider struct {
+	windowProvider
+	started chan struct{}
+}
+
+func (p slowDeslopProvider) BuildModel(context.Context, config.ProviderConfig, string) (adkmodel.LLM, error) {
+	return &mockADKModel{name: "deslop", generateFunc: func(ctx context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+		return func(yield func(*adkmodel.LLMResponse, error) bool) {
+			close(p.started)
+			<-ctx.Done()
+			time.Sleep(50 * time.Millisecond)
+			yield(nil, ctx.Err())
+		}
+	}}, nil
+}
+
+// A turn cancelled while its answer is being rewritten ends as a cancel. ADK
+// cannot deliver that answer once the turn is gone, and whatever the runner
+// reports for it is the cancel's doing, not a failure of the turn.
+func TestAgentSession_InterruptDuringDeslopEndsClean(t *testing.T) {
+	origStream := engine.GenerateStream
+	defer func() { engine.GenerateStream = origStream }()
+	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			yield(genaiTextChunk("Here is my answer", 120, 5), nil)
+		}
+	}
+
+	s := newTestAgentSession(t, nil)
+	started := make(chan struct{})
+	providers.Register(slowDeslopProvider{windowProvider: windowProvider{id: "slow-deslop", window: 8000}, started: started})
+	enabled := true
+	if err := saveConfig(askConfig{Deslop: config.DeslopConfig{Enabled: &enabled, Provider: "slow-deslop", Model: "m"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.queueTurn("start"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the answer never reached the rewrite")
+	}
+	if !s.interruptTurn() {
+		t.Fatal("interruptTurn should return true while the answer is being rewritten")
+	}
+
+	var done providerDoneMsg
+	for _, m := range readSessionMsgs(t, s.ch, isTurnComplete) {
+		if v, ok := m.(providerDoneMsg); ok {
+			done = v
+		}
+	}
+	if done.res.IsError || done.err != nil {
+		t.Fatalf("a cancelled turn surfaced as an error: %v (%q)", done.err, done.res.Result)
+	}
+}
+
 // TestAgentSession_EmitAfterShutdownNoPanic reproduces the "send on closed
 // channel" crash. run() closes s.ch on shutdown, but emit is also called from
 // background goroutines that outlive the turn — post-turn memory extraction

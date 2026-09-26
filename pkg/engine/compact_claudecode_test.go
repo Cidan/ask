@@ -15,6 +15,9 @@ import (
 
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/providers"
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
 )
 
 // fakeClaude stands in for the `claude` CLI across every child a session
@@ -23,12 +26,14 @@ import (
 // context grows: system prompt, seed, user frames, tool results, and its own
 // output. It reports each API call on message_start / message_delta stream
 // events, prices it, and keeps a cumulative total_cost_usd like the CLI; an
-// interrupt ends its turn with a result frame, as the CLI's does. A task is a
-// run of tool calls through ask's MCP bridge that survives a child being
-// replaced mid-task.
+// interrupt ends its turn with a result frame, as the CLI's does, and a
+// get_context_usage request is answered with window. A task is a run of tool
+// calls through ask's MCP bridge that survives a child being replaced
+// mid-task.
 type fakeClaude struct {
 	t            *testing.T
 	callsPerTask []int
+	window       int
 
 	mu         sync.Mutex
 	task       int
@@ -155,9 +160,17 @@ func (c *fakeClaudeChild) run() {
 		switch fr["type"] {
 		case "control_request":
 			req, _ := fr["request"].(map[string]any)
-			if req["subtype"] == "interrupt" && c.busy {
-				c.busy, c.interrupted = false, true
-				c.emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "total_cost_usd": c.cost})
+			switch req["subtype"] {
+			case "interrupt":
+				if c.busy {
+					c.busy, c.interrupted = false, true
+					c.emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "total_cost_usd": c.cost})
+				}
+			case "get_context_usage":
+				c.emit(map[string]any{"type": "control_response", "response": map[string]any{
+					"subtype": "success", "request_id": fr["request_id"],
+					"response": map[string]any{"maxTokens": c.f.window, "rawMaxTokens": c.f.window},
+				}})
 			}
 		case "user":
 			msg, _ := json.Marshal(fr["message"])
@@ -258,7 +271,7 @@ func containsString(ss []string, want string) bool {
 // twice, and the temp files go with the children.
 func TestScenario_ClaudeCodeChildRebuiltOnCompaction(t *testing.T) {
 	isolateTestHome(t)
-	fake := &fakeClaude{t: t, callsPerTask: []int{24, 12}}
+	fake := &fakeClaude{t: t, callsPerTask: []int{24, 12}, window: scenarioWindow}
 	prevStart := providers.ClaudeCodeStart
 	providers.ClaudeCodeStart = fake.start
 	t.Cleanup(func() { providers.ClaudeCodeStart = prevStart })
@@ -340,5 +353,97 @@ func TestScenario_ClaudeCodeChildRebuiltOnCompaction(t *testing.T) {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Errorf("temp file %s outlived its child (stat err %v)", p, err)
 		}
+	}
+}
+
+// A resumed Claude Code session is measured against the window the CLI
+// reports, not the registry's guess — here half of it, the way the catalog's
+// 200k is of a 1M model. A history that overflows the guess but fits the real
+// window goes out whole on the first call, before any turn could have
+// reported the window.
+func TestScenario_ClaudeCodeResumeMeasuredAgainstTheCLIsWindow(t *testing.T) {
+	isolateTestHome(t)
+	const (
+		modelID       = "fake-model-resume"
+		cliWindow     = 100_000
+		guessedWindow = cliWindow / 2
+	)
+	fake := &fakeClaude{t: t, callsPerTask: []int{0}, window: cliWindow}
+	prevStart := providers.ClaudeCodeStart
+	providers.ClaudeCodeStart = fake.start
+	t.Cleanup(func() { providers.ClaudeCodeStart = prevStart })
+	t.Setenv(providers.ClaudeCodeEnvBinary, os.Args[0])
+	providers.Register(compactStubProvider{window: guessedWindow})
+
+	cwd := t.TempDir()
+	ctx := context.Background()
+	svc := NewFileSessionService("compacttest", cwd)
+	created, err := svc.Create(ctx, &session.CreateRequest{AppName: "ask", UserID: "user", SessionID: "resumed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 40; i++ {
+		role, author := genai.Role(genai.RoleUser), "user"
+		if i%2 == 1 {
+			role, author = genai.RoleModel, "ask_coder"
+		}
+		if err := svc.AppendEvent(ctx, created.Session, &session.Event{
+			Author:      author,
+			LLMResponse: model.LLMResponse{Content: genai.NewContentFromText(fmt.Sprintf("old %d %s", i, strings.Repeat("h", 6000)), role)},
+			Timestamp:   time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	llm, err := providers.ClaudeCode{}.BuildModel(ctx, config.ProviderConfig{}, modelID)
+	if err != nil {
+		t.Fatalf("BuildModel: %v", err)
+	}
+	var mu sync.Mutex
+	var compactions []ContextCompactedEvent
+	var failures []string
+	turnDone := make(chan struct{}, 1)
+	sess := NewSession(
+		SessionArgs{TabID: 1, Cwd: cwd, Provider: "compacttest", Model: modelID, SessionID: "resumed"},
+		llm, "system prompt", nil,
+		func(ev EngineEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			switch e := ev.(type) {
+			case ContextCompactedEvent:
+				compactions = append(compactions, e)
+			case DoneEvent:
+				if e.Result.IsError {
+					failures = append(failures, e.Result.Result)
+				}
+			case TurnCompleteEvent:
+				turnDone <- struct{}{}
+			}
+		},
+		HeadlessInteractionHandler{AutoApproveTools: true},
+	)
+	if err := sess.QueueTurn("continue"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-turnDone:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the resumed turn never completed")
+	}
+	sess.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(failures) > 0 {
+		t.Fatalf("turn failed: %v", failures)
+	}
+	if len(compactions) != 0 {
+		t.Fatalf("compacted against a %d-token window, the CLI's is %d: %+v", compactions[0].ContextWindow, cliWindow, compactions)
+	}
+	if fake.maxContext <= guessedWindow || fake.maxContext > cliWindow {
+		t.Fatalf("the child held %d tokens; the history should overflow the guessed %d and fit the CLI's %d", fake.maxContext, guessedWindow, cliWindow)
 	}
 }

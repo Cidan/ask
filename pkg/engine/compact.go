@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -55,7 +56,8 @@ var compactNoticeTokens = estimateContentTokens(genai.NewContentFromText(compact
 
 // CompactOptions configures a Compactor.
 type CompactOptions struct {
-	// ContextWindow is the model's input window in tokens. A non-positive
+	// ContextWindow is the model's input window in tokens, used when Model
+	// cannot report its own (providers.ContextWindowResolver). A non-positive
 	// window disables compaction: without a denominator there is no ratio.
 	ContextWindow int64
 	// Disabled turns the compactor into a pass-through.
@@ -150,8 +152,8 @@ func (c *Compactor) AfterModel(_ agent.Context, resp *model.LLMResponse, _ error
 
 // BeforeModel is an llmagent.BeforeModelCallback. It rewrites req.Contents in
 // place and never short-circuits the model call.
-func (c *Compactor) BeforeModel(_ agent.Context, req *model.LLMRequest) (*model.LLMResponse, error) {
-	c.Apply(req)
+func (c *Compactor) BeforeModel(ctx agent.Context, req *model.LLMRequest) (*model.LLMResponse, error) {
+	c.Apply(ctx, req)
 	return nil, nil
 }
 
@@ -172,11 +174,15 @@ func (c *Compactor) Reset() {
 
 // Apply performs the compaction on req. It is the testable half of
 // BeforeModel.
-func (c *Compactor) Apply(req *model.LLMRequest) {
-	if c == nil || req == nil || c.opts.Disabled || c.opts.ContextWindow <= 0 || len(req.Contents) == 0 {
+func (c *Compactor) Apply(ctx context.Context, req *model.LLMRequest) {
+	if c == nil || req == nil || c.opts.Disabled || len(req.Contents) == 0 {
 		return
 	}
-	result, moved := c.cut(req)
+	window := c.window(ctx)
+	if window <= 0 {
+		return
+	}
+	result, moved := c.cut(req, window)
 	if moved {
 		providers.RebaseHistory(c.opts.Model)
 	}
@@ -185,15 +191,27 @@ func (c *Compactor) Apply(req *model.LLMRequest) {
 	}
 }
 
-// cut rewrites req.Contents to the compacted view. It returns the outcome of
-// a new cut (nil when none was made) and whether the view's start moved — a
-// new cut, or a watermark that no longer resolves.
-func (c *Compactor) cut(req *model.LLMRequest) (*CompactionResult, bool) {
+// window is the model's context window as it stands for this call. A provider
+// can learn it after the session started (see
+// providers.ContextWindowResolver), so it is asked every time and
+// CompactOptions.ContextWindow is only the fallback for a model that cannot
+// tell.
+func (c *Compactor) window(ctx context.Context) int64 {
+	if w, ok := providers.ResolveContextWindow(ctx, c.opts.Model); ok {
+		return w
+	}
+	return c.opts.ContextWindow
+}
+
+// cut rewrites req.Contents to the compacted view against window. It returns
+// the outcome of a new cut (nil when none was made) and whether the view's
+// start moved — a new cut, or a watermark that no longer resolves.
+func (c *Compactor) cut(req *model.LLMRequest, window int64) (*CompactionResult, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	contents := req.Contents
-	window := float64(c.opts.ContextWindow)
+	limit := float64(window)
 	// The system instruction and tool declarations are not in Contents and
 	// cannot be dropped, so they are a floor the target has to clear.
 	floor := estimateOverheadTokens(req)
@@ -217,9 +235,9 @@ func (c *Compactor) cut(req *model.LLMRequest) (*CompactionResult, bool) {
 	used := int(scale * float64(viewTokens(contents, start, len(contents))+floor))
 
 	var result *CompactionResult
-	if float64(used) >= CompactTriggerRatio*window {
+	if float64(used) >= CompactTriggerRatio*limit {
 		head := estimateContentTokens(contents[0]) + compactNoticeTokens
-		budget := int(CompactTargetRatio*window/scale) - floor - head
+		budget := int(CompactTargetRatio*limit/scale) - floor - head
 		// From the uncut history the first useful cut is 2: index 0 is pinned
 		// and a cut at 1 would drop nothing.
 		minCut := 1
@@ -244,7 +262,7 @@ func (c *Compactor) cut(req *model.LLMRequest) (*CompactionResult, bool) {
 	if result != nil {
 		result.DroppedContents = start - 1
 		result.AfterTokens = int(scale * float64(estimateContentsTokens(req.Contents)+floor))
-		result.ContextWindow = c.opts.ContextWindow
+		result.ContextWindow = window
 	}
 	return result, moved
 }

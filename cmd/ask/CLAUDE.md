@@ -184,7 +184,8 @@ lockstep (`.claude/rules/issues.md`).
   (agent_run.go), assembles tools (`setupAgentSessionTools`), attaches
   MCP, starts `session.run`. `providerProc.payload` is the session;
   `stdin.Close()` tears it down (`killProc`); `Interrupt` cancels the
-  turn context.
+  turn context. Any runner error once that context is cancelled ends the
+  turn as a cancel, not a failure (see `pkg/engine/CLAUDE.md`, `Session`).
 - `Coordinator` (`globalCoordinator`, coordinator.go) owns sessions by
   tab: `Dispatch` starts one or queues a turn (`queueMidTurn` while
   busy), `Cancel`, `Kill`, `RunWorkflow` → `runWorkflowGraph`
