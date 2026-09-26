@@ -120,6 +120,29 @@ func RebaseHistory(m model.LLM) bool {
 	return ok
 }
 
+// ContextWindowResolver is the optional capability of a model that reports its
+// context window as it stands at call time. A provider can learn a model's
+// window only after a session has started — Claude Code asks its CLI, and
+// OpenRouter's live listing lands in the background — so a caller that must
+// not act on a stale window (auto-compaction) asks on every call instead of
+// keeping the one it started with. ResolveContextWindow may block, bounded by
+// ctx, while the window is being learned; zero means unknown. Wrappers (the
+// retry and usage decorators) forward it.
+type ContextWindowResolver interface {
+	ResolveContextWindow(ctx context.Context) int64
+}
+
+// ResolveContextWindow returns m's current context window, reporting false
+// when m cannot tell.
+func ResolveContextWindow(ctx context.Context, m model.LLM) (int64, bool) {
+	r, ok := m.(ContextWindowResolver)
+	if !ok {
+		return 0, false
+	}
+	w := r.ResolveContextWindow(ctx)
+	return w, w > 0
+}
+
 // SettingField is one configuration field a provider declares. The
 // /config → <provider> screen is rendered from these, one row per field.
 type SettingField struct {

@@ -22,7 +22,11 @@ Related: `.claude/rules/tools.md`, `.claude/rules/providers.md`,
   instruction is `BuildSystemPrompt` behind an `InstructionProvider`.
 - `Session` (session.go) — the per-tab runtime the TUI uses.
   `NewSession` starts the goroutine; `QueueTurn` / `QueueTurnSync` feed
-  it; `InterruptTurn` cancels the turn's context; `Close` emits
+  it; `InterruptTurn` cancels the turn's context, and the turn's
+  `DoneEvent` then carries the context's error, whatever the runner
+  returned — ADK v2.0.0 can end a cancelled turn with a panic it
+  recovered from its own node (`range function continued iteration`),
+  fixed upstream after v2.4.0; `Close` emits
   `ExitedEvent`. First turn emits `ModelInfoEvent`. Session id defaults
   to `ses-<modelID>`.
 - Mid-turn input: `QueueMidTurn` → `MidTurnQueue` (types.go).
@@ -120,6 +124,14 @@ Related: `.claude/rules/tools.md`, `.claude/rules/providers.md`,
   reads the one config toggle (`config.AutoCompact`, on when nil). The
   TUI and `Session` read it per call; switched off, they call `Reset`,
   which drops a standing cut so the whole history goes out again.
+- **The window is asked for on every call**, never fixed when the
+  compactor is built: `providers.ResolveContextWindow(ctx, opts.Model)`,
+  falling back to `CompactOptions.ContextWindow` for a model that cannot
+  tell. A provider can learn the real window after the session starts;
+  a window fixed at construction made Claude Code compact at 90% of the
+  catalog's 200k guess on a 1M model. `CompactionResult.ContextWindow` is
+  the window the cut was measured against, so the notice agrees with the
+  meter.
 - **A cut may land anywhere except on a tool result**: at a user
   message, or at a model reply — between two tool round-trips of one
   turn, the only place a long agentic turn (one prompt, many tool calls)

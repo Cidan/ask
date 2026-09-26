@@ -380,6 +380,11 @@ func (s *Session) runTurn(turn Turn) {
 
 	for event, err := range s.runner.Run(ctx, "user", s.sessionID, userMsg, agent.RunConfig{}) {
 		if err != nil {
+			// A cancelled turn is not always reported as context.Canceled:
+			// ADK can end it with a panic it recovered from its own node.
+			if ctx.Err() != nil {
+				err = ctx.Err()
+			}
 			s.Emit(DoneEvent{
 				BaseEvent: BaseEvent{TabID: s.args.TabID},
 				Result: ResultSummary{

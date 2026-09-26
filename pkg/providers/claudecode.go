@@ -79,6 +79,8 @@ func (ClaudeCode) Configured(pc config.ProviderConfig) bool {
 // BuildModel returns the lock-step adapter. It does not spawn the child — the
 // process starts on the first GenerateContent — but it fails fast if the
 // binary cannot be found, so a misconfigured session errors at session start.
+// It starts the probe that learns the model's context window from the CLI in
+// the background, so the window is known before the first call needs it.
 func (ClaudeCode) BuildModel(ctx context.Context, pc config.ProviderConfig, modelID string) (model.LLM, error) {
 	bin := ClaudeCodeResolveBinary(pc)
 	if _, err := exec.LookPath(bin); err != nil {
@@ -93,7 +95,9 @@ func (ClaudeCode) BuildModel(ctx context.Context, pc config.ProviderConfig, mode
 	// context; the sink (if any) surfaces the native calls to the UI.
 	nativeWebSearch := !webSearchAvailableFromCtx(ctx)
 	sink := observedToolSinkFromCtx(ctx)
-	return newClaudeCodeModel(bin, CanonicalClaudeCodeModelID(modelID, ClaudeCodeDefaultModel), cwd, nativeWebSearch, sink), nil
+	modelID = CanonicalClaudeCodeModelID(modelID, ClaudeCodeDefaultModel)
+	startClaudeCodeWindowProbe(bin, modelID)
+	return newClaudeCodeModel(bin, modelID, cwd, nativeWebSearch, sink), nil
 }
 
 // HasNativeWebSearch reports that Claude Code can run web search in its own
@@ -128,6 +132,7 @@ func (ClaudeCode) SupportsImages(modelID string) bool {
 }
 
 func (ClaudeCode) ContextWindow(modelID string) int64 {
+	modelID = CanonicalClaudeCodeModelID(modelID)
 	if w, ok := cachedClaudeCodeContextWindow(modelID); ok {
 		return w
 	}
@@ -204,8 +209,9 @@ func probeClaudeCodeModels(ctx context.Context, binary string) ([]string, error)
 	}
 }
 
-// ccProbeArgv is the minimal argv for the listing probe: enough to complete the
-// initialize handshake, with no tools and no MCP server.
+// ccProbeArgv is the minimal argv for a probe child: enough to complete the
+// initialize handshake and answer control requests, with no tools and no MCP
+// server.
 func ccProbeArgv() []string {
 	return []string{
 		"-p",
@@ -274,11 +280,12 @@ func cachedClaudeCodeMeta(modelID string) (ccModelMeta, bool) {
 }
 
 // claudeCodeContextWindows caches the authoritative per-model context window
-// the CLI reports in a turn's result-frame modelUsage, keyed by the --model id
-// ask selected (a session's claudeCodeModel.modelID, the same id the context
-// meter queries ContextWindow with). It lets the meter's denominator reflect
-// the real window (e.g. a 1M beta) instead of the static catalog guess. In
-// memory only, like claudeCodeMeta.
+// the CLI reports — answering the window probe, or in a turn's result-frame
+// modelUsage — keyed by the --model id ask selected (a session's
+// claudeCodeModel.modelID, the same id the context meter queries ContextWindow
+// with). It lets the meter and the compactor measure against the real window
+// (e.g. 1M) instead of the static catalog guess. In memory only, like
+// claudeCodeMeta.
 var claudeCodeContextWindows = struct {
 	mu   sync.RWMutex
 	byID map[string]int64
@@ -298,6 +305,112 @@ func cachedClaudeCodeContextWindow(modelID string) (int64, bool) {
 	defer claudeCodeContextWindows.mu.RUnlock()
 	w, ok := claudeCodeContextWindows.byID[modelID]
 	return w, ok
+}
+
+// claudeCodeWindowProbes holds, per model id, the done channel of the latest
+// window probe; it closes when the probe settles.
+var claudeCodeWindowProbes = struct {
+	mu   sync.Mutex
+	byID map[string]chan struct{}
+}{byID: map[string]chan struct{}{}}
+
+// startClaudeCodeWindowProbe learns modelID's context window from the CLI in
+// the background, unless it is already known or a probe for it is running. A
+// probe that failed is retried by the next model built for the id; until then
+// the window is the catalog's, corrected by the first turn's result frame.
+func startClaudeCodeWindowProbe(binary, modelID string) {
+	claudeCodeWindowProbes.mu.Lock()
+	defer claudeCodeWindowProbes.mu.Unlock()
+	if _, ok := cachedClaudeCodeContextWindow(modelID); ok {
+		return
+	}
+	if done, ok := claudeCodeWindowProbes.byID[modelID]; ok {
+		select {
+		case <-done:
+		default:
+			return
+		}
+	}
+	done := make(chan struct{})
+	claudeCodeWindowProbes.byID[modelID] = done
+	go func() {
+		defer close(done)
+		if w, err := probeClaudeCodeContextWindow(context.Background(), binary, modelID); err == nil {
+			observeClaudeCodeContextWindow(modelID, w)
+		}
+	}()
+}
+
+// awaitClaudeCodeWindowProbe blocks until modelID's window probe settles or
+// ctx ends, returning at once when none was started.
+func awaitClaudeCodeWindowProbe(ctx context.Context, modelID string) {
+	claudeCodeWindowProbes.mu.Lock()
+	done, ok := claudeCodeWindowProbes.byID[modelID]
+	claudeCodeWindowProbes.mu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+}
+
+// probeClaudeCodeContextWindow forks `claude` on modelID, in a session child's
+// environment, and asks it for its context usage: the CLI's own window for the
+// model. The static catalog can only guess it — an alias's window moves with
+// the model behind it, and a full model id is not listed at all. The child
+// runs no turn; it is killed as soon as the answer lands (or the timeout).
+func probeClaudeCodeContextWindow(ctx context.Context, binary, modelID string) (int64, error) {
+	pctx, cancel := context.WithTimeout(ctx, ccListTimeout)
+	defer cancel()
+
+	argv := ccProbeArgv()
+	if m := strings.TrimSpace(modelID); m != "" && m != ClaudeCodeDefaultModel {
+		argv = append(argv, "--model", m)
+	}
+	conn, err := ccDial(pctx, ClaudeCodeStartArgs{Binary: binary, Argv: argv, Env: ccSessionEnv()})
+	if err != nil {
+		return 0, err
+	}
+	defer conn.close()
+
+	for _, req := range []ccControlEnvelope{
+		{Type: "control_request", RequestID: "init", Request: map[string]any{"subtype": "initialize", "hooks": nil}},
+		{Type: "control_request", RequestID: "window", Request: map[string]any{"subtype": "get_context_usage"}},
+	} {
+		if err := conn.send(req); err != nil {
+			return 0, err
+		}
+	}
+
+	for {
+		select {
+		case <-pctx.Done():
+			return 0, pctx.Err()
+		case fr, ok := <-conn.frames():
+			if !ok {
+				return 0, errChildExited
+			}
+			if fr.Type != "control_response" {
+				continue
+			}
+			var wrap ccContextUsageWrap
+			if json.Unmarshal(fr.Response, &wrap) != nil || wrap.RequestID != "window" {
+				continue
+			}
+			if wrap.Subtype != "success" {
+				return 0, fmt.Errorf("claude-code: get_context_usage: %s", wrap.Error)
+			}
+			if w := wrap.Response.RawMaxTokens; w > 0 {
+				return w, nil
+			}
+			if w := wrap.Response.MaxTokens; w > 0 {
+				return w, nil
+			}
+			return 0, errors.New("claude-code: get_context_usage reported no window")
+		}
+	}
 }
 
 var (

@@ -649,7 +649,9 @@ func (s *agentSession) runTurn(turn agentTurn) {
 
 	for event, err := range r.Run(ctx, "user", s.sessionID, adkUserMsg, adkagent.RunConfig{}) {
 		if err != nil {
-			if isAgentCancel(err) {
+			// A cancelled turn is not always reported as context.Canceled:
+			// ADK can end it with a panic it recovered from its own node.
+			if ctx.Err() != nil || isAgentCancel(err) {
 				s.emit(providerDoneMsg{res: providerResult{SessionID: s.sessionID}})
 				s.emit(turnCompleteMsg{})
 				return

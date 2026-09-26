@@ -40,13 +40,20 @@ the registry; nothing outside `pkg/providers` may name a provider.
   (Claude Code, OpenRouter); `providers.ReportsCost(id)` reads it so the
   sidebar shows a cost from the start even for a model the catalog cannot
   price.
-- Models have one optional capability of their own: `HistoryRebaser`, for
-  a model that holds the conversation outside the request (Claude Code's
-  child). Auto-compaction applies to every provider alike and calls
+- Models have two optional capabilities of their own. `HistoryRebaser`,
+  for a model that holds the conversation outside the request (Claude
+  Code's child): auto-compaction applies to every provider alike and calls
   `providers.RebaseHistory(m)` whenever it moves its cut; such a model
-  must then rebuild what it holds from its next request. Wrappers
-  (`retryingModel`) forward it. There is no per-provider compaction
-  opt-out.
+  must then rebuild what it holds from its next request. There is no
+  per-provider compaction opt-out. `ContextWindowResolver`, for a model
+  whose window is learned after it was built (Claude Code's CLI probe,
+  OpenRouter's live listing): `providers.ResolveContextWindow(ctx, m)`
+  asks it on every call — it may block, bounded by `ctx`, while the window
+  is being learned — so the compactor never measures against the window
+  it started with. `engine.ModelBuilder`'s usage wrapper implements it for
+  every model (the inner model's answer, else the provider's current
+  `ContextWindow`). Wrappers (`retryingModel`, the usage wrapper) forward
+  both.
 - Pin every implementation: `var _ Provider = Name{}` (and
   `var _ ModelLister = Name{}` when it lists models).
 - `Register` panics on a malformed provider (empty id; a setting key
@@ -142,7 +149,17 @@ ClaudeCode{}}`; Vertex is `DefaultProviderID()`. All three implement
   array (`probeClaudeCodeModels`), and caches each model's live metadata
   (`cacheClaudeCodeMeta`, layered by `ModelMetaFor` through
   `mergeProviderNative`); it falls back to the static catalog on a probe
-  failure so the picker is never empty. Seams: `ccDial` (swap for a
+  failure so the picker is never empty. **Context window:** the static
+  catalog can only guess it (an alias's window moves with the model
+  behind it; a full model id is not listed at all), so `BuildModel` starts
+  a background probe (`startClaudeCodeWindowProbe`, once per model id per
+  process; a failed probe is retried by the next build): a short-lived
+  child on `--model <id>` answers a `get_context_usage` control request,
+  and its `rawMaxTokens` (else `maxTokens`) is cached as the model's
+  window. No turn runs. `claudeCodeModel.ResolveContextWindow` waits for
+  the probe, bounded by the call's `ctx`; every turn's result frame
+  (`modelUsage`), an interrupted one's included, also records the window.
+  Seams: `ccDial` (swap for a
   scripted `ccConn` in tests — frame level, no process) and
   `ClaudeCodeStart` (swap for a fake `ClaudeCodeProcess` speaking NDJSON —
   what `pkg/engine`'s end-to-end compaction test uses). Opt-in live tests

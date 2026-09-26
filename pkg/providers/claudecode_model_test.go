@@ -417,6 +417,41 @@ func TestClaudeCodeModel_ObservesContextWindow(t *testing.T) {
 	}
 }
 
+// The CLI's answer to an interrupt is not the next turn's end, but the window
+// it reports is as good as any turn's: a session whose turns keep being
+// interrupted still learns it.
+func TestClaudeCodeModel_ObservesContextWindowOfAnInterruptedTurn(t *testing.T) {
+	const id = "ctxwin-interrupted"
+	t.Cleanup(func() {
+		claudeCodeContextWindows.mu.Lock()
+		delete(claudeCodeContextWindows.byID, id)
+		claudeCodeContextWindows.mu.Unlock()
+	})
+	fc := newFakeConn(16)
+	fc.onInterrupt = func(c *fakeConn) {
+		c.push(ccFrame{
+			Type: "result", Subtype: "error_during_execution", IsError: true,
+			ModelUsage: map[string]ccModelUsage{"claude-opus-5-5": {ContextWindow: 1_000_000}},
+		})
+	}
+	recordDials(t, fc)
+	m := newClaudeCodeModel("claude", id, "/repo", false, nil)
+	t.Cleanup(func() { _ = m.Close() })
+	cfg := &genai.GenerateContentConfig{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(20 * time.Millisecond); cancel() }()
+	for range m.GenerateContent(ctx, &model.LLMRequest{Config: cfg, Contents: []*genai.Content{userContent("long job")}}, false) {
+	}
+	fc.push(assistantTextFrame("hi"))
+	fc.push(resultFrame("hi"))
+	collect(t, m, &model.LLMRequest{Config: cfg, Contents: []*genai.Content{userContent("long job"), userContent("say hi")}})
+
+	if got := (ClaudeCode{}).ContextWindow(id); got != 1_000_000 {
+		t.Fatalf("ContextWindow = %d, want the 1000000 the interrupted turn reported", got)
+	}
+}
+
 // TestCCContextWindowFromModelUsage: the largest contextWindow in a multi-entry
 // modelUsage map wins (the turn's primary model has the largest window), and an
 // empty or nil map yields 0.

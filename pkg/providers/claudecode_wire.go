@@ -162,6 +162,20 @@ type ccInitResponseWrap struct {
 	} `json:"response"`
 }
 
+// ccContextUsageWrap decodes the `response` field of a get_context_usage
+// control_response. rawMaxTokens is the model's window; maxTokens is the same
+// window as the CLI budgets it, which only differs while its own compaction
+// reserves a buffer.
+type ccContextUsageWrap struct {
+	Subtype   string `json:"subtype"`
+	RequestID string `json:"request_id"`
+	Error     string `json:"error,omitempty"`
+	Response  struct {
+		MaxTokens    int64 `json:"maxTokens"`
+		RawMaxTokens int64 `json:"rawMaxTokens"`
+	} `json:"response"`
+}
+
 // ccControlEnvelope is a control frame ask writes: the initialize request and
 // every control_response (MCP replies, can_use_tool decisions, interrupt).
 type ccControlEnvelope struct {

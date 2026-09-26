@@ -82,6 +82,7 @@ func TestClaudeCode_HasNativeWebSearch(t *testing.T) {
 // the native fallback is on exactly when the context says web_search is
 // unavailable, and the observed-tool sink is threaded through.
 func TestClaudeCodeBuildModel_NativeWebSearchFromContext(t *testing.T) {
+	isolateWindowProbes(t, func(context.Context, ClaudeCodeStartArgs) (ccConn, error) { return nil, errChildExited })
 	var p ClaudeCode
 	pc := config.ProviderConfig{}.WithField(ClaudeCodeFieldBinary, "sh")
 

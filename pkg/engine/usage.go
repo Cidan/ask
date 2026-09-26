@@ -40,6 +40,19 @@ func (u *usageModel) RebaseHistory() {
 	providers.RebaseHistory(u.inner)
 }
 
+// ResolveContextWindow is the wrapped model's own answer when it has one, else
+// the provider's current window for the model — which a live listing can
+// correct after the model was built (see providers.ContextWindowResolver).
+func (u *usageModel) ResolveContextWindow(ctx context.Context) int64 {
+	if w, ok := providers.ResolveContextWindow(ctx, u.inner); ok {
+		return w
+	}
+	if p, ok := providers.Get(u.provider); ok {
+		return p.ContextWindow(u.model)
+	}
+	return 0
+}
+
 func (u *usageModel) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
 		for resp, err := range u.inner.GenerateContent(ctx, req, stream) {
