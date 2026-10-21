@@ -82,7 +82,18 @@ type sudoPasswordReply struct {
 type sudoPasswordRequestedMsg struct {
 	tabID  int
 	prompt string
-	reply  chan sudoPasswordReply
+	// retry is set when the same sudo process asks again after rejecting
+	// the password it was given.
+	retry bool
+	reply chan sudoPasswordReply
+}
+
+// sudoPasswordDismissMsg withdraws the sudo request answered on reply: the
+// askpass helper hung up (sudo finished, was killed, or timed out), so the
+// prompt closes, or leaves the queue, without an answer.
+type sudoPasswordDismissMsg struct {
+	tabID int
+	reply chan sudoPasswordReply
 }
 
 // mcpAuthReply carries the user's answer to the MCP OAuth authorize modal:

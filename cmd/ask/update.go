@@ -53,6 +53,17 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			newModel = mm
 		}
 	}()
+	defer func() {
+		mm, ok := newModel.(model)
+		if !ok || len(mm.pendingModals) == 0 || mm.modalOpen() {
+			return
+		}
+		next := mm.pendingModals[0]
+		mm.pendingModals = mm.pendingModals[1:]
+		opened, openCmd := mm.Update(next)
+		newModel = opened
+		cmd = tea.Batch(cmd, openCmd)
+	}()
 	switch msg := msg.(type) {
 	case issueLoadingTickMsg:
 		// High-fps loader animation. Drop ticks aimed at a different
@@ -914,6 +925,10 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			m.appendHistory(outputStyle.Render(dimStyle.Render("no prior sessions for this project")))
 			return m, nil
 		}
+		if m.mode == modeSudoPassword {
+			m.pendingModals = append(m.pendingModals, msg)
+			return m, nil
+		}
 		m.sessions = msg.sessions
 		m.pickerIdx = 0
 		m.mode = modeSessionPicker
@@ -932,6 +947,10 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.mode == modeSudoPassword {
+			m.pendingModals = append(m.pendingModals, msg)
+			return m, nil
+		}
 		if m.mode == modeAskQuestion {
 			msg.reply <- askReply{cancelled: true}
 			return m, nil
@@ -946,6 +965,10 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			if msg.reply != nil {
 				msg.reply <- finalizedPlanReply{headless: true}
 			}
+			return m, nil
+		}
+		if m.mode == modeSudoPassword {
+			m.pendingModals = append(m.pendingModals, msg)
 			return m, nil
 		}
 		if m.mode == modeFinalizedPlan {
@@ -976,6 +999,10 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.mode == modeSudoPassword {
+			m.pendingModals = append(m.pendingModals, msg)
+			return m, nil
+		}
 		if m.mode == modeApproval || m.mode == modeAskQuestion {
 			msg.reply <- approvalReply{allow: false}
 			return m, nil
@@ -990,14 +1017,27 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			return m, nil
 		}
+		// The password prompt only opens on a tab with no modal up, so
+		// keystrokes aimed at another modal never land in it.
+		if m.modalOpen() {
+			m.pendingModals = append(m.pendingModals, msg)
+			return m, nil
+		}
 		m = m.startSudoPassword(msg)
 		return m, nil
+
+	case sudoPasswordDismissMsg:
+		return m.dismissSudoPassword(msg.reply), nil
 
 	case mcpAuthPromptRequestedMsg:
 		if m.workflowRun != nil {
 			if msg.reply != nil {
 				msg.reply <- mcpAuthReply{cancelled: true}
 			}
+			return m, nil
+		}
+		if m.mode == modeSudoPassword {
+			m.pendingModals = append(m.pendingModals, msg)
 			return m, nil
 		}
 		m = m.startMCPAuth(msg)
@@ -1008,7 +1048,15 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		// without answering it (the prompter already moved on).
 		if m.mode == modeMCPAuth {
 			m = m.clearMCPAuth()
+			return m, nil
 		}
+		kept := make([]tea.Msg, 0, len(m.pendingModals))
+		for _, queued := range m.pendingModals {
+			if _, ok := queued.(mcpAuthPromptRequestedMsg); !ok {
+				kept = append(kept, queued)
+			}
+		}
+		m.pendingModals = kept
 		return m, nil
 
 	case modelCatalogLoadedMsg:
@@ -1267,6 +1315,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		if m.mode == modeMCPAuth {
 			return m.applyMCPAuthPaste(msg.Content)
+		}
+		if m.mode == modeSudoPassword {
+			return m.pasteSudoPassword(msg.Content)
 		}
 		if m.mode != modeInput {
 			return m, nil

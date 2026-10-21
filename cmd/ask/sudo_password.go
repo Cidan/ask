@@ -14,8 +14,6 @@ const (
 func (m model) startSudoPassword(msg sudoPasswordRequestedMsg) model {
 	(&m).clearSelection()
 
-	incorrect := m.mode == modeSudoPassword || m.sudoIncorrectAttempt
-
 	ti := textinput.New()
 	ti.Prompt = "Password: "
 	ti.EchoMode = textinput.EchoPassword
@@ -25,7 +23,7 @@ func (m model) startSudoPassword(msg sudoPasswordRequestedMsg) model {
 	m.sudoPrompt = msg.prompt
 	m.sudoReply = msg.reply
 	m.sudoInput = ti
-	m.sudoIncorrectAttempt = incorrect
+	m.sudoIncorrectAttempt = msg.retry
 	return m
 }
 
@@ -33,8 +31,32 @@ func (m model) clearSudoPassword() model {
 	m.mode = modeInput
 	m.sudoPrompt = ""
 	m.sudoReply = nil
+	m.sudoInput.Reset()
 	m.sudoIncorrectAttempt = false
 	return m
+}
+
+// dismissSudoPassword withdraws the request answered on reply: it closes
+// the prompt when that request is on screen, else drops it from the queue.
+func (m model) dismissSudoPassword(reply chan sudoPasswordReply) model {
+	if m.mode == modeSudoPassword && m.sudoReply == reply {
+		return m.clearSudoPassword()
+	}
+	kept := make([]tea.Msg, 0, len(m.pendingModals))
+	for _, msg := range m.pendingModals {
+		if req, ok := msg.(sudoPasswordRequestedMsg); ok && req.reply == reply {
+			continue
+		}
+		kept = append(kept, msg)
+	}
+	m.pendingModals = kept
+	return m
+}
+
+func (m model) pasteSudoPassword(content string) (model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.sudoInput, cmd = m.sudoInput.Update(tea.PasteMsg{Content: strings.TrimRight(content, "\r\n")})
+	return m, cmd
 }
 
 func (m model) sendSudoPassword(password string, cancelled bool) model {

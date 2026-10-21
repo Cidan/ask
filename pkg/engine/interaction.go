@@ -78,10 +78,25 @@ type PlanResponse struct {
 	Source        any      `json:"-"`
 }
 
+// SudoPasswordRequest is one askpass prompt from sudo.
+type SudoPasswordRequest struct {
+	Prompt string `json:"prompt"`
+	// Retry is set when the same sudo process asks again, which it only
+	// does after rejecting the password it was last given.
+	Retry bool `json:"retry,omitempty"`
+}
+
 // SudoPasswordResponse contains the user's input for a sudo prompt.
 type SudoPasswordResponse struct {
 	Password  string `json:"password"`
 	Cancelled bool   `json:"cancelled"`
+}
+
+// SudoPasswordPrompter is an optional InteractionHandler capability: a
+// handler that implements it receives the whole request, Retry included,
+// in place of RequestSudoPassword.
+type SudoPasswordPrompter interface {
+	PromptSudoPassword(ctx context.Context, tabID int, req SudoPasswordRequest) (SudoPasswordResponse, error)
 }
 
 // InteractionHandler is implemented by user interfaces (TUI, Web UI, CLI, headless agents)

@@ -87,6 +87,9 @@ Related: `.claude/rules/tools.md`, `.claude/rules/providers.md`,
   `RequestSudoPassword`. The TUI implements it over its modals.
   `HeadlessInteractionHandler` answers question/plan with `Headless:
   true`, approval with `AutoApproveTools`, sudo with `Cancelled: true`.
+  The optional `SudoPasswordPrompter` capability receives the whole
+  `SudoPasswordRequest` (prompt plus `Retry`, set when the same sudo asks
+  again after rejecting a password) in place of `RequestSudoPassword`.
 - Approval is deliberately NOT ADK's `toolconfirmation` flow (no
   suspend/resume for a chat turn): a mutating tool blocks on the handler
   and returns the denial inline. `IsConfirmationCall` /

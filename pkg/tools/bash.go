@@ -7,7 +7,6 @@ import (
 	"google.golang.org/adk/v2/agent"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -30,6 +29,9 @@ type ShellResult struct {
 
 // ShellHandle represents a running shell command.
 type ShellHandle struct {
+	// Pid is the shell's process id; zero when no real process backs the
+	// handle.
+	Pid    int
 	Output <-chan string
 	Done   <-chan ShellResult
 	Kill   func()
@@ -112,6 +114,7 @@ func RunShellProcess(dir, command string, extraEnv ...string) (*ShellHandle, err
 	}()
 	pid := cmd.Process.Pid
 	return &ShellHandle{
+		Pid:    pid,
 		Output: out,
 		Done:   done,
 		Kill: func() {
@@ -273,22 +276,21 @@ func BashTool(env *ToolEnv) Tool {
 			}
 
 			var extraEnv []string
-			if server := EnsureSudoIPCServer(env.Interaction); server != nil {
-				askExe, err := os.Executable()
-				if err != nil || askExe == "" {
-					askExe = "ask"
-				}
+			sudoServer := EnsureSudoIPCServer()
+			if sudoServer != nil {
 				extraEnv = append(extraEnv,
-					"SUDO_ASKPASS="+askExe,
-					"ASK_SUDO_SOCKET="+server.SocketPath,
-					"ASK_SUDO_TOKEN="+server.Token,
-					fmt.Sprintf("ASK_SUDO_TABID=%d", env.TabID),
+					"SUDO_ASKPASS="+askPassExecutable(),
+					AskSudoSocketEnv+"="+sudoServer.SocketPath,
 				)
 			}
 
 			handle, err := RunShell(env.Cwd, command, extraEnv...)
 			if err != nil {
 				return BashResult{}, errors.New("could not start shell: " + err.Error())
+			}
+			unregisterSudo := func() {}
+			if sudoServer != nil && handle.Pid > 0 {
+				unregisterSudo = sudoServer.RegisterShell(handle.Pid, env.Interaction, env.TabID)
 			}
 
 			if p.RunInBackground {
@@ -298,6 +300,7 @@ func BashTool(env *ToolEnv) Tool {
 						job.AppendOutput(chunk)
 					}
 					job.Finish(<-handle.Done)
+					unregisterSudo()
 					if env.Emit != nil {
 						env.Emit(engine.BgTaskEndedEvent{
 							BaseEvent: engine.BaseEvent{TabID: env.TabID},
@@ -314,6 +317,7 @@ func BashTool(env *ToolEnv) Tool {
 				}
 				return BashResult{JobID: job.ID, Output: "started background job " + job.ID + "; poll it with job_output and stop it with job_kill"}, nil
 			}
+			defer unregisterSudo()
 
 			timeout := BashDefaultTimeout
 			if p.Timeout > 0 {
@@ -521,32 +525,27 @@ func SafeShellCommand(command string) bool {
 	return false
 }
 
-var errSudoRequiresAskpass = fmt.Errorf("sudo: commands invoking sudo must use -A as the first argument (e.g., 'sudo -A <command>'). Plain sudo without -A is blocked because ask requires -A to trigger the secure password prompt modal.")
+var errSudoRequiresAskpass = fmt.Errorf("sudo: commands invoking sudo must pass -A (e.g., 'sudo -A <command>'), including sudo run through env, timeout, xargs, find -exec, or sh -c. Plain sudo without -A is blocked because ask requires -A to trigger the secure password prompt modal.")
 
-// ValidateSudoCommand checks if command invokes sudo and verifies that -A or --askpass is passed as its first argument.
+// ValidateSudoCommand rejects a command line that runs sudo in a way that
+// could prompt for a password without -A (--askpass).
 func ValidateSudoCommand(command string) error {
 	return parseAndValidateSudo(command)
 }
 
 func parseAndValidateSudo(input string) error {
 	var (
-		foundCmd      bool
-		isSudo        bool
-		sudoValidated bool
-		skipNext      bool
-		i             int
-		n             = len(input)
+		words    []string
+		skipNext bool
+		i        int
+		n        = len(input)
 	)
 
 	checkReset := func() error {
-		if isSudo && !sudoValidated {
-			return errSudoRequiresAskpass
-		}
-		foundCmd = false
-		isSudo = false
-		sudoValidated = false
+		err := validateSimpleCommand(words)
+		words = words[:0]
 		skipNext = false
-		return nil
+		return err
 	}
 
 	for i < n {
@@ -702,25 +701,7 @@ func parseAndValidateSudo(input string) error {
 			continue
 		}
 
-		if !foundCmd {
-			if isEnvAssignment(unquotedStr) || isEnvAssignment(rawWord) {
-				continue
-			}
-			foundCmd = true
-			base := filepath.Base(unquotedStr)
-			if base == "sudo" || unquotedStr == "sudo" || strings.HasSuffix(unquotedStr, "/sudo") {
-				isSudo = true
-			}
-			continue
-		}
-
-		if isSudo && !sudoValidated {
-			if unquotedStr == "-A" || unquotedStr == "--askpass" || rawWord == "-A" || rawWord == "--askpass" {
-				sudoValidated = true
-			} else {
-				return errSudoRequiresAskpass
-			}
-		}
+		words = append(words, unquotedStr)
 	}
 
 	if err := checkReset(); err != nil {

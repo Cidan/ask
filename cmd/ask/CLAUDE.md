@@ -154,11 +154,21 @@ lockstep (`.claude/rules/issues.md`).
 - The list cursor IS `app.active`. `ActionSidebarFocus` (Tab) takes
   focus only when `model.wantsTabKey()` is false; while focused,
   Up/Down/j/k switch tabs immediately, a printable rune bounces focus
-  back and types, Esc/Enter/Tab return, `ActionTabClose` closes.
+  back and types, Esc/Enter/Tab return, `ActionTabClose` closes. When
+  the active tab has a modal open (one can arrive while the list has
+  focus), focus drops and every key goes to the modal.
   `ActionTabPrevAlt`/`NextAlt` switch from anywhere; clicking a card
   switches; wheel over the column is absorbed.
 - No focus theft: `dispatchByTabID` parks ask/approval/sudo/plan
   requests on the target tab; a dead tab gets a cancelled/denied reply.
+- The sudo prompt owns the keyboard until answered. Approval, ask,
+  plan, MCP auth, and session-picker requests that arrive while it is up,
+  and a sudo request that arrives while any modal or inline confirm is
+  up (`modalOpen`), wait in `model.pendingModals`; a deferred step in
+  `model.Update` opens the head once no modal is open. Queued requests
+  count for the ⚠ badge, `drainPendingReplies` cancels them, a
+  `sudoPasswordDismissMsg` (the askpass helper hung up) closes or
+  unqueues its prompt, and `mcpAuthDismissMsg` drops queued MCP prompts.
 - `openTab` reloads config from disk (a `/config` change applies to the
   next Ctrl+T). `focusTab`/`closeTab` chdir to the tab's cwd and clear
   its frame cache. Closing the last tab prints `last session: <vsID>`
@@ -290,7 +300,9 @@ lockstep (`.claude/rules/issues.md`).
   Finalized plan (finalized_plan.go): `finalizedPlanRequestMsg` renders
   the plan and offers execute-in-workflow, pick another workflow,
   execute inline, or talk more. Sudo (sudo_password.go): masked
-  `textinput`, retried on a wrong password.
+  `textinput` that accepts paste (trailing newline dropped) and is
+  cleared on close; "Incorrect password" shows only when the server
+  flags the request as `retry` (same sudo asking again).
 - toast.go (`m.toast.show`), themes.go (16 themes in `themeRegistry`;
   `applyTheme` fills every style var), selection.go, list_nav.go
   (↑/↓ and Ctrl+P/N for popovers), tab_title.go (`fallbackTabTitle`

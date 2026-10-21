@@ -229,13 +229,31 @@ tool.
   tool's offset/limit continuation pages the untouched bytes back. It is
   the recovery path, so it runs even under `disable_token_savings` when
   the middle-out cap dropped content.
-- `sudo` must be invoked as `sudo -A` (`ValidateSudoCommand`). The
-  tool exports `SUDO_ASKPASS=<ask binary>` plus `ASK_SUDO_SOCKET` /
-  `ASK_SUDO_TOKEN` / `ASK_SUDO_TABID`; `ask` run as the askpass helper
-  (`RunAskPassHelper`, dispatched from `cmd/ask/main.go`) connects to
-  the per-process unix socket (`EnsureSudoIPCServer`, peer-uid checked)
-  and the TUI answers with the password modal
-  (`cmd/ask/sudo_password.go`).
+- `sudo` must get `-A` (`ValidateSudoCommand`, `sudo_validate.go`).
+  The validator follows sudo's own option grammar (`-A` anywhere among
+  the options; `-n`, `-V`, `-K`, help, and a bare `-k` never prompt) and
+  looks through leading assignments, wrappers (`env`, `nice`, `timeout`,
+  `xargs`, `nohup`, `command`, `exec`, `time`, `stdbuf`, `setsid`,
+  `ionice`, `taskset`), `sh -c` / `bash -c` scripts, and `find -exec`.
+- Sudo askpass (`sudo_ipc.go`, `sudo_proc*.go`; Linux only, other
+  platforms export nothing). The bash tool exports only
+  `SUDO_ASKPASS=<running ask image>` (`/proc/<pid>/exe` once a reinstall
+  replaced the file) and `ASK_SUDO_SOCKET` (a 0700 temp dir); neither is
+  a secret. It registers each command's shell pid with the server
+  (`RegisterShell`, with the env's interaction handler and tab) for the
+  command's lifetime. Authorization is the process tree, read through
+  the swappable `SudoProcInspector`: the peer must be this ask
+  executable, its parent a sudo front end of this user (real uid the
+  user, effective uid 0), its stdout a pipe that is not one of ask's
+  own (so the password cannot flow into tool output), and the sudo must
+  descend from a registered shell. A request from the same sudo after a
+  delivered password carries `Retry`. A hang-up cancels the prompt's
+  context. `cmd/ask/main.go` enters helper mode only when
+  `IsAskPassInvocation` holds (argv is `SUDO_ASKPASS` plus the prompt,
+  parent is that sudo front end); every other launch with the variable
+  set is a normal ask that unsets it. The protocol is one JSON line each
+  way. Handlers implementing `engine.SudoPasswordPrompter` receive the
+  full request; others get `RequestSudoPassword`.
 
 ## fetch and web_search
 

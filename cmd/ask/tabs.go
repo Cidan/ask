@@ -199,6 +199,8 @@ func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.dispatchByTabID(m.tabID, msg)
 	case sudoPasswordRequestedMsg:
 		return a.dispatchByTabID(m.tabID, msg)
+	case sudoPasswordDismissMsg:
+		return a.dispatchByTabID(m.tabID, msg)
 	case mcpAuthPromptRequestedMsg:
 		return a.dispatchByTabID(m.tabID, msg)
 	case mcpAuthDismissMsg:

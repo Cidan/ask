@@ -594,6 +594,12 @@ type model struct {
 	sudoInput            textinput.Model
 	sudoIncorrectAttempt bool
 
+	// pendingModals holds modal requests that arrived while the tab could
+	// not take them: anything that would replace an open sudo prompt, and
+	// a sudo prompt while another modal is up. Update opens the head once
+	// no modal is open.
+	pendingModals []tea.Msg
+
 	// MCP OAuth authorize modal (modeMCPAuth): the interactive copy-link /
 	// paste-redirect flow that lets authorization complete over SSH.
 	mcpAuthServer string
@@ -1093,6 +1099,36 @@ func (m *model) drainPendingReplies() {
 		default:
 		}
 		m.mcpAuthReply = nil
+	}
+	for _, msg := range m.pendingModals {
+		cancelModalRequest(msg)
+	}
+	m.pendingModals = nil
+}
+
+// cancelModalRequest answers a modal request that will never be shown.
+func cancelModalRequest(msg tea.Msg) {
+	switch r := msg.(type) {
+	case askToolRequestMsg:
+		trySend(r.reply, askReply{cancelled: true})
+	case approvalRequestMsg:
+		trySend(r.reply, approvalReply{allow: false})
+	case finalizedPlanRequestMsg:
+		trySend(r.reply, finalizedPlanReply{cancelled: true})
+	case sudoPasswordRequestedMsg:
+		trySend(r.reply, sudoPasswordReply{cancelled: true})
+	case mcpAuthPromptRequestedMsg:
+		trySend(r.reply, mcpAuthReply{cancelled: true})
+	}
+}
+
+func trySend[T any](ch chan T, v T) {
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- v:
+	default:
 	}
 }
 

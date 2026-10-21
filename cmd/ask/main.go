@@ -240,13 +240,14 @@ func resolveStartupProvider(resumeProviderID, savedDefault string, warn io.Write
 }
 
 func main() {
-	if os.Getenv("ASK_SUDO_SOCKET") != "" && os.Getenv("ASK_SUDO_TOKEN") != "" {
+	if isAskPassInvocation() {
 		if err := runAskPassHelper(); err != nil {
 			fmt.Fprintln(os.Stderr, "ask askpass:", err)
 			os.Exit(1)
 		}
 		os.Exit(0)
 	}
+	_ = os.Unsetenv(askSudoSocketEnv)
 
 	cmd, err := parseCLICommand(os.Args[1:])
 	if err != nil {
@@ -310,6 +311,7 @@ func main() {
 	if fa, ok := final.(app); ok {
 		fa.shutdown()
 	}
+	closeSudoIPCServer()
 	pruneWorktrees()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ask:", err)
