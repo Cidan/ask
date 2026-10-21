@@ -121,10 +121,15 @@ func (t *TUIInteractionHandler) ConfirmPlan(ctx context.Context, tabID int, req 
 }
 
 func (t *TUIInteractionHandler) RequestSudoPassword(ctx context.Context, tabID int, prompt string) (engine.SudoPasswordResponse, error) {
+	return t.PromptSudoPassword(ctx, tabID, engine.SudoPasswordRequest{Prompt: prompt})
+}
+
+func (t *TUIInteractionHandler) PromptSudoPassword(ctx context.Context, tabID int, req engine.SudoPasswordRequest) (engine.SudoPasswordResponse, error) {
 	reply := make(chan sudoPasswordReply, 1)
 	if !agentSendToProgram(sudoPasswordRequestedMsg{
 		tabID:  tabID,
-		prompt: prompt,
+		prompt: req.Prompt,
+		retry:  req.Retry,
 		reply:  reply,
 	}) {
 		return engine.SudoPasswordResponse{}, fmt.Errorf("sudo UI not ready")
@@ -137,6 +142,8 @@ func (t *TUIInteractionHandler) RequestSudoPassword(ctx context.Context, tabID i
 			Cancelled: resp.cancelled,
 		}, nil
 	case <-ctx.Done():
+		debugLog("sudo prompt abandoned tab=%d: %v", tabID, ctx.Err())
+		agentSendToProgram(sudoPasswordDismissMsg{tabID: tabID, reply: reply})
 		return engine.SudoPasswordResponse{}, ctx.Err()
 	}
 }

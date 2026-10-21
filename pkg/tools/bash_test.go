@@ -94,7 +94,7 @@ func TestBashToolSync(t *testing.T) {
 }
 
 func TestBashToolBackground(t *testing.T) {
-	env, events := newTestToolEnv(t)
+	env, events := newTestToolEnvSnapshot(t)
 	oldRun := RunShell
 	defer func() { RunShell = oldRun }()
 
@@ -139,19 +139,22 @@ func TestBashToolBackground(t *testing.T) {
 		t.Fatalf("kill failed: %s", resp.Content)
 	}
 
-	// Check bg events
+	// The ended event is emitted after the job is marked done, which is
+	// what job_kill waits for.
 	startedFound := false
 	endedFound := false
-	for _, ev := range *events {
-		if _, ok := ev.(engine.BgTaskStartedEvent); ok {
-			startedFound = true
-		}
-		if _, ok := ev.(engine.BgTaskEndedEvent); ok {
-			endedFound = true
+	for deadline := time.Now().Add(2 * time.Second); !endedFound && time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		for _, ev := range events() {
+			if _, ok := ev.(engine.BgTaskStartedEvent); ok {
+				startedFound = true
+			}
+			if _, ok := ev.(engine.BgTaskEndedEvent); ok {
+				endedFound = true
+			}
 		}
 	}
 	if !startedFound || !endedFound {
-		t.Errorf("expected started and ended bg task events, got: %+v", *events)
+		t.Errorf("expected started and ended bg task events, got: %+v", events())
 	}
 }
 
@@ -172,6 +175,95 @@ func TestValidateSudoCommand(t *testing.T) {
 	for _, tt := range tests {
 		err := ValidateSudoCommand(tt.cmd)
 		if (err == nil) != tt.valid {
+			t.Errorf("ValidateSudoCommand(%q) valid=%v, want %v (err=%v)", tt.cmd, err == nil, tt.valid, err)
+		}
+	}
+}
+
+func TestValidateSudoCommand_FollowsSudosOptionGrammar(t *testing.T) {
+	tests := []struct {
+		cmd   string
+		valid bool
+	}{
+		{"sudo -u postgres -A psql", true},
+		{"sudo -E -A make install", true},
+		{"sudo -nA true", true},
+		{"sudo -uroot -A id", true},
+		{"sudo --user=root --askpass id", true},
+		{"sudo --user root --ask id", true},
+		{"sudo -p 'pw: ' -A id", true},
+		{"sudo FOO=1 -A env", true},
+		{"sudo -n true", true},
+		{"sudo --non-interactive true", true},
+		{"sudo -k", true},
+		{"sudo -K", true},
+		{"sudo -V", true},
+		{"sudo --version", true},
+		{"sudo -h", true},
+		{"sudo -k ls", false},
+		{"sudo -ks", false},
+		{"sudo -l", false},
+		{"sudo -v", false},
+		{"sudo -S cat /etc/shadow", false},
+		{"sudo -u root apt update", false},
+		{"sudo -p -A id", false},
+		{"sudo -h host id", false},
+		{"sudo -- -A", false},
+		{"sudo --bogus -A id", false},
+		{"sudo", false},
+	}
+	for _, tt := range tests {
+		if err := ValidateSudoCommand(tt.cmd); (err == nil) != tt.valid {
+			t.Errorf("ValidateSudoCommand(%q) valid=%v, want %v (err=%v)", tt.cmd, err == nil, tt.valid, err)
+		}
+	}
+}
+
+func TestValidateSudoCommand_SeesSudoBehindWrappers(t *testing.T) {
+	tests := []struct {
+		cmd   string
+		valid bool
+	}{
+		{"env sudo apt update", false},
+		{"env -i PATH=/usr/bin sudo apt update", false},
+		{"env -u HOME sudo apt update", false},
+		{"nice -n 10 sudo make install", false},
+		{"nice -10 sudo make install", false},
+		{"nohup sudo make install", false},
+		{"timeout 60 sudo zypper refresh", false},
+		{"timeout -s KILL 60 sudo zypper refresh", false},
+		{"command sudo id", false},
+		{"exec sudo id", false},
+		{"time -p sudo id", false},
+		{"stdbuf -oL sudo journalctl", false},
+		{"setsid sudo id", false},
+		{"ionice -c 3 sudo id", false},
+		{"taskset 0x1 sudo id", false},
+		{"find . -name '*.o' | xargs sudo rm", false},
+		{"xargs -I {} sudo cp {} /opt", false},
+		{"xargs -I{} sudo cp {} /opt", false},
+		{"find /tmp -name x -exec sudo rm {} \\;", false},
+		{"find /tmp -name x -execdir sudo rm {} +", false},
+		{`bash -c "sudo zypper refresh"`, false},
+		{`bash -lc 'sudo zypper refresh'`, false},
+		{`sh -c "echo hi; sudo id"`, false},
+		{`bash -c "bash -c 'sudo id'"`, false},
+		{"timeout 60 nice sudo id", false},
+		{"env sudo -A apt update", true},
+		{"timeout 60 sudo -A zypper refresh", true},
+		{"xargs -0 sudo -A rm", true},
+		{`bash -lc "sudo -A make install"`, true},
+		{"find . -exec sudo -A rm {} \\;", true},
+		{"command -v sudo", true},
+		{"timeout 5 grep sudo /var/log/messages", true},
+		{"env FOO=sudo ls", true},
+		{"echo sudo", true},
+		{"xargs -I{} echo sudo {}", true},
+		{"bash script.sh sudo", true},
+		{"ionice -p 1234", true},
+	}
+	for _, tt := range tests {
+		if err := ValidateSudoCommand(tt.cmd); (err == nil) != tt.valid {
 			t.Errorf("ValidateSudoCommand(%q) valid=%v, want %v (err=%v)", tt.cmd, err == nil, tt.valid, err)
 		}
 	}

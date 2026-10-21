@@ -296,11 +296,12 @@ func (m *model) effectiveModelID() string {
 	return ""
 }
 
-// needsUserInput reports whether the tab is blocked on a human — an
-// ask-question or approval modal is up. These never steal focus (see
-// dispatchByTabID); the badge is how the user finds them.
+// needsUserInput reports whether the tab is blocked on a human — a modal
+// request is up or queued behind another modal. These never steal focus
+// (see dispatchByTabID); the badge is how the user finds them.
 func (m *model) needsUserInput() bool {
-	return m.mode == modeAskQuestion || m.mode == modeApproval || m.mode == modeSudoPassword || m.mode == modeMCPAuth
+	return m.mode == modeAskQuestion || m.mode == modeApproval || m.mode == modeSudoPassword || m.mode == modeMCPAuth ||
+		len(m.pendingModals) > 0
 }
 
 // sidebarBadge returns the attention glyph for the card's title row
@@ -407,6 +408,13 @@ func (a app) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			return a, nil, true
 		}
 		return a, nil, false
+	}
+	if a.activeTab().modalOpen() {
+		// A modal that opened while the list had focus (an approval or
+		// sudo prompt from the running turn) owns every keystroke.
+		a.sidebarFocus = false
+		nm, cmd := a.dispatchActive(msg)
+		return nm, cmd, true
 	}
 	switch {
 	case km.Matches(ActionSidebarFocus, msg),

@@ -25,6 +25,26 @@ func newTestToolEnv(t *testing.T) (*ToolEnv, *[]engine.EngineEvent) {
 	return env, events
 }
 
+// newTestToolEnvSnapshot is newTestToolEnv for tools that keep emitting
+// from another goroutine (background jobs): events returns a copy taken
+// under the lock.
+func newTestToolEnvSnapshot(t *testing.T) (*ToolEnv, func() []engine.EngineEvent) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	var mu sync.Mutex
+	var events []engine.EngineEvent
+	env := NewToolEnv(t.TempDir(), 1, true, func(ev engine.EngineEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, ev)
+	}, nil)
+	return env, func() []engine.EngineEvent {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]engine.EngineEvent(nil), events...)
+	}
+}
+
 func runTool(t *testing.T, tool Tool, input any) ToolResponse {
 	t.Helper()
 	b, err := json.Marshal(input)

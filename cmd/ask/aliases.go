@@ -155,13 +155,13 @@ const (
 	mcpStatusError     = tools.MCPStatusError
 )
 
-func ensureSudoIPCServer(interaction ...engine.InteractionHandler) *tools.SudoIPCServer {
-	var handler engine.InteractionHandler = globalTUIInteractionHandler
-	if len(interaction) > 0 && interaction[0] != nil {
-		handler = interaction[0]
-	}
-	return tools.EnsureSudoIPCServer(handler)
-}
+const askSudoSocketEnv = tools.AskSudoSocketEnv
+
+var (
+	ensureSudoIPCServer = tools.EnsureSudoIPCServer
+	closeSudoIPCServer  = tools.CloseSudoIPCServer
+	isAskPassInvocation = tools.IsAskPassInvocation
+)
 
 var (
 	newMCPManager            = tools.NewMCPManager
