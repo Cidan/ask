@@ -45,6 +45,11 @@ sixteen themes re-paint the whole UI live.
 - **Resume sessions** — `/resume` picks a prior conversation in the
   current directory; `ask resume <vs-id>` reopens one from the shell
   (ask prints the id on quit).
+- **[herdr](https://herdr.dev) support** — run ask in a herdr pane and
+  herdr shows it as an agent: idle, working, or blocked on you (with
+  what it is waiting for), notifications when it finishes or needs a
+  decision, `herdr agent wait`, and the same session reopened in the
+  pane after a herdr restart. Nothing to install or configure.
 - **Inline markdown** with [glamour](https://github.com/charmbracelet/glamour),
   cached per history entry; **inline colored diffs** for every `edit` /
   `write`; a **live todo panel** (`Ctrl+X` expands and collapses it)

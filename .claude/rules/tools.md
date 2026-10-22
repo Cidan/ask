@@ -229,6 +229,9 @@ tool.
   tool's offset/limit continuation pages the untouched bytes back. It is
   the recovery path, so it runs even under `disable_token_savings` when
   the middle-out cap dropped content.
+- Bash tool commands (`agentShellEnv`) and stdio MCP servers start
+  without herdr's pane variables (`herdr.WithoutPaneEnv`), so a nested
+  agent cannot report over or release ask's status in its herdr pane.
 - `sudo` must get `-A` (`ValidateSudoCommand`, `sudo_validate.go`).
   The validator follows sudo's own option grammar (`-A` anywhere among
   the options; `-n`, `-V`, `-K`, help, and a bare `-k` never prompt) and

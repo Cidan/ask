@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -29,6 +30,13 @@ func Main(m *testing.M, env ...string) {
 		"JJ_EMAIL", "test@example.com",
 	}
 	vars = append(vars, env...)
+	// A test binary started inside a herdr pane would otherwise report
+	// into, and release, the developer's own pane.
+	for _, kv := range os.Environ() {
+		if key, _, _ := strings.Cut(kv, "="); strings.HasPrefix(key, "HERDR_") {
+			_ = os.Unsetenv(key)
+		}
+	}
 	for i := 0; i+1 < len(vars); i += 2 {
 		if err := os.Setenv(vars[i], vars[i+1]); err != nil {
 			fmt.Fprintln(os.Stderr, "testhome:", err)

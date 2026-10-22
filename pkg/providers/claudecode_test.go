@@ -457,3 +457,24 @@ func TestProbeClaudeCodeContextWindow_ReadsTheCLIsAnswer(t *testing.T) {
 		})
 	}
 }
+
+func TestClaudeCodeSessionEnv_DropsClaudeAndHerdrPaneVariables(t *testing.T) {
+	t.Setenv("CLAUDECODE", "1")
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_PANE_ID", "w1:p1")
+	t.Setenv("HERDR_SOCKET_PATH", "/tmp/herdr.sock")
+	t.Setenv("ANTHROPIC_API_KEY", "k")
+
+	env := ccSessionEnv()
+
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "CLAUDECODE=") || strings.HasPrefix(kv, "HERDR_") {
+			t.Errorf("claude child inherits %s", kv)
+		}
+	}
+	for _, want := range []string{"ANTHROPIC_API_KEY=k", "CLAUDE_CODE_ENTRYPOINT=sdk-ts", "DISABLE_COMPACT=1"} {
+		if !slices.Contains(env, want) {
+			t.Errorf("claude child env lacks %s", want)
+		}
+	}
+}

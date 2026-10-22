@@ -12,6 +12,7 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
+	"github.com/Cidan/ask/pkg/herdr"
 )
 
 const cursorBlinkSpeed = 650 * time.Millisecond
@@ -305,9 +306,12 @@ func main() {
 		first.virtualSessionID = startupResumeVID
 	}
 	a := newApp(first)
+	herdr.DebugLog = debugLog
+	herdrPane = herdr.FromEnv(os.Getenv)
 	p := tea.NewProgram(a, tea.WithFPS(120))
 	setTeaProgram(p)
 	final, err := p.Run()
+	herdrPane.Release()
 	if fa, ok := final.(app); ok {
 		fa.shutdown()
 	}

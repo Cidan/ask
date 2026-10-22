@@ -47,8 +47,10 @@ real-model memory test skips itself unless
   `testmain_test.go`): `$HOME` and the XDG dirs point at a temp dir for
   the whole binary, and `cmd/ask` and `pkg/engine` also point
   `ASK_CLAUDE_BIN` at nothing (`testhome.NoClaude`) so no test starts
-  the real CLI. A new such package adds the same `TestMain`. Opt-in live
-  tests that drive real tools call `testhome.UseRealHome(t)`.
+  the real CLI. `testhome.Main` also unsets every `HERDR_*` variable, so
+  a suite started inside a herdr pane never reports into it. A new such
+  package adds the same `TestMain`. Opt-in live tests that drive real
+  tools call `testhome.UseRealHome(t)`.
 - `t.TempDir()` for every file-system test; `t.Chdir(...)` when cwd
   matters.
 - `isolateHome(t)` (`cmd/ask/testhelpers_test.go`) pins `$HOME` to a

@@ -167,3 +167,26 @@ func TestMCPManager_ToolsetsLifecycle(t *testing.T) {
 		t.Errorf("expected 0 toolsets after close, got %d", len(mgr.Toolsets()))
 	}
 }
+
+func TestMCPTransportFor_StdioServerDoesNotInheritHerdrPane(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_PANE_ID", "w1:p1")
+	tr, err := MCPTransportFor(MCPServer{Name: "srv", Cfg: MCPServerConfig{Command: "srv", Env: map[string]string{"TOKEN": "x"}}}, nil)
+	if err != nil {
+		t.Fatalf("MCPTransportFor: %v", err)
+	}
+	ct, ok := tr.(*mcp.CommandTransport)
+	if !ok {
+		t.Fatalf("transport = %T, want *mcp.CommandTransport", tr)
+	}
+	sawToken := false
+	for _, kv := range ct.Command.Env {
+		if strings.HasPrefix(kv, "HERDR_") {
+			t.Errorf("stdio MCP server inherits %s", kv)
+		}
+		sawToken = sawToken || kv == "TOKEN=x"
+	}
+	if !sawToken {
+		t.Errorf("server env %v lost its configured TOKEN", ct.Command.Env)
+	}
+}

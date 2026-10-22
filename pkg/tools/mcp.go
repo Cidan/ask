@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/herdr"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
@@ -133,7 +134,7 @@ var MCPTransportFor = func(srv MCPServer, oauth *MCPOAuthHandler) (mcp.Transport
 	switch srv.Cfg.EffectiveType() {
 	case MCPServerTypeStdio:
 		cmd := exec.Command(srv.Cfg.Command, srv.Cfg.Args...)
-		cmd.Env = os.Environ()
+		cmd.Env = herdr.WithoutPaneEnv(os.Environ())
 		for k, v := range srv.Cfg.Env {
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
