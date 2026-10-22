@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/herdr"
 )
 
 const (
@@ -64,14 +65,18 @@ func ResolveAgentShell(lookPath func(string) (string, error), getenv func(string
 	return "/bin/sh"
 }
 
+// agentShellEnv is the environment of a bash tool command: base without
+// herdr's pane variables, plus extra.
+func agentShellEnv(base []string, extra ...string) []string {
+	return append(herdr.WithoutPaneEnv(base), extra...)
+}
+
 // RunShellProcess forks the resolved agent shell (see agentShell) with
 // -c <command> in its own process group.
 func RunShellProcess(dir, command string, extraEnv ...string) (*ShellHandle, error) {
 	cmd := exec.Command(agentShell, "-c", command)
 	cmd.Dir = dir
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
+	cmd.Env = agentShellEnv(os.Environ(), extraEnv...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

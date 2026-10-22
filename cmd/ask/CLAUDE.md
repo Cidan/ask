@@ -172,7 +172,18 @@ lockstep (`.claude/rules/issues.md`).
 - `openTab` reloads config from disk (a `/config` change applies to the
   next Ctrl+T). `focusTab`/`closeTab` chdir to the tab's cwd and clear
   its frame cache. Closing the last tab prints `last session: <vsID>`
-  inline (`quitting`); Ctrl+Z suspends the same way (`suspending`).
+  (`resumableSessionID`) inline (`quitting`); Ctrl+Z suspends the same
+  way (`suspending`).
+- herdr (herdr.go, `pkg/herdr`): inside a herdr pane `main` sets
+  `herdrPane` from the pane's env and releases it after the program
+  exits. A deferred step in `app.Update` reports `app.herdrStatus()`
+  after every message (the client sends only changes): blocked while any
+  tab `needsUserInput` (the active tab's `herdrBlockedReason` first,
+  prefixed with the tab title when there are several tabs), working while
+  any tab is `busy`, idle otherwise; `ask resume <resumableSessionID>` of
+  the active tab as herdr's resume command; the active tab's title and
+  `tabs`/`model` tokens as display metadata. `tea.ResumeMsg` calls
+  `Reclaim`, since herdr drops the agent while ask is suspended.
 - Workflows supplant the origin tab (`app.supplantWorkflow`): the
   provider/session state goes into `workflowTabSnapshot`, the live
   session is killed, `workflowRun` is set, `skipAllPermissions` forced
@@ -384,7 +395,7 @@ lockstep (`.claude/rules/issues.md`).
 - App, tabs, layout: main.go, tabs.go, types.go, update.go, view.go,
   transcript.go, chatview.go, screens.go, sidebar.go, keymap.go,
   themes.go, toast.go, selection.go, list_nav.go, util.go, debug.go,
-  aliases.go.
+  aliases.go, herdr.go.
 - Chat and input: commands.go, paths.go, slashdescs.go, shell.go,
   clipboard.go, kitty.go, kitty_diacritics.go, tool_output.go,
   tab_title.go, usage.go.

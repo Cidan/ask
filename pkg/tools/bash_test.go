@@ -268,3 +268,14 @@ func TestValidateSudoCommand_SeesSudoBehindWrappers(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentShellEnv_DropsHerdrPaneVariables(t *testing.T) {
+	got := agentShellEnv(
+		[]string{"PATH=/bin", "HERDR_ENV=1", "HERDR_PANE_ID=w1:p1", "HERDR_SOCKET_PATH=/s", "HOME=/u"},
+		"SUDO_ASKPASS=/x",
+	)
+	want := []string{"PATH=/bin", "HOME=/u", "SUDO_ASKPASS=/x"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("agentShellEnv = %v, want %v: a nested agent in a bash command must not claim ask's herdr pane", got, want)
+	}
+}

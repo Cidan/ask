@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Cidan/ask/pkg/herdr"
 	"google.golang.org/genai"
 )
 
@@ -257,11 +258,13 @@ var errChildExited = errors.New("claude-code: child process exited")
 // currentEnvMinusClaude returns the process environment with every CLAUDE*
 // variable removed (ask often runs inside a Claude Code session; CLAUDECODE=1
 // and the messaging-socket vars must not leak into the child), plus the SDK
-// entrypoint marker. ANTHROPIC_API_KEY and other non-CLAUDE vars pass through,
-// so an API key in the environment is honoured; otherwise the child uses
-// whatever `claude` is logged in as.
+// entrypoint marker. herdr's pane variables are dropped too, so a child with
+// herdr's Claude hooks installed cannot report over ask's status in the
+// pane. ANTHROPIC_API_KEY and other non-CLAUDE vars pass through, so an API
+// key in the environment is honoured; otherwise the child uses whatever
+// `claude` is logged in as.
 func currentEnvMinusClaude() []string {
-	src := os.Environ()
+	src := herdr.WithoutPaneEnv(os.Environ())
 	out := make([]string, 0, len(src)+1)
 	for _, kv := range src {
 		if strings.HasPrefix(kv, "CLAUDE") {

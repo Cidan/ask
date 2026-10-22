@@ -101,13 +101,22 @@ func (a app) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-func (a app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (a app) Update(msg tea.Msg) (next tea.Model, cmd tea.Cmd) {
+	if herdrPane != nil {
+		defer func() {
+			if na, ok := next.(app); ok {
+				herdrPane.Report(na.herdrStatus())
+			}
+		}()
+	}
 	switch m := msg.(type) {
 	case closeTabMsg:
 		return a.closeTab(m.tabID)
 
 	case tea.ResumeMsg:
 		a.suspending = false
+		// herdr dropped ask from the pane while its shell prompt was back.
+		herdrPane.Reclaim()
 		return a, nil
 
 	case tea.WindowSizeMsg:
@@ -576,10 +585,7 @@ func (a app) closeTab(tabID int) (tea.Model, tea.Cmd) {
 		// "last session: …" inline before tea.Quit tears the altscreen
 		// down. Empty vsID = nothing to print, so don't even arm the
 		// flag — saves a redundant render flicker.
-		quittingVID := t.virtualSessionID
-		if t.workflowRun != nil && t.workflowRun.supplanted != nil && t.workflowRun.supplanted.virtualSessionID != "" {
-			quittingVID = t.workflowRun.supplanted.virtualSessionID
-		}
+		quittingVID := t.resumableSessionID()
 		if quittingVID != "" {
 			a.quitting = true
 			a.quittingVID = quittingVID
