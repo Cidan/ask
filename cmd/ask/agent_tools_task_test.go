@@ -120,3 +120,67 @@ func TestAgentTaskTool_Delegation(t *testing.T) {
 		}
 	})
 }
+
+// A named agent runs on its own definition — its prompt, the report tail,
+// and the environment — never ask's coding prompt; a research sub-agent
+// keeps the assembled one.
+func TestAgentTaskTool_NamedAgentSystemPrompt(t *testing.T) {
+	origModelBuilder := engine.ModelBuilder
+	defer func() { engine.ModelBuilder = origModelBuilder }()
+
+	var systems []string
+	engine.ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (adkmodel.LLM, error) {
+		return &mockADKModel{
+			name: modelID,
+			generateFunc: func(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+				var sys strings.Builder
+				if req.Config != nil && req.Config.SystemInstruction != nil {
+					for _, part := range req.Config.SystemInstruction.Parts {
+						sys.WriteString(part.Text)
+					}
+				}
+				systems = append(systems, sys.String())
+				return func(yield func(*adkmodel.LLMResponse, error) bool) {
+					yield(&adkmodel.LLMResponse{
+						Content:      &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{genai.NewPartFromText("done")}},
+						FinishReason: genai.FinishReasonStop,
+					}, nil)
+				}
+			},
+		}, nil
+	}
+
+	env, _ := newTestToolEnv(t)
+	agentsDir := filepath.Join(env.Cwd, ".claude", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	def := "---\nname: auditor\ndescription: security auditor\ntools: read, grep\n---\nYou are a security auditor."
+	if err := os.WriteFile(filepath.Join(agentsDir, "auditor.md"), []byte(def), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := agentTaskTool(env, func() *agentSession { return nil })
+
+	if resp := runTool(t, tool, agentTaskParams{Prompt: "audit auth", Agent: "auditor", Description: "audit"}); resp.IsError {
+		t.Fatalf("named agent failed: %+v", resp)
+	}
+	if len(systems) != 1 {
+		t.Fatalf("%d model calls, want 1", len(systems))
+	}
+	named := systems[0]
+	for _, want := range []string{"You are a security auditor.", strings.TrimSpace(agentSubagentPromptTail), "<env>", "Working directory: " + env.Cwd} {
+		if !strings.Contains(named, want) {
+			t.Errorf("the named agent's system prompt lacks %q:\n%s", want, named)
+		}
+	}
+	if !strings.HasPrefix(named, "You are a security auditor.") || strings.Contains(named, "You are a software engineering agent running inside ask") {
+		t.Errorf("the named agent's system prompt is not its own:\n%s", named)
+	}
+
+	if resp := runTool(t, tool, agentTaskParams{Prompt: "investigate auth", Description: "research"}); resp.IsError {
+		t.Fatalf("research sub-agent failed: %+v", resp)
+	}
+	if len(systems) != 2 || !strings.Contains(systems[1], "You are a software engineering agent running inside ask") {
+		t.Errorf("the research sub-agent lost ask's system prompt:\n%s", systems[len(systems)-1])
+	}
+}

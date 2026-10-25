@@ -60,6 +60,12 @@ type RunOptions struct {
 	// Model optionally overrides the default model for the selected provider.
 	Model string `json:"model,omitempty"`
 
+	// SystemPrompt, when set, is the whole system prompt, in place of the
+	// one BuildSystemPrompt assembles (ask's coding prompt, project
+	// instructions, memory, skills, agents, steering): a named sub-agent's
+	// own definition.
+	SystemPrompt string `json:"system_prompt,omitempty"`
+
 	// Effort optionally sets reasoning/thinking effort level.
 	Effort string `json:"effort,omitempty"`
 
@@ -302,6 +308,9 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	}
 
 	instructionProvider := func(ctx agent.ReadonlyContext) (string, error) {
+		if opts.SystemPrompt != "" {
+			return opts.SystemPrompt, nil
+		}
 		return BuildSystemPrompt(PromptOptions{
 			Cwd:                 opts.Cwd,
 			InWorkflow:          false,

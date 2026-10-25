@@ -338,6 +338,34 @@ func contextFilesInDir(dir, linkRoot string, seenReal map[string]bool) []LoadedC
 	return docs
 }
 
+// EnvBlock is the <env> snapshot every system prompt carries: the working
+// directory, whether it is a git repository (and its status, from
+// gitStatus, AgentGitStatus when nil), the platform, and today's date.
+func EnvBlock(cwd string, gitStatus func(string) string) string {
+	var b strings.Builder
+	b.WriteString("<env>\n")
+	fmt.Fprintf(&b, "Working directory: %s\n", cwd)
+	isRepo := false
+	if _, err := os.Stat(filepath.Join(cwd, ".git")); err == nil {
+		isRepo = true
+	}
+	fmt.Fprintf(&b, "Is a git repository: %v\n", isRepo)
+	fmt.Fprintf(&b, "Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(&b, "Today's date: %s\n", time.Now().Format("2006-01-02"))
+	if isRepo {
+		if gitStatus == nil {
+			gitStatus = AgentGitStatus
+		}
+		if status := gitStatus(cwd); status != "" {
+			b.WriteString("Git status (snapshot at session start — may be outdated):\n")
+			b.WriteString(status)
+			b.WriteByte('\n')
+		}
+	}
+	b.WriteString("</env>")
+	return b.String()
+}
+
 // BuildSystemPrompt assembles the full system prompt for one
 // agent session: static coder head, env snapshot, <project_instructions>
 // (CLAUDE.md/AGENTS.md context files), <project_rules> (eager rules),
@@ -364,27 +392,8 @@ func BuildSystemPrompt(opts PromptOptions) string {
 
 	b.WriteString(promptStr)
 
-	b.WriteString("\n\n<env>\n")
-	fmt.Fprintf(&b, "Working directory: %s\n", cwd)
-	isRepo := false
-	if _, err := os.Stat(filepath.Join(cwd, ".git")); err == nil {
-		isRepo = true
-	}
-	fmt.Fprintf(&b, "Is a git repository: %v\n", isRepo)
-	fmt.Fprintf(&b, "Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
-	fmt.Fprintf(&b, "Today's date: %s\n", time.Now().Format("2006-01-02"))
-	if isRepo {
-		gitStatus := AgentGitStatus
-		if opts.GitStatusFn != nil {
-			gitStatus = opts.GitStatusFn
-		}
-		if status := gitStatus(cwd); status != "" {
-			b.WriteString("Git status (snapshot at session start — may be outdated):\n")
-			b.WriteString(status)
-			b.WriteByte('\n')
-		}
-	}
-	b.WriteString("</env>")
+	b.WriteString("\n\n")
+	b.WriteString(EnvBlock(cwd, opts.GitStatusFn))
 
 	ctxDocs := AgentContextFiles(cwd)
 	if len(ctxDocs) > 0 {

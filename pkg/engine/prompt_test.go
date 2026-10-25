@@ -652,3 +652,23 @@ func mustToolText(resp map[string]any) string {
 	text, _ := ToolResultText(resp)
 	return text
 }
+
+// EnvBlock names the working directory, the platform, and the date, and a
+// repository's status from the function it is given.
+func TestEnvBlock(t *testing.T) {
+	plain := t.TempDir()
+	block := EnvBlock(plain, func(string) string { t.Error("git status asked of a directory that is no repository"); return "" })
+	for _, want := range []string{"<env>\n", "Working directory: " + plain + "\n", "Is a git repository: false\n", "Platform: ", "Today's date: ", "</env>"} {
+		if !strings.Contains(block, want) {
+			t.Errorf("block lacks %q:\n%s", want, block)
+		}
+	}
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	block = EnvBlock(repo, func(string) string { return "## main\n M foo.go" })
+	if !strings.Contains(block, "Is a git repository: true\n") || !strings.Contains(block, "## main\n M foo.go\n") {
+		t.Errorf("a repository's block:\n%s", block)
+	}
+}

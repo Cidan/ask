@@ -85,6 +85,7 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 			}
 
 			var toolsList []tools.Tool
+			var system string
 			if name := strings.TrimSpace(p.Agent); name != "" {
 				var def *subagentDef
 				for _, d := range discoverSubagents(env.Cwd) {
@@ -104,6 +105,12 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 				if def.Model != "" {
 					modelID = def.Model
 				}
+				// A named agent runs on its own instructions, not ask's
+				// coding prompt: its definition, the report tail, and the
+				// environment.
+				if def.Prompt != "" {
+					system = def.Prompt + agentSubagentPromptTail + "\n\n" + engine.EnvBlock(env.Cwd, agentGitStatus)
+				}
 				toolsList = subagentTools(*def, subEnv, deferredFn)
 			} else {
 				toolsList = tools.CoreTools(subEnv, deferredFn, true)
@@ -118,6 +125,7 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 					Config:             toPkgConfig(cfg),
 					Provider:           providerID,
 					Model:              modelID,
+					SystemPrompt:       system,
 					Tools:              toolsList,
 					SkipAllPermissions: true,
 					SkipMemory:         true,
