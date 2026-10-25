@@ -40,7 +40,7 @@ the registry; nothing outside `pkg/providers` may name a provider.
   (Claude Code, OpenRouter); `providers.ReportsCost(id)` reads it so the
   sidebar shows a cost from the start even for a model the catalog cannot
   price.
-- Models have two optional capabilities of their own. `HistoryRebaser`,
+- Models have three optional capabilities of their own. `HistoryRebaser`,
   for a model that holds the conversation outside the request (Claude
   Code's child): auto-compaction applies to every provider alike and calls
   `providers.RebaseHistory(m)` whenever it moves its cut; such a model
@@ -52,8 +52,13 @@ the registry; nothing outside `pkg/providers` may name a provider.
   is being learned — so the compactor never measures against the window
   it started with. `engine.ModelBuilder`'s usage wrapper implements it for
   every model (the inner model's answer, else the provider's current
-  `ContextWindow`). Wrappers (`retryingModel`, the usage wrapper) forward
-  both.
+  `ContextWindow`). `TurnCloser`, for a model that runs a turn of its own
+  between `GenerateContent` calls (Claude Code's child, blocked on the tool
+  results ADK owes it): every session calls `providers.CloseTurn(m)` when
+  its turn ends, and a model whose own turn is still open — the user
+  stopped it, or it failed mid-tool — ends it, so the next message starts a
+  turn rather than steering the stopped one. Wrappers (`retryingModel`,
+  the usage wrapper) forward all three.
 - Pin every implementation: `var _ Provider = Name{}` (and
   `var _ ModelLister = Name{}` when it lists models).
 - `Register` panics on a malformed provider (empty id; a setting key
@@ -181,7 +186,11 @@ ClaudeCode{}}`; Vertex is `DefaultProviderID()`. All three implement
   context the model holds after the call. `UsageFromMetadata` reads that
   into a `providers.Usage`.
 - `providers.Usage` is the one accounting record: `Provider`/`Model`,
-  `ContextTokens`, `InputTokens` (full-rate input only),
+  `ContextTokens`, `ContextWindow` (the window that reading is measured
+  against, stamped by `engine.ModelBuilder`'s wrapper from the model's
+  `ResolveContextWindow` — the compactor's own — when the adapter set
+  none, so a resumed meter shows what the live one did before the
+  provider relearns the window), `InputTokens` (full-rate input only),
   `CacheReadTokens`, `CacheWriteTokens`, `OutputTokens` (thinking
   included), `ThinkingTokens`, `CostUSD` + `CostSource` (`reported` by the
   provider — authoritative; `priced` from the catalog; empty = unknown).
@@ -202,10 +211,24 @@ ClaudeCode{}}`; Vertex is `DefaultProviderID()`. All three implement
   1–3 token placeholder). A step sums its calls; its context is the last
   call's input plus output. `result.total_cost_usd` is cumulative over
   the child's life; each turn is charged the difference (`takeResult`),
-  as a reported cost on the turn's final response. An interrupt ends the
-  CLI's turn with a result frame of its own: `interruptLocked` counts it
-  (`staleResults`) so the next read skips it rather than ending the next
-  turn empty, and its cost is carried to the next response. Replacing a
+  as a reported cost on the turn's final response. **Interrupts**, as the
+  real CLI behaves (2.1.x, probed): an interrupt mid-turn is answered with
+  the rest of the turn's frames — the partial reply it had streamed
+  (`assistant`), a `notifications/cancelled` for a pending MCP call, the
+  `[Request interrupted by user]` echo — and then a `result` frame
+  (`error_during_execution`, empty text); an interrupt while idle gets only
+  its `control_response`; a user message sent mid-turn is folded into the
+  running turn (one result for both). `interruptLocked` counts an
+  interrupted turn (`staleResults`, only when `inTurn`), and while any is
+  outstanding `readStep` discards every frame up to its result
+  (`discardFrame`) — none of it belongs to the step being read: before
+  this the partial reply, its thinking, and its usage leaked into the next
+  turn's first step. A stale `tools/call` is refused on its own
+  (`refuseCallLocked`), never with another interrupt, which would land on
+  the turn now running. `CloseTurn` interrupts a child whose turn is still
+  open when ask's ended (Esc mid-tool, a failure), so its pending calls are
+  refused rather than answered by the next request. Its cost is carried
+  to the next response. Replacing a
   child (`stopLocked(settle)`) interrupts a turn in progress and reads its
   result first, so a rebuilt child's predecessor's spend is not lost.
   The context reading is the CLI's own count

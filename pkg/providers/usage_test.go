@@ -40,7 +40,7 @@ func TestUsageFromMetadata_GeminiSemantics(t *testing.T) {
 // A record survives the trip through a stored session event, where
 // CustomMetadata comes back as generic JSON.
 func TestUsageOf_RoundTripsThroughStoredEvents(t *testing.T) {
-	in := Usage{Provider: "p", Model: "m", ContextTokens: 5, InputTokens: 1, CacheReadTokens: 2, CacheWriteTokens: 3, OutputTokens: 4, ThinkingTokens: 1, CostUSD: 0.25, CostSource: CostReported}
+	in := Usage{Provider: "p", Model: "m", ContextTokens: 5, ContextWindow: 1_000_000, InputTokens: 1, CacheReadTokens: 2, CacheWriteTokens: 3, OutputTokens: 4, ThinkingTokens: 1, CostUSD: 0.25, CostSource: CostReported}
 	resp := &model.LLMResponse{}
 	AttachUsage(resp, in)
 	if got, ok := UsageOf(resp); !ok || got != in {

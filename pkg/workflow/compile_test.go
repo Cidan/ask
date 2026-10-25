@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/tool"
 )
@@ -365,9 +364,9 @@ func TestCompileWorkflow_ModelCallbacksPerStepModel(t *testing.T) {
 		models[step.Name] = m
 		return m, nil
 	}
-	cfg.ModelCallbacksBuilder = func(step Step, llm model.LLM) ([]llmagent.BeforeModelCallback, []llmagent.AfterModelCallback) {
+	cfg.ModelCallbacksBuilder = func(step Step, llm model.LLM) StepModelHooks {
 		bound[step.Name] = llm
-		return nil, nil
+		return StepModelHooks{}
 	}
 	if _, err := CompileWorkflow(context.Background(), cfg); err != nil {
 		t.Fatalf("compile: %v", err)
@@ -375,6 +374,48 @@ func TestCompileWorkflow_ModelCallbacksPerStepModel(t *testing.T) {
 	for _, name := range []string{"plan", "review", "fix"} {
 		if bound[name] == nil || bound[name] != models[name] {
 			t.Errorf("step %q callbacks bound to %v, want its own model %v", name, bound[name], models[name])
+		}
+	}
+}
+
+type countingCloser struct{ closed *int }
+
+func (c countingCloser) Close() error { *c.closed++; return nil }
+
+// What a step's hooks hold — its compactor's in-memory history archive —
+// lives exactly as long as the run: Compiled.Close releases it once, loop
+// inner steps included, and a second Close releases nothing again.
+func TestCompiledClose_ReleasesEveryStepsHookCloser(t *testing.T) {
+	def := Def{Name: "wf", Steps: []Step{
+		{Name: "plan", Prompt: "p"},
+		{Name: "loop", Kind: "loop", MaxIterations: 2, Steps: []Step{{Name: "a", Prompt: "a"}, {Name: "b", Prompt: "b"}}},
+	}}
+	closed := map[string]*int{}
+	cfg := testCompileConfig(def)
+	cfg.ModelCallbacksBuilder = func(step Step, llm model.LLM) StepModelHooks {
+		n := new(int)
+		closed[step.Name] = n
+		return StepModelHooks{Closer: countingCloser{closed: n}}
+	}
+	c, err := CompileWorkflow(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	for name, n := range closed {
+		if *n != 0 {
+			t.Fatalf("step %q hook closed during compile", name)
+		}
+	}
+	_ = c.Close()
+	_ = c.Close()
+	for _, name := range []string{"plan", "a", "b"} {
+		n := closed[name]
+		if n == nil {
+			t.Errorf("step %q got no hooks", name)
+			continue
+		}
+		if *n != 1 {
+			t.Errorf("step %q hook closer ran %d times, want exactly 1", name, *n)
 		}
 	}
 }

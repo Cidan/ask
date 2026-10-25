@@ -27,6 +27,12 @@ type Usage struct {
 	// input it read plus the output it wrote. It is the context meter's
 	// reading and the compactor's.
 	ContextTokens int `json:"contextTokens,omitempty"`
+	// ContextWindow is the window ContextTokens is measured against: the
+	// model's own, as it stood when the call finished — the same window the
+	// compactor cuts against. It is stored with the reading so a resumed
+	// session's meter shows what the live one did, before the provider has
+	// learned the window again.
+	ContextWindow int64 `json:"contextWindow,omitempty"`
 	// InputTokens is input billed at the full rate: not read from, and not
 	// written to, a prompt cache.
 	InputTokens      int `json:"inputTokens,omitempty"`

@@ -236,13 +236,44 @@ func (MidTurnDrainedEvent) Kind() EventKind { return EventKindMidTurnDrained }
 
 // ContextCompactedEvent is emitted when the oldest turns were dropped from the
 // model's view to keep the conversation inside the context window. The stored
-// transcript is unchanged.
+// transcript is unchanged. Chunk, when set, is the history chunk the dropped
+// turns were archived as.
 type ContextCompactedEvent struct {
 	BaseEvent
-	Dropped       int   `json:"dropped"`
-	BeforeTokens  int   `json:"before_tokens"`
-	AfterTokens   int   `json:"after_tokens"`
-	ContextWindow int64 `json:"context_window"`
+	Dropped       int    `json:"dropped"`
+	BeforeTokens  int    `json:"before_tokens"`
+	AfterTokens   int    `json:"after_tokens"`
+	ContextWindow int64  `json:"context_window"`
+	Chunk         int    `json:"chunk,omitempty"`
+	Archived      int    `json:"archived,omitempty"`
+	Headline      string `json:"headline,omitempty"`
+}
+
+// NewContextCompactedEvent builds the event for one compaction.
+func NewContextCompactedEvent(tabID int, r CompactionResult) ContextCompactedEvent {
+	return ContextCompactedEvent{
+		BaseEvent:     BaseEvent{TabID: tabID},
+		Dropped:       r.DroppedContents,
+		BeforeTokens:  r.BeforeTokens,
+		AfterTokens:   r.AfterTokens,
+		ContextWindow: r.ContextWindow,
+		Chunk:         r.Chunk,
+		Archived:      r.Archived,
+		Headline:      r.Headline,
+	}
+}
+
+// Result is the compaction the event reports.
+func (e ContextCompactedEvent) Result() CompactionResult {
+	return CompactionResult{
+		DroppedContents: e.Dropped,
+		BeforeTokens:    e.BeforeTokens,
+		AfterTokens:     e.AfterTokens,
+		ContextWindow:   e.ContextWindow,
+		Chunk:           e.Chunk,
+		Archived:        e.Archived,
+		Headline:        e.Headline,
+	}
 }
 
 func (ContextCompactedEvent) Kind() EventKind { return EventKindContextCompact }

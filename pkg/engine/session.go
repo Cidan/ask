@@ -40,13 +40,12 @@ type Session struct {
 	contextWindow int64
 	modelID       string
 	tools         []Tool
+	lastMu        sync.Mutex
 	lastResponse  string
-	midTurnQueue  *MidTurnQueue
+	gate          TurnGate
 	sendCh        chan Turn
 	closed        chan struct{}
 	closeOnce     sync.Once
-	turnMu        sync.Mutex
-	turnCancel    context.CancelFunc
 	listener      EventListener
 	interaction   InteractionHandler
 	sessionID     string
@@ -73,7 +72,6 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 		contextWindow: contextWindow,
 		modelID:       modelID,
 		tools:         tools,
-		midTurnQueue:  &MidTurnQueue{},
 		sendCh:        make(chan Turn, 8),
 		closed:        make(chan struct{}),
 		listener:      listener,
@@ -84,21 +82,35 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 		s.sessionID = "ses-" + modelID
 	}
 
+	sessSvc := NewFileSessionService(args.Provider, args.Cwd)
 	// The user-facing toggle is read per call in compactBeforeModel so
 	// flipping it takes effect without restarting the session.
-	s.compactor = NewCompactor(CompactOptions{
+	compact := CompactOptions{
 		ContextWindow: contextWindow,
 		Model:         llm,
 		Notify: func(r CompactionResult) {
-			s.Emit(ContextCompactedEvent{
-				BaseEvent:     BaseEvent{TabID: args.TabID},
-				Dropped:       r.DroppedContents,
-				BeforeTokens:  r.BeforeTokens,
-				AfterTokens:   r.AfterTokens,
-				ContextWindow: r.ContextWindow,
-			})
+			s.Emit(NewContextCompactedEvent(args.TabID, r))
 		},
-	})
+		OnSummarize: func(_ int, running bool) {
+			s.Emit(StatusEvent{BaseEvent: BaseEvent{TabID: args.TabID}, Status: CompactionStatus(running)})
+		},
+	}
+	if path, err := HistoryArchivePath(sessSvc, args.Cwd, s.sessionID); err == nil {
+		compact.History = NewHistoryArchive(path)
+	}
+	if hasProvider {
+		compact.Summarizer = ModelChunkSummarizer{
+			Provider: prov,
+			ModelID:  modelID,
+			Effort:   args.Effort,
+			OnUsage: func(u providers.Usage) {
+				if u.CostKnown() {
+					s.Emit(CostEvent{BaseEvent: BaseEvent{TabID: args.TabID}, CostUSD: u.CostUSD})
+				}
+			},
+		}
+	}
+	s.compactor = NewCompactor(compact)
 
 	genConfig := &genai.GenerateContentConfig{
 		MaxOutputTokens: int32(providers.MaxOutputTokensGemini),
@@ -136,7 +148,7 @@ func NewSession(args SessionArgs, llm model.LLM, system string, tools []Tool, li
 		AfterModelCallbacks: []llmagent.AfterModelCallback{s.compactor.AfterModel},
 	})
 	if err == nil {
-		s.sessSvc = NewFileSessionService(args.Provider, args.Cwd)
+		s.sessSvc = sessSvc
 		s.runner, _ = RunnerBuilder(agentInstance, s.sessSvc)
 	}
 
@@ -150,20 +162,14 @@ func (s *Session) Emit(event EngineEvent) {
 	}
 }
 
+// IsBusy reports whether a turn is running and taking input. A turn that was
+// interrupted is not, though it may still be unwinding.
 func (s *Session) IsBusy() bool {
-	s.turnMu.Lock()
-	defer s.turnMu.Unlock()
-	return s.turnCancel != nil
+	return s.gate.Busy()
 }
 
 func (s *Session) InterruptTurn() bool {
-	s.turnMu.Lock()
-	defer s.turnMu.Unlock()
-	if s.turnCancel == nil {
-		return false
-	}
-	s.turnCancel()
-	return true
+	return s.gate.Interrupt()
 }
 
 func (s *Session) Close() {
@@ -173,20 +179,28 @@ func (s *Session) Close() {
 		if s.llm != nil {
 			_ = CloseModel(s.llm)
 		}
+		_ = s.compactor.Close()
 	})
 }
 
-func (s *Session) QueueMidTurn(text string) {
-	s.midTurnQueue.Push(text)
+// Submit hands the session a message from the user: it steers the turn that
+// is running, taken by that turn's next model call, or — when no turn is
+// taking input — runs as a turn of its own. Either way it is never lost
+// between the two.
+func (s *Session) Submit(text string, files ...FilePart) error {
+	if s.gate.Steer(TurnInput{Text: text, Files: files}) {
+		return nil
+	}
+	return s.QueueTurn(text, files)
 }
 
 func (s *Session) beforeModelCallback(ctx agent.Context, llmRequest *model.LLMRequest) (*model.LLMResponse, error) {
-	msgs := s.midTurnQueue.Drain()
-	if len(msgs) == 0 {
+	taken := s.gate.Take(ctx)
+	if len(taken) == 0 {
 		return nil, nil
 	}
-	combined := strings.Join(msgs, "\n\n")
-	llmRequest.Contents = append(llmRequest.Contents, genai.NewContentFromText(combined, genai.RoleUser))
+	in := JoinTurnInputs(taken)
+	llmRequest.Contents = append(llmRequest.Contents, in.Content())
 
 	if s.sessSvc != nil && s.sessionID != "" {
 		if getResp, err := s.sessSvc.Get(ctx, &session.GetRequest{
@@ -196,7 +210,7 @@ func (s *Session) beforeModelCallback(ctx agent.Context, llmRequest *model.LLMRe
 		}); err == nil && getResp.Session != nil {
 			s.sessSvc.AppendEvent(ctx, getResp.Session, &session.Event{
 				LLMResponse: model.LLMResponse{
-					Content: genai.NewContentFromText(combined, genai.RoleUser),
+					Content: in.Content(),
 				},
 				Author: "user",
 			})
@@ -205,7 +219,7 @@ func (s *Session) beforeModelCallback(ctx agent.Context, llmRequest *model.LLMRe
 
 	s.Emit(MidTurnDrainedEvent{
 		BaseEvent: BaseEvent{TabID: s.args.TabID},
-		Text:      combined,
+		Text:      in.Text,
 	})
 
 	return nil, nil
@@ -279,8 +293,6 @@ func (s *Session) SessionID() string {
 }
 
 func (s *Session) Messages() []Message {
-	s.turnMu.Lock()
-	defer s.turnMu.Unlock()
 	if s.sessSvc != nil && s.sessionID != "" {
 		if getResp, err := s.sessSvc.Get(context.Background(), &session.GetRequest{
 			AppName:   "ask",
@@ -298,8 +310,8 @@ func (s *Session) Messages() []Message {
 }
 
 func (s *Session) LastResponse() string {
-	s.turnMu.Lock()
-	defer s.turnMu.Unlock()
+	s.lastMu.Lock()
+	defer s.lastMu.Unlock()
 	return s.lastResponse
 }
 
@@ -315,15 +327,22 @@ func (s *Session) run() {
 				})
 				first = false
 			}
-			s.runTurn(turn)
-			msgs := s.midTurnQueue.Drain()
-			if len(msgs) > 0 {
-				combined := strings.Join(msgs, "\n\n")
+			for {
+				s.runTurn(turn)
+				left, ok := s.gate.End()
+				if turn.Done != nil {
+					close(turn.Done)
+				}
+				if !ok {
+					break
+				}
+				// What the user sent that the turn never took runs next,
+				// ahead of anything queued behind it.
 				s.Emit(MidTurnDrainedEvent{
 					BaseEvent: BaseEvent{TabID: s.args.TabID},
-					Text:      combined,
+					Text:      left.Text,
 				})
-				go s.QueueTurn(combined)
+				turn = Turn{Text: left.Text, Files: left.Files}
 			}
 		case <-s.closed:
 			s.Emit(ExitedEvent{
@@ -334,21 +353,35 @@ func (s *Session) run() {
 	}
 }
 
+// closeTurn leaves the model and the history as a turn that is over. A model
+// that runs a turn of its own is told it ended; and when this one stopped
+// before it finished — interrupted, or failed — every tool call it left
+// without a result is answered as interrupted, so the next request is one
+// every provider accepts.
+func (s *Session) closeTurn(invocationID string, finished bool) {
+	providers.CloseTurn(s.llm)
+	if finished {
+		return
+	}
+	responses, err := CloseInterruptedCalls(context.Background(), s.sessSvc, s.sessionID, invocationID)
+	if err != nil {
+		DebugLog("close interrupted calls %s: %v", s.sessionID, err)
+	}
+	for _, fr := range responses {
+		s.Emit(ToolResultEvent{
+			BaseEvent: BaseEvent{TabID: s.args.TabID},
+			ToolUseID: fr.ID,
+			ToolName:  fr.Name,
+			Output:    ToolInterruptedError,
+			IsError:   true,
+		})
+	}
+}
+
 func (s *Session) runTurn(turn Turn) {
 	ctx, cancel := context.WithCancel(context.Background())
-	s.turnMu.Lock()
-	s.turnCancel = cancel
-	s.turnMu.Unlock()
-
-	defer func() {
-		if turn.Done != nil {
-			close(turn.Done)
-		}
-		s.turnMu.Lock()
-		s.turnCancel = nil
-		s.turnMu.Unlock()
-		cancel()
-	}()
+	s.gate.Begin(cancel)
+	defer cancel()
 
 	s.Emit(StatusEvent{
 		BaseEvent: BaseEvent{TabID: s.args.TabID},
@@ -369,14 +402,10 @@ func (s *Session) runTurn(turn Turn) {
 		return
 	}
 
-	userMsg := genai.NewContentFromText(turn.Text, genai.RoleUser)
-	for _, f := range turn.Files {
-		if len(f.Data) > 0 {
-			userMsg.Parts = append(userMsg.Parts, genai.NewPartFromBytes(f.Data, f.MIMEType))
-		}
-	}
+	userMsg := TurnInput{Text: turn.Text, Files: turn.Files}.Content()
 
 	var finalResponseText strings.Builder
+	invocationID := ""
 
 	for event, err := range s.runner.Run(ctx, "user", s.sessionID, userMsg, agent.RunConfig{}) {
 		if err != nil {
@@ -385,6 +414,7 @@ func (s *Session) runTurn(turn Turn) {
 			if ctx.Err() != nil {
 				err = ctx.Err()
 			}
+			s.closeTurn(invocationID, false)
 			s.Emit(DoneEvent{
 				BaseEvent: BaseEvent{TabID: s.args.TabID},
 				Result: ResultSummary{
@@ -399,6 +429,9 @@ func (s *Session) runTurn(turn Turn) {
 		}
 		if event == nil {
 			continue
+		}
+		if event.InvocationID != "" {
+			invocationID = event.InvocationID
 		}
 
 		if u, ok := ResponseUsage(&event.LLMResponse); ok && !event.Partial {
@@ -461,9 +494,10 @@ func (s *Session) runTurn(turn Turn) {
 	}
 
 	respText := finalResponseText.String()
-	s.turnMu.Lock()
+	s.lastMu.Lock()
 	s.lastResponse = respText
-	s.turnMu.Unlock()
+	s.lastMu.Unlock()
+	s.closeTurn(invocationID, ctx.Err() == nil)
 	s.Emit(DoneEvent{
 		BaseEvent: BaseEvent{TabID: s.args.TabID},
 		Result: ResultSummary{

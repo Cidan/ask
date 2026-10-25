@@ -335,7 +335,7 @@ func newCompactHarness(t *testing.T, llm adkmodel.LLM) *compactHarness {
 		args:          ProviderSessionArgs{Cwd: t.TempDir(), TabID: 1},
 		contextWindow: 8000,
 	}
-	h.s.compactor = h.s.newCompactor(h.s.contextWindow, llm)
+	h.s.compactor = h.s.newCompactor(h.s.contextWindow, llm, nil, nil)
 	return h
 }
 
@@ -401,9 +401,18 @@ func TestWorkflowStep_CompactsAgainstItsOwnModel(t *testing.T) {
 	cfg := tuiWorkflowCompileConfig(h.s, workflow.Def{Name: "wf"}, workflow.NewTextSource(1, "src"), t.TempDir(), 1)
 
 	stepModel := &rebasingModel{mockADKModel: mockADKModel{name: "step"}}
-	before, after := cfg.ModelCallbacksBuilder(workflow.Step{Name: "s", Provider: "wf-small"}, stepModel)
+	hooks := cfg.ModelCallbacksBuilder(workflow.Step{Name: "s", Provider: "wf-small"}, stepModel)
+	before, after := hooks.Before, hooks.After
 	if len(before) != 1 || len(after) != 1 {
 		t.Fatalf("step callbacks = %d before, %d after; want one compactor pair", len(before), len(after))
+	}
+	c, ok := hooks.Closer.(*engine.Compactor)
+	if !ok {
+		t.Fatalf("the step's hooks close %T, want its compactor and the archive it holds", hooks.Closer)
+	}
+	t.Cleanup(func() { hooks.Closer.Close() })
+	if c.History() == nil || c.History().Path() != "" {
+		t.Fatal("a workflow step's history must live in memory for the run")
 	}
 	callAround(t, before[0], after[0], compactTestContents(), 7500)
 	got := callAround(t, before[0], after[0], compactTestContents(), 7500)
@@ -419,12 +428,92 @@ func TestWorkflowStep_CompactsAgainstItsOwnModel(t *testing.T) {
 
 	// A second step gets a compactor of its own: nothing carries over.
 	other := &rebasingModel{mockADKModel: mockADKModel{name: "other"}}
-	b2, a2 := cfg.ModelCallbacksBuilder(workflow.Step{Name: "t", Provider: "wf-small"}, other)
-	if got := callAround(t, b2[0], a2[0], compactTestContents()[:2], 100); len(got) != 2 {
+	hooks2 := cfg.ModelCallbacksBuilder(workflow.Step{Name: "t", Provider: "wf-small"}, other)
+	t.Cleanup(func() { hooks2.Closer.Close() })
+	if got := callAround(t, hooks2.Before[0], hooks2.After[0], compactTestContents()[:2], 100); len(got) != 2 {
 		t.Fatalf("a fresh step inherited another step's cut: %d contents", len(got))
 	}
 	if other.rebases != 0 {
 		t.Fatalf("the fresh step's model was rebuilt %d times", other.rebases)
+	}
+}
+
+// summarizerModel stands in for the session's model rebuilt for a summary:
+// it answers every request with one headline and records the requests.
+func installSummarizerModel(t *testing.T) *[]*adkmodel.LLMRequest {
+	t.Helper()
+	var mu sync.Mutex
+	var reqs []*adkmodel.LLMRequest
+	prev := engine.ModelBuilder
+	engine.ModelBuilder = func(_ context.Context, _ providers.Provider, _ config.Config, modelID string) (adkmodel.LLM, error) {
+		return &mockADKModel{name: modelID, generateFunc: func(_ context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+			mu.Lock()
+			reqs = append(reqs, req)
+			mu.Unlock()
+			return func(yield func(*adkmodel.LLMResponse, error) bool) {
+				yield(&adkmodel.LLMResponse{
+					Content:       genai.NewContentFromText("Tab headline\nWhat the tab was doing.", genai.RoleModel),
+					UsageMetadata: &genai.GenerateContentResponseUsageMetadata{TotalTokenCount: 4242},
+				}, nil)
+			}
+		}}, nil
+	}
+	t.Cleanup(func() { engine.ModelBuilder = prev })
+	return &reqs
+}
+
+// A cut in a tab archives what it drops, shows that it is summarizing,
+// summarizes on the session's own provider and model, carries the summary
+// to the model and the chunk to the transcript notice, and bills the
+// summary to the session's ledger.
+func TestAgentSession_CompactionArchivesSummarizesAndBills(t *testing.T) {
+	isolateHome(t)
+	reqs := installSummarizerModel(t)
+	h := newCompactHarness(t, &mockADKModel{name: "m"})
+	h.s.store = &agentSessionStore{provider: "wf-small"}
+	h.s.sessionID = "tab-session"
+	h.s.compactor = h.s.newCompactor(h.s.contextWindow, &mockADKModel{name: "m"}, engine.NewMemoryHistoryArchive(),
+		h.s.chunkSummarizer(windowProvider{id: "wf-small", window: 8000}, "m"))
+	t.Cleanup(func() { h.s.compactor.Close() })
+
+	h.call(t, compactTestContents(), 7500)
+	sent := h.call(t, compactTestContents(), 7500)
+
+	if len(*reqs) != 1 {
+		t.Fatalf("%d summary calls, want 1", len(*reqs))
+	}
+	if notice := sent[1].Parts[0].Text; !strings.Contains(notice, "#1 Tab headline") || !strings.Contains(notice, "What the tab was doing.") {
+		t.Fatalf("the cut request does not carry the summary:\n%s", notice)
+	}
+	statusAt, thinkingAt, noticeAt := -1, -1, -1
+	for i, m := range h.emitted {
+		switch msg := m.(type) {
+		case streamStatusMsg:
+			switch {
+			case msg.status == engine.CompactionSummarizingStatus && statusAt < 0:
+				statusAt = i
+			case msg.status == "thinking…" && statusAt >= 0 && thinkingAt < 0:
+				thinkingAt = i
+			}
+		case contextCompactedMsg:
+			noticeAt = i
+			if !strings.Contains(msg.summary, "as #1 (Tab headline)") {
+				t.Fatalf("transcript notice %q does not name the chunk", msg.summary)
+			}
+		}
+	}
+	if statusAt < 0 || thinkingAt < statusAt || noticeAt < thinkingAt {
+		t.Fatalf("summarizing status at %d, back to thinking at %d, compaction notice at %d", statusAt, thinkingAt, noticeAt)
+	}
+	entries := h.s.store.loadUsageLedger("tab-session", h.s.args.Cwd)
+	if len(entries) != 1 || entries[0].Kind != spendCompaction || entries[0].Usage.ContextTokens != 4242 {
+		t.Fatalf("ledger %+v, want the summary billed as compaction", entries)
+	}
+}
+
+func TestAgentSession_NoSummarizerWithoutAProvider(t *testing.T) {
+	if s := (&agentSession{}).chunkSummarizer(nil, "m"); s != nil {
+		t.Fatalf("summarizer %v for a session with no provider", s)
 	}
 }
 

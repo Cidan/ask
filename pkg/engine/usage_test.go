@@ -116,12 +116,82 @@ func TestUsageModel_ReportsTheCurrentContextWindow(t *testing.T) {
 	}
 }
 
+// countingWindowModel answers with one usage reading and counts how often
+// its window is asked for.
+type countingWindowModel struct {
+	mockLLM
+	window int64
+	asked  int
+}
+
+func (c *countingWindowModel) ResolveContextWindow(context.Context) int64 {
+	c.asked++
+	return c.window
+}
+
+func finalResponse(t *testing.T, llm model.LLM) *model.LLMResponse {
+	t.Helper()
+	var last *model.LLMResponse
+	for resp, err := range llm.GenerateContent(context.Background(), &model.LLMRequest{}, false) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		last = resp
+	}
+	return last
+}
+
+// A context reading is stored with the window it is measured against — the
+// model's own as it stands when the call finishes, the one the compactor
+// cut against — so a resumed meter needs no provider to relearn it. A window
+// the adapter reported stands, and a response with no reading is not
+// stamped at all.
+func TestUsageModel_StampsTheReadingsWindow(t *testing.T) {
+	reading := func(u *providers.Usage) func(context.Context, *model.LLMRequest, bool) iter.Seq2[*model.LLMResponse, error] {
+		return func(context.Context, *model.LLMRequest, bool) iter.Seq2[*model.LLMResponse, error] {
+			resp := textResponse("ok")
+			if u != nil {
+				providers.AttachUsage(resp, *u)
+			} else {
+				resp.UsageMetadata = &genai.GenerateContentResponseUsageMetadata{PromptTokenCount: 400_000, TotalTokenCount: 404_000}
+			}
+			return mockLLMSequence(resp)
+		}
+	}
+
+	own := &countingWindowModel{window: 1_000_000}
+	own.generateFunc = reading(nil)
+	u, _ := providers.UsageOf(finalResponse(t, newUsageModel(own, "claude-code", "claude-opus-5-5")))
+	if u.ContextTokens != 404_000 || u.ContextWindow != 1_000_000 {
+		t.Fatalf("record = %+v, want the reading with the model's own 1M window", u)
+	}
+
+	providers.Register(usageStubProvider{compactStubProvider{window: 64_000}})
+	blind := newUsageModel(&mockLLM{generateFunc: reading(nil)}, "usagetest", "priced-model")
+	if u, _ := providers.UsageOf(finalResponse(t, blind)); u.ContextWindow != 64_000 {
+		t.Fatalf("window %d, want the provider's 64000 for a model that cannot tell", u.ContextWindow)
+	}
+
+	reported := &countingWindowModel{window: 1_000_000}
+	reported.generateFunc = reading(&providers.Usage{ContextTokens: 10, ContextWindow: 32_000})
+	if u, _ := providers.UsageOf(finalResponse(t, newUsageModel(reported, "p", "m"))); u.ContextWindow != 32_000 || reported.asked != 0 {
+		t.Fatalf("window %d (asked %d times), want the adapter's own 32000 untouched", u.ContextWindow, reported.asked)
+	}
+
+	costOnly := &countingWindowModel{window: 1_000_000}
+	costOnly.generateFunc = reading(&providers.Usage{CostUSD: 0.01, CostSource: providers.CostReported})
+	if u, _ := providers.UsageOf(finalResponse(t, newUsageModel(costOnly, "p", "m"))); u.ContextWindow != 0 || costOnly.asked != 0 {
+		t.Fatalf("a record with no reading got window %d (asked %d times)", u.ContextWindow, costOnly.asked)
+	}
+}
+
 // The record rides the response into the session file, so it survives a
 // restart.
 func TestUsageRecords_PersistWithSessionEvents(t *testing.T) {
 	isolateTestHome(t)
 	stubPricing(t)
 	providers.Register(compactStubProvider{window: 100_000})
+	providers.Register(usageStubProvider{compactStubProvider{window: 2_000_000}})
 	built, err := usageStubProvider{}.BuildModel(context.Background(), config.ProviderConfig{}, "")
 	if err != nil {
 		t.Fatal(err)
@@ -162,12 +232,12 @@ func TestUsageRecords_PersistWithSessionEvents(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, ev := range stored.Events {
-			if u, ok := providers.UsageOf(&ev.LLMResponse); ok && u.Model == "priced-model" && u.CostSource == providers.CostPriced {
+			if u, ok := providers.UsageOf(&ev.LLMResponse); ok && u.Model == "priced-model" && u.CostSource == providers.CostPriced && u.ContextWindow == 2_000_000 {
 				found = true
 			}
 		}
 	}
 	if !found {
-		t.Fatal("the stored session lost the usage record")
+		t.Fatal("the stored session lost the usage record or the window it was measured against")
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/memory"
 	"github.com/Cidan/ask/pkg/providers"
@@ -71,7 +72,9 @@ type agentSession struct {
 	chMu     sync.Mutex
 	chClosed bool
 
-	midTurnQueue *engine.MidTurnQueue
+	// gate is the turn state: whether a turn runs and takes input, and
+	// what the user sent it. See engine.TurnGate.
+	gate engine.TurnGate
 
 	// compactor trims the oldest turns out of the coder agent's outgoing
 	// request when the conversation approaches the model's context window.
@@ -82,9 +85,6 @@ type agentSession struct {
 
 	closed    chan struct{}
 	closeOnce sync.Once
-
-	turnMu     sync.Mutex
-	turnCancel context.CancelFunc
 
 	sessionID string
 	store     *agentSessionStore
@@ -193,13 +193,8 @@ func (s *agentSession) shutdown() {
 		if s.model != nil {
 			_ = engine.CloseModel(s.model)
 		}
+		_ = s.compactor.Close()
 	})
-}
-
-func (s *agentSession) setTurnCancel(fn context.CancelFunc) {
-	s.turnMu.Lock()
-	defer s.turnMu.Unlock()
-	s.turnCancel = fn
 }
 
 // recordSpend adds calls made on the session's behalf outside its own model
@@ -228,19 +223,14 @@ func (s *agentSession) recordSpend(kind string, records ...providers.Usage) {
 }
 
 func (s *agentSession) interruptTurn() bool {
-	s.turnMu.Lock()
-	defer s.turnMu.Unlock()
-	if s.turnCancel == nil {
-		return false
-	}
-	s.turnCancel()
-	return true
+	return s.gate.Interrupt()
 }
 
+// isBusy reports whether a turn is running and taking input. A turn stopped
+// with Esc is not, while it unwinds: what the user sends next is a turn of
+// its own.
 func (s *agentSession) isBusy() bool {
-	s.turnMu.Lock()
-	defer s.turnMu.Unlock()
-	return s.turnCancel != nil
+	return s.gate.Busy()
 }
 
 func (s *agentSession) emit(msg tea.Msg) {
@@ -318,11 +308,16 @@ func (s *agentSession) emit(msg tea.Msg) {
 	agentSendToProgram(msg)
 }
 
-func (s *agentSession) queueMidTurn(text string) {
-	if s.midTurnQueue == nil {
-		return
+// submit hands the session a message from the user: it steers the turn that
+// is running — that turn's next model call takes it, attachments included —
+// or, when no turn is taking input, runs as a turn of its own. The choice is
+// made under the turn's own lock, so a message sent as a turn ends, or right
+// after Esc, is never stranded between the two.
+func (s *agentSession) submit(text string, files []engine.FilePart) error {
+	if s.gate.Steer(engine.TurnInput{Text: text, Files: files}) {
+		return nil
 	}
-	s.midTurnQueue.Push(text)
+	return s.queueTurn(text, files)
 }
 
 func (s *agentSession) queueTurn(text string, files ...[]engine.FilePart) error {
@@ -358,14 +353,16 @@ func (s *agentSession) run() {
 				s.emit(providerModelMsg{model: s.modelID})
 				first = false
 			}
-			s.runTurn(turn)
-			if s.midTurnQueue != nil {
-				msgs := s.midTurnQueue.Drain()
-				if len(msgs) > 0 {
-					combined := strings.Join(msgs, "\n\n")
-					s.emit(queuedMessageDrainedMsg{text: combined})
-					go s.queueTurn(combined)
+			for {
+				s.runTurn(turn)
+				left, ok := s.gate.End()
+				if !ok {
+					break
 				}
+				// What the user sent that the turn never took runs next,
+				// ahead of anything sent after it.
+				s.emit(queuedMessageDrainedMsg{text: left.Text})
+				turn = agentTurn{text: left.Text, files: left.Files}
 			}
 		case <-s.closed:
 			if s.env != nil && s.env.Jobs != nil {
@@ -419,15 +416,13 @@ func (m *streamToADKModel) GenerateContent(ctx context.Context, req *adkmodel.LL
 }
 
 func (s *agentSession) beforeModelCallback(ctx adkagent.Context, req *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
-	if s.midTurnQueue == nil {
+	taken := s.gate.Take(ctx)
+	if len(taken) == 0 {
 		return nil, nil
 	}
-	msgs := s.midTurnQueue.Drain()
-	if len(msgs) == 0 {
-		return nil, nil
-	}
-	combined := strings.Join(msgs, "\n\n")
-	req.Contents = append(req.Contents, genai.NewContentFromText(combined, genai.RoleUser))
+	in := engine.JoinTurnInputs(taken)
+	combined := in.Text
+	req.Contents = append(req.Contents, in.Content())
 
 	if s.sessSvc != nil && s.sessionID != "" {
 		if getResp, err := s.sessSvc.Get(ctx, &session.GetRequest{
@@ -437,7 +432,7 @@ func (s *agentSession) beforeModelCallback(ctx adkagent.Context, req *adkmodel.L
 		}); err == nil && getResp.Session != nil {
 			s.sessSvc.AppendEvent(ctx, getResp.Session, &session.Event{
 				LLMResponse: adkmodel.LLMResponse{
-					Content: genai.NewContentFromText(combined, genai.RoleUser),
+					Content: in.Content(),
 				},
 				Author: "user",
 			})
@@ -451,15 +446,43 @@ func (s *agentSession) beforeModelCallback(ctx adkagent.Context, req *adkmodel.L
 // newCompactor builds a context compactor for one agent of this session — the
 // coder, or one workflow step — calling llm with the given window. Every
 // provider compacts the same way; a model that holds its own history is
-// rebuilt from the cut view (providers.HistoryRebaser).
-func (s *agentSession) newCompactor(window int64, llm adkmodel.LLM) *engine.Compactor {
+// rebuilt from the cut view (providers.HistoryRebaser). What a cut drops goes
+// into history, summarized at the cut by summarizer; the compactor owns
+// history and closes it.
+func (s *agentSession) newCompactor(window int64, llm adkmodel.LLM, history *engine.HistoryArchive, summarizer engine.ChunkSummarizer) *engine.Compactor {
 	return engine.NewCompactor(engine.CompactOptions{
 		ContextWindow: window,
 		Model:         llm,
+		History:       history,
+		Summarizer:    summarizer,
 		Notify: func(r engine.CompactionResult) {
 			s.emit(contextCompactedMsg{summary: engine.CompactionSummary(r)})
 		},
+		OnSummarize: func(_ int, running bool) {
+			s.emit(streamStatusMsg{status: engine.CompactionStatus(running)})
+		},
 	})
+}
+
+// chunkSummarizer summarizes this session's archived history on prov and
+// modelID — the model of the agent whose history it is — charging the calls
+// to the session. Nil without a provider.
+func (s *agentSession) chunkSummarizer(prov providers.Provider, modelID string) engine.ChunkSummarizer {
+	if prov == nil {
+		return nil
+	}
+	return engine.ModelChunkSummarizer{
+		Provider: prov,
+		ModelID:  modelID,
+		Effort:   s.args.Effort,
+		LoadConfig: func() (config.Config, error) {
+			cfg, err := loadConfig()
+			return toPkgConfig(cfg), err
+		},
+		OnUsage: func(u providers.Usage) {
+			s.recordSpend(spendCompaction, u)
+		},
+	}
 }
 
 // compactCallbacks adapts c to an llmagent. The before-callback keeps the
@@ -487,11 +510,8 @@ func compactCallbacks(c *engine.Compactor) (llmagent.BeforeModelCallback, llmage
 
 func (s *agentSession) runTurn(turn agentTurn) {
 	ctx, cancel := context.WithCancel(context.Background())
-	s.setTurnCancel(cancel)
-	defer func() {
-		s.setTurnCancel(nil)
-		cancel()
-	}()
+	s.gate.Begin(cancel)
+	defer cancel()
 
 	s.emit(streamStatusMsg{status: "thinking…"})
 
@@ -633,22 +653,19 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		return
 	}
 
-	adkUserMsg := genai.NewContentFromText(turn.text, genai.RoleUser)
-	for _, f := range turn.files {
-		if len(f.Data) > 0 {
-			adkUserMsg.Parts = append(adkUserMsg.Parts, genai.NewPartFromBytes(f.Data, f.MIMEType))
-		}
-	}
+	adkUserMsg := engine.TurnInput{Text: turn.text, Files: turn.files}.Content()
 
 	var finalResponseText strings.Builder
 	var latestThoughtSig []byte
 	var touchedFiles []string
+	invocationID := ""
 
 	displayNames := make(map[string]string)
 	backgroundCalls := make(map[string]bool)
 
 	for event, err := range r.Run(ctx, "user", s.sessionID, adkUserMsg, adkagent.RunConfig{}) {
 		if err != nil {
+			s.closeTurn(llm, invocationID, false)
 			// A cancelled turn is not always reported as context.Canceled:
 			// ADK can end it with a panic it recovered from its own node.
 			if ctx.Err() != nil || isAgentCancel(err) {
@@ -666,6 +683,9 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		if event == nil {
 			continue
 		}
+		if event.InvocationID != "" {
+			invocationID = event.InvocationID
+		}
 		s.workflowProgress.Observe(event)
 
 		// Every final model response carries its usage record, priced for
@@ -674,6 +694,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		if u, ok := engine.ResponseUsage(&event.LLMResponse); ok && !event.Partial {
 			s.emit(usageMsg{
 				tokens:    u.ContextTokens,
+				window:    u.ContextWindow,
 				provider:  u.Provider,
 				model:     u.Model,
 				costUSD:   u.CostUSD,
@@ -807,6 +828,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	}
 
 	respText := strings.TrimSpace(finalResponseText.String())
+	s.closeTurn(llm, invocationID, ctx.Err() == nil)
 	s.emit(providerDoneMsg{
 		res: providerResult{
 			SessionID: s.sessionID,
@@ -816,6 +838,29 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	s.emit(turnCompleteMsg{})
 	if !s.args.InWorkflow && s.workflowAgent == nil {
 		s.enqueueMemoryTurn(turn.text, respText, touchedFiles)
+	}
+}
+
+// closeTurn leaves the coder's model and history as a turn that is over. A
+// model that runs a turn of its own (Claude Code's child) is told it ended,
+// so the next message does not resume what the user stopped; and when this
+// turn stopped before finishing — Esc, or a failure — every tool call it left
+// without a result is answered as interrupted, so the next request is one
+// every provider accepts. A workflow run's steps own their models.
+func (s *agentSession) closeTurn(llm adkmodel.LLM, invocationID string, finished bool) {
+	if s.workflowAgent != nil {
+		return
+	}
+	providers.CloseTurn(llm)
+	if finished {
+		return
+	}
+	responses, err := engine.CloseInterruptedCalls(context.Background(), s.sessSvc, s.sessionID, invocationID)
+	if err != nil {
+		debugLog("close interrupted calls %s: %v", s.sessionID, err)
+	}
+	for _, fr := range responses {
+		s.emit(toolResultMsg{name: fr.Name, output: engine.ToolInterruptedError, isError: true})
 	}
 }
 

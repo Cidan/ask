@@ -303,6 +303,7 @@ func translateVSCmd(req translateVSReq) tea.Cmd {
 			if err != nil {
 				return virtualSessionMaterializedMsg{tabID: req.tabID, vsID: req.vsID, err: err}
 			}
+			prepareTranscriptImages(loaded)
 			transcript = loaded
 			turns = neutralTurnsFromTranscript(loaded)
 			usage = loadUsageFor(req.source, req.sourceSessionID)

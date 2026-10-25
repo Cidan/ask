@@ -112,6 +112,18 @@ func (m *claudeCodeModel) RebaseHistory() {
 	m.mu.Unlock()
 }
 
+// CloseTurn implements TurnCloser. ADK's turn is over; if the child's is not
+// — it is generating, or blocked on a tool result ADK will never send — it is
+// interrupted, so the next user content starts a turn of its own instead of
+// steering the one the user stopped.
+func (m *claudeCodeModel) CloseTurn() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.inTurn || len(m.pending) > 0 {
+		m.interruptLocked()
+	}
+}
+
 // ResolveContextWindow implements ContextWindowResolver. It first waits,
 // bounded by ctx, for the probe BuildModel started, so the first call of a
 // resumed session is not measured against the catalog's guess.
@@ -367,6 +379,13 @@ func (m *claudeCodeModel) readStep(ctx context.Context, stream bool, yield func(
 				yield(nil, m.exitError())
 				return
 			}
+			if m.discarding() {
+				// Everything up to an interrupted turn's result frame is that
+				// turn's — the partial reply it had written, the interrupt's
+				// echo — and none of it belongs to this step.
+				m.discardFrame(conn, fr)
+				continue
+			}
 			switch fr.Type {
 			case "stream_event":
 				step.observeEvent(fr.Event)
@@ -429,6 +448,41 @@ func (m *claudeCodeModel) readStep(ctx context.Context, stream bool, yield func(
 				return
 			}
 		}
+	}
+}
+
+// discarding reports whether the frames being read still belong to a turn ask
+// interrupted: the CLI answers an interrupt by finishing the turn's frames —
+// whatever partial reply it had written, the interrupt's echo — and then its
+// result frame.
+func (m *claudeCodeModel) discarding() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.staleResults > 0
+}
+
+// discardFrame consumes one frame of an interrupted turn. Its result frame
+// carries the turn's cost and closes it; a tool call it raced out is refused
+// on its own — never by another interrupt, which would land on the turn now
+// being read — and the bridge's other requests are still answered.
+func (m *claudeCodeModel) discardFrame(conn ccConn, fr ccFrame) {
+	switch fr.Type {
+	case "result":
+		if w := ccContextWindowFromModelUsage(fr.ModelUsage); w > 0 {
+			observeClaudeCodeContextWindow(m.modelID, w)
+		}
+		m.takeResult(fr.TotalCostUSD)
+	case "control_request":
+		var req ccControlRequest
+		var msg ccJSONRPC
+		if json.Unmarshal(fr.Request, &req) == nil && req.Subtype == "mcp_message" &&
+			json.Unmarshal(req.Message, &msg) == nil && msg.Method == "tools/call" {
+			m.mu.Lock()
+			m.refuseCallLocked(conn, ccPending{requestID: fr.RequestID, innerID: msg.ID})
+			m.mu.Unlock()
+			return
+		}
+		m.handleControl(conn, fr)
 	}
 }
 
@@ -557,18 +611,24 @@ func (m *claudeCodeModel) interruptLocked() {
 		m.staleResults++
 	}
 	for id, p := range m.pending {
-		_ = m.conn.send(ccControlEnvelope{Type: "control_response", Response: map[string]any{
-			"subtype": "success", "request_id": p.requestID,
-			"response": map[string]any{"mcp_response": map[string]any{
-				"jsonrpc": "2.0", "id": p.innerID,
-				"result": map[string]any{
-					"content": []map[string]any{{"type": "text", "text": "interrupted"}},
-					"isError": true,
-				},
-			}},
-		}})
+		m.refuseCallLocked(m.conn, p)
 		delete(m.pending, id)
 	}
+}
+
+// refuseCallLocked answers a tool call nothing will run with an
+// "interrupted" error. Caller holds m.mu.
+func (m *claudeCodeModel) refuseCallLocked(conn ccConn, p ccPending) {
+	_ = conn.send(ccControlEnvelope{Type: "control_response", Response: map[string]any{
+		"subtype": "success", "request_id": p.requestID,
+		"response": map[string]any{"mcp_response": map[string]any{
+			"jsonrpc": "2.0", "id": p.innerID,
+			"result": map[string]any{
+				"content": []map[string]any{{"type": "text", "text": "interrupted"}},
+				"isError": true,
+			},
+		}},
+	}})
 }
 
 // observeToolUses forwards native tool calls in an assistant frame to the sink

@@ -45,6 +45,7 @@ func EngineEventToTeaMsg(event engine.EngineEvent) tea.Msg {
 	case engine.UsageEvent:
 		return usageMsg{
 			tokens:    ev.TotalTokens,
+			window:    ev.Usage.ContextWindow,
 			provider:  ev.Usage.Provider,
 			model:     ev.Usage.Model,
 			costUSD:   ev.Usage.CostUSD,
@@ -117,13 +118,8 @@ func EngineEventToTeaMsg(event engine.EngineEvent) tea.Msg {
 		return queuedMessageDrainedMsg{text: ev.Text, tabID: tabID}
 	case engine.ContextCompactedEvent:
 		return contextCompactedMsg{
-			summary: engine.CompactionSummary(engine.CompactionResult{
-				DroppedContents: ev.Dropped,
-				BeforeTokens:    ev.BeforeTokens,
-				AfterTokens:     ev.AfterTokens,
-				ContextWindow:   ev.ContextWindow,
-			}),
-			tabID: tabID,
+			summary: engine.CompactionSummary(ev.Result()),
+			tabID:   tabID,
 		}
 	case engine.ExtensionsChangedEvent:
 		return extensionsChangedMsg{what: ev.What, tabID: tabID}

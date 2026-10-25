@@ -65,7 +65,7 @@ runtime is `pkg/engine`, re-exported as a library by the root package
 | `pkg/plugin/` | Claude Code plugin-marketplace format: manifests, marketplace/plugin state, install, publish, import from Claude. |
 | `pkg/memory/` | sqlite-vec memory store behind an injected `Embedder` (no llama.cpp dependency); `pkg/memory/llamacpp/` is the local llama.cpp embedder (cgo) that only `cmd/ask` imports. |
 | `pkg/config/` | `~/.config/ask/ask.json` shapes, per-provider blocks, legacy migration, worktree helpers. |
-| `pkg/diff/` | Pure-Go Myers unified diff and parser. |
+| `pkg/diff/` | Pure-Go Myers diff, parser, `Align` (linear-space LCS).|
 | `pkg/herdr/` | herdr pane status reporting. |
 | `pkg/render/` | Compact in-process HTML/CSS→PNG renderer (tdewolff/canvas + parse, `x/net/html`, embedded Go fonts) behind the `render_design` design-preview tool. |
 | `third_party/sqlite/` | `sqlite3.h` / `sqlite3ext.h` for sqlite-vec's cgo build (no system header assumed); reached through the Makefile's `CGO_CFLAGS`. |
@@ -95,7 +95,7 @@ its own `Embedder` never touches llama.cpp. The Makefile targets do all
 of it:
 
 ```
-make build      # clone+build llama.cpp (once), download the embedding model (once), go build -o bin/ask ./cmd/ask
+make build      # build llama.cpp, fetch the embedding model (once each), go build -o bin/ask ./cmd/ask
 make install    # same prerequisites, then go install ./cmd/ask
 make test       # same prerequisites, then go test ./...
 make clean
@@ -104,17 +104,17 @@ make clean
 - Running `go test ./...` directly works once `build/llama.cpp` exists,
   with the three `CGO_*` variables from the Makefile in the environment.
 - **In a git worktree** `build/` (gitignored) does not exist, and the cgo
-  directives in `pkg/memory/llamacpp/embed.go` resolve `build/llama.cpp` relative to
-  the checkout — so builds fail with `llama.h: No such file`. Symlink it to
-  the primary checkout once, from the worktree root:
-  `ln -s /path/to/primary/checkout/build build`. Then `make` / `go build` /
-  `go test` work unchanged.
+  directives in `pkg/memory/llamacpp/embed.go` resolve `build/llama.cpp`
+  relative to the checkout — builds fail with `llama.h: No such file`.
+  Symlink it to the primary checkout once, from the worktree root:
+  `ln -s /path/to/primary/checkout/build build`. `setup-llama` configures
+  via the physical path and drops another path's CMake cache.
 - The whole suite takes about 10 seconds; `cmd/ask` is the slow package.
   Tests never spawn subprocesses (except `git` and `jj` in the worktree
-  tests) and
-  never touch the network or the real `$HOME` — see `.claude/rules/testing.md`.
-- `./...` also walks into `build/llama.cpp` and reports a Go package
-  with no tests there; that is expected.
+  tests) and never touch the network or the real `$HOME` — see
+  `.claude/rules/testing.md`.
+- `./...` also walks into `build/llama.cpp` (a Go package with no
+  tests); that is expected.
 
 ## Conventions
 
@@ -149,7 +149,7 @@ make clean
 | Location | Holds |
 |----------|-------|
 | `~/.config/ask/ask.json` | Config: provider blocks, UI toggles, keybindings, MCP servers, recent models, the `memory` block (extraction provider/model), per-project blocks (issues, MCP tokens, user-scope workflows). |
-| `~/.config/ask/agent-sessions/<provider>/` | ADK transcripts behind `/resume` (raw model output plus each call's `providers.Usage`), never rewritten. Sidecars: `<id>.deslop.json` (display-time desloped blocks), `<id>.usage.json` (spend outside the conversation). `~/.config/ask/sessions.json` is the virtual-session index. |
+| `~/.config/ask/agent-sessions/<provider>/` | ADK transcripts behind `/resume` (raw output plus each call's `providers.Usage`), never rewritten. Sidecars: `<id>.deslop.json` (desloped blocks), `<id>.usage.json` (off-conversation spend), `<id>.history.db` (what compaction cut). `~/.config/ask/sessions.json` is the virtual-session index. |
 | `~/.config/ask/{skills,agents,workflows}/` | User-scope skills, subagents, workflows. |
 | `~/.config/ask/plugins/` | Known marketplaces, installed plugins, publications, the plugin cache. |
 | `~/.config/ask/cache/models-dev.json` | models.dev snapshot (24h TTL). |

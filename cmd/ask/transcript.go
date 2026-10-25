@@ -40,6 +40,9 @@ type transcriptItem struct {
 	// trPrerendered (already-styled), and trWorkflowDone.
 	text string
 
+	// images are the images a trUser / trUserQueued message carried.
+	images []chatImage
+
 	// trToolCall.
 	toolName  string
 	toolInput map[string]any
@@ -85,9 +88,9 @@ type transcriptItem struct {
 func projectItem(it transcriptItem, quiet bool, mode toolOutputMode, diffs bool) []historyEntry {
 	switch it.kind {
 	case trUser:
-		return []historyEntry{{kind: histUser, text: it.text}}
+		return []historyEntry{{kind: histUser, text: it.text, images: it.images}}
 	case trUserQueued:
-		return []historyEntry{{kind: histUserQueued, text: it.text}}
+		return []historyEntry{{kind: histUserQueued, text: it.text, images: it.images}}
 	case trAssistant:
 		return []historyEntry{{kind: histResponse, text: it.text}}
 	case trPrerendered:
@@ -176,6 +179,8 @@ func (m *model) projectHistory() {
 		out = append(out, projectItem(m.transcript[i], m.quietMode, m.toolOutputMode, m.renderDiffs)...)
 	}
 	m.history = out
+	// Entries were re-made, maybe renumbered: a selection names none of them.
+	m.clearSelection()
 	if m.shellOutIdx >= 0 {
 		m.shellOutIdx = newShellIdx
 	}

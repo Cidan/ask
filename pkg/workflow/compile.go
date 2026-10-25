@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"unicode"
 
@@ -41,12 +42,21 @@ type WorkflowAgentConfig struct {
 	MaxRetries int
 	// BeforeModelCallbacks run before every LLM invocation.
 	BeforeModelCallbacks []llmagent.BeforeModelCallback
-	// ModelCallbacksBuilder, when set, supplies callbacks bound to one step's
-	// model; its before-callbacks run after BeforeModelCallbacks. Each step
+	// ModelCallbacksBuilder, when set, supplies hooks bound to one step's
+	// model; their before-callbacks run after BeforeModelCallbacks. Each step
 	// agent gets its own set, so per-model state — auto-compaction, sized to
 	// that model's window and rebuilding that model when the cut moves — is
 	// never shared across steps.
-	ModelCallbacksBuilder func(step Step, llm model.LLM) ([]llmagent.BeforeModelCallback, []llmagent.AfterModelCallback)
+	ModelCallbacksBuilder func(step Step, llm model.LLM) StepModelHooks
+}
+
+// StepModelHooks are the model callbacks bound to one step's model, and
+// whatever they hold that the run must release when it ends.
+type StepModelHooks struct {
+	Before []llmagent.BeforeModelCallback
+	After  []llmagent.AfterModelCallback
+	// Closer, when set, is closed by Compiled.Close.
+	Closer io.Closer
 }
 
 // workflowDefaultMaxRetries is the per-node retry budget. Replaces the
@@ -91,10 +101,12 @@ type Compiled struct {
 	// them after the run — a subprocess-backed provider (Claude Code) forks
 	// a child per step that must be terminated.
 	Models []model.LLM
+	// Closers are what the steps' model hooks hold (StepModelHooks.Closer).
+	Closers []io.Closer
 }
 
-// Close releases every per-step model. It is safe to call on a nil Compiled
-// and after a partial compile.
+// Close releases every per-step model and hook. It is safe to call on a nil
+// Compiled and after a partial compile.
 func (c *Compiled) Close() error {
 	if c == nil {
 		return nil
@@ -104,7 +116,11 @@ func (c *Compiled) Close() error {
 			_ = closer.Close()
 		}
 	}
+	for _, closer := range c.Closers {
+		_ = closer.Close()
+	}
 	c.Models = nil
+	c.Closers = nil
 	return nil
 }
 
@@ -298,9 +314,12 @@ func buildStepAgent(ctx context.Context, cfg WorkflowAgentConfig, step Step, ste
 	before := append([]llmagent.BeforeModelCallback(nil), cfg.BeforeModelCallbacks...)
 	var after []llmagent.AfterModelCallback
 	if cfg.ModelCallbacksBuilder != nil {
-		b, a := cfg.ModelCallbacksBuilder(step, llm)
-		before = append(before, b...)
-		after = a
+		hooks := cfg.ModelCallbacksBuilder(step, llm)
+		before = append(before, hooks.Before...)
+		after = hooks.After
+		if hooks.Closer != nil {
+			out.Closers = append(out.Closers, hooks.Closer)
+		}
 	}
 
 	return llmagent.New(llmagent.Config{

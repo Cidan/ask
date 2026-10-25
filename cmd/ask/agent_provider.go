@@ -105,6 +105,7 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 	modelID := p.prov.CanonicalModelID(args.Model, p.prov.DefaultModel())
 
 	store := p.store()
+	sessSvc := engine.NewFileSessionService(p.prov.ID(), args.Cwd)
 	callOpts, temperature := p.prov.CallOptions(modelID, args.Effort)
 	session := &agentSession{
 		args:            args,
@@ -117,10 +118,9 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 		modelID:         modelID,
 		ch:              make(chan tea.Msg, 256),
 		sendCh:          make(chan agentTurn, 8),
-		midTurnQueue:    &engine.MidTurnQueue{},
 		closed:          make(chan struct{}),
 		store:           store,
-		sessSvc:         engine.NewFileSessionService(p.prov.ID(), args.Cwd),
+		sessSvc:         sessSvc,
 		topic:           memory.NormalizeTopic(args.Topic),
 	}
 	// Build the model up front so a provider that cannot run fails here, with
@@ -134,7 +134,6 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 		return nil, nil, fmt.Errorf("%s: %w", p.prov.ID(), err)
 	}
 	session.model = llm
-	session.compactor = session.newCompactor(session.contextWindow, llm)
 	session.retryMaxRetries, session.retryInitialDelay, session.retryBackoffFactor = agentRetryOptions(cfg)
 
 	switch {
@@ -152,6 +151,16 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 	default:
 		session.sessionID = newUUIDv4()
 	}
+
+	// The archive sits next to the transcript, so a resumed session gets
+	// the history its earlier cuts kept and resumes from the same cut.
+	var history *engine.HistoryArchive
+	if path, err := engine.HistoryArchivePath(sessSvc, args.Cwd, session.sessionID); err == nil {
+		history = engine.NewHistoryArchive(path)
+	} else {
+		debugLog("history archive path %s: %v", session.sessionID, err)
+	}
+	session.compactor = session.newCompactor(session.contextWindow, llm, history, session.chunkSummarizer(p.prov, modelID))
 
 	session.env = newAgentToolEnv(args.Cwd, args.TabID, args.SkipAllPermissions, session.emit)
 	setupAgentSessionTools(session, cfg)

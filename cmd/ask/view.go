@@ -253,6 +253,7 @@ func (m *model) ensureEntryWrapped(idx, width int) {
 			inflightToolGlyphStyle(float64(time.Now().UnixNano())/1e9), diffPathStyle)
 		e.wrapped = wrapStyledLines(e.rendered, width)
 		e.wrappedFor = width
+		e.textMap = nil
 		return
 	}
 	if e.wrappedFor != width {
@@ -297,15 +298,16 @@ func (m *model) ensureEntryWrapped(idx, width int) {
 		case histDiff:
 			e.rendered = renderDiffBlock(e.filePath, e.hunks, width)
 		case histUser:
-			e.rendered = m.renderUserBarAt(e.text, width, false)
+			e.rendered = m.renderUserEntry(e.text, e.images, width, false)
 		case histUserQueued:
-			e.rendered = m.renderUserBarAt(e.text, width, true)
+			e.rendered = m.renderUserEntry(e.text, e.images, width, true)
 		default:
 			e.rendered = e.text
 		}
 	}
 	e.wrapped = wrapStyledLines(e.rendered, width)
 	e.wrappedFor = width
+	e.textMap = nil
 }
 
 // renderUserBarAt renders the user-message bar at an explicit width
@@ -334,6 +336,7 @@ func invalidateEntryRender(e *historyEntry) {
 	e.wrappedFor = 0
 	e.rawLines = 0
 	e.rawLinesFor = 0
+	e.textMap = nil
 }
 
 // wrapStyledLines hard-wraps a styled (ANSI) string to width columns.
@@ -444,6 +447,9 @@ func (m *model) chatVisibleRange() (int, int) {
 // Output is padded to contentHeight with blank lines so the viewport
 // frame stays a fixed grid even while content is short.
 func (m *model) viewportContent() string {
+	if m.fc != nil {
+		m.fc.chatRows = nil
+	}
 	contentW := m.chat.contentWidth()
 	contentH := m.chat.contentHeight()
 	if contentW <= 0 || contentH <= 0 {
@@ -453,32 +459,45 @@ func (m *model) viewportContent() string {
 	if first == -1 {
 		return m.blankChatFrame(contentH)
 	}
-	renderFrom := max(0, first-renderAheadEntries)
-	renderTo := min(len(m.history), last+renderAheadEntries)
-	for i := renderFrom; i < renderTo; i++ {
-		m.ensureEntryWrapped(i, contentW)
-	}
-	// After wrapping, refresh totals and re-clamp the visible window
-	// (the wrap may have changed the actual line count for visited
-	// entries vs. their pre-wrap estimate).
-	m.refreshChatTotals()
-	if m.chat.YOffset() > m.chat.MaxYOffset() {
-		m.chat.SetYOffset(m.chat.MaxYOffset())
-	}
-	first, last = m.chatVisibleRange()
-	if first == -1 {
-		return m.blankChatFrame(contentH)
+	// The wrap below replaces estimated heights with real ones. A chat pinned
+	// to the bottom must stay pinned through it, as layout() will pin it on
+	// the next update: View draws on a copy of the model, so a frame that
+	// only clamped would show rows the next update moves away from — the
+	// chat would shift under the pointer between a press and a drag.
+	atBottom := m.chat.AtBottom()
+	for pass := 0; pass < 4; pass++ {
+		renderFrom := max(0, first-renderAheadEntries)
+		renderTo := min(len(m.history), last+renderAheadEntries)
+		for i := renderFrom; i < renderTo; i++ {
+			m.ensureEntryWrapped(i, contentW)
+		}
+		m.refreshChatTotals()
+		if atBottom {
+			m.chat.GotoBottom()
+		} else if m.chat.YOffset() > m.chat.MaxYOffset() {
+			m.chat.SetYOffset(m.chat.MaxYOffset())
+		}
+		f, l := m.chatVisibleRange()
+		if f == first && l == last {
+			break
+		}
+		first, last = f, l
+		if first == -1 {
+			return m.blankChatFrame(contentH)
+		}
 	}
 
 	yStart := m.chat.YOffset()
 	yEnd := yStart + contentH
 	lines := make([]string, 0, contentH)
+	rows := make([]rowRef, 0, contentH)
 	row := 0
 	for i := 0; i < first; i++ {
 		row += m.estimateEntryLines(i)
 		row += m.gapAfter(i)
 	}
 	for i := first; i < last && len(lines) < contentH; i++ {
+		m.ensureEntryWrapped(i, contentW)
 		entryLines := m.history[i].wrapped
 		if entryLines == nil {
 			// ensureEntryWrapped populates this for every visible idx
@@ -493,20 +512,29 @@ func (m *model) viewportContent() string {
 		}
 		if offset < end {
 			lines = append(lines, entryLines[offset:end]...)
+			for l := offset; l < end; l++ {
+				rows = append(rows, rowRef{entry: i, line: l, ok: true})
+			}
 		}
 		row = entryEnd
 		if g := m.gapAfter(i); g > 0 {
 			if row >= yStart && row < yEnd && len(lines) < contentH {
 				lines = append(lines, "")
+				rows = append(rows, rowRef{entry: i, line: -1})
 			}
 			row += g
 		}
 	}
 	for len(lines) < contentH {
 		lines = append(lines, "")
+		rows = append(rows, rowRef{entry: len(m.history) - 1, line: -1})
 	}
 	if len(lines) > contentH {
 		lines = lines[:contentH]
+		rows = rows[:contentH]
+	}
+	if m.fc != nil {
+		m.fc.chatRows = rows
 	}
 	body := lipgloss.NewStyle().
 		Width(contentW).
@@ -693,14 +721,14 @@ func (m *model) appendResponse(raw string) {
 	m.pushTranscript(transcriptItem{kind: trAssistant, text: raw})
 }
 
-func (m *model) appendUser(text string) {
+func (m *model) appendUser(text string, images ...chatImage) {
 	m.responseActive = false
-	m.pushTranscript(transcriptItem{kind: trUser, text: text})
+	m.pushTranscript(transcriptItem{kind: trUser, text: text, images: images})
 }
 
-func (m *model) appendUserQueued(text string) {
+func (m *model) appendUserQueued(text string, images ...chatImage) {
 	m.responseActive = false
-	m.pushTranscript(transcriptItem{kind: trUserQueued, text: text})
+	m.pushTranscript(transcriptItem{kind: trUserQueued, text: text, images: images})
 }
 
 func (m *model) refreshPrompt() {
@@ -1186,38 +1214,43 @@ func (m model) buildViewportWithScrollbar() string {
 }
 
 // applySelectionHighlight overlays the active selection background on
-// the rendered viewport content. No-op when there's no selection so
-// the steady-state render path is unchanged. Walks every visible row
-// once, asks selectionRenderMask for the col range to paint, and uses
-// lipgloss.StyleRanges to splice the background style in without
-// losing the line's existing ANSI foreground colors at the boundaries.
-// Computes entryRowRanges once per pass and reuses it for every row,
-// so multi-row selections don't quadratically rewalk the history.
+// the rendered viewport content. No-op when there's no selection so the
+// steady-state render path is unchanged. The highlight is pure geometry
+// over what the frame shows (screenRows): each row is painted over the
+// columns rowSelection gives it, the same ones buildCopyText reads, so
+// what is highlighted is what the pointer swept. lipgloss.StyleRanges
+// splices the background in without losing the line's ANSI foreground
+// colors at the boundaries.
 func (m model) applySelectionHighlight(vpView string) string {
-	if !m.selDragging && !m.selActive {
-		return vpView
-	}
-	if _, ok := m.selectionRange(); !ok {
+	start, end, ok := m.selectionRange()
+	if !ok {
 		return vpView
 	}
 	frameTop := m.chat.style.GetPaddingTop() +
 		m.chat.style.GetMarginTop() +
 		m.chat.style.GetBorderTopSize()
-	yOffset := m.chat.YOffset()
 	style := selectionStyle()
-	ranges := m.entryRowRanges()
 	lines := strings.Split(vpView, "\n")
+	rows := (&m).screenRows(max(0, len(lines)-frameTop))
 	for i := range lines {
-		if i < frameTop {
+		if i < frameTop || i-frameTop >= len(rows) {
 			continue
 		}
-		contentRow := (i - frameTop) + yOffset
-		lineW := lipgloss.Width(lines[i])
-		start, end, ok := m.selectionRenderMask(contentRow, lineW, ranges)
+		ref := rows[i-frameTop]
+		if !ref.ok || ref.entry < 0 || ref.entry >= len(m.history) {
+			continue
+		}
+		wrapped := m.history[ref.entry].wrapped
+		if ref.line >= len(wrapped) {
+			continue
+		}
+		from, to, ok := rowSelection(start, end, ref.entry, ref.line, lineExtent(wrapped[ref.line]))
 		if !ok {
 			continue
 		}
-		lines[i] = lipgloss.StyleRanges(lines[i], lipgloss.NewRange(start, end, style))
+		if to = min(to, lipgloss.Width(lines[i])); from < to {
+			lines[i] = lipgloss.StyleRanges(lines[i], lipgloss.NewRange(from, to, style))
+		}
 	}
 	return strings.Join(lines, "\n")
 }

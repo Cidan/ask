@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/providers"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 )
 
@@ -54,6 +56,32 @@ const compactElisionNotice = "[Earlier turns in this conversation were elided to
 
 var compactNoticeTokens = estimateContentTokens(genai.NewContentFromText(compactElisionNotice, genai.RoleUser))
 
+// CompactionSummarizingStatus is the status a session shows while a cut's
+// archived chunk is being summarized, before the call that made it goes out.
+const CompactionSummarizingStatus = "summarizing compacted context…"
+
+// CompactionStatus is the status for a summary running or just finished:
+// once it finishes, the model call it held back is under way.
+func CompactionStatus(running bool) string {
+	if running {
+		return CompactionSummarizingStatus
+	}
+	return "thinking…"
+}
+
+const (
+	// compactNoticeMaxHeadlines is how many chunks the notice names one by
+	// one; older ones are folded into a single line.
+	compactNoticeMaxHeadlines = 40
+	// compactHeadlineTokens and compactSummaryTokens size one named chunk
+	// and the newest chunk's summary for planning a cut, before the
+	// summary exists.
+	compactHeadlineTokens = (historyHeadlineCap+16)/4 + 4
+	compactSummaryTokens  = (historySummaryCap+40)/4 + 4
+)
+
+var historyNoticeBaseTokens = estimateContentTokens(genai.NewContentFromText(historyNotice([]HistoryChunk{{ID: 1}}), genai.RoleUser))
+
 // CompactOptions configures a Compactor.
 type CompactOptions struct {
 	// ContextWindow is the model's input window in tokens, used when Model
@@ -68,6 +96,18 @@ type CompactOptions struct {
 	Model model.LLM
 	// Notify, when set, is called once per compaction with the outcome.
 	Notify func(CompactionResult)
+	// History, when set, keeps what the cuts drop: each cut's dropped
+	// contents are archived once as a numbered chunk, summarized before the
+	// request goes out, named in the elision notice, and readable through
+	// the history tools the compactor puts on the request. The compactor
+	// owns it; Close closes it.
+	History *HistoryArchive
+	// Summarizer writes each archived chunk's summary. Nil leaves chunks
+	// unsummarized.
+	Summarizer ChunkSummarizer
+	// OnSummarize, when set, is called as each chunk's summary starts
+	// (running) and once it has finished, however it ended.
+	OnSummarize func(chunk int, running bool)
 }
 
 // CompactionResult describes one compaction.
@@ -80,6 +120,12 @@ type CompactionResult struct {
 	AfterTokens int
 	// ContextWindow is the denominator both readings are measured against.
 	ContextWindow int64
+	// Chunk is the history chunk this cut archived, 0 when none. Archived
+	// is how many contents went into it and Headline its summary's
+	// headline, empty when it has no summary.
+	Chunk    int
+	Archived int
+	Headline string
 }
 
 // Compactor keeps one agent's conversation inside its model's context window
@@ -96,8 +142,16 @@ type CompactionResult struct {
 //
 // Register BeforeModel and AfterModel on the same agent; one Compactor serves
 // one agent and one model.
+//
+// With a History archive the cut is no longer a loss: every content a cut
+// drops is archived exactly once, the archive's end doubles as the watermark
+// a fresh compactor resumes from, and the notice names what is archived.
 type Compactor struct {
 	opts CompactOptions
+
+	// applyMu serializes Apply. A cut's archiving and summary run outside mu
+	// so a summary call never blocks a usage reading.
+	applyMu sync.Mutex
 
 	mu sync.Mutex
 	// lastTotal is the latest call's total-token reading: what the model held
@@ -106,6 +160,32 @@ type Compactor struct {
 	// watermark identifies the first content retained by the last cut.
 	// Everything before it stays dropped for the rest of the session.
 	watermark contentMark
+	// notice is the elision notice the standing cut sends, built when the
+	// cut moves and reused verbatim until it moves again so the prompt cache
+	// survives; noticeTokens is its estimate. Empty means the fixed notice.
+	notice       string
+	noticeTokens int
+
+	historyTools []tool.Tool
+	toolTokens   int
+}
+
+// cutPlan is what cut decided for one request.
+type cutPlan struct {
+	// start is the first retained content; start <= 1 is no cut.
+	start int
+	// moved reports whether the view's start moved: a new cut, a seed from
+	// the archive, or a watermark that no longer resolves.
+	moved bool
+	// seeded reports that the start came from the archive's end.
+	seeded bool
+	// archiveFrom, when positive, is where the contents a new cut dropped
+	// and the archive does not hold yet begin; they run to start.
+	archiveFrom int
+	// end is the watermark a new cut left.
+	end    contentMark
+	scale  float64
+	result *CompactionResult
 }
 
 // contentMark identifies one content across rebuilds of the request. The
@@ -123,7 +203,30 @@ func (m contentMark) isZero() bool { return m.fingerprint == "" }
 
 // NewCompactor returns a Compactor for opts.
 func NewCompactor(opts CompactOptions) *Compactor {
-	return &Compactor{opts: opts}
+	c := &Compactor{opts: opts}
+	if opts.History != nil {
+		c.historyTools = HistoryTools(opts.History)
+		scratch := &model.LLMRequest{}
+		packHistoryTools(context.Background(), scratch, c.historyTools)
+		c.toolTokens = estimateOverheadTokens(scratch)
+	}
+	return c
+}
+
+// Close closes the compactor's history archive.
+func (c *Compactor) Close() error {
+	if c == nil || c.opts.History == nil {
+		return nil
+	}
+	return c.opts.History.Close()
+}
+
+// History is the compactor's archive, nil when it keeps none.
+func (c *Compactor) History() *HistoryArchive {
+	if c == nil {
+		return nil
+	}
+	return c.opts.History
 }
 
 // ObserveUsage records the total-token reading of the latest model call.
@@ -158,7 +261,8 @@ func (c *Compactor) BeforeModel(ctx agent.Context, req *model.LLMRequest) (*mode
 }
 
 // Reset drops the standing cut, so the next request goes out whole. Sessions
-// call it in place of BeforeModel while auto-compaction is switched off.
+// call it in place of BeforeModel while auto-compaction is switched off. The
+// archive keeps everything; the next Apply resumes from its end.
 func (c *Compactor) Reset() {
 	if c == nil {
 		return
@@ -166,6 +270,7 @@ func (c *Compactor) Reset() {
 	c.mu.Lock()
 	had := !c.watermark.isZero()
 	c.watermark = contentMark{}
+	c.notice, c.noticeTokens = "", 0
 	c.mu.Unlock()
 	if had {
 		providers.RebaseHistory(c.opts.Model)
@@ -178,17 +283,188 @@ func (c *Compactor) Apply(ctx context.Context, req *model.LLMRequest) {
 	if c == nil || req == nil || c.opts.Disabled || len(req.Contents) == 0 {
 		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	window := c.window(ctx)
 	if window <= 0 {
 		return
 	}
-	result, moved := c.cut(req, window)
-	if moved {
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+
+	contents := req.Contents
+	plan := c.cut(req, window)
+	result := plan.result
+
+	history := c.opts.History
+	var chunk HistoryChunk
+	if plan.archiveFrom > 0 {
+		dropped := contents[plan.archiveFrom:plan.start]
+		archived, err := history.appendChunk(dropped, markContent(contents, plan.archiveFrom), plan.end, estimateContentsTokens(dropped))
+		if err != nil {
+			DebugLog("compaction: archive %d contents: %v", len(dropped), err)
+		} else {
+			chunk = archived
+		}
+	}
+	if history != nil && (chunk.ID > 0 || plan.seeded) {
+		c.summarizePending(ctx)
+	}
+
+	c.mu.Lock()
+	if plan.start > 1 && (plan.moved || c.notice == "") {
+		c.notice = compactElisionNotice
+		if history != nil {
+			if chunks, err := history.Chunks(); err == nil && len(chunks) > 0 {
+				c.notice = historyNotice(chunks)
+			}
+		}
+		c.noticeTokens = estimateContentTokens(genai.NewContentFromText(c.notice, genai.RoleUser))
+	}
+	notice := c.notice
+	c.mu.Unlock()
+
+	if plan.start > 1 {
+		rebuilt := make([]*genai.Content, 0, len(contents)-plan.start+2)
+		rebuilt = append(rebuilt, contents[0])
+		rebuilt = append(rebuilt, genai.NewContentFromText(notice, genai.RoleUser))
+		rebuilt = append(rebuilt, contents[plan.start:]...)
+		req.Contents = rebuilt
+	}
+	if history != nil && history.count() > 0 {
+		packHistoryTools(ctx, req, c.historyTools)
+	}
+
+	if result != nil {
+		result.DroppedContents = plan.start - 1
+		result.AfterTokens = int(plan.scale * float64(estimateContentsTokens(req.Contents)+estimateOverheadTokens(req)))
+		result.ContextWindow = window
+		if chunk.ID > 0 {
+			result.Chunk = chunk.ID
+			result.Archived = plan.start - plan.archiveFrom
+			if summarized, err := history.Chunk(chunk.ID); err == nil {
+				result.Headline = summarized.Headline
+			}
+		}
+	}
+	if plan.moved {
 		providers.RebaseHistory(c.opts.Model)
 	}
 	if result != nil && c.opts.Notify != nil {
 		c.opts.Notify(*result)
 	}
+}
+
+// summarizePending writes the summary of every archived chunk that lacks
+// one and has attempts left, oldest first, so a chunk's summarizer can lean
+// on the ones before it. An interrupted attempt is not a failed one.
+func (c *Compactor) summarizePending(ctx context.Context) {
+	if c.opts.Summarizer == nil {
+		return
+	}
+	history := c.opts.History
+	chunks, err := history.Chunks()
+	if err != nil {
+		DebugLog("compaction: read archive: %v", err)
+		return
+	}
+	for _, ch := range chunks {
+		if ch.Summarized() || ch.SummaryAttempts >= historySummaryMaxAttempts {
+			continue
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if c.opts.OnSummarize != nil {
+			c.opts.OnSummarize(ch.ID, true)
+		}
+		s, err := c.opts.Summarizer.SummarizeChunk(ctx, history, ch)
+		if c.opts.OnSummarize != nil {
+			c.opts.OnSummarize(ch.ID, false)
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			DebugLog("compaction: summarize chunk %d: %v", ch.ID, err)
+			if err := history.recordSummaryFailure(ch.ID, err.Error()); err != nil {
+				DebugLog("compaction: record summary failure: %v", err)
+			}
+			continue
+		}
+		if err := history.setSummary(ch.ID, s.Headline, s.Body); err != nil {
+			DebugLog("compaction: store summary of chunk %d: %v", ch.ID, err)
+		}
+	}
+}
+
+// packHistoryTools puts the history tools on req the way ADK packs any tool:
+// a declaration for the model and an entry ADK dispatches calls through. A
+// name the agent already has keeps its own tool.
+func packHistoryTools(ctx context.Context, req *model.LLMRequest, tools []tool.Tool) {
+	actx := NewStandaloneAgentContext(ctx)
+	for _, t := range tools {
+		p, ok := t.(interface {
+			ProcessRequest(agent.Context, *model.LLMRequest) error
+		})
+		if !ok {
+			continue
+		}
+		if _, taken := req.Tools[t.Name()]; taken {
+			continue
+		}
+		if err := p.ProcessRequest(actx, req); err != nil {
+			DebugLog("compaction: pack %s: %v", t.Name(), err)
+		}
+	}
+}
+
+// historyNotice is the elision notice over an archive: every chunk by
+// headline (the oldest folded once there are many), the newest chunk's
+// summary, and where to look for the rest.
+func historyNotice(chunks []HistoryChunk) string {
+	n := len(chunks)
+	var b strings.Builder
+	b.WriteString("[Earlier turns in this conversation were elided to fit the context window. The first message above is the original request; everything between it and this point was archived")
+	if n == 1 {
+		b.WriteString(" as chunk #1:\n")
+	} else {
+		fmt.Fprintf(&b, " as chunks #1–#%d, oldest first:\n", n)
+	}
+	from := max(0, n-compactNoticeMaxHeadlines)
+	if from > 0 {
+		fmt.Fprintf(&b, "#1–#%d: older chunks; list them with %s\n", from, HistorySummaryToolName)
+	}
+	for _, c := range chunks[from:] {
+		fmt.Fprintf(&b, "#%d %s\n", c.ID, chunkHeadline(c))
+	}
+	if last := chunks[n-1]; last.Summarized() {
+		fmt.Fprintf(&b, "\nSummary of #%d, the most recent:\n%s\n", last.ID, last.Summary)
+	}
+	fmt.Fprintf(&b, "\nThe archive holds every elided message, tool call, and full tool result verbatim. "+
+		"Use %s to find something by keyword, %s to scan it forward or backward, and %s for any chunk's summary. "+
+		"Look there before re-running a tool or asking the user to restate anything.]",
+		HistorySearchToolName, HistoryReadToolName, HistorySummaryToolName)
+	return b.String()
+}
+
+// plannedNoticeTokens estimates the notice a cut that leaves n chunks will
+// send, before the newest chunk's summary exists.
+func (c *Compactor) plannedNoticeTokens(n int) int {
+	if c.opts.History == nil {
+		return compactNoticeTokens
+	}
+	return historyNoticeBaseTokens + min(n, compactNoticeMaxHeadlines+1)*compactHeadlineTokens + compactSummaryTokens
+}
+
+// viewNoticeTokensLocked is the notice the view in force sends. Caller
+// holds c.mu.
+func (c *Compactor) viewNoticeTokensLocked(chunks int) int {
+	if c.notice != "" {
+		return c.noticeTokens
+	}
+	return c.plannedNoticeTokens(chunks)
 }
 
 // window is the model's context window as it stands for this call. A provider
@@ -203,41 +479,73 @@ func (c *Compactor) window(ctx context.Context) int64 {
 	return c.opts.ContextWindow
 }
 
-// cut rewrites req.Contents to the compacted view against window. It returns
-// the outcome of a new cut (nil when none was made) and whether the view's
-// start moved — a new cut, or a watermark that no longer resolves.
-func (c *Compactor) cut(req *model.LLMRequest, window int64) (*CompactionResult, bool) {
+// cut decides the compacted view of req against window: where the retained
+// history starts, whether that start moved, and — for a new cut over an
+// archive — which dropped contents the archive does not hold yet. It never
+// rewrites req; Apply does, once the notice is known.
+func (c *Compactor) cut(req *model.LLMRequest, window int64) cutPlan {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	contents := req.Contents
 	limit := float64(window)
+	history := c.opts.History
+	chunks := history.count()
 	// The system instruction and tool declarations are not in Contents and
-	// cannot be dropped, so they are a floor the target has to clear.
+	// cannot be dropped, so they are a floor the target has to clear. The
+	// history tools ride every request once the archive holds a chunk, and
+	// every request after a cut.
 	floor := estimateOverheadTokens(req)
+	if chunks > 0 {
+		floor += c.toolTokens
+	}
 
 	// Re-apply the standing watermark first: the model must not see history
 	// that a previous compaction already cut away. Without this the reduced
 	// usage would read as "no need to compact", the full history would go
 	// back out, and the session would oscillate across the trigger.
-	moved := false
+	var plan cutPlan
 	start := 0
 	if !c.watermark.isZero() {
 		if i, ok := locateMark(contents, c.watermark); ok {
 			start = i
 		} else {
 			c.watermark = contentMark{}
-			moved = true
+			c.notice, c.noticeTokens = "", 0
+			plan.moved = true
 		}
 	}
 
-	scale := c.scaleLocked(contents, start, floor)
-	used := int(scale * float64(viewTokens(contents, start, len(contents))+floor))
+	// archivedTo is where the contents the archive does not hold begin.
+	// With no cut standing, the archive's end is where this view resumes:
+	// a resumed session, or auto-compaction switched back on, sees exactly
+	// what it saw before and never archives a content twice. An end that
+	// does not resolve belongs to a context this request does not share
+	// (a workflow loop's next iteration), so nothing here is archived yet.
+	archivedTo := 1
+	if end, ok := history.lastEnd(); ok {
+		if end == c.watermark && start > 1 {
+			archivedTo = start
+		} else if i, found := locateMark(contents, end); found && i > 1 {
+			archivedTo = i
+			if c.watermark.isZero() {
+				start = i
+				c.watermark = end
+				plan.moved, plan.seeded = true, true
+			}
+		}
+	}
 
-	var result *CompactionResult
+	scale := c.scaleLocked(contents, start, floor, c.viewNoticeTokensLocked(chunks))
+	used := int(scale * float64(viewTokens(contents, start, len(contents), c.viewNoticeTokensLocked(chunks))+floor))
+
 	if float64(used) >= CompactTriggerRatio*limit {
-		head := estimateContentTokens(contents[0]) + compactNoticeTokens
-		budget := int(CompactTargetRatio*limit/scale) - floor - head
+		planFloor := floor
+		if history != nil && chunks == 0 {
+			planFloor += c.toolTokens
+		}
+		head := estimateContentTokens(contents[0]) + c.plannedNoticeTokens(chunks+1)
+		budget := int(CompactTargetRatio*limit/scale) - planFloor - head
 		// From the uncut history the first useful cut is 2: index 0 is pinned
 		// and a cut at 1 would drop nothing.
 		minCut := 1
@@ -247,24 +555,17 @@ func (c *Compactor) cut(req *model.LLMRequest, window int64) (*CompactionResult,
 		if cut := planCut(contents[start:], budget, minCut); cut > 0 {
 			start += cut
 			c.watermark = markContent(contents, start)
-			moved = true
-			result = &CompactionResult{BeforeTokens: used}
+			plan.moved = true
+			plan.end = c.watermark
+			plan.result = &CompactionResult{BeforeTokens: used}
+			if history != nil && start > archivedTo {
+				plan.archiveFrom = archivedTo
+			}
 		}
 	}
-
-	if start > 1 {
-		rebuilt := make([]*genai.Content, 0, len(contents)-start+2)
-		rebuilt = append(rebuilt, contents[0])
-		rebuilt = append(rebuilt, genai.NewContentFromText(compactElisionNotice, genai.RoleUser))
-		rebuilt = append(rebuilt, contents[start:]...)
-		req.Contents = rebuilt
-	}
-	if result != nil {
-		result.DroppedContents = start - 1
-		result.AfterTokens = int(scale * float64(estimateContentsTokens(req.Contents)+floor))
-		result.ContextWindow = window
-	}
-	return result, moved
+	plan.start = start
+	plan.scale = scale
+	return plan
 }
 
 // scaleLocked calibrates the character estimate against the provider's own
@@ -274,7 +575,7 @@ func (c *Compactor) cut(req *model.LLMRequest, window int64) (*CompactionResult,
 // the same thing on every provider; a prompt count does not (Claude Code
 // reports only the uncached slice of its input there). Before any reading —
 // a resumed session — the estimate stands as is. Caller holds c.mu.
-func (c *Compactor) scaleLocked(contents []*genai.Content, start, floor int) float64 {
+func (c *Compactor) scaleLocked(contents []*genai.Content, start, floor, notice int) float64 {
 	if c.lastTotal <= 0 {
 		return 1
 	}
@@ -285,7 +586,7 @@ func (c *Compactor) scaleLocked(contents []*genai.Content, start, floor int) flo
 			break
 		}
 	}
-	est := viewTokens(contents, start, end) + floor
+	est := viewTokens(contents, start, end, notice) + floor
 	if est <= 0 {
 		return 1
 	}
@@ -299,13 +600,13 @@ func (c *Compactor) scaleLocked(contents []*genai.Content, start, floor int) flo
 }
 
 // viewTokens estimates contents[:end] as the model sees it with the cut at
-// start: the pinned first content, the elision notice, then
+// start: the pinned first content, an elision notice of notice tokens, then
 // contents[start:end]. A start of 0 or 1 is no cut.
-func viewTokens(contents []*genai.Content, start, end int) int {
+func viewTokens(contents []*genai.Content, start, end, notice int) int {
 	if start <= 1 {
 		return estimateContentsTokens(contents[:end])
 	}
-	n := estimateContentTokens(contents[0]) + compactNoticeTokens
+	n := estimateContentTokens(contents[0]) + notice
 	if end > start {
 		n += estimateContentsTokens(contents[start:end])
 	}
@@ -546,6 +847,13 @@ func CompactionSummary(r CompactionResult) string {
 	pct := 0
 	if r.ContextWindow > 0 {
 		pct = int(float64(r.AfterTokens) * 100 / float64(r.ContextWindow))
+	}
+	if r.Chunk > 0 {
+		archived := fmt.Sprintf("archived %d earlier entries as #%d", r.Archived, r.Chunk)
+		if r.Headline != "" {
+			archived += " (" + r.Headline + ")"
+		}
+		return fmt.Sprintf("compacted context: %s, now ~%d%% of the window", archived, pct)
 	}
 	return fmt.Sprintf("compacted context: dropped %d earlier entries, now ~%d%% of the window", r.DroppedContents, pct)
 }

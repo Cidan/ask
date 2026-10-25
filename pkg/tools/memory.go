@@ -114,7 +114,7 @@ func (h *MemoryRecallHook) ProcessRequest(ctx agent.Context, req *model.LLMReque
 		return nil
 	}
 	copied := *req.Contents[target]
-	copied.Parts = append(append([]*genai.Part(nil), req.Contents[target].Parts...), genai.NewPartFromText("<memory>\n"+block+"\n</memory>"))
+	copied.Parts = append(append([]*genai.Part(nil), req.Contents[target].Parts...), genai.NewPartFromText(engine.RecallBlock(block)))
 	req.Contents[target] = &copied
 	return nil
 }

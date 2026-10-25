@@ -17,6 +17,10 @@ export CGO_CFLAGS=-I$(PWD)/third_party/sqlite
 
 all: setup-llama download-model build
 
+# A worktree reaches build/ through a symlink to the primary checkout's, and
+# CMake records the path it was configured from, so llama.cpp is configured
+# through the physical path every checkout shares, and a cache recorded under
+# any other path is discarded rather than failing the build.
 setup-llama:
 	@mkdir -p build
 	@if [ ! -d "$(LLAMA_DIR)" ]; then \
@@ -24,7 +28,13 @@ setup-llama:
 		git clone --branch $(LLAMA_BRANCH) $(LLAMA_URL) $(LLAMA_DIR); \
 	fi
 	@echo "Building llama.cpp static libraries..."
-	@cd $(LLAMA_DIR) && cmake -B build -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON && cmake --build build --config Release -j 4
+	@src=$$(cd $(LLAMA_DIR) && pwd -P); \
+	cache="$$src/build/CMakeCache.txt"; \
+	if [ -f "$$cache" ] && ! grep -qxF "CMAKE_CACHEFILE_DIR:INTERNAL=$$src/build" "$$cache"; then \
+		echo "Discarding a llama.cpp CMake cache configured from another path..."; \
+		rm -rf "$$cache" "$$src/build/CMakeFiles"; \
+	fi; \
+	cd "$$src" && cmake -S "$$src" -B "$$src/build" -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON && cmake --build "$$src/build" --config Release -j 4
 
 download-model:
 	@mkdir -p $(MODEL_DIR)
