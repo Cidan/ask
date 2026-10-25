@@ -85,7 +85,7 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 			}
 
 			var toolsList []tools.Tool
-			var system string
+			var system, agentName string
 			if name := strings.TrimSpace(p.Agent); name != "" {
 				var def *subagentDef
 				for _, d := range discoverSubagents(env.Cwd) {
@@ -111,6 +111,7 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 				if def.Prompt != "" {
 					system = def.Prompt + agentSubagentPromptTail + "\n\n" + engine.EnvBlock(env.Cwd, agentGitStatus)
 				}
+				agentName = def.Name
 				toolsList = subagentTools(*def, subEnv, deferredFn)
 			} else {
 				toolsList = tools.CoreTools(subEnv, deferredFn, true)
@@ -126,6 +127,7 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 					Provider:           providerID,
 					Model:              modelID,
 					SystemPrompt:       system,
+					AgentName:          agentName,
 					Tools:              toolsList,
 					SkipAllPermissions: true,
 					SkipMemory:         true,
