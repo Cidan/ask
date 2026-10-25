@@ -382,6 +382,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		// turns. Only move it when the step reported real tokens.
 		if msg.tokens > 0 {
 			m.lastUsageTokens = msg.tokens
+			m.usageWindow = int(msg.window)
 			m.usageProvider, m.usageModel = msg.provider, msg.model
 			m.usageEstimated = false
 		}
@@ -851,6 +852,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		m.transcript = msg.transcript
+		m.placeTranscriptImages()
 		m.responseActive = false
 		if msg.usage != nil {
 			m.restoreUsage(*msg.usage)
@@ -879,6 +881,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if msg.err != nil {
 			if msg.transcript != nil {
 				m.transcript = msg.transcript
+				m.placeTranscriptImages()
 				m.responseActive = false
 				m.projectHistory()
 			}
@@ -893,6 +896,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		if msg.transcript != nil {
 			m.transcript = msg.transcript
+			m.placeTranscriptImages()
 			m.responseActive = false
 			m.projectHistory()
 			m.layout()
@@ -1166,14 +1170,11 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		att := pendingAttachment{data: msg.data, mime: msg.mime}
 		if isKitty() && msg.pngForKitty != nil {
-			m.nextImageID++
-			if m.nextImageID == 0 {
-				m.nextImageID = 1
-			}
-			if err := kittyTransmitPNG(m.nextImageID, msg.pngForKitty); err != nil {
+			id := (&m).nextKittyImageID()
+			if err := kittyTransmitFn(id, msg.pngForKitty); err != nil {
 				debugLog("kitty transmit err: %v", err)
 			} else {
-				att.imageID = m.nextImageID
+				att.imageID = id
 				att.thumbCols, att.thumbRows = thumbnailGrid(msg.width, msg.height)
 			}
 		}
@@ -1220,10 +1221,12 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			if inViewport && msg.X >= 0 && msg.X < m.width-1 {
 				m.clearSelection()
-				cell := m.screenToContentCell(msg.X, msg.Y)
-				m.selAnchor = cell
-				m.selFocus = cell
-				m.selDragging = true
+				if pos, ok := m.posAt(msg.X, msg.Y); ok {
+					m.selAnchor = pos
+					m.selFocus = pos
+					m.selWidth = m.chat.contentWidth()
+					m.selDragging = true
+				}
 				m.lastContentFP = ""
 				return m, nil
 			}
@@ -1243,9 +1246,16 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		if m.selDragging {
-			y := max(0, min(m.chat.Height()-1, msg.Y))
 			x := max(0, min(m.width-2, msg.X))
-			m.selFocus = m.screenToContentCell(x, y)
+			y := max(0, msg.Y)
+			if y >= m.chat.Height() {
+				// Below the chat: the selection runs through the end of
+				// the last row it shows.
+				x, y = m.width, m.chat.Height()-1
+			}
+			if pos, ok := m.posAt(x, y); ok {
+				m.selFocus = pos
+			}
 			m.lastContentFP = ""
 			return m, nil
 		}
@@ -1266,13 +1276,10 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 				m.clearSelection()
 			case clipboardGOOS == "darwin":
 				// iTerm2 and Terminal.app intercept Cmd+C and right-
-				// click before the app sees them; auto-copy on drag-
-				// release routes the visual selection (not the source)
-				// to the clipboard so selecting one word copies that
-				// word. clearSelection must run after buildVisualCopyText
-				// — the latter short-circuits without selDragging /
-				// selActive.
-				if text := m.buildVisualCopyText(); text != "" {
+				// click before the app sees them, so finishing a drag
+				// copies the selected text. clearSelection must run after
+				// buildCopyText, which reads the selection.
+				if text := m.buildCopyText(); text != "" {
 					copyCmd = copyTextSilentCmd(m.toast, text)
 				}
 				m.clearSelection()
@@ -2509,11 +2516,11 @@ func (m model) sendToProvider(line string) (tea.Model, tea.Cmd) {
 }
 
 func (m model) dispatchProviderTurn(line string) (tea.Model, tea.Cmd) {
-	nAtt := len(m.pending)
+	images := (&m).sentImages()
 	(&m).clearSelection()
 
 	if m.busy() {
-		m.appendUserQueued(userBarText(line, nAtt))
+		m.appendUserQueued(line, images...)
 		args := m.sessionArgs()
 		p := m.provider
 		pending := append([]pendingAttachment(nil), m.pending...)
@@ -2533,7 +2540,7 @@ func (m model) dispatchProviderTurn(line string) (tea.Model, tea.Cmd) {
 
 	m.responseActive = false
 	if m.workflowRun == nil {
-		m.appendUser(userBarText(line, nAtt))
+		m.appendUser(line, images...)
 	}
 	if invalid := validateAskCwd(m.cwd); invalid.Msg != "" {
 		m.pending = nil

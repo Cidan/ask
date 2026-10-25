@@ -53,6 +53,7 @@ func costKnownUpfront(providerID, modelID string) bool {
 // different conversation.
 func (m *model) clearUsage() {
 	m.lastUsageTokens = 0
+	m.usageWindow = 0
 	m.usageProvider, m.usageModel = "", ""
 	m.usageEstimated = false
 	m.sessionCostUSD = 0
@@ -60,10 +61,12 @@ func (m *model) clearUsage() {
 }
 
 // restoreUsage installs a stored session's accounting. Its context reading
-// is exact only against the model that made it; on any other model the chip
-// shows it approximate until that model reports.
+// is exact only against the model that made it, and measured against the
+// window stored with it; on any other model the chip shows it approximate
+// until that model reports.
 func (m *model) restoreUsage(u sessionUsage) {
 	m.lastUsageTokens = u.contextTokens
+	m.usageWindow = int(u.contextWindow)
 	m.usageProvider, m.usageModel = u.provider, u.model
 	m.usageEstimated = u.contextTokens > 0 && !m.readingIsCurrentModel(u.provider, u.model)
 	m.sessionCostUSD = u.costUSD
@@ -91,7 +94,30 @@ func (m *model) readingIsCurrentModel(provider, model string) bool {
 // it differently and may have another window.
 func (m *model) estimateUsageAfterSwap() {
 	m.usageEstimated = m.lastUsageTokens > 0
+	m.usageWindow = 0
 	m.usageProvider, m.usageModel = "", ""
+}
+
+// contextLimit is the window the ctx chip divides the reading by: the one
+// stored with an exact reading, else the window of the model that made it,
+// else — for an estimate carried over from another model — the current
+// model's.
+func (m *model) contextLimit() int {
+	if !m.usageEstimated && m.usageWindow > 0 {
+		return m.usageWindow
+	}
+	mdl := m.modelForContext
+	if mdl == "" {
+		mdl = m.providerModel
+	}
+	providerID := ""
+	if m.provider != nil {
+		providerID = m.provider.ID()
+	}
+	if m.usageProvider != "" && !m.usageEstimated {
+		providerID, mdl = m.usageProvider, m.usageModel
+	}
+	return modelContextLimit(providerID, mdl)
 }
 
 // formatUSD renders a dollar amount as dollars-and-cents ("$0.07").

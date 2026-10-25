@@ -10,11 +10,16 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"iter"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/providers"
+	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
 
@@ -226,4 +231,123 @@ func lastNonZero(xs []int) int {
 		}
 	}
 	return 0
+}
+
+// meterProvider is a provider whose catalog guesses a 200k window for a model
+// that really holds 1M — Claude Code on a full model id the catalog does not
+// list, before the CLI has reported the real window. Its model knows its own
+// window and reports a 404k reading.
+type meterProvider struct{ windowProvider }
+
+func (meterProvider) BuildModel(context.Context, config.ProviderConfig, string) (adkmodel.LLM, error) {
+	return &meterModel{}, nil
+}
+
+type meterModel struct{ mockADKModel }
+
+func (*meterModel) ResolveContextWindow(context.Context) int64 { return 1_000_000 }
+func (*meterModel) GenerateContent(context.Context, *adkmodel.LLMRequest, bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		yield(&adkmodel.LLMResponse{
+			Content:       genai.NewContentFromText("done", genai.RoleModel),
+			UsageMetadata: &genai.GenerateContentResponseUsageMetadata{PromptTokenCount: 400_000, CandidatesTokenCount: 4_000, TotalTokenCount: 404_000},
+		}, nil)
+	}
+}
+
+// The meter reads a reading against the window the model reported when it
+// made it, live and after /resume — never against the provider's guess. The
+// window rides the usage record from the model call into the session file and
+// back: a 404k reading on a 1M model is 40%, not the 100% a 200k guess clamps
+// it to.
+func TestContextMeter_ReadingKeepsItsWindowThroughResume(t *testing.T) {
+	isolateHome(t)
+	prov := meterProvider{windowProvider{id: "metertest", window: 200_000}}
+	providers.Register(prov)
+	s := newTestAgentSession(t, &agentSessionStore{provider: prov.ID()})
+	s.provider = prov
+
+	if err := s.queueTurn("hi"); err != nil {
+		t.Fatal(err)
+	}
+	var live usageMsg
+	for _, msg := range readSessionMsgs(t, s.ch, isTurnComplete) {
+		if u, ok := msg.(usageMsg); ok && u.tokens > 0 {
+			live = u
+		}
+	}
+	if live.tokens != 404_000 || live.window != 1_000_000 {
+		t.Fatalf("live usage = %d tokens against %d, want 404000 against the model's 1M", live.tokens, live.window)
+	}
+
+	tab := newTestModel(t, newFakeProvider())
+	tab.provider = agentAPIProvider{prov: prov}
+	tab.providerModel = s.modelID
+	tab, _ = runUpdate(t, tab, usageMsg{tokens: live.tokens, window: live.window, provider: live.provider, model: live.model})
+	if got := tab.sidebarCost(); got != "40%" {
+		t.Fatalf("live meter = %q, want 40%%", got)
+	}
+
+	stored, err := s.store.loadUsage(s.sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.contextTokens != 404_000 || stored.contextWindow != 1_000_000 || stored.model != s.modelID {
+		t.Fatalf("stored reading = %+v, want 404000 against 1M from %s", stored, s.modelID)
+	}
+	resumed := newTestModel(t, newFakeProvider())
+	resumed.provider = agentAPIProvider{prov: prov}
+	resumed.providerModel = s.modelID
+	resumed.sessionID = s.sessionID
+	resumed, _ = runUpdate(t, resumed, historyLoadedMsg{tabID: resumed.id, sessionID: s.sessionID, silent: true, usage: &stored})
+	if got := resumed.sidebarCost(); got != "40%" || resumed.usageEstimated {
+		t.Fatalf("resumed meter = %q (estimated %v), want the live 40%%", got, resumed.usageEstimated)
+	}
+
+	// A reading recorded before ask stored windows has only the provider's
+	// window to go on.
+	legacy := stored
+	legacy.contextWindow = 0
+	old, _ := runUpdate(t, resumed, historyLoadedMsg{tabID: resumed.id, sessionID: s.sessionID, silent: true, usage: &legacy})
+	if got := old.sidebarCost(); got != "100%" {
+		t.Fatalf("a windowless reading measured %q, want the provider's 200k", got)
+	}
+}
+
+// A reading carried over to another model is an estimate against that model's
+// window: the old model's stored window no longer applies, and /new forgets it.
+func TestContextMeter_StoredWindowGoesWithTheReading(t *testing.T) {
+	isolateHome(t)
+	m := newTestModel(t, newFakeProvider())
+	m.provider = vertexAgentProvider()
+	m.providerModel = "gemini-2.5-pro"
+	m, _ = runUpdate(t, m, usageMsg{tokens: 100_000, window: 200_000, provider: "vertex", model: "gemini-2.5-pro"})
+	if got := m.sidebarCost(); !strings.HasPrefix(got, "50%") {
+		t.Fatalf("meter = %q, want 50%% of the reading's own 200k", got)
+	}
+
+	m.estimateUsageAfterSwap()
+	if m.usageWindow != 0 {
+		t.Fatalf("the swapped-away model's window %d stayed with the estimate", m.usageWindow)
+	}
+	want := fmt.Sprintf("~%d%%", contextPercent(100_000, modelContextLimit("vertex", "gemini-2.5-pro")))
+	if got := m.sidebarCost(); !strings.HasPrefix(got, want) {
+		t.Fatalf("estimate = %q, want %q against the current model", got, want)
+	}
+
+	m.usageWindow = 300_000
+	m.clearUsage()
+	if m.usageWindow != 0 || m.lastUsageTokens != 0 {
+		t.Fatalf("clearUsage left window %d tokens %d", m.usageWindow, m.lastUsageTokens)
+	}
+}
+
+// A zero-count streaming chunk moves nothing — the window included.
+func TestContextMeter_ZeroChunkKeepsTheWindow(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	m, _ = runUpdate(t, m, usageMsg{tokens: 500_000, window: 1_000_000, provider: "vertex", model: "x"})
+	m, _ = runUpdate(t, m, usageMsg{tokens: 0, window: 0})
+	if m.usageWindow != 1_000_000 || m.sidebarCost()[:3] != "50%" {
+		t.Fatalf("a zero chunk reset the meter: window %d, %q", m.usageWindow, m.sidebarCost())
+	}
 }

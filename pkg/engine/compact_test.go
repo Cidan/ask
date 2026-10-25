@@ -358,7 +358,7 @@ func TestCompactor_WatermarkAdvancesOnSecondCompaction(t *testing.T) {
 	if !ok {
 		t.Fatal("the first cut's watermark does not resolve")
 	}
-	c.ObserveUsage(viewTokens(contents, wm, len(contents)) + estimateOverheadTokens(req2))
+	c.ObserveUsage(viewTokens(contents, wm, len(contents), compactNoticeTokens) + estimateOverheadTokens(req2))
 	c.Apply(context.Background(), req2)
 	if fingerprintContent(req2.Contents[2]) == firstCut {
 		t.Fatal("watermark did not advance on the second compaction")
@@ -746,6 +746,9 @@ type scenarioOpts struct {
 	cwd       string
 	// onCall runs inside each model call, before it answers.
 	onCall func(sc *scenario, step int)
+	// respond, when it returns a response, answers the call in place of
+	// the scripted tool loop.
+	respond func(step int, req *model.LLMRequest) *model.LLMResponse
 }
 
 func newScenario(t *testing.T, o scenarioOpts) *scenario {
@@ -779,6 +782,11 @@ func newScenario(t *testing.T, o scenarioOpts) *scenario {
 				}
 			} else {
 				resp = textResponse("finished")
+			}
+			if o.respond != nil {
+				if r := o.respond(step, req); r != nil {
+					resp = r
+				}
 			}
 			total := size + estimateContentTokens(resp.Content)*4/3
 			prompt := size
@@ -955,7 +963,7 @@ func TestScenario_SteeringMessageMidTurn(t *testing.T) {
 		callsPerTurn: 30,
 		onCall: func(sc *scenario, step int) {
 			if step == 20 {
-				sc.sess.QueueMidTurn("also update the docs")
+				sc.sess.Submit("also update the docs")
 			}
 		},
 	})

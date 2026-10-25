@@ -249,21 +249,7 @@ func (m *model) sidebarMeta() string {
 // sidebarCost is the dim third row: the session's context usage percentage
 // and accumulated API spend in dollars and cents (e.g. "7%/$0.00" or "7%").
 func (m *model) sidebarCost() string {
-	mdl := m.modelForContext
-	if mdl == "" {
-		mdl = m.providerModel
-	}
-	providerID := ""
-	if m.provider != nil {
-		providerID = m.provider.ID()
-	}
-	// A reading is measured against the window of the model that made it
-	// (a workflow step can run on another); an estimate carried over from
-	// another model is measured against the current one.
-	if m.usageProvider != "" && !m.usageEstimated {
-		providerID, mdl = m.usageProvider, m.usageModel
-	}
-	ctxPct := contextPercent(m.lastUsageTokens, modelContextLimit(providerID, mdl))
+	ctxPct := contextPercent(m.lastUsageTokens, m.contextLimit())
 	pctStr := fmt.Sprintf("%d%%", ctxPct)
 	if m.usageEstimated {
 		pctStr = "~" + pctStr

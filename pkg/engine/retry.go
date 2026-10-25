@@ -58,6 +58,11 @@ func (r *retryingModel) RebaseHistory() {
 	providers.RebaseHistory(r.inner)
 }
 
+// CloseTurn forwards to the wrapped model (see providers.TurnCloser).
+func (r *retryingModel) CloseTurn() {
+	providers.CloseTurn(r.inner)
+}
+
 // ResolveContextWindow forwards to the wrapped model (see
 // providers.ContextWindowResolver).
 func (r *retryingModel) ResolveContextWindow(ctx context.Context) int64 {

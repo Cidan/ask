@@ -68,11 +68,13 @@ type statusRevertMsg struct {
 // thinking included), the provider and model that made it — the meter
 // measures a reading against that model's window — and the call's cost
 // (costKnown is false when the provider reported none and the catalog can't
-// price the model). update.go ignores tokens==0 for the ctx chip segment so
+// price the model). window is the window the reading was measured against,
+// zero when unknown. update.go ignores tokens==0 for the ctx chip segment so
 // the meter never resets mid-stream, and accumulates sessionCostUSD for the
 // sidebar cost row.
 type usageMsg struct {
 	tokens    int
+	window    int64
 	provider  string
 	model     string
 	costUSD   float64
@@ -295,6 +297,14 @@ type historyEntry struct {
 	workflowHeader string
 	workflowIndent int
 
+	// images are a histUser / histUserQueued message's images, drawn below
+	// its bar.
+	images []chatImage
+
+	// textMap ties wrapped's cells to the entry's copy source; rebuilt
+	// whenever wrapped is.
+	textMap *entryTextMap
+
 	// filePath and hunks carry a histDiff entry's structured payload.
 	// Unlike prerendered kinds, a diff re-renders in ensureEntryWrapped at
 	// the current width so its solid red/green backgrounds span the content
@@ -365,6 +375,10 @@ type historyLoadedMsg struct {
 type frameCache struct {
 	vpFP   string
 	vpView string
+	// chatRows is what each content row of the last drawn chat frame
+	// shows, top to bottom: the mouse and the selection highlight read the
+	// screen through it, since the frame is drawn on a copy of the model.
+	chatRows []rowRef
 
 	vbFP      string
 	vbWithBar string
@@ -555,18 +569,20 @@ type model struct {
 
 	scrollbarDragging bool
 
-	// Mouse text selection in the chat viewport. Anchor/focus are in
-	// *content* coordinates (row counts from the top of the rendered
-	// viewport content, not the screen) so the selection survives
-	// scrolling and resizes. selDragging is true while the left button
-	// is held; selActive is true once the user releases with a non-zero
-	// range, until something clears it (right-click copy, mode change,
-	// new turn). buildVisualCopyText/selectionContains/selectionRange
-	// consume these.
+	// Mouse text selection in the chat viewport, as the screen shows it:
+	// anchor is the cell the left button went down on, focus the cell it is
+	// over now (an entry, a wrapped line, a column — so the selection stays
+	// put while the chat scrolls). selWidth is the chat width they were
+	// taken at; once the chat re-wraps at another width the selection is
+	// gone. selDragging is true while the button is held; selActive once it
+	// is released over another cell, until something clears it (right-click
+	// copy, mode change, new turn). selectionRange, the highlight and
+	// buildCopyText consume these.
 	selDragging bool
 	selActive   bool
-	selAnchor   cellPos
-	selFocus    cellPos
+	selAnchor   selPos
+	selFocus    selPos
+	selWidth    int
 
 	// toast carries transient top-right notifications (e.g. "copied to
 	// clipboard"). Always non-nil after newTab so we don't have to
@@ -769,12 +785,18 @@ type model struct {
 	// back to 0 mid-stream). usageProvider/usageModel name the model that
 	// made the reading; the ctx chip divides by that model's window, so a
 	// workflow step on another model is measured against its own.
+	// usageWindow is that window as it was when the reading was made — the
+	// one the compactor measured against, stored with the reading, so a
+	// resumed session is not measured against a provider's guess before it
+	// has learned the model's real window again. Zero when unknown (readings
+	// recorded before ask stored it), falling back to the provider's window.
 	// usageEstimated marks a reading carried over from another model (a
 	// model swap, a translated session): the chip shows it approximate,
 	// against the current model's window, until the new model reports.
 	// Reset on /new and /clear; restored from the session's usage records
 	// on /resume.
 	lastUsageTokens int
+	usageWindow     int
 	usageProvider   string
 	usageModel      string
 	usageEstimated  bool

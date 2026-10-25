@@ -61,6 +61,21 @@ func TestEngineEventToTeaMsg_ContextCompacted(t *testing.T) {
 	}
 }
 
+// A headless session's compaction names the chunk it archived, the same as
+// a tab's.
+func TestEngineEventToTeaMsg_ContextCompactedNamesTheChunk(t *testing.T) {
+	ev := engine.NewContextCompactedEvent(3, engine.CompactionResult{
+		DroppedContents: 30, Archived: 9, Chunk: 4, Headline: "Wired the archive", AfterTokens: 50, ContextWindow: 100,
+	})
+	msg, ok := EngineEventToTeaMsg(ev).(contextCompactedMsg)
+	if !ok {
+		t.Fatalf("expected contextCompactedMsg, got %T", EngineEventToTeaMsg(ev))
+	}
+	if want := "compacted context: archived 9 earlier entries as #4 (Wired the archive), now ~50% of the window"; msg.summary != want {
+		t.Fatalf("summary = %q, want %q", msg.summary, want)
+	}
+}
+
 func TestEngineEventToTeaMsg_ToolCallAndResult(t *testing.T) {
 	call, ok := EngineEventToTeaMsg(engine.ToolCallEvent{
 		BaseEvent: engine.BaseEvent{TabID: 1},

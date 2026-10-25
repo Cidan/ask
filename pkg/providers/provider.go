@@ -120,6 +120,26 @@ func RebaseHistory(m model.LLM) bool {
 	return ok
 }
 
+// TurnCloser is the optional capability of a model that runs a turn of its
+// own alongside ADK's — Claude Code's child keeps working a turn between
+// GenerateContent calls, blocked on the tool results ADK owes it. When ask's
+// turn ends without the model having finished (the user interrupted it, or it
+// failed mid-tool), CloseTurn ends the model's turn too, so the next turn
+// does not resume work the user stopped. A no-op when the model's turn is
+// already over. Wrappers forward it.
+type TurnCloser interface {
+	CloseTurn()
+}
+
+// CloseTurn ends m's own turn, when m runs one. It reports whether m does.
+func CloseTurn(m model.LLM) bool {
+	c, ok := m.(TurnCloser)
+	if ok {
+		c.CloseTurn()
+	}
+	return ok
+}
+
 // ContextWindowResolver is the optional capability of a model that reports its
 // context window as it stands at call time. A provider can learn a model's
 // window only after a session has started — Claude Code asks its CLI, and

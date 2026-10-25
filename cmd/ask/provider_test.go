@@ -175,22 +175,3 @@ func (t *trackCloser) Close() error {
 	t.closed = true
 	return nil
 }
-
-func TestUserBarText(t *testing.T) {
-	cases := []struct {
-		line string
-		n    int
-		want string
-	}{
-		{"hi", 0, "hi"},
-		{"", 1, "[image attached]"},
-		{"hi", 1, "hi  [image attached]"},
-		{"", 3, "[3 images attached]"},
-		{"hi", 3, "hi  [3 images attached]"},
-	}
-	for _, c := range cases {
-		if got := userBarText(c.line, c.n); got != c.want {
-			t.Errorf("userBarText(%q, %d)=%q want %q", c.line, c.n, got, c.want)
-		}
-	}
-}

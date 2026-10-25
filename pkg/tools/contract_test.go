@@ -2,8 +2,10 @@ package tools
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 
+	"github.com/Cidan/ask/pkg/engine"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/genai"
 )
@@ -86,6 +88,47 @@ func TestToolFailuresAreGoErrors(t *testing.T) {
 	}
 	if _, err := runTypedTool[EditResult](t, EditTool(env), EditParams{FilePath: "x", OldString: "a", NewString: "a"}); err == nil {
 		t.Error("a no-op edit must return a Go error")
+	}
+}
+
+// The history tools are built in pkg/engine, where the compactor that puts
+// them on a request lives, but they are native tools like any other and
+// keep the same contract: the one Run shape, a real response schema whose
+// text field the UI can find, and a required description phrase.
+func TestHistoryToolsKeepTheToolContract(t *testing.T) {
+	hist := engine.HistoryTools(engine.NewMemoryHistoryArchive())
+	if len(hist) != 3 {
+		t.Fatalf("%d history tools, want 3", len(hist))
+	}
+	for _, tl := range hist {
+		if _, ok := tl.(interface {
+			Run(agent.Context, any) (map[string]any, error)
+		}); !ok {
+			t.Errorf("%s does not implement the ADK Run contract", tl.Name())
+		}
+		decl := tl.(interface {
+			Declaration() *genai.FunctionDeclaration
+		}).Declaration()
+		raw, _ := json.Marshal(decl.ResponseJsonSchema)
+		var schema struct {
+			Properties map[string]any `json:"properties"`
+		}
+		if err := json.Unmarshal(raw, &schema); err != nil || len(schema.Properties) == 0 {
+			t.Errorf("%s has no response schema: %s", tl.Name(), raw)
+		}
+		textField := false
+		for _, f := range []string{"content", "results", "summary"} {
+			if _, ok := schema.Properties[f]; ok {
+				textField = true
+			}
+		}
+		if !textField {
+			t.Errorf("%s names its text with no field ToolResultText reads: %s", tl.Name(), raw)
+		}
+		info := ExtractToolInfo(tl)
+		if _, ok := info.Parameters["description"]; !ok || !slices.Contains(info.Required, "description") {
+			t.Errorf("%s must require a description phrase, got %v required %v", tl.Name(), info.Parameters, info.Required)
+		}
 	}
 }
 

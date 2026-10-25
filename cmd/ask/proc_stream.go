@@ -1,8 +1,6 @@
 package main
 
 import (
-	"fmt"
-
 	tea "charm.land/bubbletea/v2"
 )
 
@@ -30,6 +28,7 @@ func nextStreamCmd(ch chan tea.Msg) tea.Cmd {
 func loadHistoryCmd(tabID int, p Provider, sessionID, vsID string, silent bool) tea.Cmd {
 	return func() tea.Msg {
 		items, err := p.LoadHistory(sessionID)
+		prepareTranscriptImages(items)
 		msg := historyLoadedMsg{
 			tabID:            tabID,
 			sessionID:        sessionID,
@@ -42,23 +41,6 @@ func loadHistoryCmd(tabID int, p Provider, sessionID, vsID string, silent bool) 
 			msg.usage = loadUsageFor(p, sessionID)
 		}
 		return msg
-	}
-}
-
-// userBarText renders the user-bar line for a sent prompt, annotating
-// attached images.
-func userBarText(line string, n int) string {
-	switch {
-	case n == 0:
-		return line
-	case n == 1 && line == "":
-		return "[image attached]"
-	case n == 1:
-		return line + "  [image attached]"
-	case line == "":
-		return fmt.Sprintf("[%d images attached]", n)
-	default:
-		return line + fmt.Sprintf("  [%d images attached]", n)
 	}
 }
 

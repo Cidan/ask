@@ -9,13 +9,15 @@ import (
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
-// cellPos points at a cell in the *content* coordinate system of the
-// viewport: row counts from the top of the rendered content (not the
-// screen), col counts from the start of the line (not from inside the
-// viewport's right-margin scrollbar). Storing in content coords lets the
-// selection survive scrolling and viewport resizes.
+// cellPos points at a cell in a screen-like grid: row and column. The issue
+// board's selection uses it.
 type cellPos struct {
 	row, col int
+}
+
+// selectionBounds is a normalized grid selection, inclusive cells.
+type selectionBounds struct {
+	minRow, minCol, maxRow, maxCol int
 }
 
 // chatLeftMarginCols is the first column where actual entry content
@@ -27,163 +29,259 @@ type cellPos struct {
 //   - outputStyle (every other kind: histResponse, histPrerendered):
 //     MarginLeft(5) → cols 0..4 are spaces, col 5+ is the text.
 //
-// The selection renderer suppresses highlight (and copy) on cols
-// < this value so the indent / bar / padding gutter never appears
-// highlighted, regardless of entry kind.
+// The gutter is decoration, never text: it is not highlighted or copied,
+// and a selection that starts in it starts at the line's text.
 const chatLeftMarginCols = 5
 
-// selectionBounds is the normalized rectangle for a live or finalized
-// selection, expressed as inclusive content cells.
-type selectionBounds struct {
-	minRow, minCol, maxRow, maxCol int
+// selPos is one end of a chat selection, in what the chat shows: a history
+// entry, one of its wrapped lines, and a screen column on it. A row the chat
+// draws between entries, or below the last one, is the end of the entry
+// above it: line is that entry's line count.
+type selPos struct {
+	entry, line, col int
 }
 
-// selectionRange returns the normalized inclusive bounds of the current
-// selection. ok=false means there is no selection (anchor == focus or
-// neither dragging nor active). Callers must check ok before reading
-// bounds — the rectangle struct is zero when ok is false.
-func (m model) selectionRange() (selectionBounds, bool) {
+func (a selPos) less(b selPos) bool {
+	if a.entry != b.entry {
+		return a.entry < b.entry
+	}
+	if a.line != b.line {
+		return a.line < b.line
+	}
+	return a.col < b.col
+}
+
+// rowBefore reports whether the row (entry, line) comes before p's row.
+func rowBefore(entry, line int, p selPos) bool {
+	return entry < p.entry || (entry == p.entry && line < p.line)
+}
+
+// selectionRange returns the selection as a start and end cell in reading
+// order, inclusive — ok=false when there is none: no drag or finished
+// selection, the pointer never left the cell it pressed, or the chat has
+// been re-wrapped at another width since, so the lines it named are gone.
+func (m model) selectionRange() (start, end selPos, ok bool) {
 	if !m.selDragging && !m.selActive {
-		return selectionBounds{}, false
+		return selPos{}, selPos{}, false
 	}
-	if m.selAnchor == m.selFocus {
-		return selectionBounds{}, false
+	if m.selAnchor == m.selFocus || m.selWidth != m.chat.contentWidth() {
+		return selPos{}, selPos{}, false
 	}
-	a, b := m.selAnchor, m.selFocus
-	if a.row > b.row || (a.row == b.row && a.col > b.col) {
-		a, b = b, a
+	start, end = m.selAnchor, m.selFocus
+	if end.less(start) {
+		start, end = end, start
 	}
-	return selectionBounds{
-		minRow: a.row, minCol: a.col,
-		maxRow: b.row, maxCol: b.col,
-	}, true
+	return start, end, true
 }
 
-// selectionContains reports whether (row, col) sits inside the selection
-// rectangle using terminal block-selection semantics: on the first row
-// only col >= minCol counts, on the last row only col <= maxCol counts,
-// and middle rows include every column. Returns false when there is no
-// active selection so renderers can short-circuit.
-func (m model) selectionContains(row, col int) bool {
-	b, ok := m.selectionRange()
-	if !ok {
-		return false
+// rowSelection is the column range [from, to) the selection covers on the
+// wrapped line (entry, line), whose characters end at column extent: the
+// way a terminal selects, from the start cell to the end of its row, every
+// row between whole, and the end row up to and including the end cell. The
+// gutter is never part of it.
+func rowSelection(start, end selPos, entry, line, extent int) (from, to int, ok bool) {
+	if rowBefore(entry, line, start) || rowBefore(end.entry, end.line, selPos{entry: entry, line: line}) {
+		return 0, 0, false
 	}
-	if row < b.minRow || row > b.maxRow {
-		return false
+	from, to = chatLeftMarginCols, extent
+	if entry == start.entry && line == start.line {
+		from = max(from, start.col)
 	}
-	if b.minRow == b.maxRow {
-		return col >= b.minCol && col <= b.maxCol
+	if entry == end.entry && line == end.line {
+		to = min(to, end.col+1)
 	}
-	switch row {
-	case b.minRow:
-		return col >= b.minCol
-	case b.maxRow:
-		return col <= b.maxCol
-	default:
-		return true
-	}
+	return from, to, from < to
 }
 
-// entryRowRanges returns, for each history entry, the [start, end)
-// content-row range it occupies in the rendered viewport content. Used
-// to map a selection (in content rows) back to history entries when
-// building the clipboard payload.
-//
-// The chatView lays out entries by joining wrapped lines with one
-// blank separator row between consecutive entries; entryRowRanges
-// mirrors that layout. It prefers the per-entry wrap cache (exact for
-// the current width) and falls back to lipgloss.Height(rendered) for
-// entries that have never been wrapped — so a copy issued before the
-// first View() lands still produces correct ranges, just at the
-// pre-wrap line count.
-func (m model) entryRowRanges() [][2]int {
-	out := make([][2]int, len(m.history))
-	row := 0
+// rowRef is where one chat content row sits: an entry and a line within it,
+// or ok=false for a separator row or a row past the end, entry being the last
+// entry above it.
+type rowRef struct {
+	entry, line int
+	ok          bool
+}
+
+// placeRows places n content rows from row first the way viewportContent
+// lays the chat out — every entry at its estimateEntryLines height, with the
+// same separator rows — for a chat that has not drawn a frame yet.
+func (m *model) placeRows(first, n int) []rowRef {
+	out := make([]rowRef, 0, n)
+	r := 0
 	for i := range m.history {
-		h := 1
-		switch {
-		case m.history[i].wrapped != nil:
-			h = max(1, len(m.history[i].wrapped))
-		default:
-			rendered := m.history[i].rendered
-			if rendered == "" {
-				rendered = m.history[i].text
-			}
-			h = max(1, lipgloss.Height(rendered))
+		if len(out) == n {
+			return out
 		}
-		out[i] = [2]int{row, row + h}
-		row += h + m.gapAfter(i) // blank separator row, unless a tool group
+		h := m.estimateEntryLines(i)
+		for len(out) < n && first+len(out) < r+h {
+			out = append(out, rowRef{entry: i, line: first + len(out) - r, ok: true})
+		}
+		r += h
+		g := m.gapAfter(i)
+		for len(out) < n && first+len(out) < r+g {
+			out = append(out, rowRef{entry: i, line: -1})
+		}
+		r += g
+	}
+	for len(out) < n {
+		out = append(out, rowRef{entry: len(m.history) - 1, line: -1})
 	}
 	return out
 }
 
-// buildVisualCopyText assembles the clipboard payload from the
-// highlighted cells only (WYSIWYG): a partial drag copies exactly what
-// the user selected — a word, a line, a block — not the whole entry.
-// Both copy gestures use it: the Linux/BSD right-click
-// (copySelectionAndClear) and the macOS auto-copy on drag-release.
-//
-// Copying the visual slice (rather than each touched entry's raw
-// source) means the clipboard matches what the user highlighted on
-// screen. ANSI styling is stripped and trailing block-fill whitespace
-// is trimmed per row so the payload pastes as clean plain text.
-func (m model) buildVisualCopyText() string {
-	b, ok := m.selectionRange()
-	if !ok {
-		return ""
-	}
-	ranges := m.entryRowRanges()
-	rows := make([]string, 0, b.maxRow-b.minRow+1)
-	for r := b.minRow; r <= b.maxRow; r++ {
-		line, inEntry := m.lineAtContentRow(r, ranges)
-		if !inEntry {
-			rows = append(rows, "")
-			continue
+// entryCopySource is the text a history entry is drawn from, and so what a
+// selection of it copies: what the user typed, the reply's markdown, a
+// diff's unified text; for blocks drawn from structured data, the text they
+// show, without the chat's margin.
+func entryCopySource(e *historyEntry) string {
+	switch e.kind {
+	case histUser, histUserQueued, histResponse:
+		return e.text
+	case histWorkflowDone:
+		header := strings.TrimSpace(xansi.Strip(e.workflowHeader))
+		switch {
+		case header == "":
+			return e.text
+		case strings.TrimSpace(e.text) == "":
+			return header
 		}
-		start, end, ok := m.selectionRenderMask(r, lipgloss.Width(line), ranges)
-		if !ok {
-			rows = append(rows, "")
-			continue
-		}
-		slice := xansi.Strip(xansi.Cut(line, start, end))
-		rows = append(rows, strings.TrimRight(slice, " \t"))
+		return header + "\n" + e.text
+	case histDiff:
+		return unifiedDiffText(e)
 	}
-	for len(rows) > 0 && rows[len(rows)-1] == "" {
-		rows = rows[:len(rows)-1]
+	src := e.rendered
+	if src == "" {
+		src = e.text
 	}
-	if len(rows) == 0 {
-		return ""
+	lines := strings.Split(xansi.Strip(src), "\n")
+	margin := strings.Repeat(" ", chatLeftMarginCols)
+	for i, l := range lines {
+		lines[i] = strings.TrimRight(strings.TrimPrefix(l, margin), " \t")
 	}
-	return strings.Join(rows, "\n")
+	return strings.Join(lines, "\n")
 }
 
-// lineAtContentRow returns the rendered line at chat-content row r and
-// whether the row sits inside a real entry (false for the blank
-// separator between consecutive entries, or for rows past the end of
-// history). Falls back to entry.rendered/text when the wrap cache is
-// not yet populated so the copy path stays correct in test scenarios
-// that bypass viewportContent.
-func (m model) lineAtContentRow(r int, ranges [][2]int) (string, bool) {
-	for i, rr := range ranges {
-		if r < rr[0] || r >= rr[1] {
+// unifiedDiffText is a diff entry as unified-diff text: its path, then each
+// hunk's header and lines.
+func unifiedDiffText(e *historyEntry) string {
+	var b strings.Builder
+	if e.filePath != "" {
+		b.WriteString(e.filePath)
+	}
+	for _, h := range e.hunks {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString("@@ -" + strconv.Itoa(h.OldStart) + "," + strconv.Itoa(h.OldLines) +
+			" +" + strconv.Itoa(h.NewStart) + "," + strconv.Itoa(h.NewLines) + " @@")
+		for _, l := range h.Lines {
+			if l == "" {
+				continue
+			}
+			b.WriteByte('\n')
+			b.WriteString(l)
+		}
+	}
+	return b.String()
+}
+
+// textMap returns entry's cell-to-source map at the chat's current width,
+// wrapping the entry first if it has not been at that width.
+func (m *model) textMap(entry int) *entryTextMap {
+	width := m.chat.contentWidth()
+	m.ensureEntryWrapped(entry, width)
+	e := &m.history[entry]
+	if e.textMap == nil || e.textMap.width != width {
+		lines := e.wrapped
+		if lines == nil {
+			lines = strings.Split(e.text, "\n")
+		}
+		e.textMap = buildEntryTextMap(lines, entryCopySource(e), width)
+	}
+	return e.textMap
+}
+
+// screenRows is what the chat's content rows show, top of the viewport down:
+// the last drawn frame's record — the frame the user is looking at — else
+// the layout's own placement of n rows.
+func (m *model) screenRows(n int) []rowRef {
+	if m.fc != nil && len(m.fc.chatRows) > 0 {
+		return m.fc.chatRows
+	}
+	return m.placeRows(m.chat.YOffset(), n)
+}
+
+// posAt maps a screen cell inside the chat viewport to a selection end,
+// through the frame the user is looking at. A separator row, or a row below
+// the last entry, is the end of the entry above it; the padding above the
+// first row is that row's start.
+func (m *model) posAt(screenX, screenY int) (selPos, bool) {
+	if len(m.history) == 0 {
+		return selPos{}, false
+	}
+	frameTop := m.chat.style.GetPaddingTop() + m.chat.style.GetMarginTop() + m.chat.style.GetBorderTopSize()
+	idx := max(0, screenY-frameTop)
+	rows := m.screenRows(idx + 1)
+	if len(rows) == 0 {
+		return selPos{}, false
+	}
+	ref := rows[min(idx, len(rows)-1)]
+	if ref.entry < 0 || ref.entry >= len(m.history) {
+		return selPos{}, false
+	}
+	if !ref.ok {
+		m.ensureEntryWrapped(ref.entry, m.chat.contentWidth())
+		return selPos{entry: ref.entry, line: len(m.history[ref.entry].wrapped)}, true
+	}
+	if screenY < frameTop {
+		screenX = 0
+	}
+	return selPos{entry: ref.entry, line: ref.line, col: screenX}, true
+}
+
+// buildCopyText is the raw text behind what the selection highlights: for
+// every entry it touches, the copy source from the first highlighted
+// character that comes from it through the last, exactly — markup between
+// them included, none outside them, and no line breaks the window width
+// put in. Entries are joined the way the chat separates them.
+func (m *model) buildCopyText() string {
+	start, end, ok := m.selectionRange()
+	if !ok || start.entry < 0 || end.entry >= len(m.history) {
+		return ""
+	}
+	var b strings.Builder
+	prev := -1
+	for k := start.entry; k <= end.entry; k++ {
+		tm := m.textMap(k)
+		first, last := -1, -1
+		for l, cells := range tm.lines {
+			from, to, ok := rowSelection(start, end, k, l, tm.extents[l])
+			if !ok {
+				continue
+			}
+			for _, c := range cells {
+				if c.start < 0 || c.col+c.width <= from || c.col >= to {
+					continue
+				}
+				if first < 0 {
+					first = c.start
+				}
+				last = c.end
+			}
+		}
+		if first < 0 {
 			continue
 		}
-		j := r - rr[0]
-		if w := m.history[i].wrapped; w != nil && j < len(w) {
-			return w[j], true
+		if prev >= 0 {
+			if m.gapAfter(k-1) > 0 || k-1 != prev {
+				b.WriteString("\n\n")
+			} else {
+				b.WriteByte('\n')
+			}
 		}
-		src := m.history[i].rendered
-		if src == "" {
-			src = m.history[i].text
-		}
-		lines := strings.Split(src, "\n")
-		if j < len(lines) {
-			return lines[j], true
-		}
-		return "", true
+		b.WriteString(tm.source[first:last])
+		prev = k
 	}
-	return "", false
+	return b.String()
 }
 
 // clearSelection drops both the live drag and any finalized selection
@@ -192,21 +290,20 @@ func (m model) lineAtContentRow(r int, ranges [][2]int) (string, bool) {
 func (m *model) clearSelection() {
 	m.selDragging = false
 	m.selActive = false
-	m.selAnchor = cellPos{}
-	m.selFocus = cellPos{}
+	m.selAnchor = selPos{}
+	m.selFocus = selPos{}
 }
 
-// copySelectionAndClear is the right-click handler entry point: it
-// builds the WYSIWYG clipboard payload from the highlighted cells,
-// kicks off an async clipboard write, and clears the selection
-// synchronously so the highlight disappears immediately. The returned
-// tea.Cmd carries the clipboard write and the resulting toast (success
-// or failure).
+// copySelectionAndClear is the right-click handler entry point: it builds the
+// clipboard payload from the selection, kicks off an async clipboard
+// write, and clears the selection synchronously so the highlight disappears
+// immediately. The returned tea.Cmd carries the clipboard write and the
+// resulting toast (success or failure).
 //
 // Right-clicking with no active selection is a no-op (no toast, no
 // clipboard call); the caller in update.go gates on selActive.
 func (m model) copySelectionAndClear() (tea.Model, tea.Cmd) {
-	text := m.buildVisualCopyText()
+	text := (&m).buildCopyText()
 	(&m).clearSelection()
 	m.lastContentFP = ""
 	if text == "" {
@@ -256,57 +353,6 @@ func copyTextSilentCmd(t *toastModel, text string) tea.Cmd {
 	})
 }
 
-// selectionRenderMask returns the inclusive-start / exclusive-end
-// column range to paint with the selection background on a given
-// content row. The mask handles three concerns in one place so the
-// renderer (and tests) get a single source of truth:
-//
-//   - terminal block-selection semantics (first row from minCol, last
-//     row up to maxCol, middle rows full width)
-//   - left-margin suppression — cols 0..chatLeftMarginCols-1 never get
-//     highlighted (the indent / user-bar gutter is decoration, not
-//     content, regardless of entry kind)
-//   - clamping to the actual line width so the highlight never extends
-//     into trailing blank cells
-//
-// ranges is unused today (the margin clamp no longer depends on entry
-// kind) but kept in the signature so the highlight loop can pass its
-// precomputed slice without an extra allocation if entry-aware logic
-// ever comes back.
-//
-// ok=false means there's nothing to paint on this row (no selection,
-// row outside selection range, or fully clamped by the left margin).
-func (m model) selectionRenderMask(contentRow, lineWidth int, ranges [][2]int) (start, end int, ok bool) {
-	_ = ranges
-	b, hasRange := m.selectionRange()
-	if !hasRange {
-		return 0, 0, false
-	}
-	if contentRow < b.minRow || contentRow > b.maxRow {
-		return 0, 0, false
-	}
-	switch {
-	case b.minRow == b.maxRow:
-		start = b.minCol
-		end = b.maxCol + 1
-	case contentRow == b.minRow:
-		start = b.minCol
-		end = lineWidth
-	case contentRow == b.maxRow:
-		start = 0
-		end = b.maxCol + 1
-	default:
-		start = 0
-		end = lineWidth
-	}
-	end = min(end, lineWidth)
-	start = max(start, chatLeftMarginCols)
-	if end <= start {
-		return 0, 0, false
-	}
-	return start, end, true
-}
-
 // selectionStyle is the lipgloss style used to paint highlighted cells
 // on screen. Falls back to reverse-video when the active theme has no
 // row-highlight color (default theme), so the selection still reads on
@@ -321,30 +367,13 @@ func selectionStyle() lipgloss.Style {
 // selectionFingerprint is the stable string representation of the
 // current selection used in viewport cache keys. Empty when there's no
 // selection so the no-selection cache path stays effective. Drag and
-// active selections render identically today, so the fingerprint keys
-// only on bounds — adding a flag would cause unnecessary cache misses
-// every time a drag finalizes.
+// active selections render identically, so the fingerprint keys only on
+// the two ends.
 func (m model) selectionFingerprint() string {
-	b, ok := m.selectionRange()
+	start, end, ok := m.selectionRange()
 	if !ok {
 		return ""
 	}
-	return strconv.Itoa(b.minRow) + "," + strconv.Itoa(b.minCol) + "-" +
-		strconv.Itoa(b.maxRow) + "," + strconv.Itoa(b.maxCol)
-}
-
-// screenToContentCell converts a screen-space mouse coordinate (the X/Y
-// from a tea.Mouse* event) into a content-space cellPos suitable for
-// selAnchor / selFocus. The viewport sits at (0,0) of the screen, but
-// its outer Style applies a top frame (PaddingTop(1) in production), so
-// the first content row lives at screenY = frameTop. Clicks landing on
-// the padding band itself collapse onto the topmost visible content row
-// rather than scrolling negative. Caller is responsible for confirming
-// the click is inside the viewport's screen footprint before calling.
-func (m model) screenToContentCell(screenX, screenY int) cellPos {
-	frameTop := m.chat.style.GetPaddingTop() +
-		m.chat.style.GetMarginTop() +
-		m.chat.style.GetBorderTopSize()
-	contentY := max(0, screenY-frameTop)
-	return cellPos{row: contentY + m.chat.YOffset(), col: screenX}
+	return strconv.Itoa(start.entry) + "," + strconv.Itoa(start.line) + "," + strconv.Itoa(start.col) + "-" +
+		strconv.Itoa(end.entry) + "," + strconv.Itoa(end.line) + "," + strconv.Itoa(end.col)
 }

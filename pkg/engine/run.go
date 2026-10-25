@@ -167,6 +167,9 @@ var ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Co
 	if err != nil {
 		return nil, err
 	}
+	if llm == nil {
+		return nil, fmt.Errorf("provider %s built no model for %q", p.ID(), modelID)
+	}
 	_, initialDelay, backoff := config.AgentRetryOptions(cfg)
 	return newRetryingModel(newUsageModel(llm, p.ID(), modelID), initialDelay, backoff), nil
 }
@@ -318,23 +321,45 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		}
 	}
 
-	compactor := NewCompactor(CompactOptions{
+	var spend RunResult
+	var spendMu sync.Mutex
+	addSpend := func(u providers.Usage) {
+		spendMu.Lock()
+		defer spendMu.Unlock()
+		spend.Usage = append(spend.Usage, u)
+		if u.CostKnown() {
+			spend.CostUSD += u.CostUSD
+			spend.CostKnown = true
+		}
+	}
+
+	compact := CompactOptions{
 		ContextWindow: prov.ContextWindow(modelID),
 		Disabled:      !AutoCompactEnabled(opts.Config),
 		Model:         llm,
 		Notify: func(r CompactionResult) {
-			if opts.EventListener == nil {
-				return
+			if opts.EventListener != nil {
+				opts.EventListener(NewContextCompactedEvent(0, r))
 			}
-			opts.EventListener(ContextCompactedEvent{
-				BaseEvent:     BaseEvent{TabID: 0},
-				Dropped:       r.DroppedContents,
-				BeforeTokens:  r.BeforeTokens,
-				AfterTokens:   r.AfterTokens,
-				ContextWindow: r.ContextWindow,
-			})
 		},
-	})
+		OnSummarize: func(_ int, running bool) {
+			if opts.EventListener != nil {
+				opts.EventListener(StatusEvent{BaseEvent: BaseEvent{TabID: 0}, Status: CompactionStatus(running)})
+			}
+		},
+		Summarizer: ModelChunkSummarizer{
+			Provider:   prov,
+			ModelID:    modelID,
+			Effort:     effort,
+			LoadConfig: func() (config.Config, error) { return opts.Config, nil },
+			OnUsage:    addSpend,
+		},
+	}
+	if path, err := HistoryArchivePath(sessSvc, opts.Cwd, sessionID); err == nil {
+		compact.History = NewHistoryArchive(path)
+	}
+	compactor := NewCompactor(compact)
+	defer compactor.Close()
 
 	agentInstance, err := llmagent.New(llmagent.Config{
 		Name:                  "ask_coder",
@@ -376,7 +401,6 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	}
 
 	var finalResponseText strings.Builder
-	var spend RunResult
 	var touchedFiles []string
 
 	for event, err := range r.Run(ctx, "user", sessionID, userMsg, agent.RunConfig{}) {
@@ -416,11 +440,7 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		}
 
 		if u, ok := ResponseUsage(&event.LLMResponse); ok && !event.Partial {
-			spend.Usage = append(spend.Usage, u)
-			if u.CostKnown() {
-				spend.CostUSD += u.CostUSD
-				spend.CostKnown = true
-			}
+			addSpend(u)
 			if opts.EventListener != nil {
 				opts.EventListener(NewUsageEvent(0, u))
 			}

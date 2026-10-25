@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/workflow"
 	"google.golang.org/adk/v2/agent"
@@ -50,29 +51,44 @@ func WorkflowCompileConfig(e *Engine, cwd string, tabID int, def workflow.Def, s
 			}
 			return toolsets, nil
 		},
-		ModelCallbacksBuilder: func(step workflow.Step, llm adkmodel.LLM) ([]llmagent.BeforeModelCallback, []llmagent.AfterModelCallback) {
-			var window int64
-			if prov, modelID, err := stepTarget(e, step); err == nil {
-				window = prov.ContextWindow(modelID)
+		ModelCallbacksBuilder: func(step workflow.Step, llm adkmodel.LLM) workflow.StepModelHooks {
+			emit := func(ev EngineEvent) {
+				if e.opts.EventListener != nil {
+					e.opts.EventListener(ev)
+				}
 			}
-			c := NewCompactor(CompactOptions{
-				ContextWindow: window,
-				Disabled:      !AutoCompactEnabled(e.opts.Config),
-				Model:         llm,
+			// A step's session is the run's in-memory one, so its archive
+			// lives in memory for the run too.
+			opts := CompactOptions{
+				Disabled: !AutoCompactEnabled(e.opts.Config),
+				Model:    llm,
+				History:  NewMemoryHistoryArchive(),
 				Notify: func(r CompactionResult) {
-					if e.opts.EventListener == nil {
-						return
-					}
-					e.opts.EventListener(ContextCompactedEvent{
-						BaseEvent:     BaseEvent{TabID: tabID},
-						Dropped:       r.DroppedContents,
-						BeforeTokens:  r.BeforeTokens,
-						AfterTokens:   r.AfterTokens,
-						ContextWindow: r.ContextWindow,
-					})
+					emit(NewContextCompactedEvent(tabID, r))
 				},
-			})
-			return []llmagent.BeforeModelCallback{c.BeforeModel}, []llmagent.AfterModelCallback{c.AfterModel}
+				OnSummarize: func(_ int, running bool) {
+					emit(StatusEvent{BaseEvent: BaseEvent{TabID: tabID}, Status: CompactionStatus(running)})
+				},
+			}
+			if prov, modelID, err := stepTarget(e, step); err == nil {
+				opts.ContextWindow = prov.ContextWindow(modelID)
+				opts.Summarizer = ModelChunkSummarizer{
+					Provider:   prov,
+					ModelID:    modelID,
+					LoadConfig: func() (config.Config, error) { return e.opts.Config, nil },
+					OnUsage: func(u providers.Usage) {
+						if u.CostKnown() {
+							emit(CostEvent{BaseEvent: BaseEvent{TabID: tabID}, CostUSD: u.CostUSD})
+						}
+					},
+				}
+			}
+			c := NewCompactor(opts)
+			return workflow.StepModelHooks{
+				Before: []llmagent.BeforeModelCallback{c.BeforeModel},
+				After:  []llmagent.AfterModelCallback{c.AfterModel},
+				Closer: c,
+			}
 		},
 	}
 }

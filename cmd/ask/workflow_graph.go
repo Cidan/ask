@@ -147,13 +147,22 @@ func tuiWorkflowCompileConfig(sess *agentSession, def workflow.Def, src workflow
 			return toolsets, nil
 		},
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{sess.beforeModelCallback},
-		ModelCallbacksBuilder: func(step workflow.Step, llm adkmodel.LLM) ([]llmagent.BeforeModelCallback, []llmagent.AfterModelCallback) {
+		ModelCallbacksBuilder: func(step workflow.Step, llm adkmodel.LLM) workflow.StepModelHooks {
 			var window int64
+			var summarizer engine.ChunkSummarizer
 			if prov, modelID, err := workflowStepTarget(sess, step); err == nil {
 				window = prov.ContextWindow(modelID)
+				summarizer = sess.chunkSummarizer(prov, modelID)
 			}
-			before, after := compactCallbacks(sess.newCompactor(window, llm))
-			return []llmagent.BeforeModelCallback{before}, []llmagent.AfterModelCallback{after}
+			// Workflow runs are not resumable, so a step's history only
+			// has to last the run.
+			c := sess.newCompactor(window, llm, engine.NewMemoryHistoryArchive(), summarizer)
+			before, after := compactCallbacks(c)
+			return workflow.StepModelHooks{
+				Before: []llmagent.BeforeModelCallback{before},
+				After:  []llmagent.AfterModelCallback{after},
+				Closer: c,
+			}
 		},
 	}
 }

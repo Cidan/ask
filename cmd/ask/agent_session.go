@@ -116,14 +116,19 @@ func loadTranscriptFromEvents(events []*session.Event, deslop map[string]string)
 			}
 
 			var textParts []string
+			var images []chatImage
 			for _, p := range content.Parts {
-				if p != nil && p.Text != "" && !p.Thought && p.FunctionResponse == nil && p.FunctionCall == nil {
+				switch {
+				case p == nil:
+				case p.InlineData != nil && len(p.InlineData.Data) > 0 && strings.HasPrefix(p.InlineData.MIMEType, "image/"):
+					images = append(images, chatImage{mime: p.InlineData.MIMEType, size: len(p.InlineData.Data), data: p.InlineData.Data})
+				case p.Text != "" && !p.Thought && p.FunctionResponse == nil && p.FunctionCall == nil:
 					textParts = append(textParts, p.Text)
 				}
 			}
 			fullText := strings.TrimSpace(strings.Join(textParts, ""))
-			if fullText != "" {
-				items = append(items, transcriptItem{kind: trUser, text: fullText})
+			if fullText != "" || len(images) > 0 {
+				items = append(items, transcriptItem{kind: trUser, text: fullText, images: images})
 			}
 			continue
 		}

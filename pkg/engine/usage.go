@@ -40,6 +40,11 @@ func (u *usageModel) RebaseHistory() {
 	providers.RebaseHistory(u.inner)
 }
 
+// CloseTurn forwards to the wrapped model (see providers.TurnCloser).
+func (u *usageModel) CloseTurn() {
+	providers.CloseTurn(u.inner)
+}
+
 // ResolveContextWindow is the wrapped model's own answer when it has one, else
 // the provider's current window for the model — which a live listing can
 // correct after the model was built (see providers.ContextWindowResolver).
@@ -57,7 +62,7 @@ func (u *usageModel) GenerateContent(ctx context.Context, req *model.LLMRequest,
 	return func(yield func(*model.LLMResponse, error) bool) {
 		for resp, err := range u.inner.GenerateContent(ctx, req, stream) {
 			if err == nil && resp != nil && !resp.Partial {
-				completeUsage(resp, u.provider, u.model)
+				completeUsage(resp, u.provider, u.model, func() int64 { return u.ResolveContextWindow(ctx) })
 			}
 			if !yield(resp, err) {
 				return
@@ -67,10 +72,16 @@ func (u *usageModel) GenerateContent(ctx context.Context, req *model.LLMRequest,
 }
 
 // completeUsage fills in and prices resp's usage record, attaching one derived
-// from its metadata when the adapter did not.
-func completeUsage(resp *model.LLMResponse, providerID, modelID string) {
+// from its metadata when the adapter did not. A context reading is stamped
+// with window(), the window it is measured against, unless the adapter
+// reported one.
+func completeUsage(resp *model.LLMResponse, providerID, modelID string, window func() int64) {
 	if rec, ok := ResponseUsage(resp); ok {
-		providers.AttachUsage(resp, StampUsage(rec, providerID, modelID))
+		rec = StampUsage(rec, providerID, modelID)
+		if rec.ContextTokens > 0 && rec.ContextWindow <= 0 {
+			rec.ContextWindow = window()
+		}
+		providers.AttachUsage(resp, rec)
 	}
 }
 

@@ -87,6 +87,16 @@ reaches for the design-preview canvas while it is making visual
 decisions rather than only after a `search_tools` round-trip; flip it to
 `s.deferredBase` / the registry func to make it discovery-only).
 
+**History tools are neither.** `history_summary`, `history_read`, and
+`history_search` (`pkg/engine/history_tools.go`) are not in any tool list:
+the auto-compactor packs them onto the request itself once its archive
+holds a chunk, each bound to that agent's own archive (detail in
+`pkg/engine/CLAUDE.md`). The registry would be wrong for them — sub-agents
+and workflow steps reach the coder's registry, so a registry copy would
+search the parent's archive — and a session that never compacts never
+carries them. They first appear on the call that makes the first cut,
+which already misses the prompt cache. The elision notice names them.
+
 ## Images from tools (ImageSink)
 
 Tool results are text/JSON on every provider — ADK stuffs a tool's

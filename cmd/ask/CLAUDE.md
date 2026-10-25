@@ -98,8 +98,42 @@ tool surface → `.claude/rules/tools.md`, workflow graph →
   entry in place — hence its length in the key.
 - The scrollbar is column `m.width-1`; content is laid out at
   `m.width-1`. Mouse on the ask screen: left-drag selects
-  (selection.go), right-click copies (`copySelectionAndClear`), drag on
-  the scrollbar column scrolls.
+  (selection.go), right-click copies (`copySelectionAndClear`; on macOS
+  the drag's release copies), drag on the scrollbar column scrolls.
+- **Selection is what the screen shows; copy is the raw text behind it.**
+  `selAnchor` / `selFocus` are `selPos` — an entry, one of its wrapped
+  lines, a screen column — taken from the cell under the pointer, so the
+  highlight is pure geometry: a terminal-style stream from the press cell
+  to the current one (`rowSelection`: the press row from its column to the
+  row's text end, rows between whole, the end row through its column;
+  never the gutter, never trailing padding). A separator or blank row
+  below an entry is that entry's end; the padding row above the text is
+  the first row's start; dragging below the chat runs to the end of its
+  last row. Only right-click translates (`buildCopyText`): per entry, the
+  first and last selected cells that draw a character of the entry's
+  *copy source* (`entryCopySource` — what the user typed, the reply's
+  markdown, a diff's unified text, a tool block's text without the
+  margin) bound the copy, and the source between them is copied exactly —
+  markup inside kept, none outside, no breaks the width put in. Which
+  cell draws which source character is the `entryTextMap`
+  (chat_textmap.go): both sides tokenized into graphemes with whitespace
+  runs folded, paired by a longest common subsequence (`diff.Align`), with
+  the glyphs glamour draws for markup comparing equal to it (`alignKey`:
+  `•`/`─` ↔ `-*+`, `│`/`┼` ↔ `|>`, `✓` ↔ `x`). It is built only on copy
+  and rebuilt whenever `wrapped` is. Images are not text. `selWidth` ties
+  a selection to the width it was made at; a re-wrap drops it, as does a
+  re-projection.
+- **The mouse reads the frame the user sees.** `View` runs on a copy of
+  the model, so a scroll offset the render clamped never reaches the
+  model the mouse events go to. `viewportContent` records what each
+  content row shows (`fc.chatRows`, a `rowRef` per row), and `posAt` and
+  the highlight (`applySelectionHighlight`) read the screen through it
+  (`screenRows`; `placeRows` only before the first frame). Every frame
+  must also be one the next update reproduces: the draw replaces
+  estimated entry heights with wrapped ones, so a chat pinned to the
+  bottom is re-pinned after that wrap (as `layout()` pins it), never just
+  clamped — a clamped frame after a resize showed rows the next update
+  jumped away from, moving the text under the pointer mid-drag.
 
 ### Reactive flow for data-bearing screens
 
@@ -123,7 +157,11 @@ lockstep (`.claude/rules/issues.md`).
   usage record (`providers.Usage`, attached by `engine.ModelBuilder`'s
   wrapper and read with `engine.ResponseUsage`) arrives as a `usageMsg`
   carrying its context reading, the provider/model that made it, and its
-  cost. `lastUsageTokens` is divided by *that* model's window
+  cost. `lastUsageTokens` is divided by *that* reading's window
+  (`contextLimit`): the one the record carries (`usageWindow`, from
+  `Usage.ContextWindow` — restored with the reading on `/resume`, so a
+  1M model is not measured against a 200k catalog guess before the
+  provider relearns its window), else *that* model's
   (`usageProvider`/`usageModel`), so a workflow step on another model is
   measured against its own. A model swap keeps the reading as an
   estimate (`usageEstimated`, shown `~N%` against the new model's window)
@@ -134,7 +172,8 @@ lockstep (`.claude/rules/issues.md`).
   priceable model or a `providers.CostReporter` (Claude Code,
   OpenRouter). Calls made on the session's behalf outside its own model
   calls — sub-agents (`RunResult.Usage`), deslop, memory extraction, the
-  tab title — go through `agentSession.recordSpend` (or
+  tab title, compaction summaries (`chunkSummarizer`, kind `compaction`)
+  — go through `agentSession.recordSpend` (or
   `appendSpendCmd`), which posts a `costMsg` and appends to the usage
   ledger, `<sessionID>.usage.json` beside the session file. `/resume`
   (`historyLoadedMsg.usage`, and the translation path's
@@ -208,8 +247,13 @@ lockstep (`.claude/rules/issues.md`).
   turn context. Any runner error once that context is cancelled ends the
   turn as a cancel, not a failure (see `pkg/engine/CLAUDE.md`, `Session`).
 - `Coordinator` (`globalCoordinator`, coordinator.go) owns sessions by
-  tab: `Dispatch` starts one or queues a turn (`queueMidTurn` while
-  busy), `Cancel`, `Kill`, `RunWorkflow` → `runWorkflowGraph`
+  tab: `Dispatch` starts one or hands the message to
+  `agentSession.submit`, which steers the running turn or starts the
+  next one under the turn's own lock (`engine.TurnGate`, see
+  `pkg/engine/CLAUDE.md`), attachments included either way. A stopped
+  turn is not busy, so the next line is a turn of its own; `closeTurn`
+  answers its orphaned tool calls and ends the model's own turn.
+  `Cancel`, `Kill`, `RunWorkflow` → `runWorkflowGraph`
   (workflow_graph.go). `injectTabID` stamps every outgoing message. On a
   first start `Dispatch` runs `prepareProviderSession` (proc.go) before
   `StartSession` — this is the one place the worktree is created and
@@ -370,6 +414,18 @@ lockstep (`.claude/rules/issues.md`).
   accepted mime (png/jpeg/gif/webp), no X11 path; macOS coerces the
   pasteboard with `osascript`. Raw bytes go to the provider; a PNG
   thumbnail re-encode goes to Kitty.
+- **Images stay in the chat** (chat_images.go). A sent message keeps the
+  text as typed, and its attachments become `chatImage`s on the
+  `trUser`/`trUserQueued` item (`sentImages`, reusing the image ids the
+  pending area already uploaded); `renderUserEntry` draws them under the
+  bar as bordered thumbnails, or a `[mime  size]` chip without Kitty or
+  when a thumbnail would not fit the width (cutting placeholder cells
+  breaks the image). On `/resume` and translation the replay
+  (`loadTranscriptFromEvents`) records each user message's inline image
+  parts — an image-only message included; `prepareTranscriptImages`
+  builds their thumbnails off the UI goroutine and drops the raw bytes;
+  `placeTranscriptImages` uploads each under a fresh id
+  (`nextKittyImageID`). `kittyTransmitFn` is the upload seam.
 - Kitty: `isKitty` (TERM kitty/ghostty or `KITTY_WINDOW_ID`);
   `kittyTransmitPNG` writes APC chunks straight to `/dev/tty` so the
   renderer cannot interleave; `kittyPlaceholderRows` emits `U+10EEEE`
@@ -394,11 +450,11 @@ lockstep (`.claude/rules/issues.md`).
 
 - App, tabs, layout: main.go, tabs.go, types.go, update.go, view.go,
   transcript.go, chatview.go, screens.go, sidebar.go, keymap.go,
-  themes.go, toast.go, selection.go, list_nav.go, util.go, debug.go,
-  aliases.go, herdr.go.
+  themes.go, toast.go, selection.go, chat_textmap.go, list_nav.go,
+  util.go, debug.go, aliases.go, herdr.go.
 - Chat and input: commands.go, paths.go, slashdescs.go, shell.go,
-  clipboard.go, kitty.go, kitty_diacritics.go, tool_output.go,
-  tab_title.go, usage.go.
+  clipboard.go, kitty.go, kitty_diacritics.go, chat_images.go,
+  tool_output.go, tab_title.go, usage.go.
 - Overlays: ask_question.go, ask_wire.go, approval.go,
   finalized_plan.go, sudo_password.go, config.go, config_modal.go,
   config_fields.go, config_project.go, config_keybindings.go,

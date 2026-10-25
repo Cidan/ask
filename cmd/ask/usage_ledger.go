@@ -15,17 +15,19 @@ import (
 // conversation itself is an event in the session file, and carries its usage
 // record (providers.Usage) there. Calls made on the session's behalf that never
 // become events — the tab title, deslop rewrites, memory extraction,
-// sub-agents — are appended to the usage ledger, <sessionID>.usage.json next
-// to the session file, like the deslop sidecar. /resume reads both back.
+// sub-agents, compaction summaries — are appended to the usage ledger,
+// <sessionID>.usage.json next to the session file, like the deslop sidecar.
+// /resume reads both back.
 
 const usageLedgerVersion = 1
 
 // Ledger entry kinds: what an out-of-conversation call was for.
 const (
-	spendTitle    = "title"
-	spendDeslop   = "deslop"
-	spendMemory   = "memory"
-	spendSubagent = "subagent"
+	spendTitle      = "title"
+	spendDeslop     = "deslop"
+	spendMemory     = "memory"
+	spendSubagent   = "subagent"
+	spendCompaction = "compaction"
 )
 
 type usageLedgerEntry struct {
@@ -96,12 +98,14 @@ func (st *agentSessionStore) appendUsageLedger(id, cwd string, entries ...usageL
 }
 
 // sessionUsage is what a stored session says about its context and spend:
-// the latest context reading, the provider and model that made it, and the
-// total cost of the conversation's calls and its ledgered ones. Only usage
-// records count — a session saved before ask recorded them restores nothing,
-// rather than a guess from its providers' raw counts.
+// the latest context reading, the window it was measured against (zero for a
+// reading recorded before ask stored one), the provider and model that made
+// it, and the total cost of the conversation's calls and its ledgered ones.
+// Only usage records count — a session saved before ask recorded them
+// restores nothing, rather than a guess from its providers' raw counts.
 type sessionUsage struct {
 	contextTokens int
+	contextWindow int64
 	provider      string
 	model         string
 	costUSD       float64
@@ -126,7 +130,8 @@ func summarizeSessionUsage(events []*session.Event, ledger []usageLedgerEntry) s
 		}
 		add(u)
 		if u.ContextTokens > 0 {
-			out.contextTokens, out.provider, out.model = u.ContextTokens, u.Provider, u.Model
+			out.contextTokens, out.contextWindow = u.ContextTokens, u.ContextWindow
+			out.provider, out.model = u.Provider, u.Model
 		}
 	}
 	for _, e := range ledger {
