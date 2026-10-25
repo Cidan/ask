@@ -122,8 +122,8 @@ func TestAgentTaskTool_Delegation(t *testing.T) {
 }
 
 // A named agent runs on its own definition — its prompt, the report tail,
-// and the environment — never ask's coding prompt; a research sub-agent
-// keeps the assembled one.
+// and the environment, under its own name — never ask's coding prompt; a
+// research sub-agent keeps the assembled one, as ask_coder.
 func TestAgentTaskTool_NamedAgentSystemPrompt(t *testing.T) {
 	origModelBuilder := engine.ModelBuilder
 	defer func() { engine.ModelBuilder = origModelBuilder }()
@@ -168,7 +168,7 @@ func TestAgentTaskTool_NamedAgentSystemPrompt(t *testing.T) {
 		t.Fatalf("%d model calls, want 1", len(systems))
 	}
 	named := systems[0]
-	for _, want := range []string{"You are a security auditor.", strings.TrimSpace(agentSubagentPromptTail), "<env>", "Working directory: " + env.Cwd} {
+	for _, want := range []string{"You are a security auditor.", strings.TrimSpace(agentSubagentPromptTail), "<env>", "Working directory: " + env.Cwd, `Your internal name is "auditor"`} {
 		if !strings.Contains(named, want) {
 			t.Errorf("the named agent's system prompt lacks %q:\n%s", want, named)
 		}
@@ -180,7 +180,7 @@ func TestAgentTaskTool_NamedAgentSystemPrompt(t *testing.T) {
 	if resp := runTool(t, tool, agentTaskParams{Prompt: "investigate auth", Description: "research"}); resp.IsError {
 		t.Fatalf("research sub-agent failed: %+v", resp)
 	}
-	if len(systems) != 2 || !strings.Contains(systems[1], "You are a software engineering agent running inside ask") {
+	if len(systems) != 2 || !strings.Contains(systems[1], "You are a software engineering agent running inside ask") || !strings.Contains(systems[1], `Your internal name is "ask_coder"`) {
 		t.Errorf("the research sub-agent lost ask's system prompt:\n%s", systems[len(systems)-1])
 	}
 }

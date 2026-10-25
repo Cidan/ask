@@ -7,6 +7,7 @@ import (
 	"iter"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -896,5 +897,48 @@ func TestEngineRun_InstructionutilSessionInterpolation(t *testing.T) {
 	}
 	if res.Response != "Completed with branch interpolation." {
 		t.Errorf("unexpected response: %q", res.Response)
+	}
+}
+
+// A run's agent is "ask_coder" unless AgentName names it: the model is told
+// the name, and its replies are still the assistant's. "user" is refused.
+func TestEngineRun_AgentName(t *testing.T) {
+	isolateTestHome(t)
+	tmpCwd := t.TempDir()
+
+	var systems []string
+	origBuilder := ModelBuilder
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
+		return &mockLLM{
+			name: modelID,
+			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+				var sys strings.Builder
+				if req.Config != nil && req.Config.SystemInstruction != nil {
+					for _, part := range req.Config.SystemInstruction.Parts {
+						sys.WriteString(part.Text)
+					}
+				}
+				systems = append(systems, sys.String())
+				return mockLLMSequence(textResponse("done"))
+			},
+		}, nil
+	}
+	defer func() { ModelBuilder = origBuilder }()
+
+	for _, c := range []struct{ name, want string }{{"", `"ask_coder"`}, {"blog-post", `"blog-post"`}} {
+		res, err := Run(context.Background(), RunOptions{Prompt: "go", Cwd: tmpCwd, Provider: "vertex", AgentName: c.name})
+		if err != nil {
+			t.Fatalf("AgentName %q: %v", c.name, err)
+		}
+		if got := systems[len(systems)-1]; !strings.Contains(got, "Your internal name is "+c.want) {
+			t.Errorf("AgentName %q: the model was not told %s:\n%s", c.name, c.want, got)
+		}
+		if len(res.Messages) < 2 || res.Messages[1].Role != RoleAssistant || res.Response != "done" {
+			t.Errorf("AgentName %q: the reply is not the assistant's: %+v", c.name, res.Messages)
+		}
+	}
+
+	if _, err := Run(context.Background(), RunOptions{Prompt: "go", Cwd: tmpCwd, Provider: "vertex", AgentName: "user"}); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Errorf(`AgentName "user": %v, want refused`, err)
 	}
 }

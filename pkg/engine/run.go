@@ -66,6 +66,12 @@ type RunOptions struct {
 	// own definition.
 	SystemPrompt string `json:"system_prompt,omitempty"`
 
+	// AgentName, when set, is the agent's name — what it is told it is
+	// called, and the author of its events — in place of "ask_coder": a
+	// named sub-agent's definition name. A session is resumed under the name
+	// it ran under; events by any other name read as another agent's.
+	AgentName string `json:"agent_name,omitempty"`
+
 	// Effort optionally sets reasoning/thinking effort level.
 	Effort string `json:"effort,omitempty"`
 
@@ -370,8 +376,16 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	compactor := NewCompactor(compact)
 	defer compactor.Close()
 
+	agentName := strings.TrimSpace(opts.AgentName)
+	if agentName == "" {
+		agentName = "ask_coder"
+	}
+	if agentName == "user" {
+		return nil, errors.New(`agent name "user" is reserved for the user's own messages`)
+	}
+
 	agentInstance, err := llmagent.New(llmagent.Config{
-		Name:                  "ask_coder",
+		Name:                  agentName,
 		Model:                 llm,
 		InstructionProvider:   instructionProvider,
 		Tools:                 adkTools,
