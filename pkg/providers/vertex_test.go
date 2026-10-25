@@ -9,6 +9,7 @@ import (
 
 	"cloud.google.com/go/auth"
 	"github.com/Cidan/ask/pkg/config"
+	"google.golang.org/genai"
 )
 
 func TestFilterVertexModelOptions(t *testing.T) {
@@ -238,6 +239,31 @@ func TestVertexProviderOptions(t *testing.T) {
 	}
 	if cfgOff.MaxOutputTokens != int32(MaxOutputTokensGemini) {
 		t.Errorf("expected MaxOutputTokens=%d for off effort, got %d", MaxOutputTokensGemini, cfgOff.MaxOutputTokens)
+	}
+}
+
+// A model the catalog does not know (gemini-4-argon) gets a thinking level Vertex accepts for every
+// Gemini thinking model: xhigh and max are high, minimal is low; a catalog model keeps its own.
+func TestVertexProviderOptionsUnknownModel(t *testing.T) {
+	for effort, want := range map[string]genai.ThinkingLevel{
+		"xhigh":   genai.ThinkingLevelHigh,
+		"max":     genai.ThinkingLevelHigh,
+		"high":    genai.ThinkingLevelHigh,
+		"medium":  genai.ThinkingLevelMedium,
+		"low":     genai.ThinkingLevelLow,
+		"minimal": genai.ThinkingLevelLow,
+	} {
+		cfg, _ := VertexProviderOptions("gemini-4-argon", effort)
+		if cfg.ThinkingConfig == nil || cfg.ThinkingConfig.ThinkingLevel != want {
+			t.Errorf("gemini-4-argon at %s: %+v, want %s", effort, cfg.ThinkingConfig, want)
+		}
+	}
+	if cfg, _ := VertexProviderOptions("gemini-4-argon", "off"); cfg.ThinkingConfig != nil {
+		t.Errorf("off: %+v, want no thinking config", cfg.ThinkingConfig)
+	}
+	// gemini-3-pro-preview offers low and high: medium is the middle of its own levels.
+	if cfg, _ := VertexProviderOptions("gemini-3-pro-preview", "medium"); cfg.ThinkingConfig == nil || cfg.ThinkingConfig.ThinkingLevel != genai.ThinkingLevelHigh {
+		t.Errorf("a catalog model's own levels: %+v, want HIGH", cfg.ThinkingConfig)
 	}
 }
 

@@ -279,6 +279,11 @@ var ListVertexModels = func(ctx context.Context, pc config.ProviderConfig) ([]st
 	return models, nil
 }
 
+// geminiThinkingLevels are the thinking levels every Gemini thinking model takes: a model the
+// catalog does not know is held to them, since Vertex refuses a level a model does not offer
+// (XHIGH and MAX none, MINIMAL only some Flash models) with a 400.
+var geminiThinkingLevels = []string{"low", "medium", "high"}
+
 // VertexProviderOptions translates ask's effort picker onto Gemini's thinking controls and configures max tokens.
 func VertexProviderOptions(modelID, effort string) (*genai.GenerateContentConfig, *float64) {
 	cfg := &genai.GenerateContentConfig{
@@ -294,6 +299,9 @@ func VertexProviderOptions(modelID, effort string) (*genai.GenerateContentConfig
 	clamped := CatalogClampEffort(VertexProviderID, modelID, resolved)
 	if clamped == "" {
 		clamped = resolved
+	}
+	if _, known := CatalogModel(VertexProviderID, modelID); !known {
+		clamped = clampEffortToSet(clamped, geminiThinkingLevels)
 	}
 	if clamped != "" && clamped != "off" {
 		level := genai.ThinkingLevel(strings.ToUpper(clamped))
