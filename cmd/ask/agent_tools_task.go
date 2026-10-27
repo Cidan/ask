@@ -167,7 +167,7 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 					})
 				}
 				jobCtx, cancel := context.WithCancel(context.Background())
-				job := env.Jobs.Add(label+": "+short(prompt), true, cancel)
+				job := env.Jobs.AddAgent(label+": "+clipText(firstLineOf(subDesc), 80), cancel)
 				go func() {
 					report, err := run(jobCtx)
 					isErr := false

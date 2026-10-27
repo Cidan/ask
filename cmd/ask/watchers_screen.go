@@ -933,11 +933,19 @@ func (s *watchersScreenState) runLines(d watcher.Def, st *watcher.Status, run wa
 }
 
 // transcriptLines appends what the model did: each tool call as a one-line
-// header, each answer as wrapped text. The prompt is the output above.
+// header, each answer as wrapped text, and any later turn handed to it (the
+// reports of its background agents) as a one-line marker. The first turn's
+// prompt is the output above.
 func (s *watchersScreenState) transcriptLines(out *[]string, width int, markdown func(string)) {
 	glyph := lipgloss.NewStyle().Foreground(activeTheme.accent)
+	prompts := 0
 	for _, it := range s.tx {
 		switch it.kind {
+		case trUser:
+			prompts++
+			if prompts > 1 {
+				*out = append(*out, "", "  "+dimStyle.Render(truncateForRow("› "+firstLineOf(it.text), max(1, width-4))))
+			}
 		case trToolCall:
 			phrase := toolCallPhrase(it.toolInput)
 			if phrase == "" {

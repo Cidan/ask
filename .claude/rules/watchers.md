@@ -113,6 +113,16 @@ are local; `String()` is the canonical spelling and round-trips.
   configured. A workflow target goes through `runWorkflowGraph` with
   `workflowGraphOpts{background: true}` (no tracker, no memory ingest),
   every step carrying the project's context the same way.
+- A chat-session run can start sub-agents with `task`. The session closes
+  when the run ends, which kills its jobs, so a turn that ends with
+  background sub-agents the model has not collected
+  (`Jobs.UndeliveredAgents`: running, or finished but never read) does
+  not end the run: it waits for them (activity `waiting for N background
+  agents`, still counting cost and honoring stop), then queues one more
+  turn carrying their reports (`agentReportsTurn`, one `<agent_report>`
+  each), and repeats until a turn ends with none owed. That turn's answer
+  is the run's. Background bash jobs are not waited for — a server never
+  ends. A workflow target's steps get no such turn; the graph is done.
 - Permissions follow the configured Skip All Permissions. Runs work in the
   watcher's directory, never a fresh worktree (a chatty watcher would
   leave a worktree and branch per check).

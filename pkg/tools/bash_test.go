@@ -279,3 +279,47 @@ func TestAgentShellEnv_DropsHerdrPaneVariables(t *testing.T) {
 		t.Errorf("agentShellEnv = %v, want %v: a nested agent in a bash command must not claim ask's herdr pane", got, want)
 	}
 }
+
+// A background sub-agent stays owed to the model until the model has its
+// output: read after it finished, killed by the model, or handed over.
+// Reading it while it runs does not count, and shell jobs are never owed.
+func TestJobManager_UndeliveredAgents(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	jobs := env.Jobs
+	jobs.Add("sleep 100", false, nil)
+	first := jobs.AddAgent("agent: one", nil)
+	second := jobs.AddAgent("agent reviewer: two", nil)
+	var third *Job
+	third = jobs.AddAgent("agent: three", func() { third.Finish(ShellResult{ExitCode: 1}) })
+	owed := func() string {
+		var ids []string
+		for _, j := range jobs.UndeliveredAgents() {
+			ids = append(ids, j.ID)
+		}
+		return strings.Join(ids, ",")
+	}
+	if got := owed(); got != "job-2,job-3,job-4" {
+		t.Fatalf("owed = %q, want the three agents in start order", got)
+	}
+
+	read := JobOutputTool(env)
+	runTool(t, read, JobOutputParams{JobID: first.ID})
+	if got := owed(); got != "job-2,job-3,job-4" {
+		t.Errorf("reading a running agent must not count as delivered: %q", got)
+	}
+	first.AppendOutput("report one")
+	first.Finish(ShellResult{ExitCode: 0})
+	runTool(t, read, JobOutputParams{JobID: first.ID})
+	if got := owed(); got != "job-3,job-4" {
+		t.Errorf("reading a finished agent delivers it: %q", got)
+	}
+
+	runTool(t, JobKillTool(env), JobKillParams{JobID: third.ID})
+	if got := owed(); got != "job-3" {
+		t.Errorf("an agent the model killed is not owed: %q", got)
+	}
+	second.MarkDelivered()
+	if got := owed(); got != "" {
+		t.Errorf("owed after the last delivery = %q", got)
+	}
+}
