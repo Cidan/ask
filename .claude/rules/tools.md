@@ -181,7 +181,11 @@ tool.
 - `run_in_background` registers a `Job` in `env.Jobs`; `job_output`
   (optionally waiting up to 30s) and `job_kill` (SIGKILL to the group)
   manage it. `BgTaskStartedEvent` / `BgTaskEndedEvent` drive the UI.
-  The `task` tool's background mode rides the same manager.
+  The `task` tool's background mode rides the same manager as an agent
+  job (`AddAgent`, labelled `agent <name>: <description>`). A job is
+  `Delivered` once the model has its output — `job_output` on a finished
+  job, `job_kill`, or `MarkDelivered`; `UndeliveredAgents` lists the
+  agent jobs still owed (what a watcher run waits for).
 - Output passes through `ApplyBashFilter(command, raw, exitCode)`
   unless `disable_token_savings`; savings are tallied in
   `~/.config/ask/savings.json` (`RecordSavings(base, rawTokens,

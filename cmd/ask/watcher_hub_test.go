@@ -538,3 +538,139 @@ func TestWatcherHub_MissingAgentFailsTheRun(t *testing.T) {
 		t.Errorf("run = %+v", r)
 	}
 }
+
+// requestText is every text part a model request carries.
+func requestText(req *adkmodel.LLMRequest) string {
+	var b strings.Builder
+	for _, c := range req.Contents {
+		if c == nil {
+			continue
+		}
+		for _, p := range c.Parts {
+			if p != nil {
+				b.WriteString(p.Text)
+			}
+		}
+	}
+	return b.String()
+}
+
+// A watcher's session that starts a sub-agent in the background and ends
+// its turn does not end the run: the run waits for the agent, hands its
+// report to the model as one more turn, and that turn's answer is the
+// run's.
+func TestWatcherHub_WaitsForBackgroundAgents(t *testing.T) {
+	h := useWatcherHub(t)
+	providers.Register(windowProvider{id: "wtest-bg", window: 8000})
+	withRegisteredProviders(t, agentAPIProvider{prov: windowProvider{id: "wtest-bg", window: 8000}})
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var finalRequest string
+	reply := func(parts ...*genai.Part) iter.Seq2[*adkmodel.LLMResponse, error] {
+		return func(yield func(*adkmodel.LLMResponse, error) bool) {
+			yield(&adkmodel.LLMResponse{Content: &genai.Content{Role: genai.RoleModel, Parts: parts}, FinishReason: genai.FinishReasonStop}, nil)
+		}
+	}
+	prev := engine.ModelBuilder
+	engine.ModelBuilder = func(_ context.Context, _ providers.Provider, _ config.Config, modelID string) (adkmodel.LLM, error) {
+		return &mockADKModel{name: modelID, generateFunc: func(ctx context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+			if strings.Contains(systemText(req), "You are the helper.") {
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+				return reply(genai.NewPartFromText("HELPER_REPORT: #7 looks fine"))
+			}
+			text := requestText(req)
+			last := req.Contents[len(req.Contents)-1]
+			switch {
+			case strings.Contains(text, "HELPER_REPORT"):
+				mu.Lock()
+				finalRequest = text
+				mu.Unlock()
+				return reply(genai.NewPartFromText("Final: the helper says #7 looks fine."))
+			case len(last.Parts) > 0 && last.Parts[0].FunctionResponse != nil:
+				return reply(genai.NewPartFromText("Started the helper."))
+			}
+			return reply(genai.NewPartFromFunctionCall("task", map[string]any{
+				"prompt": "review #7", "agent": "helper", "run_in_background": true, "description": "review #7",
+			}))
+		}}, nil
+	}
+	t.Cleanup(func() { engine.ModelBuilder = prev })
+	stubScript(t, printing("#7 bump deps\n"))
+	d := saveTestWatcher(t, "prs", "every 5m", func(d *watcher.Def) { d.Provider = "wtest-bg" })
+	writeTestFile(t, filepath.Join(d.Cwd, ".ask", "agents"), "helper.md",
+		"---\nname: helper\ndescription: reviews one PR\ntools: read\n---\nYou are the helper.\n")
+
+	h.tick(time.Now())
+	waitFor(t, func() bool { return h.snapshot().status(wid(t, "prs")).Activity == "waiting for 1 background agent" })
+	if r, _ := h.snapshot().status(wid(t, "prs")).LatestRun(); r.Finished() {
+		t.Fatal("the run must not end while its background agent is out")
+	}
+	close(release)
+	waitIdle(t, h, "prs")
+
+	r, _ := h.snapshot().status(wid(t, "prs")).LatestRun()
+	if r.Status != watcher.RunDone || r.Response != "Final: the helper says #7 looks fine." {
+		t.Fatalf("run = %+v", r)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains(finalRequest, `<agent_report job="job-1" task="agent helper: review #7" status="finished">`) {
+		t.Errorf("the report turn did not carry the agent's report:\n%s", finalRequest)
+	}
+}
+
+// Stopping a run while it waits for a background agent ends it, and the
+// agent with it.
+func TestWatcherHub_StopWhileWaitingForAgents(t *testing.T) {
+	h := useWatcherHub(t)
+	providers.Register(windowProvider{id: "wtest-bg", window: 8000})
+	withRegisteredProviders(t, agentAPIProvider{prov: windowProvider{id: "wtest-bg", window: 8000}})
+	helperCancelled := make(chan struct{})
+	reply := func(text string) iter.Seq2[*adkmodel.LLMResponse, error] {
+		return func(yield func(*adkmodel.LLMResponse, error) bool) {
+			yield(&adkmodel.LLMResponse{Content: genai.NewContentFromText(text, genai.RoleModel), FinishReason: genai.FinishReasonStop}, nil)
+		}
+	}
+	prev := engine.ModelBuilder
+	engine.ModelBuilder = func(_ context.Context, _ providers.Provider, _ config.Config, modelID string) (adkmodel.LLM, error) {
+		return &mockADKModel{name: modelID, generateFunc: func(ctx context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+			if strings.Contains(systemText(req), "You are the helper.") {
+				<-ctx.Done()
+				close(helperCancelled)
+				return reply("never")
+			}
+			last := req.Contents[len(req.Contents)-1]
+			if len(last.Parts) > 0 && last.Parts[0].FunctionResponse != nil {
+				return reply("Started the helper.")
+			}
+			return func(yield func(*adkmodel.LLMResponse, error) bool) {
+				yield(&adkmodel.LLMResponse{Content: &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{genai.NewPartFromFunctionCall("task", map[string]any{
+					"prompt": "review", "agent": "helper", "run_in_background": true, "description": "review",
+				})}}, FinishReason: genai.FinishReasonStop}, nil)
+			}
+		}}, nil
+	}
+	t.Cleanup(func() { engine.ModelBuilder = prev })
+	stubScript(t, printing("#7\n"))
+	d := saveTestWatcher(t, "prs", "every 5m", func(d *watcher.Def) { d.Provider = "wtest-bg" })
+	writeTestFile(t, filepath.Join(d.Cwd, ".ask", "agents"), "helper.md",
+		"---\nname: helper\ndescription: reviews one PR\ntools: read\n---\nYou are the helper.\n")
+
+	h.tick(time.Now())
+	waitFor(t, func() bool { return h.snapshot().status(wid(t, "prs")).Activity == "waiting for 1 background agent" })
+	if err := h.requestStop(wid(t, "prs")); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, h, "prs")
+	if r, _ := h.snapshot().status(wid(t, "prs")).LatestRun(); r.Status != watcher.RunStopped {
+		t.Errorf("run = %+v", r)
+	}
+	select {
+	case <-helperCancelled:
+	case <-time.After(2 * time.Second):
+		t.Error("the background agent outlived the stopped run")
+	}
+}

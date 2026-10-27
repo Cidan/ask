@@ -905,46 +905,118 @@ func (h *watcherHub) runSessionTarget(ctx context.Context, d watcher.Def, live *
 		out.err = err
 		return out
 	}
+	// A turn can end with background sub-agents still running, or finished
+	// with reports the model never read. The session closes when the run
+	// ends, which would kill them, so the run waits for them and hands
+	// their reports to the model as one more turn.
+	var waiting []*tools.Job
+	var agentsDone <-chan struct{}
 	sawDone := false
-	for msg := range ch {
-		switch m := msg.(type) {
-		case streamStatusMsg:
-			h.setActivity(live, m.status)
-		case todoUpdatedMsg:
-			for _, t := range m.todos {
-				if t.Status == "in_progress" {
-					h.setActivity(live, nonEmpty(t.ActiveForm, t.Content))
+	for {
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				if !sawDone {
+					out.err = errors.New("the model run ended without finishing")
 				}
+				return out
 			}
-		case usageMsg:
-			if m.costKnown {
+			switch m := msg.(type) {
+			case streamStatusMsg:
+				h.setActivity(live, m.status)
+			case todoUpdatedMsg:
+				for _, t := range m.todos {
+					if t.Status == "in_progress" {
+						h.setActivity(live, nonEmpty(t.ActiveForm, t.Content))
+					}
+				}
+			case usageMsg:
+				if m.costKnown {
+					out.costUSD += m.costUSD
+					out.costKnown = true
+				}
+			case costMsg:
 				out.costUSD += m.costUSD
 				out.costKnown = true
+			case providerDoneMsg:
+				sawDone = true
+				out.response = m.res.Result
+				switch {
+				case m.err != nil:
+					out.err = m.err
+				case m.res.IsError:
+					out.err = errors.New(nonEmpty(m.res.Result, "the model run failed"))
+					out.response = ""
+				}
+			case turnCompleteMsg:
+				if !sawDone {
+					out.err = errors.New("the model run ended without finishing")
+					return out
+				}
+				if out.err != nil || ctx.Err() != nil {
+					return out
+				}
+				waiting = sess.env.Jobs.UndeliveredAgents()
+				if len(waiting) == 0 {
+					return out
+				}
+				debugLog("watcher %s: turn ended with %d background agents outstanding", d.Name, len(waiting))
+				noun := "agents"
+				if len(waiting) == 1 {
+					noun = "agent"
+				}
+				h.setActivity(live, fmt.Sprintf("waiting for %d background %s", len(waiting), noun))
+				agentsDone = jobsDone(ctx, waiting)
 			}
-		case costMsg:
-			out.costUSD += m.costUSD
-			out.costKnown = true
-		case providerDoneMsg:
-			sawDone = true
-			out.response = m.res.Result
-			switch {
-			case m.err != nil:
-				out.err = m.err
-			case m.res.IsError:
-				out.err = errors.New(nonEmpty(m.res.Result, "the model run failed"))
-				out.response = ""
+		case <-agentsDone:
+			agentsDone = nil
+			if ctx.Err() != nil {
+				return out
 			}
-		case turnCompleteMsg:
-			if !sawDone {
-				out.err = errors.New("the model run ended without finishing")
+			sawDone = false
+			if err := sess.queueTurn(agentReportsTurn(waiting)); err != nil {
+				out.err = err
+				return out
 			}
-			return out
 		}
 	}
-	if !sawDone {
-		out.err = errors.New("the model run ended without finishing")
+}
+
+// jobsDone closes once every job has finished, or ctx is done.
+func jobsDone(ctx context.Context, jobs []*tools.Job) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for _, j := range jobs {
+			select {
+			case <-j.DoneCh:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return done
+}
+
+// agentReportsTurn is the turn that hands finished background agents'
+// reports to the model, marking each delivered.
+func agentReportsTurn(jobs []*tools.Job) string {
+	var b strings.Builder
+	b.WriteString("The background agents you started have finished. Their reports follow; carry on with your instructions using them.\n")
+	for _, j := range jobs {
+		output, truncated, _, res := j.Snapshot()
+		status := "finished"
+		if res.ExitCode != 0 {
+			status = "failed"
+		}
+		body := tools.TruncateMiddle(strings.TrimSpace(output))
+		if truncated {
+			body += "\n(the report exceeded the in-memory cap; middle portions were dropped)"
+		}
+		fmt.Fprintf(&b, "\n<agent_report job=%q task=%q status=%q>\n%s\n</agent_report>\n", j.ID, j.Command, status, body)
+		j.MarkDelivered()
 	}
-	return out
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // runWorkflowTarget runs the watcher's workflow with the prompt as its

@@ -7,6 +7,7 @@ import (
 	"google.golang.org/adk/v2/agent"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -128,22 +129,29 @@ func RunShellProcess(dir, command string, extraEnv ...string) (*ShellHandle, err
 	}, nil
 }
 
-// Job represents one background shell command.
+// Job represents one background shell command, or one background sub-agent
+// (Agent) whose output is its final report.
 type Job struct {
 	ID      string
 	Command string
+	Agent   bool
 
 	Mu        sync.Mutex
 	Buf       strings.Builder
 	Truncated bool
 	Done      bool
 	Result    ShellResult
+	// Delivered records that the model has the job's final output: it read
+	// it with job_output, killed the job itself, or was handed it.
+	Delivered bool
 
 	DisableSavings  bool
 	SavingsRecorded bool
 
 	Kill   func()
 	DoneCh chan struct{}
+
+	seq int
 }
 
 func (j *Job) AppendOutput(chunk string) {
@@ -182,18 +190,61 @@ func NewJobManager() *JobManager {
 }
 
 func (m *JobManager) Add(command string, disableSavings bool, kill func()) *Job {
+	return m.add(command, disableSavings, false, kill)
+}
+
+// AddAgent tracks a background sub-agent; label names it in job listings.
+func (m *JobManager) AddAgent(label string, kill func()) *Job {
+	return m.add(label, true, true, kill)
+}
+
+func (m *JobManager) add(command string, disableSavings, agent bool, kill func()) *Job {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.seq++
 	job := &Job{
 		ID:             fmt.Sprintf("job-%d", m.seq),
 		Command:        command,
+		Agent:          agent,
 		DisableSavings: disableSavings,
 		Kill:           kill,
 		DoneCh:         make(chan struct{}),
+		seq:            m.seq,
 	}
 	m.jobs[job.ID] = job
 	return job
+}
+
+// UndeliveredAgents returns the background sub-agents whose report the
+// model does not have yet — still running, or finished but never read —
+// oldest first.
+func (m *JobManager) UndeliveredAgents() []*Job {
+	m.mu.Lock()
+	var out []*Job
+	for _, j := range m.jobs {
+		if j.Agent {
+			out = append(out, j)
+		}
+	}
+	m.mu.Unlock()
+	kept := out[:0]
+	for _, j := range out {
+		j.Mu.Lock()
+		delivered := j.Delivered
+		j.Mu.Unlock()
+		if !delivered {
+			kept = append(kept, j)
+		}
+	}
+	sort.Slice(kept, func(a, b int) bool { return kept[a].seq < kept[b].seq })
+	return kept
+}
+
+// MarkDelivered records that the model has the job's output.
+func (j *Job) MarkDelivered() {
+	j.Mu.Lock()
+	j.Delivered = true
+	j.Mu.Unlock()
 }
 
 func (m *JobManager) Get(id string) *Job {
@@ -454,6 +505,7 @@ func JobOutputTool(env *ToolEnv) Tool {
 				if res.Err != nil {
 					status = "failed: " + res.Err.Error()
 				}
+				job.MarkDelivered()
 			}
 			if strings.TrimSpace(body) == "" {
 				body = "(no output yet)"
@@ -484,6 +536,9 @@ func JobKillTool(env *ToolEnv) Tool {
 			if job == nil {
 				return JobKillResult{}, errors.New("no such job: " + p.JobID)
 			}
+			// The model chose to end it: whatever it would have reported is
+			// not wanted.
+			job.MarkDelivered()
 			_, _, done, res := job.Snapshot()
 			if done {
 				return JobKillResult{JobID: p.JobID, ExitCode: res.ExitCode}, nil
