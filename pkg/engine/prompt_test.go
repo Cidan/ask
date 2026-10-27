@@ -672,3 +672,87 @@ func TestEnvBlock(t *testing.T) {
 		t.Errorf("a repository's block:\n%s", block)
 	}
 }
+
+// projectWithContext is a repository with an instruction file, an eager
+// rule, a doc the instruction file @-links, a named agent, and a scoped
+// rule, in an isolated home.
+func projectWithContext(t *testing.T) string {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	stubGitStatus(t, "")
+	cwd := t.TempDir()
+	for path, body := range map[string]string{
+		".git/HEAD":                  "ref: refs/heads/main\n",
+		"CLAUDE.md":                  "Project rules here. See @docs/style.md\n",
+		"docs/style.md":              "Use tabs.\n",
+		".claude/rules/eager.md":     "Always run make test.\n",
+		".claude/rules/scoped.md":    "---\npaths:\n  - \"pkg/**\"\n---\nScoped rule body.\n",
+		".claude/agents/reviewer.md": "---\nname: reviewer\ndescription: reviews code\n---\nYou review code.\n",
+	} {
+		full := filepath.Join(cwd, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return cwd
+}
+
+// ProjectContext carries the instruction files, the eager rules, and the
+// docs they link — never the scoped rules, which arrive on read.
+func TestProjectContext(t *testing.T) {
+	cwd := projectWithContext(t)
+	block := ProjectContext(cwd)
+	for _, want := range []string{"<project_instructions>", "Project rules here.", "<project_rules>", "Always run make test.", "<included_docs>", "Use tabs."} {
+		if !strings.Contains(block, want) {
+			t.Errorf("project context lacks %q:\n%s", want, block)
+		}
+	}
+	if strings.Contains(block, "Scoped rule body.") {
+		t.Error("a scoped rule belongs to the reads that match it, not the prompt")
+	}
+	if ProjectContext(t.TempDir()) != "" {
+		t.Error("a bare directory has no project context")
+	}
+}
+
+// A named agent's prompt is the tab's prompt with the agent's own
+// instructions as its head: the same environment and project context, no
+// agents list, and steering for working alone.
+func TestBuildSystemPrompt_AgentInstructions(t *testing.T) {
+	cwd := projectWithContext(t)
+	tab := BuildSystemPrompt(PromptOptions{Cwd: cwd})
+	agent := BuildSystemPrompt(PromptOptions{Cwd: cwd, AgentInstructions: "You review code."})
+
+	if !strings.HasPrefix(agent, "You review code.") || strings.Contains(agent, "<tool_call_hygiene>") {
+		t.Errorf("the agent's own instructions must replace ask's coding prompt:\n%s", agent[:200])
+	}
+	context := ProjectContext(cwd)
+	if !strings.Contains(tab, context) || !strings.Contains(agent, context) {
+		t.Error("a named agent gets the same project context a tab does")
+	}
+	if !strings.Contains(agent, "Working directory: "+cwd) {
+		t.Error("a named agent gets the environment")
+	}
+	if !strings.Contains(tab, "<available_agents>") || strings.Contains(agent, "<available_agents>") {
+		t.Error("only a tab lists the named agents: a named agent cannot start one")
+	}
+	if strings.Contains(agent, "You have a team of sub-agents") || strings.Contains(agent, "stop for the user's go-ahead") {
+		t.Error("a named agent's steering neither delegates nor waits for a go-ahead")
+	}
+	for _, want := range []string{"You must never rely on your internal memory", "You MUST actively use the 'todos' tool"} {
+		if !strings.Contains(agent, want) {
+			t.Errorf("a named agent keeps the shared steering %q", want)
+		}
+	}
+
+	wt := filepath.Join(cwd, ".claude", "worktrees", "tree")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(BuildSystemPrompt(PromptOptions{Cwd: wt, AgentInstructions: "x"}), "dedicated git worktree") {
+		t.Error("a named agent in a worktree is pinned to it like a tab")
+	}
+}

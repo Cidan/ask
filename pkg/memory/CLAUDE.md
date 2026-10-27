@@ -108,8 +108,10 @@ last exchange (`TurnFromSession`) and hands it to the installed
   A failed load or open prints to stderr and ask runs without memory. No
   config flag for the store; the extraction model is `ask.json`
   `memory.{provider,model}`.
-- Session start: `pkg/engine/prompt.go` appends `SystemBlock` as
-  `<project_memory>` (2s timeout) when `IsOpen`.
+- Session start: `engine.ProjectContext` appends `SystemBlock` as
+  `<project_memory>` (2s timeout) when `IsOpen` — for every session in
+  a directory: tabs, named agents, research sub-agents, workflow steps,
+  watcher runs.
 - Per turn: `tools.PreloadMemoryTool` (`MemoryRecallHook`, core, name
   `preload_memory`) is an ADK request processor: once per invocation it
   runs `RecallBlock` on the turn's user text (topic from the tab, ids in
@@ -120,7 +122,10 @@ last exchange (`TurnFromSession`) and hands it to the installed
   cached block.
 - Per file: `tools.WrapFileToolsWithMemory` wraps `read`/`edit`/`write`;
   a non-error result gets `FileBlock` appended via
-  `engine.AppendToolResultText`.
+  `engine.AppendToolResultText`. Tabs, `tools.BuildCoreTools` /
+  `BuildSubagentTools`, and named agents (`subagentTools`, whatever they
+  are granted) all wrap; named agents also get `load_memory` and the
+  per-turn recall hook.
 - On demand: `load_memory` (core) — query → `Recall` (10, bodies for 5),
   or `id` → `Get`. Registry: `memory_index` (explicit `Upsert`,
   approval-gated), `memory_reinforce`, `memory_demote`, `memory_forget`

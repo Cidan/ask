@@ -292,17 +292,36 @@ compactor owns it (`Compactor.Close`).
 ## Prompt assembly (prompt.go)
 
 `BuildSystemPrompt(PromptOptions{Cwd, InWorkflow, GitStatusFn,
-DisableSkillsPrompt, SystemPrompt})` emits, in order: `AgentCoderPrompt`
-(static head; `InWorkflow` swaps three paragraphs for workflow-step
-text) → `<env>` (cwd, git repo flag, platform, date, git status from
-`AgentGitStatus`, 40-line cap) → `<project_instructions>` →
-`<project_rules>` (eager) → `<included_docs>` (`@`-links, seeded from
-each document's `Links`, resolved against its own `Root`) →
-`<project_memory>` (the top-weighted concepts, when `memory.IsOpen()`,
-2s timeout) →
+DisableSkillsPrompt, SystemPrompt, AgentInstructions})` emits, in order:
+`AgentCoderPrompt` (static head; `InWorkflow` swaps three paragraphs for
+workflow-step text) → `<env>` (cwd, git repo flag, platform, date, git
+status from `AgentGitStatus`, 40-line cap) → `ProjectContext(cwd)` →
 `<available_skills>` (unless `DisableSkillsPrompt`) →
 `<available_agents>` → `providers.SteeringPrompt`.
 
+- `ProjectContext(cwd)` is everything any session in cwd is told about
+  its project: `<project_instructions>` → `<project_rules>` (eager) →
+  `<included_docs>` (`@`-links, seeded from each document's `Links`,
+  resolved against its own `Root`) → `<project_memory>` (the top-weighted
+  concepts, when `memory.IsOpen()`, 2s timeout). A tab, a named agent,
+  and a workflow step all get it — a headless run is a tab without a
+  screen, never a session that knows less about the project. Path-scoped
+  rules and instruction files below cwd arrive on reads
+  (`WrapContextAwareTools`), which assumes this block was delivered.
+- A named agent (`AgentInstructions`, `RunOptions.AgentInstructions`):
+  its own instructions replace `AgentCoderPrompt`, no
+  `<available_agents>` (it cannot start one), and the headless steering
+  (`SteeringOptions.Headless`: no delegation, no stopping for a go-ahead).
+  `SystemPrompt` stays a verbatim whole-prompt override.
+- Workflow steps: `WorkflowStepInstructions(cwd)` (workflow_run.go) is
+  the `InstructionBuilder` for TUI and headless runs alike — the step's
+  own `BuildStepInstruction`, then `<env>`, `ProjectContext`, and the
+  workflow steering, the shared part built once per run.
+- Headless tools (`tools.BuildCoreTools`, `BuildSubagentTools`) come
+  wrapped like a tab's: memory-aware file tools and context-aware reads.
+  `RewrapContextAwareTools` gives a tool set fresh lazy-context state —
+  each workflow step starts its own context, so a rule an earlier step
+  was handed must reach it again.
 - Built once per session and reused verbatim for prefix caching.
   `BuildInstructionProvider` caches it and appends only the state blocks
   `<system_reminder>`, `<step_incomplete>`, `<extra_instructions>`.

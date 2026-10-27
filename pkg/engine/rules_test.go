@@ -319,3 +319,36 @@ func TestRuleAwareTool_RelPathRejectsOutsideRoot(t *testing.T) {
 		t.Errorf("relPath outside root must be empty, got %q", got)
 	}
 }
+
+// A rewrapped tool set starts over: a scoped rule an earlier holder of the
+// tools was given reaches the new one again, while the old set still
+// remembers it delivered it.
+func TestRewrapContextAwareTools_FreshState(t *testing.T) {
+	cwd := t.TempDir()
+	writeTestDoc(t, cwd, "src/api/handler.go", "package api\n")
+	rules := []Rule{{Path: "/r/api.md", Rel: "api.md", Paths: []string{"src/api/**/*.go"}, Body: "API rule body."}}
+	read := func(ts []Tool) string {
+		resp, err := RunADKTool(testAgentCtx(), ts[0], map[string]any{"file_path": "src/api/handler.go", "description": "read"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return mustToolText(resp)
+	}
+	first := WrapContextAwareTools([]Tool{&fakeRuleTestTool{cwd: cwd}}, cwd, rules)
+	if !strings.Contains(read(first), "API rule body.") {
+		t.Fatal("the first read must carry the rule")
+	}
+	if strings.Contains(read(first), "API rule body.") {
+		t.Fatal("the same set delivers a rule once")
+	}
+	second := RewrapContextAwareTools(first, cwd, rules)
+	if _, ok := second[0].(*ContextAwareTool).Inner.(*fakeRuleTestTool); !ok {
+		t.Fatal("rewrapping must wrap the inner tool, not the old wrapper")
+	}
+	if !strings.Contains(read(second), "API rule body.") {
+		t.Error("a rewrapped set must deliver the rule again")
+	}
+	if strings.Contains(read(first), "API rule body.") {
+		t.Error("rewrapping must leave the original set's state alone")
+	}
+}

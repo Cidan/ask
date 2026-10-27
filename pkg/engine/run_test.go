@@ -14,6 +14,7 @@ import (
 	"github.com/Cidan/ask/pkg/config"
 	pkgmemory "github.com/Cidan/ask/pkg/memory"
 	"github.com/Cidan/ask/pkg/providers"
+	"github.com/Cidan/ask/pkg/workflow"
 	"github.com/google/uuid"
 	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
@@ -940,5 +941,101 @@ func TestEngineRun_AgentName(t *testing.T) {
 
 	if _, err := Run(context.Background(), RunOptions{Prompt: "go", Cwd: tmpCwd, Provider: "vertex", AgentName: "user"}); err == nil || !strings.Contains(err.Error(), "reserved") {
 		t.Errorf(`AgentName "user": %v, want refused`, err)
+	}
+}
+
+// A named agent's run (AgentInstructions) is headed by the agent's own
+// instructions and still carries the project's: the instruction files,
+// rules, and linked docs of its working directory. The prompt is built
+// once for the whole run.
+func TestEngineRun_AgentInstructionsCarryProjectContext(t *testing.T) {
+	cwd := projectWithContext(t)
+	var systems []string
+	origBuilder := ModelBuilder
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
+		return &mockLLM{
+			name: modelID,
+			generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+				var sys strings.Builder
+				if req.Config != nil && req.Config.SystemInstruction != nil {
+					for _, part := range req.Config.SystemInstruction.Parts {
+						sys.WriteString(part.Text)
+					}
+				}
+				systems = append(systems, sys.String())
+				return mockLLMSequence(textResponse("done"))
+			},
+		}, nil
+	}
+	defer func() { ModelBuilder = origBuilder }()
+
+	if _, err := Run(context.Background(), RunOptions{Prompt: "review", Cwd: cwd, Provider: "vertex", AgentName: "reviewer", AgentInstructions: "You review code."}); err != nil {
+		t.Fatal(err)
+	}
+	sys := systems[len(systems)-1]
+	if !strings.HasPrefix(sys, "You review code.") {
+		t.Errorf("the agent's own instructions head its prompt:\n%s", sys[:min(len(sys), 300)])
+	}
+	for _, want := range []string{"Project rules here.", "Always run make test.", "Use tabs.", `Your internal name is "reviewer"`} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("a named agent's run lacks %q", want)
+		}
+	}
+	if strings.Contains(sys, "<available_agents>") {
+		t.Error("a named agent cannot start agents; it gets no list of them")
+	}
+
+	if _, err := Run(context.Background(), RunOptions{Prompt: "x", Cwd: cwd, Provider: "vertex", SystemPrompt: "VERBATIM"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(systems[len(systems)-1], "VERBATIM") || strings.Contains(systems[len(systems)-1], "Project rules here.") {
+		t.Error("SystemPrompt stays the whole prompt, verbatim")
+	}
+}
+
+// Every workflow step is told what a session in its directory is: its own
+// instruction first, then the environment, the project context, and the
+// workflow steering — not just the step prompt.
+func TestEngine_RunWorkflow_StepsCarryProjectContext(t *testing.T) {
+	cwd := projectWithContext(t)
+	var mu sync.Mutex
+	var systems []string
+	origBuilder := ModelBuilder
+	ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (model.LLM, error) {
+		return &mockLLM{name: "m", generateFunc: func(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+			var sys strings.Builder
+			if req.Config != nil && req.Config.SystemInstruction != nil {
+				for _, part := range req.Config.SystemInstruction.Parts {
+					sys.WriteString(part.Text)
+				}
+			}
+			mu.Lock()
+			systems = append(systems, sys.String())
+			mu.Unlock()
+			return mockLLMSequence(textResponse("done"))
+		}}, nil
+	}
+	defer func() { ModelBuilder = origBuilder }()
+
+	eng := New(Options{Config: config.Config{Provider: "vertex"}, InteractionHandler: HeadlessInteractionHandler{AutoApproveTools: true}})
+	def := workflow.Def{Name: "ctx", Steps: []workflow.Step{{Name: "one", Prompt: "STEP_ONE_PROMPT"}, {Name: "two", Prompt: "STEP_TWO_PROMPT"}}}
+	if err := eng.RunWorkflow(context.Background(), cwd, 7, def, workflow.NewTextSource(1, "src")); err != nil {
+		t.Fatalf("RunWorkflow: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(systems) < 2 {
+		t.Fatalf("%d model calls", len(systems))
+	}
+	for i, prompt := range []string{"STEP_ONE_PROMPT", "STEP_TWO_PROMPT"} {
+		sys := systems[i]
+		if !strings.HasPrefix(sys, prompt) {
+			t.Errorf("step %d's own instruction comes first:\n%s", i+1, sys[:min(len(sys), 200)])
+		}
+		for _, want := range []string{"Working directory: " + cwd, "Project rules here.", "Always run make test.", "Use tabs.", "You are running as a step in an automated workflow"} {
+			if !strings.Contains(sys, want) {
+				t.Errorf("step %d lacks %q", i+1, want)
+			}
+		}
 	}
 }

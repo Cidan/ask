@@ -112,7 +112,10 @@ only converts at the boundary (`workflow_store.go` aliases
   queues one turn with `src.Display()`. Tool execution, cost accounting,
   and cancellation behave exactly as in a chat turn. The loop ends on
   `turnCompleteMsg` or channel close; `providerDoneMsg` before
-  `turnCompleteMsg` is the order it depends on.
+  `turnCompleteMsg` is the order it depends on. `workflowGraphOpts{}` is
+  a tab's run; `{background: true}` is a watcher's (no tab): a background
+  session, the configured permissions instead of skip-all, no tracker,
+  no memory ingest (`.claude/rules/watchers.md`).
 - Headless: `Engine.RunWorkflow` (pkg/engine/workflow_run.go) does the
   same on its own `session.InMemoryService`, then
   `IngestWorkflowMemory` files the session into `pkg/memory`.
@@ -141,6 +144,13 @@ TUI also reads `env.PendingFinishData` as a backup before `Finish`.
   loop the iteration framing, and only the tail step is told about
   `exit_loop`). Previous-step output is not threaded in — the graph
   passes it as the next node's input.
+- Every step also gets its project, like a tab: both compile configs set
+  `InstructionBuilder: engine.WorkflowStepInstructions(cwd)`, which
+  appends `<env>`, `engine.ProjectContext` (instructions, eager rules,
+  linked docs, memory), and the workflow steering to the step's own
+  instruction. The TUI's `ToolsBuilder` rewraps the session's tools per
+  step (`engine.RewrapContextAwareTools`), since each step starts its own
+  context.
 - `tools.WorkflowStepTools(env, isFinal)` (pkg/tools/artifact.go):
   `save_artifact` + ADK `load_artifacts` on every step for structured
   handoff (one runner invocation ⇒ one `ArtifactService` spanning all

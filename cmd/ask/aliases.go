@@ -190,6 +190,7 @@ var (
 	agentTodosTool           = tools.TodosTool
 	agentWorkflowTools       = tools.WorkflowTools
 	agentExtensionTools      = tools.ExtensionTools
+	agentWatcherTools        = tools.WatcherTools
 	agentSearchToolsTool     = tools.SearchToolsTool
 	agentInvokeToolTool      = tools.InvokeToolTool
 	agentWebSearchTool       = tools.WebSearchTool
@@ -306,7 +307,15 @@ var (
 	agentGitStatus        = engine.AgentGitStatus
 )
 
-func subagentTools(def subagentDef, env *agentToolEnv, deferred func() []tools.Tool) []tools.Tool {
+// subagentTools is what a named agent works with: the tools its definition
+// grants, plus what every session gets whatever it is granted, as a tab
+// does — file tools that recall memories about what they touch, memory
+// recall on every turn (topic and onTopic may be nil) and lookup, and the
+// images its reads produce.
+func subagentTools(def subagentDef, env *agentToolEnv, deferred func() []tools.Tool, topic func() string, onTopic func(string)) []tools.Tool {
+	if env.ImageSink == nil {
+		env.ImageSink = agentNewImageSink()
+	}
 	available := map[string]tools.Tool{
 		"read":         tools.ReadTool(env),
 		"glob":         tools.GlobTool(env),
@@ -329,13 +338,25 @@ func subagentTools(def subagentDef, env *agentToolEnv, deferred func() []tools.T
 		return available[name] != nil
 	}
 	available["invoke_tool"] = tools.InvokeToolTool(deferred, isCore, env)
-	return engine.SubagentTools(def, available)
+	granted := wrapFileToolsWithMemory(engine.SubagentTools(def, available), env.Cwd)
+	return append(granted,
+		agentLoadMemoryTool(env.Cwd),
+		agentPreloadMemoryTool(env.Cwd, topic, onTopic),
+		agentImageInjectionHook(env.ImageSink, env.SupportsImages),
+	)
 }
 
+// buildAgentSystemPrompt is the session's system prompt: ask's coding
+// prompt, or for a session that runs as a named agent, the same prompt
+// headed by that agent's own instructions.
 func buildAgentSystemPrompt(args ProviderSessionArgs) string {
-	return engine.BuildSystemPrompt(engine.PromptOptions{
+	opts := engine.PromptOptions{
 		Cwd:         args.Cwd,
 		InWorkflow:  args.InWorkflow,
 		GitStatusFn: agentGitStatus,
-	})
+	}
+	if args.Agent != nil {
+		opts.AgentInstructions = args.Agent.Prompt
+	}
+	return engine.BuildSystemPrompt(opts)
 }

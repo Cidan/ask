@@ -210,6 +210,13 @@ type PromptOptions struct {
 	GitStatusFn         func(string) string
 	DisableSkillsPrompt bool
 	SystemPrompt        string
+	// AgentInstructions makes this a named agent's prompt: the agent's own
+	// instructions stand in for ask's coding prompt, and it still gets
+	// everything a tab in cwd knows about the project. The agents list is
+	// left out (a named agent cannot start another), and the steering is
+	// the headless one (no delegation, no stopping for a go-ahead nobody
+	// is there to give).
+	AgentInstructions string
 }
 
 // ContextFileRealPath resolves path to its canonical on-disk identity so
@@ -373,11 +380,14 @@ func EnvBlock(cwd string, gitStatus func(string) string) string {
 // skills, or subagents — loaded transitively via BFS with cycle-safe
 // dedup), <project_memory>, <available_skills>, <available_agents>,
 // then the shared ask steering prompt (with its worktree pinning clause
-// when args.Cwd is an ask-managed worktree). Called once per session —
-// the result must be reused verbatim on every request so the
+// when args.Cwd is an ask-managed worktree). A named agent
+// (AgentInstructions) gets the same prompt with its own instructions as
+// the head, no agents list, and the headless steering. Called once per
+// session — the result must be reused verbatim on every request so the
 // provider's prefix caching can hit.
 func BuildSystemPrompt(opts PromptOptions) string {
 	cwd := opts.Cwd
+	agent := strings.TrimSpace(opts.AgentInstructions) != ""
 	var b strings.Builder
 	promptStr := AgentCoderPrompt
 
@@ -389,26 +399,76 @@ func BuildSystemPrompt(opts PromptOptions) string {
 			"Exception: when the user is describing a problem, asking a question, or thinking out loud rather than requesting a change, the deliverable is your assessment. Report your findings and stop. Don't apply a fix until they ask for one.",
 			"You are running as a step in an automated workflow. Perform the requested work, implement necessary changes, and call end_turn when finished.")
 	}
+	if agent {
+		promptStr = strings.TrimSpace(opts.AgentInstructions)
+	}
 
 	b.WriteString(promptStr)
 
 	b.WriteString("\n\n")
 	b.WriteString(EnvBlock(cwd, opts.GitStatusFn))
 
-	ctxDocs := AgentContextFiles(cwd)
-	if len(ctxDocs) > 0 {
-		b.WriteString("\n\n<project_instructions>\nThe project provides these instruction files. Follow them.\n")
-		for _, d := range ctxDocs {
-			fmt.Fprintf(&b, "<file path=%q>\n%s\n</file>\n", d.Path, d.Body)
-		}
-		b.WriteString("</project_instructions>")
-	}
-
-	rules := DiscoverRules(cwd)
-	if block := RulesPromptBlock(rules); block != "" {
+	if block := ProjectContext(cwd); block != "" {
 		b.WriteString("\n\n")
 		b.WriteString(block)
 	}
+
+	if !opts.DisableSkillsPrompt {
+		if block := SkillsPromptBlock(DiscoverSkills(cwd)); block != "" {
+			b.WriteString("\n\n")
+			b.WriteString(block)
+		}
+	}
+	if !agent {
+		if block := SubagentsPromptBlock(DiscoverSubagents(cwd)); block != "" {
+			b.WriteString("\n\n")
+			b.WriteString(block)
+		}
+	}
+
+	b.WriteString("\n\n")
+	b.WriteString(providers.SteeringPrompt(providers.SteeringOptions{
+		InWorkflow: opts.InWorkflow,
+		Headless:   agent && !opts.InWorkflow,
+		Cwd:        opts.Cwd,
+	}))
+
+	return b.String()
+}
+
+// ProjectContext is what every session working in cwd is told about its
+// project, whatever runs it — a tab, a named agent, a workflow step: the
+// instruction files (CLAUDE.md, AGENTS.md, … from ~/.claude and the
+// project root down to cwd) in <project_instructions>, the eager rules in
+// <project_rules>, the docs they @-link in <included_docs>, and the
+// project's top memories in <project_memory>. Rules scoped by paths, and
+// instruction files below cwd, arrive as the session reads files
+// (WrapContextAwareTools), which assumes everything here was delivered.
+func ProjectContext(cwd string) string {
+	var b strings.Builder
+	section := func(s string) {
+		if s == "" {
+			return
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(s)
+	}
+
+	ctxDocs := AgentContextFiles(cwd)
+	if len(ctxDocs) > 0 {
+		var docs strings.Builder
+		docs.WriteString("<project_instructions>\nThe project provides these instruction files. Follow them.\n")
+		for _, d := range ctxDocs {
+			fmt.Fprintf(&docs, "<file path=%q>\n%s\n</file>\n", d.Path, d.Body)
+		}
+		docs.WriteString("</project_instructions>")
+		section(docs.String())
+	}
+
+	rules := DiscoverRules(cwd)
+	section(RulesPromptBlock(rules))
 
 	repoRoot := config.ProjectRoot(cwd)
 	if repoRoot == "" {
@@ -448,39 +508,16 @@ func BuildSystemPrompt(opts PromptOptions) string {
 		linkedDocs = append(linkedDocs, LoadContextLinksFrom(root, linksByRoot[root])...)
 	}
 	if len(linkedDocs) > 0 {
-		if block := ContextLinksPromptBlock(linkedDocs); block != "" {
-			b.WriteString("\n\n")
-			b.WriteString(block)
-		}
+		section(ContextLinksPromptBlock(linkedDocs))
 	}
 
 	if memory.IsOpen() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		if mem := memory.SystemBlock(ctx, cwd); mem != "" {
-			b.WriteString("\n\n<project_memory>\n")
-			b.WriteString(mem)
-			b.WriteString("\n</project_memory>")
+			section("<project_memory>\n" + mem + "\n</project_memory>")
 		}
 		cancel()
 	}
-
-	if !opts.DisableSkillsPrompt {
-		if block := SkillsPromptBlock(DiscoverSkills(cwd)); block != "" {
-			b.WriteString("\n\n")
-			b.WriteString(block)
-		}
-	}
-	if block := SubagentsPromptBlock(DiscoverSubagents(cwd)); block != "" {
-		b.WriteString("\n\n")
-		b.WriteString(block)
-	}
-
-	b.WriteString("\n\n")
-	b.WriteString(providers.SteeringPrompt(providers.SteeringOptions{
-		InWorkflow: opts.InWorkflow,
-		Cwd:        opts.Cwd,
-	}))
-
 	return b.String()
 }
 

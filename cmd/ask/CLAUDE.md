@@ -28,8 +28,8 @@ tool surface → `.claude/rules/tools.md`, workflow graph →
   draws body + overlay onto a `uv.ScreenBuffer`. Modals are drawn over
   the history, never returned alone.
 - Screens (screens.go): `screenAsk`, `screenIssues`, `screenPRs`,
-  `screenWorkflows`; handlers are stateless (`screen`), state lives on
-  `model` fields. `ActionScreen*` keys run before the screen's
+  `screenWorkflows`, `screenWatchers`; handlers are stateless (`screen`),
+  state lives on `model` fields. `ActionScreen*` keys run before the screen's
   `updateKey` and are blocked while `modalOpen()`.
 - Modes (`viewMode`): input, session picker, ask question, approval,
   config, model picker, finalized plan, sudo password, skills browser.
@@ -190,6 +190,11 @@ lockstep (`.claude/rules/issues.md`).
   perpetual `claudeUsageTickMsg` loop (armed in `app.Init`, re-armed in
   `app.Update`) that polls the undocumented `/api/oauth/usage` endpoint.
   `sidebarUsageFooterHeight` is reserved out of `sidebarVisibleCards`.
+- Above it sits the watcher block (`watcher_sidebar.go`): one line per
+  watcher drawn from the shared watcher state, its height
+  (`sidebarWatcherFooterHeight`) reserved out of the cards the same way;
+  a click on it opens `/watchers`. Watchers — the hub, its poll loop,
+  background runs, parked approvals — are `.claude/rules/watchers.md`.
 - The list cursor IS `app.active`. `ActionSidebarFocus` (Tab) takes
   focus only when `model.wantsTabKey()` is false; while focused,
   Up/Down/j/k switch tabs immediately, a printable rune bounces focus
@@ -263,6 +268,14 @@ lockstep (`.claude/rules/issues.md`).
   `ProviderSessionArgs` carries the tab's chosen worktree so a re-dispatch
   reuses it. This is provider-agnostic — never move it into a provider's
   `StartSession`.
+- `ProviderSessionArgs.Background` is a session no tab shows (a watcher's
+  run): `emit` keeps its messages on its channel and never calls
+  `agentSendToProgram`, and its turns skip memory extraction and deslop.
+  `ProviderSessionArgs.Agent` runs the session as a named agent — the
+  tab's prompt headed by its own instructions (`buildAgentSystemPrompt`
+  → `PromptOptions.AgentInstructions`), its name
+  (`agentSession.agentName`), and its tool grants plus what every
+  session gets (`subagentTools`).
 - The protocol every tab depends on (types.go; `emit` tags `proc` and
   tab): `streamStatusMsg`, `assistantTextMsg`,
   `toolCallMsg`/`toolResultMsg`, `toolDiffMsg`, `todoUpdatedMsg`,
@@ -301,7 +314,7 @@ lockstep (`.claude/rules/issues.md`).
 ## Keys, input, overlays
 
 - keymap.go defaults: Ctrl+I issues, Ctrl+R PRs, Ctrl+W workflows,
-  Ctrl+O ask, Ctrl+M model picker, Ctrl+S skills browser, Ctrl+F run a
+  Ctrl+G watchers, Ctrl+O ask, Ctrl+M model picker, Ctrl+S skills browser, Ctrl+F run a
   workflow on the chat, Ctrl+X task-list toggle, Ctrl+T/Ctrl+D
   new/close tab, Ctrl+←/→ and Ctrl+↑/↓ tab nav, Tab sidebar focus,
   Ctrl+Z suspend; `ActionReload` ships unbound. `currentKeyMap()` is
@@ -351,7 +364,10 @@ lockstep (`.claude/rules/issues.md`).
   pick_one / pick_many / pick_diagram, an "Enter your own" row, a note.
   One at a time — a second request while `modeAskQuestion` is up is
   answered `cancelled: true`. Approval (approval.go): deny / allow /
-  always (`permissionRuleFor`); Ctrl+C denies and kills the session.
+  always (`permissionRuleFor`); Ctrl+C denies and kills the session. An
+  approval borrowed from a watcher's run (`approvalWatcher` names it,
+  opened from `/watchers`) names the watcher, and Ctrl+C only denies; the
+  tab's own requests queue behind it in `pendingModals`.
   Finalized plan (finalized_plan.go): `finalizedPlanRequestMsg` renders
   the plan and offers execute-in-workflow, pick another workflow,
   execute inline, or talk more. Sudo (sudo_password.go): masked
@@ -472,6 +488,8 @@ lockstep (`.claude/rules/issues.md`).
 - Workflows (`.claude/rules/workflows.md`): workflows.go,
   workflow_graph.go, workflow_store.go, workflows_screen.go,
   workflows_picker.go, chat_workflow.go.
+- Watchers (`.claude/rules/watchers.md`): watcher_hub.go,
+  watcher_sidebar.go, watchers_screen.go.
 
 ## Debugging
 

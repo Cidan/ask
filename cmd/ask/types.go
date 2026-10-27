@@ -604,6 +604,10 @@ type model struct {
 	approvalInput  map[string]any
 	approvalReply  chan approvalReply
 	approvalChoice int
+	// approvalWatcher names the watcher whose background run an approval
+	// opened from the /watchers screen belongs to; answering it never
+	// touches this tab's own session. Empty for the tab's own approvals.
+	approvalWatcher string
 
 	sudoPrompt           string
 	sudoReply            chan sudoPasswordReply
@@ -841,6 +845,10 @@ type model struct {
 	// prompt drafts). Lazily allocated on screen entry; cleared on
 	// exit. Only consulted while m.screen == screenWorkflows.
 	workflowsBuilder *workflowsBuilderState
+
+	// watchers holds the per-tab state of the /watchers screen (focus,
+	// cursors, the loaded run transcript). Lazily allocated on entry.
+	watchers *watchersScreenState
 
 	// workflowPicker, when non-nil, draws the small centered modal
 	// the issues screen pops on `f`. Owns its own cursor + the list

@@ -78,6 +78,8 @@ Swap the package-level var in the test and restore it with `t.Cleanup`.
 | `generateTabTitleText` | `cmd/ask/tab_title.go` | the tab-title model call |
 | `workflowStepModel` | `cmd/ask/workflow_graph.go` | per-step models (`stubWorkflowStepModel`) |
 | `tools.RunShell` | `pkg/tools/bash.go` | shell execution for `bash` |
+| `watcher.RunScript` | `pkg/watcher/script.go` | a watcher's script (`stubScript`) |
+| `watcherModelRun` | `cmd/ask/watcher_hub.go` | a watcher's model run (`stubModelRun`); `useWatcherHub` gives each test its own hub |
 | `tools.BraveSearchClient` | `pkg/tools/web.go` | Brave HTTP client |
 | `tools.MCPOAuthOpenBrowser`, `tools.MCPTransportFor` | `pkg/tools/mcp_oauth.go`, `pkg/tools/mcp.go` | browser launch, MCP transport |
 | `providers.ModelMetaLookup` | `pkg/providers/model_meta.go` | model metadata for pricing |

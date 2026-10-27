@@ -1546,6 +1546,9 @@ type workflowsPaneArgs struct {
 	rows          []string
 	cursor        int
 	active        bool
+	// square draws the pane with square corners, as every new surface is;
+	// the workflows builder keeps the rounded ones it shipped with.
+	square bool
 }
 
 // renderWorkflowsPane renders a single side of the split-screen
@@ -1567,8 +1570,12 @@ func renderWorkflowsPane(a workflowsPaneArgs) string {
 	if a.active {
 		borderColor = activeTheme.accent
 	}
+	border := lipgloss.RoundedBorder()
+	if a.square {
+		border = lipgloss.NormalBorder()
+	}
 	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(border).
 		BorderForeground(borderColor).
 		Padding(0, workflowsPanePadX)
 

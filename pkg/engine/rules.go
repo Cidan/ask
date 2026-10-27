@@ -315,6 +315,22 @@ func WrapContextAwareTools(tools []Tool, cwd string, rules []Rule) []Tool {
 	return out
 }
 
+// RewrapContextAwareTools gives tools a fresh lazy-context state. A
+// workflow step starts from a context of its own, so a rule or instruction
+// file an earlier step was handed has to reach it again; sharing the
+// session's wrappers would mark it delivered.
+func RewrapContextAwareTools(tools []Tool, cwd string, rules []Rule) []Tool {
+	inner := make([]Tool, len(tools))
+	for i, t := range tools {
+		if ct, ok := t.(*ContextAwareTool); ok {
+			inner[i] = ct.Inner
+		} else {
+			inner[i] = t
+		}
+	}
+	return WrapContextAwareTools(inner, cwd, rules)
+}
+
 func (ct *ContextAwareTool) Run(ctx agent.Context, args any) (map[string]any, error) {
 	resp, err := RunADKTool(ctx, ct.Inner, args)
 	if err != nil {

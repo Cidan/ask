@@ -39,3 +39,25 @@ func TestBuildCoreTools_WorkflowStepAddsEndTurnOnly(t *testing.T) {
 		}
 	}
 }
+
+// A headless session's tools work like a tab's: reads bring in the rules
+// and instruction files scoped to what they read, and file tools recall
+// memories about what they touch.
+func TestBuildCoreTools_CarryProjectContext(t *testing.T) {
+	for _, step := range []bool{false, true} {
+		ts := BuildCoreTools(engine.ToolFactoryArgs{Cwd: t.TempDir(), TabID: 1, WorkflowStep: step}, true)
+		var read Tool
+		for _, tl := range ts {
+			if tl.Name() == "read" {
+				read = tl
+			}
+		}
+		ct, ok := read.(*engine.ContextAwareTool)
+		if !ok {
+			t.Fatalf("workflow step %v: read is %T, not context-aware", step, read)
+		}
+		if _, ok := ct.Inner.(*MemoryAwareTool); !ok {
+			t.Errorf("workflow step %v: read inside the context wrapper is %T, not memory-aware", step, ct.Inner)
+		}
+	}
+}

@@ -70,6 +70,7 @@ func closeTabCmd(tabID int) tea.Cmd {
 // and the next render re-enters altscreen.
 func (a app) suspendApp() (tea.Model, tea.Cmd) {
 	a.suspending = true
+	globalWatcherHub.suspend()
 	return a, tea.Suspend
 }
 
@@ -98,6 +99,7 @@ func (a app) Init() tea.Cmd {
 	if a.hasClaudeCodeTab() {
 		cmds = append(cmds, claudeUsageFetchCmd())
 	}
+	cmds = append(cmds, watcherTickCmd(), watcherPollCmd(globalWatcherHub))
 	return tea.Batch(cmds...)
 }
 
@@ -117,7 +119,19 @@ func (a app) Update(msg tea.Msg) (next tea.Model, cmd tea.Cmd) {
 		a.suspending = false
 		// herdr dropped ask from the pane while its shell prompt was back.
 		herdrPane.Reclaim()
+		globalWatcherHub.resume()
 		return a, nil
+
+	case watcherTickMsg:
+		return a, tea.Batch(watcherTickCmd(), watcherPollCmd(globalWatcherHub))
+	case watchersChangedMsg:
+		// The sidebar redraws from the hub on its own; the active tab hears
+		// it so an open /watchers screen can refresh what it loaded.
+		return a.dispatchActive(m)
+	case watcherApprovalClosedMsg:
+		return a.broadcast(m)
+	case continueWatcherRunMsg:
+		return a.continueWatcherRun(m)
 
 	case tea.WindowSizeMsg:
 		a.width = m.Width
@@ -154,6 +168,16 @@ func (a app) Update(msg tea.Msg) (next tea.Model, cmd tea.Cmd) {
 		// under the cursor; chrome rows absorb. Everything left of
 		// the column is the active tab's business.
 		if a.sidebarVisible() && m.X >= a.bodyWidth() {
+			if a.sidebarWatchersAt(m.Y) {
+				a.sidebarFocus = false
+				t := a.activeTab()
+				if t.modalOpen() {
+					return a, nil
+				}
+				nm, cmd := t.enterWatchersScreen()
+				*a.tabs[a.active] = nm
+				return a, cmd
+			}
 			if idx := a.sidebarCardAt(m.Y); idx >= 0 {
 				newA, _ := a.focusTab(idx)
 				return newA, nil
@@ -205,6 +229,9 @@ func (a app) Update(msg tea.Msg) (next tea.Model, cmd tea.Cmd) {
 	case finalizedPlanRequestMsg:
 		return a.dispatchByTabID(m.tabID, msg)
 	case approvalRequestMsg:
+		if globalWatcherHub.parkApproval(m) {
+			return a, nil
+		}
 		return a.dispatchByTabID(m.tabID, msg)
 	case sudoPasswordRequestedMsg:
 		return a.dispatchByTabID(m.tabID, msg)
@@ -620,6 +647,7 @@ func (a app) closeTab(tabID int) (tea.Model, tea.Cmd) {
 // torn down before closeMemoryService so an in-flight native memory
 // recall never races the sqlite-vec db being closed.
 func (a app) shutdown() {
+	globalWatcherHub.close()
 	for _, t := range a.tabs {
 		t.drainPendingReplies()
 		t.killProc()

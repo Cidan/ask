@@ -26,6 +26,10 @@ func (a app) herdrStatus() herdr.Status {
 		}
 		blocked, reason = t, t.herdrBlockedReason()
 	}
+	watcherReason := ""
+	if reason == "" {
+		watcherReason = globalWatcherHub.blockedReason()
+	}
 	switch {
 	case reason != "":
 		st.State = herdr.Blocked
@@ -33,6 +37,9 @@ func (a app) herdrStatus() herdr.Status {
 		if len(a.tabs) > 1 {
 			st.Message = blocked.sidebarTitle() + ": " + reason
 		}
+	case watcherReason != "":
+		st.State = herdr.Blocked
+		st.Message = watcherReason
 	default:
 		for _, t := range a.tabs {
 			if t.busy() {

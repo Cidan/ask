@@ -361,7 +361,7 @@ func (c *Coordinator) RunWorkflow(ctx context.Context, tabID int, wt workflowWor
 		agentSendToProgram(injectTabID(providerCwdMsg{cwd: runArgs.Cwd}, tabID))
 	}
 
-	runState, err := c.runWorkflowGraph(ctx, runArgs.Cwd, tabID, toPkgWorkflowDef(def), src, listener)
+	runState, err := c.runWorkflowGraph(ctx, runArgs.Cwd, tabID, toPkgWorkflowDef(def), src, listener, workflowGraphOpts{})
 	if err != nil {
 		return finalizedPlanReply{}, err
 	}

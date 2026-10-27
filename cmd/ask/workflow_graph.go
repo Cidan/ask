@@ -15,6 +15,15 @@ import (
 	adktool "google.golang.org/adk/v2/tool"
 )
 
+// workflowGraphOpts says where a workflow graph runs. The zero value is a
+// workflow tab: permissions skipped, progress in the workflow tracker. A
+// background run (a watcher's) has no tab: it follows the configured
+// permissions, stays out of the tracker, and files nothing in memory.
+type workflowGraphOpts struct {
+	background      bool
+	skipPermissions bool
+}
+
 // runWorkflowGraph compiles def into an ADK workflow graph and runs it as
 // a single turn on one agent session.
 //
@@ -23,7 +32,7 @@ import (
 // accounting, and cancellation all behave identically. Step progress is
 // derived from the ADK event stream by workflow.Progress rather than
 // from a hand-driven step loop.
-func (c *Coordinator) runWorkflowGraph(ctx context.Context, cwd string, tabID int, def workflow.Def, src workflow.Source, listener workflow.RunnerListener) (*workflow.RunState, error) {
+func (c *Coordinator) runWorkflowGraph(ctx context.Context, cwd string, tabID int, def workflow.Def, src workflow.Source, listener workflow.RunnerListener, opts workflowGraphOpts) (*workflow.RunState, error) {
 	prov := providerByID("")
 	if prov == nil {
 		err := errors.New("no provider registered for workflow run")
@@ -31,12 +40,19 @@ func (c *Coordinator) runWorkflowGraph(ctx context.Context, cwd string, tabID in
 		return nil, err
 	}
 
+	skip := true
+	tracker := workflow.GlobalTracker()
+	if opts.background {
+		skip = opts.skipPermissions
+		tracker = nil
+	}
 	proc, ch, err := prov.StartSession(ProviderSessionArgs{
 		Cwd:                cwd,
 		TabID:              tabID,
 		Effort:             "medium",
-		SkipAllPermissions: true,
+		SkipAllPermissions: skip,
 		InWorkflow:         true,
+		Background:         opts.background,
 	})
 	if err != nil {
 		listener.OnWorkflowFailed(tabID, err.Error())
@@ -65,7 +81,7 @@ func (c *Coordinator) runWorkflowGraph(ctx context.Context, cwd string, tabID in
 		return nil, err
 	}
 
-	progress := workflow.NewProgress(compiled, def, src, cwd, tabID, listener, workflow.GlobalTracker())
+	progress := workflow.NewProgress(compiled, def, src, cwd, tabID, listener, tracker)
 	sess.workflowAgent = graphAgent
 	sess.workflowProgress = progress
 	c.SetSession(tabID, sess)
@@ -112,7 +128,7 @@ drain:
 		})
 	}
 	state := progress.Finish(runErr)
-	if runErr == nil {
+	if runErr == nil && !opts.background {
 		engine.IngestWorkflowMemory(ctx, sess.sessSvc, sess.sessionID, cwd)
 	}
 	return state, runErr
@@ -123,16 +139,18 @@ drain:
 // coding core plus this project's MCP and skill toolsets — while model
 // and provider stay per-step so a workflow can chain providers.
 func tuiWorkflowCompileConfig(sess *agentSession, def workflow.Def, src workflow.Source, cwd string, tabID int) workflow.WorkflowAgentConfig {
+	rules := discoverRules(cwd)
 	return workflow.WorkflowAgentConfig{
-		Def:    def,
-		Source: src,
-		Cwd:    cwd,
-		TabID:  tabID,
+		Def:                def,
+		Source:             src,
+		Cwd:                cwd,
+		TabID:              tabID,
+		InstructionBuilder: engine.WorkflowStepInstructions(cwd),
 		ModelBuilder: func(ctx context.Context, step workflow.Step) (adkmodel.LLM, error) {
 			return workflowStepModel(ctx, sess, step)
 		},
 		ToolsBuilder: func(ctx context.Context, step workflow.Step, role workflow.StepRole) ([]adktool.Tool, error) {
-			list := append([]tools.Tool(nil), sess.currentTools()...)
+			list := engine.RewrapContextAwareTools(sess.currentTools(), cwd, rules)
 			list = append(list, tools.WorkflowStepTools(sess.env, role.IsFinal)...)
 			return engine.AsADKTools(list)
 		},

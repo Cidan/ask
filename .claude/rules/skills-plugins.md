@@ -110,6 +110,12 @@ deletes the cached copy once no scope references it. Seams: `RunGit`,
   `NewSubagentToolEnv` skips permissions and the todos gate. No `agent:`
   ⇒ the same core set on the parent model. Do not move to ADK's
   `agenttool` — it drops ask's plugins, memory service, and job UI.
+- A named agent's body heads its system prompt
+  (`RunOptions.AgentInstructions`), followed by everything a tab in the
+  same directory gets: `<env>`, the project's instructions, rules, linked
+  docs, and memory (`engine.ProjectContext`), skills, and the headless
+  steering. The grant limits its tools, never its context — memory
+  recall and `load_memory` come regardless.
 
 ## Model-facing tools (`pkg/tools/extensions.go`, registry only)
 

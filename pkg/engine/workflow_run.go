@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/providers"
@@ -16,15 +17,38 @@ import (
 	"google.golang.org/genai"
 )
 
+// WorkflowStepInstructions is the InstructionBuilder every workflow step
+// runs on, TUI and headless alike: the step's own instruction, then what
+// any session in cwd is told — the environment, the project context
+// (ProjectContext), and the workflow steering. The shared part is built
+// once per run.
+func WorkflowStepInstructions(cwd string) func(workflow.Step, workflow.Source, *workflow.StepPromptCtx) string {
+	var parts []string
+	for _, p := range []string{
+		EnvBlock(cwd, nil),
+		ProjectContext(cwd),
+		providers.SteeringPrompt(providers.SteeringOptions{InWorkflow: true, Cwd: cwd}),
+	} {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	shared := strings.Join(parts, "\n\n")
+	return func(step workflow.Step, src workflow.Source, pc *workflow.StepPromptCtx) string {
+		return workflow.BuildStepInstruction(step, src, pc) + "\n\n" + shared
+	}
+}
+
 // WorkflowCompileConfig builds the compile-time wiring for a workflow
 // run: how each step resolves its model and tool surface. Shared by the
 // headless engine and the TUI so both compile identical graphs.
 func WorkflowCompileConfig(e *Engine, cwd string, tabID int, def workflow.Def, src workflow.Source) workflow.WorkflowAgentConfig {
 	return workflow.WorkflowAgentConfig{
-		Def:    def,
-		Source: src,
-		Cwd:    cwd,
-		TabID:  tabID,
+		Def:                def,
+		Source:             src,
+		Cwd:                cwd,
+		TabID:              tabID,
+		InstructionBuilder: WorkflowStepInstructions(cwd),
 		ModelBuilder: func(ctx context.Context, step workflow.Step) (adkmodel.LLM, error) {
 			return buildStepModel(ctx, e, step)
 		},

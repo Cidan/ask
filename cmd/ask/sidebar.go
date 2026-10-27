@@ -83,9 +83,9 @@ func (a app) bodyWidth() int {
 }
 
 // sidebarVisibleCards returns how many whole cards fit below the
-// header and above the usage footer (when one is shown).
+// header and above the watcher block and the usage footer (when shown).
 func (a app) sidebarVisibleCards() int {
-	rows := a.height - sidebarHeaderHeight - a.sidebarUsageFooterHeight()
+	rows := a.height - sidebarHeaderHeight - a.sidebarWatcherFooterHeight() - a.sidebarUsageFooterHeight()
 	if rows < sidebarCardHeight {
 		return 1
 	}
@@ -108,6 +108,17 @@ func (a app) sidebarScrollOffset() int {
 		off = max
 	}
 	return off
+}
+
+// sidebarWatchersAt reports whether a screen row falls on the watcher
+// block.
+func (a app) sidebarWatchersAt(y int) bool {
+	h := a.sidebarWatcherFooterHeight()
+	if h == 0 {
+		return false
+	}
+	top := a.height - a.sidebarUsageFooterHeight() - h
+	return y > top && y < top+h
 }
 
 // sidebarCardAt maps a screen row (within the sidebar region) to the
@@ -149,9 +160,9 @@ func (a app) renderSidebar() string {
 		lines = append(lines, a.sidebarCardLines(i, inner)...)
 	}
 
-	// The Claude usage limits pin to the bottom of the column: pad the cards
-	// up to the footer's reserved rows, then append it last.
-	footer := a.sidebarUsageFooterLines(inner)
+	// The watcher block and the Claude usage limits pin to the bottom of
+	// the column: pad the cards up to their reserved rows, then append them.
+	footer := append(a.sidebarWatcherFooterLines(inner), a.sidebarUsageFooterLines(inner)...)
 	bodyRows := a.height - len(footer)
 	if bodyRows < 0 {
 		bodyRows = 0

@@ -22,14 +22,22 @@ const askSteeringPromptTodos = `You MUST actively use the 'todos' tool for ANY m
 
 type SteeringOptions struct {
 	InWorkflow bool
-	Cwd        string
+	// Headless is a named agent's steering: it works alone for whoever
+	// started it, so it gets neither the delegation paragraph (it cannot
+	// start agents) nor the stop-for-a-go-ahead one (nobody is there to
+	// give it).
+	Headless bool
+	Cwd      string
 }
 
 func SteeringPrompt(opts SteeringOptions) string {
 	var paragraphs []string
-	if opts.InWorkflow {
+	switch {
+	case opts.InWorkflow:
 		paragraphs = append(paragraphs, askSteeringPromptInWorkflowP1, askSteeringPromptInWorkflowSideEffects)
-	} else {
+	case opts.Headless:
+		paragraphs = append(paragraphs, askSteeringPromptInWorkflowP1)
+	default:
 		paragraphs = append(paragraphs, askSteeringPromptP1, askSteeringPromptSubagents, askSteeringPromptSideEffects)
 	}
 	paragraphs = append(paragraphs, askSteeringPromptP4, askSteeringPromptP5)
