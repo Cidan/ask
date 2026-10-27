@@ -69,8 +69,10 @@ Deferred registry (`s.deferredBase` + `s.mcp.Tools()`): the `linear_*`
 twins, the memory set (`memory_index`, `memory_reinforce`,
 `memory_demote`, `memory_forget` — `tools.MemoryTools`), the extension
 tools (`skill_*`, `agent_*`,
-`marketplace_*`, `plugin_*`, `skill_publish`, `skill_pull`), and every
-MCP tool as `mcp__<server>__<tool>`. Registry tools are real and
+`marketplace_*`, `plugin_*`, `skill_publish`, `skill_pull`), the watcher
+tools (`watcher_list/get/create/edit/delete/run` — `tools.WatcherTools`,
+`.claude/rules/watchers.md`), and every MCP tool as
+`mcp__<server>__<tool>`. Registry tools are real and
 callable but absent from the wire definitions: the model finds them
 with `search_tools` (`*`, `prefix*`, or substring; each match carries
 name, description, full `input_schema`) and calls them with
@@ -151,7 +153,8 @@ tool.
   the denial text, which the tool returns as its error. The text tells
   the model not to retry. Gated: `bash` outside `safeShellCommands`,
   `write`, `edit`, `fetch`, `web_search`, `memory_index`, `memory_forget`,
-  `marketplace_add`, `plugin_install`, `skill_publish`, `skill_pull`.
+  `marketplace_add`, `plugin_install`, `skill_publish`, `skill_pull`,
+  `watcher_create`, `watcher_edit`.
   `invoke_tool` adds no gate of its own.
 - `write` / `edit` on an existing file require a prior `read` in this
   session and refuse when the file changed on disk since
@@ -303,7 +306,12 @@ Still wired, workflow-only:
 `task` runs a research sub-agent on the parent model, or a named
 definition from `<available_agents>` (`agent:` param) on its own
 provider/model and tool grants. `NewSubagentToolEnv` shares the parent's
-file tracker, jobs, and emit, with permissions skipped.
+file tracker, jobs, and emit, with permissions skipped. Either kind works
+in the project like a tab: the project's context in its prompt
+(`engine.ProjectContext`; a named agent's own instructions head it via
+`RunOptions.AgentInstructions`), and `subagentTools` adds what every
+session gets whatever the grant — memory-aware file tools, `load_memory`,
+per-turn memory recall, and the image hook for its reads.
 
 ## MCP client (`pkg/tools/mcp*.go`)
 

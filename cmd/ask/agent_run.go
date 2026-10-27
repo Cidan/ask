@@ -305,7 +305,18 @@ func (s *agentSession) emit(msg tea.Msg) {
 		}
 	}
 	s.chMu.Unlock()
-	agentSendToProgram(msg)
+	if !s.args.Background {
+		agentSendToProgram(msg)
+	}
+}
+
+// agentName is the name the session's agent runs under: a named agent's
+// own, else ask's coding agent.
+func (s *agentSession) agentName() string {
+	if s.args.Agent != nil && s.args.Agent.Name != "" {
+		return s.args.Agent.Name
+	}
+	return "ask_coder"
 }
 
 // submit hands the session a message from the user: it steers the turn that
@@ -579,7 +590,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		deslopModelID  string
 		deslopNew      map[string]string
 	)
-	if dc, _ := loadConfig(); engine.DeslopEnabled(toPkgConfig(dc)) {
+	if dc, _ := loadConfig(); !s.args.Background && engine.DeslopEnabled(toPkgConfig(dc)) {
 		dprov, dmodel := engine.DeslopModel(toPkgConfig(dc))
 		sessProv := ""
 		if s.provider != nil {
@@ -613,7 +624,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	} else {
 		compactBefore, compactAfter := compactCallbacks(s.compactor)
 		agentInstance, err = llmagent.New(llmagent.Config{
-			Name:                  "ask_coder",
+			Name:                  s.agentName(),
 			Model:                 llm,
 			InstructionProvider:   instructionProvider,
 			Tools:                 adkTools,
@@ -836,7 +847,7 @@ func (s *agentSession) runTurn(turn agentTurn) {
 		},
 	})
 	s.emit(turnCompleteMsg{})
-	if !s.args.InWorkflow && s.workflowAgent == nil {
+	if !s.args.InWorkflow && s.workflowAgent == nil && !s.args.Background {
 		s.enqueueMemoryTurn(turn.text, respText, touchedFiles)
 	}
 }

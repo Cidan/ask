@@ -211,6 +211,13 @@ type ProviderSessionArgs struct {
 	// regardless of whether issues are wired up. Providers wire this
 	// into their MCP client; providers without an MCP surface ignore it.
 	ProjectMCP *issueMCPServer
+	// Background marks a session no tab shows (a watcher's model run): its
+	// messages go only to its channel, never to the Bubble Tea program, and
+	// its turns are left out of memory extraction and deslop.
+	Background bool
+	// Agent, when set, runs the session as that named agent: its prompt,
+	// its name, and its tool grants in place of ask's coding agent.
+	Agent *subagentDef
 }
 
 // providerProc is an opaque subprocess handle. The UI uses it as an
@@ -366,6 +373,7 @@ func (p *providerProc) kill() {
 var appBuiltinSlashCmds = []slashCmd{
 	{"/config", "configure ask"},
 	{"/workflows", "edit workflow pipelines"},
+	{"/watchers", "see what your watchers are doing"},
 	{"/skills", "browse skills, agents, and marketplaces"},
 	{"/savings", "show bash output token savings"},
 	{"/memory", "browse and tune long-term memory"},

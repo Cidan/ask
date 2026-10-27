@@ -1097,3 +1097,49 @@ func TestAgentSession_ToolConfirmation_HITL(t *testing.T) {
 		t.Errorf("expected unwrapped arg v='hitl_test', got %v", calls[0].input["v"])
 	}
 }
+
+// A TUI workflow step is told what a session in its directory is — its own
+// instruction first, then the environment and the project's instructions —
+// and starts with reads of its own: a rule an earlier step was handed
+// reaches it again.
+func TestTUIWorkflowSteps_CarryProjectContextAndFreshReads(t *testing.T) {
+	isolateHome(t)
+	h := newCompactHarness(t, nil)
+	cwd := t.TempDir()
+	writeTestFile(t, cwd, "CLAUDE.md", "TUI_STEP_MARKER\n")
+	h.s.env = newAgentToolEnv(cwd, 1, true, nil)
+	h.s.tools = wrapContextAwareTools([]tools.Tool{agentReadTool(h.s.env)}, cwd, nil)
+	src := workflow.NewTextSource(1, "src")
+	cfg := tuiWorkflowCompileConfig(h.s, workflow.Def{Name: "wf"}, src, cwd, 1)
+
+	instr := cfg.InstructionBuilder(workflow.Step{Name: "s", Prompt: "STEP_PROMPT"}, src, &workflow.StepPromptCtx{})
+	if !strings.HasPrefix(instr, "STEP_PROMPT") {
+		t.Errorf("the step's own instruction comes first:\n%s", instr)
+	}
+	for _, want := range []string{"TUI_STEP_MARKER", "Working directory: " + cwd, "You are running as a step in an automated workflow"} {
+		if !strings.Contains(instr, want) {
+			t.Errorf("a TUI step lacks %q", want)
+		}
+	}
+
+	readOf := func() *engine.ContextAwareTool {
+		ts, err := cfg.ToolsBuilder(context.Background(), workflow.Step{Name: "s"}, workflow.StepRole{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tl := range ts {
+			if ct, ok := tl.(*engine.ContextAwareTool); ok && ct.Name() == "read" {
+				return ct
+			}
+		}
+		t.Fatal("no context-aware read")
+		return nil
+	}
+	one, two := readOf(), readOf()
+	if one == two || one == h.s.tools[0] {
+		t.Error("each step gets read wrappers of its own, not the session's")
+	}
+	if _, nested := one.Inner.(*engine.ContextAwareTool); nested {
+		t.Error("a step's read wraps the session's tool, not its wrapper")
+	}
+}

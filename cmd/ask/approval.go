@@ -32,6 +32,7 @@ func (m model) clearApproval() model {
 	m.approvalInput = nil
 	m.approvalReply = nil
 	m.approvalChoice = 0
+	m.approvalWatcher = ""
 	return m
 }
 
@@ -52,6 +53,8 @@ func (m model) updateApproval(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, closeTabCmd(m.id)
 	}
 	switch {
+	case msg.Mod == tea.ModCtrl && msg.Code == 'c' && m.approvalWatcher != "":
+		return m.sendApproval(approvalChoiceDeny), nil
 	case msg.Mod == tea.ModCtrl && msg.Code == 'c':
 		m = m.sendApproval(approvalChoiceDeny)
 		m.killProc()
@@ -93,6 +96,9 @@ func (m model) viewApproval() string {
 
 	title := approvalTitleStyle.Render("Approval required")
 	headline := approvalHeadline(m.approvalTool)
+	if m.approvalWatcher != "" {
+		headline = "The " + m.approvalWatcher + " watcher wants to use " + approvalToolStyle.Render(nonEmpty(m.approvalTool, "a tool"))
+	}
 	summary := approvalSummary(m.approvalTool, m.approvalInput, innerW)
 
 	deny := approvalBtnStyle.Render("Deny")
@@ -108,7 +114,11 @@ func (m model) viewApproval() string {
 	}
 	buttons := lipgloss.JoinHorizontal(lipgloss.Top, deny, "  ", allow, "  ", always)
 
-	help := askHelpStyle.Render("←→ switch · enter confirm · y allow · a always · n/esc deny · ctrl+c cancel turn")
+	helpText := "←→ switch · enter confirm · y allow · a always · n/esc deny · ctrl+c cancel turn"
+	if m.approvalWatcher != "" {
+		helpText = "←→ switch · enter confirm · y allow · a always · n/esc deny"
+	}
+	help := askHelpStyle.Render(helpText)
 
 	lines := []string{title, "", headline}
 	if summary != "" {
@@ -139,19 +149,32 @@ func approvalSummary(tool string, input map[string]any, width int) string {
 		width = 10
 	}
 	switch tool {
-	case "Edit", "Write", "MultiEdit", "NotebookEdit", "Read":
+	case "Edit", "Write", "MultiEdit", "NotebookEdit", "Read", "edit", "write":
 		if p, _ := input["file_path"].(string); p != "" {
 			return approvalSummaryStyle.Render(truncateFromLeft(p, width))
 		}
-	case "Bash":
+	case "Bash", "bash":
 		if c, _ := input["command"].(string); c != "" {
 			return approvalSummaryStyle.Render(firstLinesClamped(c, width, approvalSummaryMaxLns))
+		}
+	case "watcher_create", "watcher_edit":
+		var parts []string
+		if s, _ := input["schedule"].(string); s != "" {
+			parts = append(parts, s)
+		}
+		if c, _ := input["command"].(string); c != "" {
+			parts = append(parts, c)
+		} else if _, ok := input["script"].(string); ok {
+			parts = append(parts, "a stored script")
+		}
+		if len(parts) > 0 {
+			return approvalSummaryStyle.Render(firstLinesClamped(strings.Join(parts, " · "), width, approvalSummaryMaxLns))
 		}
 	case "Glob", "Grep":
 		if p, _ := input["pattern"].(string); p != "" {
 			return approvalSummaryStyle.Render(truncate(p, width))
 		}
-	case "WebFetch":
+	case "WebFetch", "fetch":
 		if u, _ := input["url"].(string); u != "" {
 			return approvalSummaryStyle.Render(truncate(u, width))
 		}

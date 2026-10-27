@@ -37,6 +37,7 @@ const (
 	ActionScreenIssues    Action = "screen.issues"
 	ActionScreenPRs       Action = "screen.prs"
 	ActionScreenWorkflows Action = "screen.workflows"
+	ActionScreenWatchers  Action = "screen.watchers"
 	ActionScreenAsk       Action = "screen.ask"
 	ActionProviderSwitch  Action = "provider.switch"
 	ActionSkillsBrowser   Action = "skills.browser"
@@ -243,6 +244,7 @@ var defaultKeyBindings = map[Action]KeyBinding{
 	ActionScreenIssues:    {Mod: tea.ModCtrl, Code: 'i'},
 	ActionScreenPRs:       {Mod: tea.ModCtrl, Code: 'r'},
 	ActionScreenWorkflows: {Mod: tea.ModCtrl, Code: 'w'},
+	ActionScreenWatchers:  {Mod: tea.ModCtrl, Code: 'g'},
 	ActionScreenAsk:       {Mod: tea.ModCtrl, Code: 'o'},
 	ActionProviderSwitch:  {Mod: tea.ModCtrl, Code: 'm'},
 	ActionSkillsBrowser:   {Mod: tea.ModCtrl, Code: 's'},
@@ -359,6 +361,7 @@ var actionGroups = []actionMetaGroup{
 		{ActionScreenIssues, "Issues screen"},
 		{ActionScreenPRs, "PRs screen"},
 		{ActionScreenWorkflows, "Workflows screen"},
+		{ActionScreenWatchers, "Watchers screen"},
 		{ActionScreenAsk, "Ask (chat) screen"},
 	}},
 	{Heading: "Tabs", Items: []actionMetaItem{

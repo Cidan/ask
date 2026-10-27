@@ -1003,7 +1003,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			return m, nil
 		}
-		if m.mode == modeSudoPassword {
+		if m.mode == modeSudoPassword || (m.mode == modeApproval && m.approvalWatcher != "") {
+			// A watcher's approval borrowed this tab's modal; the tab's own
+			// request waits behind it rather than being denied.
 			m.pendingModals = append(m.pendingModals, msg)
 			return m, nil
 		}
@@ -1105,6 +1107,29 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		return m.finishSkillsBrowserOp(msg)
+
+	case watchersChangedMsg:
+		if m.screen == screenWatchers && m.watchers != nil {
+			return m, m.watchers.refresh(m.id)
+		}
+		return m, nil
+
+	case watcherTranscriptLoadedMsg:
+		if msg.tabID != m.id || m.watchers == nil {
+			return m, nil
+		}
+		m.watchers.transcriptLoaded(msg)
+		return m, nil
+
+	case watcherApprovalClosedMsg:
+		if m.mode == modeApproval && m.approvalWatcher != "" {
+			for _, relay := range msg.relays {
+				if relay == m.approvalReply {
+					return m.clearApproval(), nil
+				}
+			}
+		}
+		return m, nil
 
 	case workflowStatusChangedMsg:
 		// Status changed somewhere — invalidate cached frame so the
@@ -1539,6 +1564,9 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			// The builder's step model picker reads the same catalog cache.
 			return m, modelCatalogRefreshCmd(false)
+		}
+		if km.Matches(ActionScreenWatchers, msg) && !m.modalOpen() && !deferToPopover {
+			return m.enterWatchersScreen()
 		}
 		if km.Matches(ActionScreenAsk, msg) && !m.modalOpen() && !deferToPopover {
 			// Leaving issues: drop cache + cancel in-flight so re-entry
@@ -2281,7 +2309,7 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 	cmd, _, _ := strings.Cut(line, " ")
 	if invalid := validateAskCwd(m.cwd); invalid.Msg != "" {
 		switch cmd {
-		case "/resume", "/new", "/clear", "/effort", "/config", "/workflows", "/skills", "/savings", "/memory":
+		case "/resume", "/new", "/clear", "/effort", "/config", "/workflows", "/watchers", "/skills", "/savings", "/memory":
 			// Pure UI commands are still safe to run when ask's cwd
 			// is invalid — they don't start a session. Blocking them
 			// would also strand the user without a way to fix things
@@ -2361,6 +2389,8 @@ func (m model) handleCommand(line string) (tea.Model, tea.Cmd) {
 			m.workflowsBuilder.refreshItems()
 		}
 		return m, modelCatalogRefreshCmd(false)
+	case "/watchers":
+		return m.enterWatchersScreen()
 	}
 	bare := strings.TrimPrefix(cmd, "/")
 	for _, e := range m.providerSlashCmds {

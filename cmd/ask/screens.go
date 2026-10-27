@@ -20,6 +20,9 @@ const (
 	// installs a different IssueProvider (githubPRProvider) on its
 	// per-tab state and adds an `m` keybind for the merge action.
 	screenPRs
+	// screenWatchers lists the watchers, what each is doing, and its
+	// recent runs (watchers_screen.go).
+	screenWatchers
 )
 
 func isIssueScreen(id screenID) bool {
@@ -67,6 +70,7 @@ func newScreenRegistry() map[screenID]screen {
 		screenIssues:    issuesScreen{},
 		screenWorkflows: workflowsScreen{},
 		screenPRs:       prsScreen{},
+		screenWatchers:  watchersScreen{},
 	}
 }
 

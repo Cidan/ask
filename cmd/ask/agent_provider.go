@@ -222,11 +222,18 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	if !nativeWebSearchActive(s.provider, cfg) {
 		s.coreTools = append(s.coreTools, agentWebSearchTool(env))
 	}
-	s.coreTools = wrapFileToolsWithMemory(s.coreTools, s.args.Cwd)
+	if s.args.Agent != nil {
+		// A named agent gets what its definition grants, as it does under
+		// the task tool, plus what every session gets.
+		s.coreTools = subagentTools(*s.args.Agent, env, s.deferredTools, s.currentTopic, s.setTopic)
+	} else {
+		s.coreTools = wrapFileToolsWithMemory(s.coreTools, s.args.Cwd)
+	}
 	s.coreTools = wrapContextAwareTools(s.coreTools, s.args.Cwd, discoverRules(s.args.Cwd))
 	s.deferredBase = agentLinearTools(env)
 	s.deferredBase = append(s.deferredBase, agentMemoryTools(env)...)
 	s.deferredBase = append(s.deferredBase, agentExtensionTools(env)...)
+	s.deferredBase = append(s.deferredBase, agentWatcherTools(env)...)
 	s.mcp = newMCPManager(s.args.TabID,
 		supportsImages,
 		imageSink,

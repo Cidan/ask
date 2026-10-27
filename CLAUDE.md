@@ -57,18 +57,19 @@ runtime is `pkg/engine`, re-exported as a library by the root package
 
 | Path | What lives there |
 |------|------------------|
-| `cmd/ask/` | The TUI: one `package main`, one file per concern (tabs, sidebar, screens, overlays, shell mode, Kitty images, the provider adapter and session goroutine, issue/PR kanban, workflow builder). |
+| `cmd/ask/` | The TUI: one `package main`, one file per concern (tabs, sidebar, screens, overlays, the provider adapter and session goroutine). |
 | `pkg/engine/` | Headless ADK runtime: runner loop, sessions and transcript store, system-prompt assembly (CLAUDE.md, `.claude/rules`, `@`-links), skills, subagents, plugin discovery, the model builder with transient retry, headless workflow runner. |
 | `pkg/tools/` | Every agent tool (file, search, bash + jobs, fetch, web_search, todos, ask_user_question/end_turn, workflow_*, search_tools/invoke_tool, artifacts, memory, extensions, MCP client + OAuth + server config, sudo askpass IPC). |
 | `pkg/providers/` | The `Provider` contract and registry, Vertex and OpenRouter, the shared OpenAI-protocol model, static catalog, models.dev client, merged model metadata and pricing, the steering prompt. |
 | `pkg/workflow/` | Workflow definitions, the three-scope store, compile to an ADK graph, progress adapter, run tracker, sources. |
+| `pkg/watcher/` | Watchers: definitions, schedules, shared state, lead lock, script runner. |
 | `pkg/plugin/` | Claude Code plugin-marketplace format: manifests, marketplace/plugin state, install, publish, import from Claude. |
 | `pkg/memory/` | sqlite-vec memory store behind an injected `Embedder` (no llama.cpp dependency); `pkg/memory/llamacpp/` is the local llama.cpp embedder (cgo) that only `cmd/ask` imports. |
 | `pkg/config/` | `~/.config/ask/ask.json` shapes, per-provider blocks, legacy migration, worktree helpers. |
 | `pkg/diff/` | Pure-Go Myers diff, parser, `Align` (linear-space LCS).|
 | `pkg/herdr/` | herdr pane status reporting. |
-| `pkg/render/` | Compact in-process HTML/CSS→PNG renderer (tdewolff/canvas + parse, `x/net/html`, embedded Go fonts) behind the `render_design` design-preview tool. |
-| `third_party/sqlite/` | `sqlite3.h` / `sqlite3ext.h` for sqlite-vec's cgo build (no system header assumed); reached through the Makefile's `CGO_CFLAGS`. |
+| `pkg/render/` | HTML/CSS→PNG renderer (tdewolff/canvas, `x/net/html`, embedded fonts) behind `render_design`. |
+| `third_party/sqlite/` | `sqlite3.h` / `sqlite3ext.h` for sqlite-vec's cgo build, via the Makefile's `CGO_CFLAGS`. |
 | `build/` | Gitignored: the llama.cpp checkout and static libraries that `pkg/memory/llamacpp` links against. |
 
 ## Where the detail lives
@@ -81,6 +82,7 @@ runtime is `pkg/engine`, re-exported as a library by the root package
 | `.claude/rules/providers.md` | `pkg/providers/**`, `pkg/config/**`, the provider-facing TUI files | The `Provider` interface, adding a provider, config blocks, model metadata precedence, pricing. |
 | `.claude/rules/tools.md` | `pkg/tools/**`, `cmd/ask/agent_tools*.go`, `agent_run.go`, `agent_provider.go` | Typed tool contract, core vs deferred registry, description phrases, approval gate, MCP client. |
 | `.claude/rules/workflows.md` | `pkg/workflow/**`, `cmd/ask/workflow*.go`, the workflow tools | Schema and scopes, compile to ADK graph and its invariants, progress, artifacts, builder screen, supplant. |
+| `.claude/rules/watchers.md` | `pkg/watcher/**`, `cmd/ask/watcher*.go` | Lead, schedules, runs, approvals, `/watchers`, state files. |
 | `.claude/rules/skills-plugins.md` | `pkg/plugin/**`, skills/subagent files, `skills_browser*.go` | Marketplace format, scopes and state dirs, discovery, publish/pull, the browser. |
 | `.claude/rules/issues.md` | `cmd/ask/issue*.go`, `pr_provider*.go`, `mcp_linear*.go` | Kanban, carry-and-drop, loader, issue providers. |
 | `.claude/rules/testing.md` | any `*_test.go` | Behavioral-only tests, seams and fakes, isolation, where tests live. |
@@ -109,10 +111,8 @@ make clean
   Symlink it to the primary checkout once, from the worktree root:
   `ln -s /path/to/primary/checkout/build build`. `setup-llama` configures
   via the physical path and drops another path's CMake cache.
-- The whole suite takes about 10 seconds; `cmd/ask` is the slow package.
-  Tests never spawn subprocesses (except `git` and `jj` in the worktree
-  tests) and never touch the network or the real `$HOME` — see
-  `.claude/rules/testing.md`.
+- The whole suite takes about 10 seconds. Tests spawn no subprocesses
+  and touch no network or real `$HOME` (`.claude/rules/testing.md`).
 - `./...` also walks into `build/llama.cpp` (a Go package with no
   tests); that is expected.
 
@@ -150,7 +150,7 @@ make clean
 |----------|-------|
 | `~/.config/ask/ask.json` | Config: provider blocks, UI toggles, keybindings, MCP servers, recent models, the `memory` block (extraction provider/model), per-project blocks (issues, MCP tokens, user-scope workflows). |
 | `~/.config/ask/agent-sessions/<provider>/` | ADK transcripts behind `/resume` (raw output plus each call's `providers.Usage`), never rewritten. Sidecars: `<id>.deslop.json` (desloped blocks), `<id>.usage.json` (off-conversation spend), `<id>.history.db` (what compaction cut). `~/.config/ask/sessions.json` is the virtual-session index. |
-| `~/.config/ask/{skills,agents,workflows}/` | User-scope skills, subagents, workflows. |
+| `~/.config/ask/{skills,agents,workflows,watchers}/` | User-scope skills, subagents, workflows, watchers. |
 | `~/.config/ask/plugins/` | Known marketplaces, installed plugins, publications, the plugin cache. |
 | `~/.config/ask/cache/models-dev.json` | models.dev snapshot (24h TTL). |
 | `~/.config/ask/mcp-oauth/` | OAuth tokens for remote MCP servers (0600). |

@@ -26,6 +26,7 @@ func BuildCoreTools(args engine.ToolFactoryArgs, attachWebSearch bool) []Tool {
 	)
 	env.SupportsImages = args.SupportsImages
 	registry := append(ExtensionTools(env), MemoryTools(env.Cwd, env.ApprovalDenied)...)
+	registry = append(registry, WatcherTools(env)...)
 	registryFunc := func() []Tool {
 		return registry
 	}
@@ -36,7 +37,15 @@ func BuildCoreTools(args engine.ToolFactoryArgs, attachWebSearch bool) []Tool {
 		core = append(core, EndTurnTool(env))
 		core = append(core, WorkflowStepTools(env, args.WorkflowFinalStep)...)
 	}
-	return core
+	return withProjectContext(core, env.Cwd)
+}
+
+// withProjectContext gives a headless session's tools what a tab's have:
+// file tools that recall memories about the files they touch, and reads
+// that bring in the rules and instruction files scoped to what is read.
+func withProjectContext(ts []Tool, cwd string) []Tool {
+	ts = WrapFileToolsWithMemory(ts, cwd)
+	return engine.WrapContextAwareTools(ts, cwd, engine.DiscoverRules(cwd))
 }
 
 // BuildSubagentTools constructs the centralized toolset configured for an isolated subagent session.
@@ -53,7 +62,7 @@ func BuildSubagentTools(args engine.ToolFactoryArgs, attachWebSearch bool) []Too
 	registryFunc := func() []Tool {
 		return nil
 	}
-	return CoreTools(env, registryFunc, attachWebSearch)
+	return withProjectContext(CoreTools(env, registryFunc, attachWebSearch), env.Cwd)
 }
 
 // CoreTools returns the standard core wire tools for an agent session.

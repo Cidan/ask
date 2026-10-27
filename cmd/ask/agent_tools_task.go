@@ -84,10 +84,8 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 				return nil
 			}
 
-			var toolsList []tools.Tool
-			var system, agentName string
+			var def *subagentDef
 			if name := strings.TrimSpace(p.Agent); name != "" {
-				var def *subagentDef
 				for _, d := range discoverSubagents(env.Cwd) {
 					if d.Name == name {
 						dd := d
@@ -105,28 +103,39 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 				if def.Model != "" {
 					modelID = def.Model
 				}
-				// A named agent runs on its own instructions, not ask's
-				// coding prompt: its definition, the report tail, and the
-				// environment.
+			}
+			cfg, _ := loadConfig()
+			if prov, ok := providers.Get(providerID); ok {
+				resolved := providers.ResolveModelID(prov, modelID, toPkgConfig(cfg))
+				subEnv.SupportsImages = func() bool { return prov.SupportsImages(resolved) }
+			}
+
+			// Every sub-agent works in the project the way a tab does: the
+			// project's instructions, rules, and memory in its prompt, and
+			// tools that bring in more as it reads. A named agent's own
+			// instructions head that prompt in place of ask's coding one,
+			// followed by the report tail.
+			var toolsList []tools.Tool
+			var instructions, agentName string
+			if def != nil {
 				if def.Prompt != "" {
-					system = def.Prompt + agentSubagentPromptTail + "\n\n" + engine.EnvBlock(env.Cwd, agentGitStatus)
+					instructions = def.Prompt + agentSubagentPromptTail
 				}
 				agentName = def.Name
-				toolsList = subagentTools(*def, subEnv, deferredFn)
+				toolsList = subagentTools(*def, subEnv, deferredFn, nil, nil)
 			} else {
-				toolsList = tools.CoreTools(subEnv, deferredFn, true)
+				toolsList = wrapFileToolsWithMemory(tools.CoreTools(subEnv, deferredFn, true), env.Cwd)
 			}
 
 			run := func(runCtx context.Context) (string, error) {
 				toolsList = wrapContextAwareTools(toolsList, env.Cwd, discoverRules(env.Cwd))
-				cfg, _ := loadConfig()
 				res, err := engine.Run(runCtx, engine.RunOptions{
 					Prompt:             prompt,
 					Cwd:                env.Cwd,
 					Config:             toPkgConfig(cfg),
 					Provider:           providerID,
 					Model:              modelID,
-					SystemPrompt:       system,
+					AgentInstructions:  instructions,
 					AgentName:          agentName,
 					Tools:              toolsList,
 					SkipAllPermissions: true,

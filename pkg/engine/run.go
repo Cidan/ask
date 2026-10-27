@@ -60,11 +60,15 @@ type RunOptions struct {
 	// Model optionally overrides the default model for the selected provider.
 	Model string `json:"model,omitempty"`
 
-	// SystemPrompt, when set, is the whole system prompt, in place of the
-	// one BuildSystemPrompt assembles (ask's coding prompt, project
-	// instructions, memory, skills, agents, steering): a named sub-agent's
-	// own definition.
+	// SystemPrompt, when set, is the whole system prompt, verbatim, in place
+	// of the one BuildSystemPrompt assembles (ask's coding prompt, project
+	// instructions, memory, skills, agents, steering).
 	SystemPrompt string `json:"system_prompt,omitempty"`
+
+	// AgentInstructions runs the turn as a named agent: its own
+	// instructions head a prompt that still carries everything a session
+	// in Cwd knows about the project (PromptOptions.AgentInstructions).
+	AgentInstructions string `json:"agent_instructions,omitempty"`
 
 	// AgentName, when set, is the agent's name — what it is told it is
 	// called, and the author of its events — in place of "ask_coder": a
@@ -313,15 +317,18 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		toolsets = append(toolsets, skillTS)
 	}
 
-	instructionProvider := func(ctx agent.ReadonlyContext) (string, error) {
-		if opts.SystemPrompt != "" {
-			return opts.SystemPrompt, nil
-		}
-		return BuildSystemPrompt(PromptOptions{
+	// Built once and reused verbatim on every call, so prefix caching hits.
+	systemPrompt := opts.SystemPrompt
+	if systemPrompt == "" {
+		systemPrompt = BuildSystemPrompt(PromptOptions{
 			Cwd:                 opts.Cwd,
 			InWorkflow:          false,
 			DisableSkillsPrompt: len(toolsets) > 0,
-		}), nil
+			AgentInstructions:   opts.AgentInstructions,
+		})
+	}
+	instructionProvider := func(ctx agent.ReadonlyContext) (string, error) {
+		return systemPrompt, nil
 	}
 
 	genConfig := &genai.GenerateContentConfig{
