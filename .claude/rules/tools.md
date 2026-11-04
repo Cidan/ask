@@ -173,9 +173,22 @@ tool.
 
 ## bash and jobs
 
-- `RunShell` (swappable; `RunShellProcess` runs `$SHELL -c` with
-  `Setpgid`) is the exec seam for tests. Default timeout 120s, max 600s;
-  timeout kills the process group.
+- `RunShell` (swappable) is the exec seam for tests. `RunShellProcess`
+  runs the agent shell (`ResolveAgentShell`: bash, zsh, `$SHELL`,
+  `/bin/sh`) with `-c` under `Setsid`: the command leads its own session,
+  so its process group is the shell's pid and it has no controlling
+  terminal — a prompt on `/dev/tty` (ssh, git credentials, pinentry)
+  fails at once instead of stopping on ask's terminal. Default timeout
+  120s, max 600s; timeout, Esc, and `job_kill` SIGKILL the process group.
+- Output is read for at most `shellOutputGrace` (2s) after the shell
+  exits or is killed. A process the command started that still holds
+  stdout/stderr then (`cmd &` in the group, or one that left it with
+  `setsid` / daemonizing) would otherwise hold the call open for its
+  whole life: ask closes its read ends, SIGKILLs the group, and appends
+  `shellOutputHeldNote` pointing the model at `run_in_background`. The
+  result keeps the shell's own exit code. Lines stream through a 64 KiB
+  `bufio.Reader`, so a longer line arrives in pieces rather than
+  stopping the read.
 - `safeShellCommands` (`pkg/tools/bash.go`) is the exact-word /
   prefix allowlist that skips the approval prompt.
 - `run_in_background` registers a `Job` in `env.Jobs`; `job_output`

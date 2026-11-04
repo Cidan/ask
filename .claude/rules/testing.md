@@ -60,8 +60,13 @@ real-model memory test skips itself unless
 - No subprocesses. The only `exec.Command` calls in tests are `git` and
   `jj` in `cmd/ask/testhelpers_test.go` (`runGit`, `runJJ`, `initGitRepo`,
   `initJJRepo`, gated by `gitAvailable` / `jjAvailable` — the latter also
-  requires `jj git`, which some builds lack) and
-  `cmd/ask/worktree_lifecycle_test.go`.
+  requires `jj git`, which some builds lack),
+  `cmd/ask/worktree_lifecycle_test.go`, and the `RunShellProcess` /
+  `BashTool_Cancel…` tests in `pkg/tools/bash_test.go`, which run the
+  real agent shell because process groups, sessions, and held pipes are
+  what they test (`sleep`, `head`, `tr`; the `setsid` ones skip when it
+  is not on PATH). They set `shellOutputGrace` to 100ms and kill every
+  process they leave behind.
 - Network goes through `net/http/httptest` servers (MCP, Brave, OpenRouter,
   models.dev, marketplaces) — never a real host.
 

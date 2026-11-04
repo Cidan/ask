@@ -72,41 +72,70 @@ func agentShellEnv(base []string, extra ...string) []string {
 	return append(herdr.WithoutPaneEnv(base), extra...)
 }
 
+// shellOutputGrace is how long a command's output is still read after its
+// shell exits or is killed. Without a bound, a process the command started
+// that keeps the output pipes open — still in the shell's process group, or
+// one that left it and so survives the group's SIGKILL — holds the call open
+// for as long as that process lives.
+var shellOutputGrace = 2 * time.Second
+
+const shellOutputHeldNote = "(the shell exited, but a process it started still held its output open %s later: ask stopped reading and killed the command's process group; start long-running processes with run_in_background)\n"
+
 // RunShellProcess forks the resolved agent shell (see agentShell) with
-// -c <command> in its own process group.
+// -c <command> as the leader of a new session, so the command has no
+// controlling terminal and its process group is the shell's pid. Output and
+// Done finish at most shellOutputGrace after the shell exits.
 func RunShellProcess(dir, command string, extraEnv ...string) (*ShellHandle, error) {
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		stdoutR.Close()
+		stdoutW.Close()
+		return nil, err
+	}
 	cmd := exec.Command(agentShell, "-c", command)
 	cmd.Dir = dir
 	cmd.Env = agentShellEnv(os.Environ(), extraEnv...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdout, err := cmd.StdoutPipe()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stdout = stdoutW
+	cmd.Stderr = stderrW
+	err = cmd.Start()
+	stdoutW.Close()
+	stderrW.Close()
 	if err != nil {
+		stdoutR.Close()
+		stderrR.Close()
 		return nil, err
 	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
+	pid := cmd.Process.Pid
+	kill := func() { _ = syscall.Kill(-pid, syscall.SIGKILL) }
 	out := make(chan string, 64)
 	done := make(chan ShellResult, 1)
 	var wg sync.WaitGroup
-	scan := func(r interface{ Read([]byte) (int, error) }) {
-		defer wg.Done()
-		sc := bufio.NewScanner(r)
-		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		for sc.Scan() {
-			out <- sc.Text() + "\n"
-		}
-	}
 	wg.Add(2)
-	go scan(stdout)
-	go scan(stderr)
+	go streamShellOutput(stdoutR, out, &wg)
+	go streamShellOutput(stderrR, out, &wg)
+	read := make(chan struct{})
 	go func() {
 		wg.Wait()
+		close(read)
+	}()
+	go func() {
 		err := cmd.Wait()
+		select {
+		case <-read:
+		case <-time.After(shellOutputGrace):
+			kill()
+			stdoutR.Close()
+			stderrR.Close()
+			<-read
+			out <- fmt.Sprintf(shellOutputHeldNote, shellOutputGrace)
+		}
+		stdoutR.Close()
+		stderrR.Close()
 		code := 0
 		if err != nil {
 			code = -1
@@ -118,15 +147,36 @@ func RunShellProcess(dir, command string, extraEnv ...string) (*ShellHandle, err
 		done <- ShellResult{ExitCode: code, Err: err}
 		close(out)
 	}()
-	pid := cmd.Process.Pid
 	return &ShellHandle{
 		Pid:    pid,
 		Output: out,
 		Done:   done,
-		Kill: func() {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
-		},
+		Kill:   kill,
 	}, nil
+}
+
+// streamShellOutput sends r to out line by line until r ends or is closed.
+// A line longer than the read buffer goes out in pieces, so no line length
+// stops the read and leaves the command blocked on a full pipe.
+func streamShellOutput(r *os.File, out chan<- string, wg *sync.WaitGroup) {
+	defer wg.Done()
+	br := bufio.NewReaderSize(r, 64*1024)
+	for {
+		chunk, err := br.ReadSlice('\n')
+		if len(chunk) > 0 {
+			s := string(chunk)
+			switch {
+			case strings.HasSuffix(s, "\r\n"):
+				s = s[:len(s)-2] + "\n"
+			case err != nil && err != bufio.ErrBufferFull:
+				s += "\n"
+			}
+			out <- s
+		}
+		if err != nil && err != bufio.ErrBufferFull {
+			return
+		}
+	}
 }
 
 // Job represents one background shell command, or one background sub-agent
