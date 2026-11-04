@@ -1,8 +1,16 @@
 package tools
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -155,6 +163,183 @@ func TestBashToolBackground(t *testing.T) {
 	}
 	if !startedFound || !endedFound {
 		t.Errorf("expected started and ended bg task events, got: %+v", events())
+	}
+}
+
+func setShellOutputGrace(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := shellOutputGrace
+	shellOutputGrace = d
+	t.Cleanup(func() { shellOutputGrace = prev })
+}
+
+func requireSetsid(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("setsid is not on PATH")
+	}
+}
+
+// detachedPid reads the pid a test command wrote to path and kills that
+// process when the test ends: it left the shell's process group, so nothing
+// else will.
+func detachedPid(t *testing.T, path string) int {
+	t.Helper()
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		b, _ := os.ReadFile(path)
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 {
+			t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+			return pid
+		}
+	}
+	t.Fatalf("the command never wrote a pid to %s", path)
+	return 0
+}
+
+// collectShell reads h to the end and returns its output and result,
+// failing when either is still open after within.
+func collectShell(t *testing.T, h *ShellHandle, within time.Duration) (string, ShellResult) {
+	t.Helper()
+	var b strings.Builder
+	deadline := time.After(within)
+	for {
+		select {
+		case chunk, ok := <-h.Output:
+			if !ok {
+				select {
+				case res := <-h.Done:
+					return b.String(), res
+				case <-deadline:
+					t.Fatalf("output closed but no result after %s", within)
+				}
+			}
+			b.WriteString(chunk)
+		case <-deadline:
+			h.Kill()
+			t.Fatalf("output still open after %s; read so far: %q", within, b.String())
+		}
+	}
+}
+
+func TestRunShellProcess_ReturnsWhileADetachedProcessHoldsTheOutput(t *testing.T) {
+	requireSetsid(t)
+	setShellOutputGrace(t, 100*time.Millisecond)
+	pidfile := filepath.Join(t.TempDir(), "pid")
+	h, err := RunShellProcess(t.TempDir(), `setsid sleep 30 & echo $! > "$PIDFILE"; echo started`, "PIDFILE="+pidfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detachedPid(t, pidfile)
+	out, res := collectShell(t, h, 5*time.Second)
+	if res.ExitCode != 0 || res.Err != nil {
+		t.Errorf("result = %+v, want the shell's own exit 0", res)
+	}
+	if !strings.HasPrefix(out, "started\n") {
+		t.Errorf("output = %q, want what the command printed first", out)
+	}
+	if !strings.Contains(out, "run_in_background") {
+		t.Errorf("output = %q, want the note that the output was still held", out)
+	}
+}
+
+func TestRunShellProcess_KillsALeftoverChildThatHoldsTheOutput(t *testing.T) {
+	setShellOutputGrace(t, 100*time.Millisecond)
+	pidfile := filepath.Join(t.TempDir(), "pid")
+	h, err := RunShellProcess(t.TempDir(), `sleep 30 & echo $! > "$PIDFILE"; echo started`, "PIDFILE="+pidfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := detachedPid(t, pidfile)
+	out, res := collectShell(t, h, 5*time.Second)
+	if res.ExitCode != 0 {
+		t.Errorf("exit = %d, want the shell's own exit 0", res.ExitCode)
+	}
+	if !strings.Contains(out, "run_in_background") {
+		t.Errorf("output = %q, want the note that the output was still held", out)
+	}
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if err := syscall.Kill(child, 0); errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the backgrounded child %d is still alive after the call returned", child)
+		}
+	}
+}
+
+func TestRunShellProcess_KillReturnsWhileADetachedProcessHoldsTheOutput(t *testing.T) {
+	requireSetsid(t)
+	setShellOutputGrace(t, 100*time.Millisecond)
+	pidfile := filepath.Join(t.TempDir(), "pid")
+	h, err := RunShellProcess(t.TempDir(), `setsid sleep 30 & echo $! > "$PIDFILE"; sleep 30`, "PIDFILE="+pidfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detachedPid(t, pidfile)
+	h.Kill()
+	_, res := collectShell(t, h, 5*time.Second)
+	if res.ExitCode != -1 {
+		t.Errorf("exit = %d, want -1 for a shell killed by a signal", res.ExitCode)
+	}
+}
+
+func TestBashTool_CancelReturnsWhileADetachedProcessHoldsTheOutput(t *testing.T) {
+	requireSetsid(t)
+	setShellOutputGrace(t, 100*time.Millisecond)
+	env, _ := newTestToolEnv(t)
+	pidfile := filepath.Join(t.TempDir(), "pid")
+	args, err := json.Marshal(BashParams{
+		Command:     `setsid sleep 30 & echo $! > '` + pidfile + `'; sleep 30`,
+		Description: "hold the output open",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got := make(chan ToolResponse, 1)
+	go func() {
+		resp, _ := RunToolWithJSON(engine.NewStandaloneAgentContext(ctx), BashTool(env), string(args))
+		got <- resp
+	}()
+	detachedPid(t, pidfile)
+	cancel()
+	select {
+	case resp := <-got:
+		if !strings.Contains(resp.Content, `"cancelled":true`) {
+			t.Errorf("response = %s, want a cancelled result", resp.Content)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the bash tool did not return after its turn was cancelled")
+	}
+}
+
+func TestRunShellProcess_RunsInItsOwnSessionWithoutATerminal(t *testing.T) {
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("no /proc")
+	}
+	h, err := RunShellProcess(t.TempDir(), `read -r _ _ _ _ pgrp sid _ < /proc/$$/stat; echo "$pgrp $sid"; { : </dev/tty; } 2>/dev/null && echo tty || echo no-tty`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := collectShell(t, h, 5*time.Second)
+	if want := fmt.Sprintf("%d %d\nno-tty\n", h.Pid, h.Pid); out != want {
+		t.Errorf("output = %q, want %q: the shell leads its own session and process group and cannot open a terminal", out, want)
+	}
+}
+
+func TestRunShellProcess_StreamsOutputVerbatim(t *testing.T) {
+	const long = 2 << 20
+	h, err := RunShellProcess(t.TempDir(), fmt.Sprintf(`printf 'crlf\r\n'; head -c %d /dev/zero | tr '\0' a; printf '\nlast'`, long))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, res := collectShell(t, h, 5*time.Second)
+	if res.ExitCode != 0 {
+		t.Errorf("exit = %d, want 0", res.ExitCode)
+	}
+	if want := "crlf\n" + strings.Repeat("a", long) + "\nlast\n"; out != want {
+		t.Errorf("output is %d bytes starting %q, want %d bytes: a line longer than the read buffer arrives whole, CRLF ends a line like LF, and an unterminated last line is ended", len(out), out[:min(len(out), 16)], len(want))
 	}
 }
 
