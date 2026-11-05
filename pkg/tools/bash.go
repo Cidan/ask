@@ -38,6 +38,13 @@ const (
 // against until.
 var jobUntilPoll = 250 * time.Millisecond
 
+// SteerYieldGrace is how long a foreground command (bash, a sub-agent) still
+// runs after the user writes before it is handed off to a background job, so
+// one about to finish just finishes.
+var SteerYieldGrace = 2 * time.Second
+
+const bashYieldNote = "the user sent a message, which arrives with this result; the command is still running as %[1]s. Answer the user, then wait for it again with job_output (job_id %[1]s, wait: true), or stop it with job_kill if that is what the user wants."
+
 const bashFileReadNotice = "You read or searched files through bash (%s). Use the read tool instead (files, each with any number of line ranges, plus grep searches, all in one call) and the grep tool (several patterns, context lines): one call does what took several bash commands, and a read brings in the project rules for the files it touches."
 
 const bashSleepNotice = "This command waited with sleep, and every wait like it costs a full model call. Start the slow thing, or a loop that checks for it, with run_in_background, then call job_output with wait: true and until: a regexp for the line you are waiting for. One call then waits up to an hour and returns the moment the job exits, its output matches, or the user sends a message."
@@ -339,7 +346,7 @@ func (m *JobManager) KillAll() {
 	}
 }
 
-const BashToolDescription = `Run a shell command in the working directory and return its combined stdout/stderr (interleaved, truncated middle-out past 30000 chars). Output is automatically filtered to save tokens: progress/bookkeeping noise is stripped, and commands whose output is noise when they succeed (make, go build, cargo build, docker build, and similar) collapse to a one-line summary like "make: ok" on success while still showing the full error on failure. When filtering was lossy the untouched output is written to a file named in the result's raw_path field (read it to recover anything dropped). Set disable_token_savings to true if you strictly need the raw uncompressed output for a single command. Commands run in independent shells — no state persists between calls, so prefer absolute paths over cd. Set run_in_background for servers, long builds, and anything you would otherwise wait on (CI, a deploy, a remote machine: background a loop that checks it), then wait for it with one job_output call (wait: true, until: a regexp) and stop it with job_kill — never wait with sleep. Never use bash to read or search files (cat, head, tail, sed -n, grep, rg, find): the read, grep, and glob tools do that, many files and patterns in one call. Quote paths containing spaces.`
+const BashToolDescription = `Run a shell command in the working directory and return its combined stdout/stderr (interleaved, truncated middle-out past 30000 chars). Output is automatically filtered to save tokens: progress/bookkeeping noise is stripped, and commands whose output is noise when they succeed (make, go build, cargo build, docker build, and similar) collapse to a one-line summary like "make: ok" on success while still showing the full error on failure. When filtering was lossy the untouched output is written to a file named in the result's raw_path field (read it to recover anything dropped). Set disable_token_savings to true if you strictly need the raw uncompressed output for a single command. Commands run in independent shells — no state persists between calls, so prefer absolute paths over cd. Set run_in_background for servers, long builds, and anything you would otherwise wait on (CI, a deploy, a remote machine: background a loop that checks it), then wait for it with one job_output call (wait: true, until: a regexp) and stop it with job_kill — never wait with sleep. When the user writes while a command runs, the command keeps running as a background job and this call returns its output so far and the job id, so you can answer; then wait for it again with job_output, or stop it with job_kill. Never use bash to read or search files (cat, head, tail, sed -n, grep, rg, find): the read, grep, and glob tools do that, many files and patterns in one call. Quote paths containing spaces.`
 
 type BashParams struct {
 	Command             string `json:"command" jsonschema:"the shell command to execute"`
@@ -360,6 +367,7 @@ type BashResult struct {
 	RawPath   string `json:"raw_path,omitempty" jsonschema:"path to the untouched raw output when filtering was lossy; read it with the read tool (offset/limit) to recover anything the summary dropped"`
 	RawLines  int    `json:"raw_lines,omitempty" jsonschema:"line count of the raw_path file"`
 	Notice    string `json:"notice,omitempty" jsonschema:"a better way to do what this command did; follow it from now on"`
+	Note      string `json:"note,omitempty" jsonschema:"why the call returned while the command still runs as job_id"`
 }
 
 // JobOutputResult is the job_output tool's response.
@@ -445,15 +453,23 @@ func BashTool(env *ToolEnv) Tool {
 				}
 				return BashResult{JobID: job.ID, Output: "started background job " + job.ID + "; wait for it with job_output (wait: true, until: a regexp) and stop it with job_kill"}, nil
 			}
-			defer unregisterSudo()
+			detached := false
+			defer func() {
+				if !detached {
+					unregisterSudo()
+				}
+			}()
 			notice := env.bashNotice(command)
 
 			timeout := BashDefaultTimeout
 			if p.Timeout > 0 {
 				timeout = min(time.Duration(p.Timeout)*time.Second, BashMaxTimeout)
 			}
+			deadline := time.Now().Add(timeout)
 			timer := time.NewTimer(timeout)
 			defer timer.Stop()
+			steered := env.steerSignal()
+			var yield <-chan time.Time
 
 			var buf strings.Builder
 			handleFinalOutput := func(rawStr string, exit int) string {
@@ -495,10 +511,74 @@ func BashTool(env *ToolEnv) Tool {
 					handle.Kill()
 					drainShellOutput(handle.Output, collect)
 					return BashResult{Cancelled: true, Output: TruncateMiddle(handleFinalOutput(buf.String(), -1))}, nil
+				case <-steered:
+					steered = nil
+					yield = time.After(SteerYieldGrace)
+				case <-yield:
+					detached = true
+					job := env.Jobs.Add(command, p.DisableTokenSavings, handle.Kill)
+					job.AppendOutput(buf.String())
+					if rawTruncated {
+						job.Mu.Lock()
+						job.Truncated = true
+						job.Mu.Unlock()
+					}
+					go finishDetachedShell(env, job, handle, unregisterSudo, time.Until(deadline), timeout)
+					if env.Emit != nil {
+						env.Emit(engine.BgTaskStartedEvent{
+							BaseEvent:   engine.BaseEvent{TabID: env.TabID},
+							JobID:       job.ID,
+							Description: p.Description,
+						})
+					}
+					partial := buf.String()
+					if !p.DisableTokenSavings {
+						partial, _ = ApplyBashFilter(command, partial, -1)
+					}
+					if strings.TrimSpace(partial) == "" {
+						partial = "(no output yet)"
+					}
+					return BashResult{
+						JobID:  job.ID,
+						Output: TruncateMiddle(partial),
+						Note:   fmt.Sprintf(bashYieldNote, job.ID),
+						Notice: notice,
+					}, nil
 				}
 			}
 		},
 	)
+}
+
+// finishDetachedShell keeps reading a command bash handed off to a job when
+// the user wrote, still killing it when its own timeout runs out, and ends
+// the job when the command exits.
+func finishDetachedShell(env *ToolEnv, job *Job, handle *ShellHandle, unregisterSudo func(), remaining, timeout time.Duration) {
+	defer unregisterSudo()
+	kill := time.NewTimer(remaining)
+	defer kill.Stop()
+	for out := handle.Output; out != nil; {
+		select {
+		case chunk, ok := <-out:
+			if !ok {
+				out = nil
+				continue
+			}
+			job.AppendOutput(chunk)
+		case <-kill.C:
+			handle.Kill()
+			drainShellOutput(out, job.AppendOutput)
+			job.AppendOutput(fmt.Sprintf("\n(killed: the command ran past its %s timeout)\n", timeout))
+			out = nil
+		}
+	}
+	job.Finish(<-handle.Done)
+	if env.Emit != nil {
+		env.Emit(engine.BgTaskEndedEvent{
+			BaseEvent: engine.BaseEvent{TabID: env.TabID},
+			JobID:     job.ID,
+		})
+	}
 }
 
 // bashNotice is the nudge a foreground command earns, if any: reading or
@@ -625,7 +705,7 @@ func waitForJobs(ctx context.Context, jobs []*Job, until *regexp.Regexp, first b
 			}
 			return matched, fmt.Sprintf("waited %s and %d of %d jobs are still running; wait again only if it is still worth it", timeout, len(jobs)-len(ready), len(jobs)), nil
 		case <-steered:
-			return matched, "the user sent a message, which arrives with this result; answer it, then call job_output again if you still need to wait", nil
+			return matched, "the user sent a message, which arrives with this result; answer it, then wait again with job_output if you still need the job, or stop it with job_kill if that is what the user wants", nil
 		case <-ctx.Done():
 			return matched, "", ctx.Err()
 		}

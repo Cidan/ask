@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -693,5 +694,99 @@ func TestJobOutput_SeveralJobs(t *testing.T) {
 	}
 	if _, err := runTypedTool[JobOutputResult](t, tool, JobOutputParams{JobIDs: []string{fast.ID, "job-99"}}); err == nil {
 		t.Error("an unknown job id must fail")
+	}
+}
+
+// When the user writes while a foreground command runs, the command is not
+// killed: once the grace runs out it keeps running as a job, the call
+// returns what it printed so far with the job id, and the job holds the
+// rest. A command that finishes within the grace returns as usual.
+func TestBashTool_YieldsToUserInput(t *testing.T) {
+	env, events := newTestToolEnvSnapshot(t)
+	oldRun, oldGrace := RunShell, SteerYieldGrace
+	SteerYieldGrace = 20 * time.Millisecond
+	t.Cleanup(func() { RunShell, SteerYieldGrace = oldRun, oldGrace })
+	steer := fakeSteering{ch: make(chan struct{})}
+	close(steer.ch)
+	env.Steering = steer
+
+	release := make(chan struct{})
+	RunShell = func(dir, command string, extraEnv ...string) (*ShellHandle, error) {
+		out := make(chan string, 4)
+		done := make(chan ShellResult, 1)
+		if command == "quick" {
+			out <- "quick done\n"
+			close(out)
+			done <- ShellResult{}
+			return &ShellHandle{Output: out, Done: done, Kill: func() {}}, nil
+		}
+		go func() {
+			out <- "step 1\n"
+			<-release
+			out <- "step 2\n"
+			close(out)
+			done <- ShellResult{ExitCode: 3}
+		}()
+		return &ShellHandle{Output: out, Done: done, Kill: func() {}}, nil
+	}
+	tool := BashTool(env)
+
+	res, err := runTypedTool[BashResult](t, tool, BashParams{Command: "quick"})
+	if err != nil || res.JobID != "" || !strings.Contains(res.Output, "quick done") {
+		t.Errorf("a command done within the grace returns as usual: %+v %v", res, err)
+	}
+
+	res, err = runTypedTool[BashResult](t, tool, BashParams{Command: "long build", Description: "build it"})
+	if err != nil {
+		t.Fatalf("yield failed: %v", err)
+	}
+	if res.JobID == "" || !strings.Contains(res.Output, "step 1") || !strings.Contains(res.Note, "still running as "+res.JobID) {
+		t.Fatalf("the call returns the output so far and the job: %+v", res)
+	}
+	job := env.Jobs.Get(res.JobID)
+	close(release)
+	select {
+	case <-job.DoneCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the job never finished")
+	}
+	out, _, _, jobRes := job.Snapshot()
+	if out != "step 1\nstep 2\n" || jobRes.ExitCode != 3 {
+		t.Errorf("the job holds all the output and the exit code: %q %+v", out, jobRes)
+	}
+	var started, ended bool
+	for deadline := time.Now().Add(2 * time.Second); !ended && time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		for _, ev := range events() {
+			switch e := ev.(type) {
+			case engine.BgTaskStartedEvent:
+				started = started || (e.JobID == job.ID && e.Description == "build it")
+			case engine.BgTaskEndedEvent:
+				ended = ended || e.JobID == job.ID
+			}
+		}
+	}
+	if !started || !ended {
+		t.Errorf("the handoff shows as a background job: started=%v ended=%v", started, ended)
+	}
+}
+
+// A command handed to a job keeps its own timeout.
+func TestFinishDetachedShell_KillsAtTheTimeout(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	out := make(chan string, 1)
+	done := make(chan ShellResult, 1)
+	var once sync.Once
+	handle := &ShellHandle{Output: out, Done: done, Kill: func() {
+		once.Do(func() {
+			close(out)
+			done <- ShellResult{ExitCode: -1}
+		})
+	}}
+	job := env.Jobs.Add("hang", false, handle.Kill)
+	unregistered := false
+	finishDetachedShell(env, job, handle, func() { unregistered = true }, 10*time.Millisecond, 90*time.Second)
+	output, _, isDone, _ := job.Snapshot()
+	if !isDone || !strings.Contains(output, "killed: the command ran past its 1m30s timeout") || !unregistered {
+		t.Errorf("done=%v unregistered=%v output=%q", isDone, unregistered, output)
 	}
 }
