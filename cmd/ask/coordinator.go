@@ -222,6 +222,9 @@ func injectTabID(msg tea.Msg, tabID int) tea.Msg {
 	case contextCompactedMsg:
 		m.tabID = tabID
 		return m
+	case agentReportsMsg:
+		m.tabID = tabID
+		return m
 	}
 	return msg
 }

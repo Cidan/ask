@@ -60,6 +60,7 @@ func newTestAgentSession(t *testing.T, store *agentSessionStore) *agentSession {
 		ch:            make(chan tea.Msg, 256),
 		sendCh:        make(chan agentTurn, 8),
 		closed:        make(chan struct{}),
+		agentDone:     make(chan struct{}, 1),
 		sessionID:     "ses-test",
 		store:         store,
 	}
@@ -206,6 +207,102 @@ func TestAgentSession_TextTurn(t *testing.T) {
 		}
 		if len(events) < 2 {
 			t.Errorf("expected at least 2 events in session, got %d", len(events))
+		}
+	}
+}
+
+// Background sub-agents the model never collected reach it on their own:
+// once the last outstanding one finishes, an idle tab runs one turn that
+// carries every report, the UI is told why, and nothing is handed over
+// twice.
+func TestAgentSession_DeliversFinishedBackgroundAgents(t *testing.T) {
+	origStream := engine.GenerateStream
+	defer func() { engine.GenerateStream = origStream }()
+	var mu sync.Mutex
+	var prompts []string
+	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+		var last strings.Builder
+		if n := len(contents); n > 0 {
+			for _, p := range contents[n-1].Parts {
+				last.WriteString(p.Text)
+			}
+		}
+		mu.Lock()
+		prompts = append(prompts, last.String())
+		mu.Unlock()
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			yield(genaiTextChunk("got the reports", 10, 2), nil)
+		}
+	}
+
+	s := newTestAgentSession(t, nil)
+	collected := s.env.Jobs.AddAgent("agent: collected", nil)
+	collected.AppendOutput("already read")
+	collected.Finish(tools.ShellResult{})
+	collected.MarkDelivered()
+	one := s.env.Jobs.AddAgent("agent: one", nil)
+	two := s.env.Jobs.AddAgent("agent reviewer: two", nil)
+
+	one.AppendOutput("report one")
+	one.Finish(tools.ShellResult{})
+	s.agentFinished()
+	select {
+	case m := <-s.ch:
+		t.Fatalf("a report must wait while another agent still runs, got %#v", m)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	two.AppendOutput("report two")
+	two.Finish(tools.ShellResult{ExitCode: 1})
+	s.agentFinished()
+	msgs := readSessionMsgs(t, s.ch, isTurnComplete)
+	notice, ok := msgs[0].(agentReportsMsg)
+	if !ok || notice.summary != "2 background agents finished; their reports went to the model" {
+		t.Fatalf("the turn opens with the notice, got %#v", msgs[0])
+	}
+	mu.Lock()
+	got := strings.Join(prompts, "\n")
+	mu.Unlock()
+	for _, want := range []string{
+		`<agent_report job="` + one.ID + `" task="agent: one" status="finished">` + "\nreport one",
+		`<agent_report job="` + two.ID + `" task="agent reviewer: two" status="failed">` + "\nreport two",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the turn hands the model %q, got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "already read") {
+		t.Error("a report the model already collected is not handed over again")
+	}
+	if left := s.env.Jobs.UndeliveredAgents(); len(left) != 0 {
+		t.Errorf("both reports are delivered: %v", left)
+	}
+
+	s.agentFinished()
+	select {
+	case m := <-s.ch:
+		t.Fatalf("delivered reports start no second turn, got %#v", m)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// Only a chat tab hands reports over on its own: a watcher run waits for its
+// agents itself, and a workflow run's turns belong to its graph.
+func TestPendingAgentReports_OnlyInChatTabs(t *testing.T) {
+	isolateHome(t)
+	for name, args := range map[string]ProviderSessionArgs{
+		"watcher":  {Background: true},
+		"workflow": {InWorkflow: true},
+		"chat":     {},
+	} {
+		s := &agentSession{args: args, ch: make(chan tea.Msg, 8), closed: make(chan struct{})}
+		s.env = newAgentToolEnv(t.TempDir(), 1, true, nil)
+		job := s.env.Jobs.AddAgent("agent: x", nil)
+		job.AppendOutput("report")
+		job.Finish(tools.ShellResult{})
+		_, ok := s.pendingAgentReports()
+		if ok != (name == "chat") {
+			t.Errorf("%s: pendingAgentReports = %v", name, ok)
 		}
 	}
 }

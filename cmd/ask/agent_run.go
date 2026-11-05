@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"iter"
 	"strings"
 	"sync"
@@ -85,6 +86,10 @@ type agentSession struct {
 
 	closed    chan struct{}
 	closeOnce sync.Once
+
+	// agentDone is signalled when a background sub-agent of this session
+	// finishes, so an idle tab can hand the model its report.
+	agentDone chan struct{}
 
 	sessionID string
 	store     *agentSessionStore
@@ -292,6 +297,9 @@ func (s *agentSession) emit(msg tea.Msg) {
 	case contextCompactedMsg:
 		m.proc = s.proc
 		msg = m
+	case agentReportsMsg:
+		m.proc = s.proc
+		msg = m
 	case tabTopicMsg:
 		m.proc = s.proc
 		msg = m
@@ -357,24 +365,28 @@ func (s *agentSession) run() {
 		s.chMu.Unlock()
 	}()
 	first := true
+	runTurns := func(turn agentTurn) {
+		if first {
+			s.emit(providerModelMsg{model: s.modelID})
+			first = false
+		}
+		for {
+			s.runTurn(turn)
+			left, ok := s.gate.End()
+			if !ok {
+				break
+			}
+			// What the user sent that the turn never took runs next,
+			// ahead of anything sent after it.
+			s.emit(queuedMessageDrainedMsg{text: left.Text})
+			turn = agentTurn{text: left.Text, files: left.Files}
+		}
+	}
 	for {
 		select {
 		case turn := <-s.sendCh:
-			if first {
-				s.emit(providerModelMsg{model: s.modelID})
-				first = false
-			}
-			for {
-				s.runTurn(turn)
-				left, ok := s.gate.End()
-				if !ok {
-					break
-				}
-				// What the user sent that the turn never took runs next,
-				// ahead of anything sent after it.
-				s.emit(queuedMessageDrainedMsg{text: left.Text})
-				turn = agentTurn{text: left.Text, files: left.Files}
-			}
+			runTurns(turn)
+		case <-s.agentDone:
 		case <-s.closed:
 			if s.env != nil && s.env.Jobs != nil {
 				s.env.Jobs.KillAll()
@@ -385,7 +397,51 @@ func (s *agentSession) run() {
 			s.emit(providerExitedMsg{})
 			return
 		}
+		for {
+			turn, ok := s.pendingAgentReports()
+			if !ok {
+				break
+			}
+			runTurns(turn)
+		}
 	}
+}
+
+// agentFinished tells the session a background sub-agent of it finished.
+func (s *agentSession) agentFinished() {
+	select {
+	case s.agentDone <- struct{}{}:
+	default:
+	}
+}
+
+// pendingAgentReports is the turn that hands the model the reports of the
+// background sub-agents it started and never collected, once the last of
+// them has finished. The run loop asks only between turns, so a report goes
+// either to job_output inside a turn or here, never both. Only a chat tab
+// gets it: a watcher run waits for its agents itself, and a workflow run's
+// turns belong to its graph.
+func (s *agentSession) pendingAgentReports() (agentTurn, bool) {
+	if s.args.InWorkflow || s.workflowAgent != nil || s.args.Background || s.env == nil || s.env.Jobs == nil {
+		return agentTurn{}, false
+	}
+	jobs := s.env.Jobs.UndeliveredAgents()
+	if len(jobs) == 0 {
+		return agentTurn{}, false
+	}
+	for _, j := range jobs {
+		if _, _, done, _ := j.Snapshot(); !done {
+			return agentTurn{}, false
+		}
+	}
+	summary := fmt.Sprintf("%d background agents finished; their reports went to the model", len(jobs))
+	if len(jobs) == 1 {
+		summary = "background " + jobs[0].Command + " finished; its report went to the model"
+	}
+	text := agentReportsTurn(jobs)
+	debugLog("tab %d: handing %d background agent reports to the model", s.args.TabID, len(jobs))
+	s.emit(agentReportsMsg{summary: summary})
+	return agentTurn{text: text}, true
 }
 
 type streamToADKModel struct {
