@@ -130,6 +130,14 @@ type contextCompactedMsg struct {
 	proc    *providerProc
 }
 
+// agentReportsMsg reports that the session started a turn of its own to hand
+// the model the reports of background sub-agents it never collected.
+type agentReportsMsg struct {
+	summary string
+	tabID   int
+	proc    *providerProc
+}
+
 type todoItem struct {
 	Content    string
 	ActiveForm string

@@ -19,7 +19,7 @@ Without 'agent', a sub-agent runs on the current model with full access to the c
 
 Write the 'prompt' as a complete, self-contained brief: the sub-agent cannot see this conversation, so give it the goal, the files or areas to look at, the constraints and conventions to honor, and exactly what to report back (with file_path:line_number evidence).
 
-Set run_in_background:true to keep working while it runs — the call returns a job id immediately; collect the report with one job_output call (wait: true) and stop it with job_kill. The sub-agent's final message is returned verbatim as data.`
+Set run_in_background:true to keep working while it runs — the call returns a job id immediately; collect the report with one job_output call (wait: true; several agents at once with job_ids) and stop it with job_kill. If you end your turn without collecting them, the reports of every background agent you started arrive in a new turn of their own once the last one finishes, so there is no need to stay in the turn just to wait. The sub-agent's final message is returned verbatim as data.`
 
 const agentTaskSystemPrompt = `You are a research sub-agent inside a coding tool. You have access to the full toolset to investigate the codebase, read and edit files, search, and run commands as needed.
 
@@ -32,7 +32,7 @@ Your final message is returned verbatim to the calling agent as data — make it
 type agentTaskParams struct {
 	Prompt          string `json:"prompt" description:"the self-contained task for the sub-agent, including everything it needs to know"`
 	Agent           string `json:"agent,omitempty" description:"named agent definition to run (see <available_agents>); empty runs a research sub-agent with the standard tool set on the current model"`
-	RunInBackground bool   `json:"run_in_background,omitempty" description:"run the sub-agent as a background job and return its job id immediately; collect the report with job_output (wait: true)"`
+	RunInBackground bool   `json:"run_in_background,omitempty" description:"run the sub-agent as a background job and return its job id immediately; collect the report with job_output (wait: true), or end your turn and it arrives when done"`
 	Description     string `json:"description" description:"one short human-readable phrase (under 10 words) telling the user what this sub-agent is doing"`
 }
 
@@ -194,6 +194,9 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 							BaseEvent: engine.BaseEvent{TabID: env.TabID},
 							JobID:     job.ID,
 						})
+					}
+					if sess != nil {
+						sess.agentFinished()
 					}
 				}()
 				if env.Emit != nil {

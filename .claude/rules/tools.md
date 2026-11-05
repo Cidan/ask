@@ -233,7 +233,11 @@ as most of all model calls).
   split across chunks still matches), `timeout` passes (`jobWaitTimeout`:
   `JobWaitDefault` 600s, `JobWaitMax` 3600s), or `env.Steering` fires
   because the user wrote to the running turn; `matched` and `note` say
-  which. One waiting call replaces a poll loop.
+  which. One waiting call replaces a poll loop. `job_ids` names several
+  jobs: `waitForJobs` waits for all of them, or the first one ready with
+  `first`, and each comes back under its own `==> job-N (…): status <==`
+  heading (`reportJob` reads, filters, and delivers each), with `status`
+  counting how many exited.
 - Foreground `bash` results carry a `notice` (`bashNotice`) when the
   command reads or searches files through the shell
   (`filters.FileReadCommands`: grep/rg/…, `sed -n`, cat/head/tail/nl on a
@@ -371,7 +375,17 @@ Still wired, workflow-only:
 
 `task` runs a research sub-agent on the parent model, or a named
 definition from `<available_agents>` (`agent:` param) on its own
-provider/model and tool grants. `NewSubagentToolEnv` shares the parent's
+provider/model and tool grants. A foreground run blocks the call until
+the sub-agent returns. A background run (`run_in_background`) is an agent
+job; when it finishes it signals its session (`agentFinished`), and a
+chat tab's run loop, between turns only, asks `pendingAgentReports`: once
+no undelivered background agent is still running, one turn carries every
+report the model never collected (`agentReportsTurn` in `watcher_hub.go`,
+which marks them delivered) behind an `agentReportsMsg` notice. Inside a
+turn the model collects reports with `job_output`, so a report goes one
+way or the other, never both. Watcher runs (their own wait in
+`watcher_hub.go`) and workflow runs do not wake this way.
+`NewSubagentToolEnv` shares the parent's
 file tracker, jobs, and emit, with permissions skipped. Either kind works
 in the project like a tab: the project's context in its prompt
 (`engine.ProjectContext`; a named agent's own instructions head it via

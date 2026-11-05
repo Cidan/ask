@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -530,14 +531,16 @@ func bashResponse(output string, rawTruncated bool, res ShellResult) BashResult 
 	return BashResult{Output: body, ExitCode: res.ExitCode, Truncated: rawTruncated}
 }
 
-const JobOutputToolDescription = `Read the output of a background job: a bash command started with run_in_background, or a background sub-agent. Set wait to block until the job exits, its output matches the until regexp, or timeout seconds pass (default 600, max 3600), whichever comes first; a message from the user also ends the wait. One waiting call replaces any number of polls, so never wait on a job, a build, CI, a deploy, or a remote machine with bash sleep or by calling job_output again and again. To wait on something that is not a job, start a bash loop that checks for it with run_in_background and wait on that job here.`
+const JobOutputToolDescription = `Read the output of background jobs: bash commands started with run_in_background, or background sub-agents. Name one job with job_id or several with job_ids. Set wait to block until the jobs exit (all of them, or the first one with first: true), their output matches the until regexp, or timeout seconds pass (default 600, max 3600), whichever comes first; a message from the user also ends the wait. One waiting call replaces any number of polls, so never wait on a job, a build, CI, a deploy, or a remote machine with bash sleep or by calling job_output again and again, and wait on several jobs in one call rather than one after another. To wait on something that is not a job, start a bash loop that checks for it with run_in_background and wait on that job here.`
 
 type JobOutputParams struct {
-	JobID       string `json:"job_id" jsonschema:"the job id returned when the background command started"`
-	Wait        bool   `json:"wait,omitempty" jsonschema:"block until the job exits, its output matches until, or timeout passes, then return its output"`
-	Until       string `json:"until,omitempty" jsonschema:"regular expression; wait only until the job's output matches it (a server's ready line, a test's FAIL); implies wait"`
-	Timeout     int    `json:"timeout,omitempty" jsonschema:"seconds to wait at most (default 600, max 3600); implies wait"`
-	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
+	JobID       string   `json:"job_id,omitempty" jsonschema:"the job id returned when the background command started"`
+	JobIDs      []string `json:"job_ids,omitempty" jsonschema:"several job ids to read, and to wait on together, in one call"`
+	Wait        bool     `json:"wait,omitempty" jsonschema:"block until the jobs exit, their output matches until, or timeout passes, then return their output"`
+	First       bool     `json:"first,omitempty" jsonschema:"with several jobs, stop waiting as soon as one of them is done (default: wait for all)"`
+	Until       string   `json:"until,omitempty" jsonschema:"regular expression; a job is done waiting once its output matches it (a server's ready line, a test's FAIL); implies wait"`
+	Timeout     int      `json:"timeout,omitempty" jsonschema:"seconds to wait at most (default 600, max 3600); implies wait"`
+	Description string   `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
 // jobWaitTimeout is how long a job_output wait of the given seconds may
@@ -549,25 +552,56 @@ func jobWaitTimeout(seconds int) time.Duration {
 	return min(time.Duration(seconds)*time.Second, JobWaitMax)
 }
 
-// waitForJob blocks until job exits, its raw output matches until (when
-// set), timeout passes, the user steers the turn, or ctx ends — which last is
-// the only error. note says why a wait ended with the job still running.
-func waitForJob(ctx context.Context, job *Job, until *regexp.Regexp, timeout time.Duration, steered <-chan struct{}) (matched bool, note string, err error) {
-	scanned := 0
-	check := func() bool {
-		if until == nil {
-			return false
+// waitForJobs blocks until every job is ready (or, with first, any one is),
+// timeout passes, the user steers the turn, or ctx ends — which last is the
+// only error. A job is ready once it exits or, with until set, once its raw
+// output matches. matched names the jobs whose output matched; note says why
+// a wait ended while a job it waited for still runs.
+func waitForJobs(ctx context.Context, jobs []*Job, until *regexp.Regexp, first bool, timeout time.Duration, steered <-chan struct{}) (matched map[string]bool, note string, err error) {
+	matched = map[string]bool{}
+	ready := map[*Job]bool{}
+	scanned := map[*Job]int{}
+	check := func(j *Job) {
+		if ready[j] {
+			return
 		}
-		out, _, _, _ := job.Snapshot()
-		if len(out) <= scanned {
-			return false
+		out, _, done, _ := j.Snapshot()
+		if until != nil && len(out) > scanned[j] {
+			from := strings.LastIndexByte(out[:scanned[j]], '\n') + 1
+			scanned[j] = len(out)
+			if until.MatchString(out[from:]) {
+				matched[j.ID] = true
+				ready[j] = true
+			}
 		}
-		from := strings.LastIndexByte(out[:scanned], '\n') + 1
-		scanned = len(out)
-		return until.MatchString(out[from:])
+		if done {
+			ready[j] = true
+		}
 	}
-	if check() {
-		return true, "", nil
+	finished := func() bool {
+		if first {
+			return len(ready) > 0
+		}
+		return len(ready) == len(jobs)
+	}
+	for _, j := range jobs {
+		check(j)
+	}
+	if finished() {
+		return matched, "", nil
+	}
+
+	exited := make(chan *Job, len(jobs))
+	stop := make(chan struct{})
+	defer close(stop)
+	for _, j := range jobs {
+		go func() {
+			select {
+			case <-j.DoneCh:
+				exited <- j
+			case <-stop:
+			}
+		}()
 	}
 	var tick <-chan time.Time
 	if until != nil {
@@ -579,20 +613,86 @@ func waitForJob(ctx context.Context, job *Job, until *regexp.Regexp, timeout tim
 	defer deadline.Stop()
 	for {
 		select {
-		case <-job.DoneCh:
-			return check(), "", nil
+		case j := <-exited:
+			check(j)
 		case <-tick:
-			if check() {
-				return true, "", nil
+			for _, j := range jobs {
+				check(j)
 			}
 		case <-deadline.C:
-			return false, fmt.Sprintf("waited %s and the job is still running; wait again only if it is still worth it", timeout), nil
+			if len(jobs) == 1 {
+				return matched, fmt.Sprintf("waited %s and the job is still running; wait again only if it is still worth it", timeout), nil
+			}
+			return matched, fmt.Sprintf("waited %s and %d of %d jobs are still running; wait again only if it is still worth it", timeout, len(jobs)-len(ready), len(jobs)), nil
 		case <-steered:
-			return false, "the user sent a message, which arrives with this result; answer it, then call job_output again if you still need to wait", nil
+			return matched, "the user sent a message, which arrives with this result; answer it, then call job_output again if you still need to wait", nil
 		case <-ctx.Done():
-			return false, "", ctx.Err()
+			return matched, "", ctx.Err()
+		}
+		if finished() {
+			return matched, "", nil
 		}
 	}
+}
+
+// jobReport is what job_output says about one job.
+type jobReport struct {
+	status   string
+	body     string
+	done     bool
+	rawPath  string
+	rawLines int
+}
+
+// reportJob reads job's output through the bash filter, marks a finished
+// job delivered, and spills a finished job's raw output when filtering lost
+// some of it.
+func reportJob(job *Job) jobReport {
+	output, truncated, done, res := job.Snapshot()
+	rawOutput := output
+	if !job.DisableSavings {
+		// A still-running job has partial output; treat it as a
+		// non-clean exit so semantic filters preserve it verbatim
+		// rather than collapsing an incomplete run to a summary.
+		exit := -1
+		if done {
+			exit = res.ExitCode
+		}
+		filtered, saved := ApplyBashFilter(job.Command, output, exit)
+		if done && !IsTrivialCommand(job.Command) {
+			var shouldRecord bool
+			job.Mu.Lock()
+			if !job.SavingsRecorded {
+				job.SavingsRecorded = true
+				shouldRecord = true
+			}
+			job.Mu.Unlock()
+			if shouldRecord {
+				_ = RecordSavings(ExtractBaseCommand(job.Command), len(output)/4, saved)
+			}
+		}
+		output = filtered
+	}
+	body := TruncateMiddle(output)
+	if truncated {
+		body += "\n(output exceeded the in-memory cap; middle portions were dropped)"
+	}
+	r := jobReport{status: "still running", done: done}
+	if done {
+		r.status = fmt.Sprintf("exited with code %d", res.ExitCode)
+		if res.Err != nil {
+			r.status = "failed: " + res.Err.Error()
+		}
+		job.MarkDelivered()
+	}
+	if strings.TrimSpace(body) == "" {
+		body = "(no output yet)"
+	}
+	r.body = body
+	if done {
+		r.rawPath, r.rawLines = spillIfLossy(job.Command, rawOutput, body)
+	}
+	return r
 }
 
 // JobOutputTool returns the native job_output tool.
@@ -601,11 +701,24 @@ func JobOutputTool(env *ToolEnv) Tool {
 		"job_output",
 		JobOutputToolDescription,
 		func(ctx agent.Context, p JobOutputParams) (JobOutputResult, error) {
-			job := env.Jobs.Get(p.JobID)
-			if job == nil {
-				return JobOutputResult{}, errors.New("no such job: " + p.JobID)
+			ids := p.JobIDs
+			if p.JobID != "" && !slices.Contains(ids, p.JobID) {
+				ids = append([]string{p.JobID}, ids...)
 			}
-			var matched bool
+			if len(ids) == 0 {
+				return JobOutputResult{}, errors.New("job_id or job_ids is required")
+			}
+			var jobs []*Job
+			for _, id := range ids {
+				job := env.Jobs.Get(id)
+				if job == nil {
+					return JobOutputResult{}, errors.New("no such job: " + id)
+				}
+				if !slices.Contains(jobs, job) {
+					jobs = append(jobs, job)
+				}
+			}
+			var matched map[string]bool
 			var note string
 			if p.Wait || p.Until != "" || p.Timeout > 0 {
 				var until *regexp.Regexp
@@ -617,57 +730,47 @@ func JobOutputTool(env *ToolEnv) Tool {
 					until = re
 				}
 				var err error
-				matched, note, err = waitForJob(ctx, job, until, jobWaitTimeout(p.Timeout), env.steerSignal())
+				matched, note, err = waitForJobs(ctx, jobs, until, p.First, jobWaitTimeout(p.Timeout), env.steerSignal())
 				if err != nil {
-					return JobOutputResult{}, errors.New("cancelled while waiting for " + p.JobID)
+					return JobOutputResult{}, errors.New("cancelled while waiting for " + strings.Join(ids, ", "))
 				}
 			}
-			output, truncated, done, res := job.Snapshot()
-			rawOutput := output
-			if !job.DisableSavings {
-				// A still-running job has partial output; treat it as a
-				// non-clean exit so semantic filters preserve it verbatim
-				// rather than collapsing an incomplete run to a summary.
-				exit := -1
-				if done {
-					exit = res.ExitCode
+
+			if len(jobs) == 1 {
+				job := jobs[0]
+				r := reportJob(job)
+				result := JobOutputResult{JobID: job.ID, Command: job.Command, Status: r.status, Output: r.body, Matched: matched[job.ID], RawPath: r.rawPath, RawLines: r.rawLines}
+				if !r.done {
+					result.Note = note
 				}
-				filtered, saved := ApplyBashFilter(job.Command, output, exit)
-				if done && !IsTrivialCommand(job.Command) {
-					var shouldRecord bool
-					job.Mu.Lock()
-					if !job.SavingsRecorded {
-						job.SavingsRecorded = true
-						shouldRecord = true
-					}
-					job.Mu.Unlock()
-					if shouldRecord {
-						_ = RecordSavings(ExtractBaseCommand(job.Command), len(output)/4, saved)
-					}
+				return result, nil
+			}
+
+			var out strings.Builder
+			running := 0
+			for i, job := range jobs {
+				r := reportJob(job)
+				if !r.done {
+					running++
 				}
-				output = filtered
-			}
-			body := TruncateMiddle(output)
-			if truncated {
-				body += "\n(output exceeded the in-memory cap; middle portions were dropped)"
-			}
-			status := "still running"
-			if done {
-				status = fmt.Sprintf("exited with code %d", res.ExitCode)
-				if res.Err != nil {
-					status = "failed: " + res.Err.Error()
+				if i > 0 {
+					out.WriteByte('\n')
 				}
-				job.MarkDelivered()
+				heading := job.ID + " (" + job.Command + "): " + r.status
+				if matched[job.ID] {
+					heading += ", output matched until"
+				}
+				fmt.Fprintf(&out, "==> %s <==\n%s\n", heading, strings.TrimRight(r.body, "\n"))
+				if r.rawPath != "" {
+					fmt.Fprintf(&out, "(raw output: %s, %d lines)\n", r.rawPath, r.rawLines)
+				}
 			}
-			if strings.TrimSpace(body) == "" {
-				body = "(no output yet)"
+			result := JobOutputResult{
+				Status: fmt.Sprintf("%d of %d jobs exited", len(jobs)-running, len(jobs)),
+				Output: out.String(),
 			}
-			result := JobOutputResult{JobID: p.JobID, Command: job.Command, Status: status, Output: body, Matched: matched}
-			if !done {
+			if running > 0 {
 				result.Note = note
-			}
-			if done {
-				result.RawPath, result.RawLines = spillIfLossy(job.Command, rawOutput, body)
 			}
 			return result, nil
 		},

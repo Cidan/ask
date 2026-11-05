@@ -570,16 +570,22 @@ func TestJobOutput_WaitEndsOnMatchExitOrSteer(t *testing.T) {
 	}
 }
 
-func TestWaitForJob_TimesOutAndHonorsCancel(t *testing.T) {
+func TestWaitForJobs_TimesOutAndHonorsCancel(t *testing.T) {
 	env, _ := newTestToolEnv(t)
 	job := env.Jobs.Add("forever", false, nil)
-	matched, note, err := waitForJob(context.Background(), job, nil, 10*time.Millisecond, nil)
-	if err != nil || matched || !strings.Contains(note, "still running") {
+	matched, note, err := waitForJobs(context.Background(), []*Job{job}, nil, false, 10*time.Millisecond, nil)
+	if err != nil || len(matched) != 0 || !strings.Contains(note, "the job is still running") {
 		t.Errorf("timeout = %v %q %v", matched, note, err)
+	}
+	done := env.Jobs.Add("quick", false, nil)
+	done.Finish(ShellResult{})
+	_, note, _ = waitForJobs(context.Background(), []*Job{job, done}, nil, false, 10*time.Millisecond, nil)
+	if !strings.Contains(note, "1 of 2 jobs are still running") {
+		t.Errorf("a multi-job timeout counts what still runs: %q", note)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, err := waitForJob(ctx, job, nil, time.Hour, nil); err == nil {
+	if _, _, err := waitForJobs(ctx, []*Job{job}, nil, false, time.Hour, nil); err == nil {
 		t.Error("a cancelled turn ends the wait with its error")
 	}
 	if got := jobWaitTimeout(0); got != JobWaitDefault {
@@ -640,5 +646,52 @@ func TestBashTool_NoticesForFileReadsAndSleeps(t *testing.T) {
 	}
 	if fmt.Sprint(nudged) != "[2 3 10 20]" {
 		t.Errorf("file-read notices on calls %v, want [2 3 10 20]", nudged)
+	}
+}
+
+// Several jobs wait together in one call: for all of them by default, for
+// the first one done with first, and each comes back under its own heading.
+func TestJobOutput_SeveralJobs(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	tool := JobOutputTool(env)
+	slow := env.Jobs.AddAgent("agent: slow", nil)
+	fast := env.Jobs.AddAgent("agent: fast", nil)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		fast.AppendOutput("fast report")
+		fast.Finish(ShellResult{ExitCode: 0})
+		time.Sleep(20 * time.Millisecond)
+		slow.AppendOutput("slow report")
+		slow.Finish(ShellResult{ExitCode: 1})
+	}()
+
+	res, err := runTypedTool[JobOutputResult](t, tool, JobOutputParams{JobIDs: []string{slow.ID, fast.ID}, Wait: true, First: true})
+	if err != nil {
+		t.Fatalf("first-done wait failed: %v", err)
+	}
+	if res.Status != "1 of 2 jobs exited" || !strings.Contains(res.Output, "==> "+fast.ID+" (agent: fast): exited with code 0 <==\nfast report") ||
+		!strings.Contains(res.Output, "==> "+slow.ID+" (agent: slow): still running <==") {
+		t.Errorf("first: true returns as the first job ends, with both under headings: %+v", res)
+	}
+	if got := env.Jobs.UndeliveredAgents(); len(got) != 1 || got[0] != slow {
+		t.Errorf("only the finished agent is delivered: %v", got)
+	}
+
+	res, err = runTypedTool[JobOutputResult](t, tool, JobOutputParams{JobID: fast.ID, JobIDs: []string{slow.ID, fast.ID}, Wait: true})
+	if err != nil {
+		t.Fatalf("all-done wait failed: %v", err)
+	}
+	if res.Status != "2 of 2 jobs exited" || strings.Count(res.Output, "==> ") != 2 || !strings.Contains(res.Output, "slow report") || res.Note != "" {
+		t.Errorf("a wait for all returns once both ended, each job once: %+v", res)
+	}
+	if got := env.Jobs.UndeliveredAgents(); len(got) != 0 {
+		t.Errorf("both agents are delivered: %v", got)
+	}
+
+	if _, err := runTypedTool[JobOutputResult](t, tool, JobOutputParams{}); err == nil {
+		t.Error("naming no job must fail")
+	}
+	if _, err := runTypedTool[JobOutputResult](t, tool, JobOutputParams{JobIDs: []string{fast.ID, "job-99"}}); err == nil {
+		t.Error("an unknown job id must fail")
 	}
 }

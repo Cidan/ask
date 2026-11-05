@@ -285,6 +285,9 @@ lockstep (`.claude/rules/issues.md`).
   `bgTaskStartedMsg`/`bgTaskEndedMsg`, `queuedMessageDrainedMsg`, then
   `providerDoneMsg` BEFORE `turnCompleteMsg` (workflow_graph.go waits
   on that order), and `providerExitedMsg` + channel close on shutdown.
+  `agentReportsMsg` opens a turn the session started itself to hand the
+  model finished background agents' reports (`pendingAgentReports`, see
+  `.claude/rules/tools.md`); the tab renders it as a `●` notice.
 - `EngineEventToTeaMsg` (event_adapter.go) turns `engine.EngineEvent`s
   into those messages; `TUIInteractionHandler` (interaction_adapter.go)
   turns ask question, approval, finalized plan, and sudo password into
