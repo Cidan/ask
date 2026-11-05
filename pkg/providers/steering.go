@@ -18,6 +18,10 @@ const askSteeringPromptP5 = `You must never rely on your internal memory or pre-
 
 const askSteeringPromptInWorkflowP6 = `End the turn only when the work you committed to in your text is actually done. Do not write a closing sentence that promises future work ("Let me X next", "I will then Y", "Then I'll commit") without immediately performing that work via tool calls in the same turn. When you have finished the step's tasks, you MUST call the end_turn tool as your final action to record your summary and outcome in the workflow log. Do not finish the turn without calling end_turn.`
 
+const askSteeringPromptParallel = `<use_parallel_tool_calls>
+For maximum efficiency, whenever you perform multiple independent operations, invoke all relevant tools simultaneously rather than sequentially. Prioritize calling tools in parallel whenever possible. For example, when you need three files, read all three in one read call (its files list) rather than one at a time, and when you also need a grep, a glob, and a git status, put every one of those calls in the same response. When running multiple read-only commands, always run all of them in parallel. Err on the side of maximizing parallel tool calls rather than running too many tools sequentially. Only batch tool calls that are independent of each other: when one call needs another's result, wait for that result first.
+</use_parallel_tool_calls>`
+
 const askSteeringPromptTodos = `You MUST actively use the 'todos' tool for ANY multi-step task, whether you are running inline or inside a workflow step. Break your work down into a clear plan, mark the first item in_progress, and update the list live as you complete each task. Do NOT batch work and send a completed list at the end — the task list must track reality at every moment.`
 
 type SteeringOptions struct {
@@ -40,7 +44,7 @@ func SteeringPrompt(opts SteeringOptions) string {
 	default:
 		paragraphs = append(paragraphs, askSteeringPromptP1, askSteeringPromptSubagents, askSteeringPromptSideEffects)
 	}
-	paragraphs = append(paragraphs, askSteeringPromptP4, askSteeringPromptP5)
+	paragraphs = append(paragraphs, askSteeringPromptP4, askSteeringPromptP5, askSteeringPromptParallel)
 	if opts.InWorkflow {
 		paragraphs = append(paragraphs, askSteeringPromptInWorkflowP6)
 	}

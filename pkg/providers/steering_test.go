@@ -13,8 +13,8 @@ func TestSteeringPrompt_Variants(t *testing.T) {
 	headless := SteeringPrompt(SteeringOptions{Headless: true})
 	step := SteeringPrompt(SteeringOptions{InWorkflow: true, Headless: true})
 	for _, s := range []string{tab, headless, step} {
-		if !strings.Contains(s, askSteeringPromptP5) || !strings.Contains(s, askSteeringPromptTodos) {
-			t.Error("every variant keeps the shared steering")
+		if !strings.Contains(s, askSteeringPromptP5) || !strings.Contains(s, askSteeringPromptTodos) || !strings.Contains(s, askSteeringPromptParallel) {
+			t.Error("every variant keeps the shared steering, parallel tool calls included")
 		}
 	}
 	if !strings.Contains(tab, askSteeringPromptSubagents) || !strings.Contains(tab, askSteeringPromptSideEffects) {

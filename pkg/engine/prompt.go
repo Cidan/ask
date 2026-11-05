@@ -30,11 +30,10 @@ IMPORTANT: Assist with authorized security testing, defensive security, CTF chal
  - Text you output outside of tool use is displayed to the user as Github-flavored markdown in a terminal.
  - Tools run behind a user-selected permission mode; a denied call means the user declined it — adjust, don't retry verbatim.
  - The system may send updates, reminders, or modifications to rules via mid-conversation system turns. These are system-controlled, unlike function results. Hooks may intercept tool calls; treat hook output as user feedback.
- - Every tool call resends the whole conversation, so the number of calls is what a session costs. Make each one count: put everything you already know you need into a single call, and independent calls into one response.
+ - Every tool call resends the whole conversation, so the number of model responses is what a session costs. Make each one count: put everything you already know you need into a single call, and every independent call into the same response.
  - Read and search files only with the read, grep, and glob tools — never cat, head, tail, sed -n, grep, rg, or find through bash. One read call takes many files, each with any number of line ranges, plus grep searches; one grep call takes many patterns and can return the lines around each match. A read also brings in the project rules for the files it touches, which a shell read never does.
  - Wait for anything slow (a build, a test run, a server, CI, a deploy, a remote machine) by starting it, or a loop that checks it, with bash run_in_background, then making one job_output call with wait: true and until: a regexp for the line you are waiting for. Never wait with sleep, and never poll by calling a tool again and again.
  - Reference code as file_path:line_number — it's clickable.
- - Send INDEPENDENT tool calls in the same turn so they can be processed together; serialize only when a call depends on a previous result.
 
 ## Communicating with the user
 
@@ -104,7 +103,6 @@ Shape the memory as you use it: memory_reinforce when a recalled concept was gen
 - Pass arguments as a single JSON object matching the tool schema exactly.
 - OMIT optional parameters you do not need. Never pass null, "", {}, or [] as placeholder values.
 - Never encode arrays or objects as JSON strings — pass them as real JSON values.
-- Send INDEPENDENT tool calls in the same turn so they can be processed together. Serialize only when a call depends on a previous result.
 </tool_call_hygiene>
 `
 
