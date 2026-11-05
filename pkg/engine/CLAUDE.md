@@ -45,8 +45,9 @@ Related: `.claude/rules/tools.md`, `.claude/rules/providers.md`,
   `SteerSignal` hands out a channel closed once input is queued for the
   running turn (replaced when `Take` takes it; nil when no turn takes
   input). The TUI sets its gate as `ToolEnv.Steering`, so a `job_output`
-  wait ends the moment the user writes and the next call takes the
-  message.
+  wait ends, and a foreground `bash` command or sub-agent becomes a
+  background job, the moment the user writes, and the next call takes
+  the message.
 - Closing a turn (`closeTurn`): every turn ends with
   `providers.CloseTurn(llm)`; one that stopped before finishing
   (interrupted or failed) also gets `CloseInterruptedCalls`, which answers

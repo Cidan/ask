@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	adkagent "google.golang.org/adk/v2/agent"
 
@@ -19,7 +21,9 @@ Without 'agent', a sub-agent runs on the current model with full access to the c
 
 Write the 'prompt' as a complete, self-contained brief: the sub-agent cannot see this conversation, so give it the goal, the files or areas to look at, the constraints and conventions to honor, and exactly what to report back (with file_path:line_number evidence).
 
-Set run_in_background:true to keep working while it runs — the call returns a job id immediately; collect the report with one job_output call (wait: true; several agents at once with job_ids) and stop it with job_kill. If you end your turn without collecting them, the reports of every background agent you started arrive in a new turn of their own once the last one finishes, so there is no need to stay in the turn just to wait. The sub-agent's final message is returned verbatim as data.`
+Set run_in_background:true to keep working while it runs — the call returns a job id immediately; collect the report with one job_output call (wait: true; several agents at once with job_ids) and stop it with job_kill. If you end your turn without collecting them, the reports of every background agent you started arrive in a new turn of their own once the last one finishes, so there is no need to stay in the turn just to wait. When the user writes while a foreground sub-agent runs, it keeps running as a background job and this call returns its job id, so you can answer first. The sub-agent's final message is returned verbatim as data.`
+
+const agentTaskYieldNote = "the user sent a message, which arrives with this result; the %[1]s is still running as %[2]s. Answer the user, then collect its report with job_output (job_id %[2]s, wait: true), or stop it with job_kill if that is what the user wants. If you end your turn instead, the report arrives on its own when it finishes."
 
 const agentTaskSystemPrompt = `You are a research sub-agent inside a coding tool. You have access to the full toolset to investigate the codebase, read and edit files, search, and run commands as needed.
 
@@ -152,53 +156,14 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 				return strings.TrimSpace(res.Response), nil
 			}
 
-			if p.RunInBackground {
-				label := "agent"
-				if p.Agent != "" {
-					label = "agent " + p.Agent
-				}
-				if env.Emit != nil {
-					env.Emit(engine.SubagentStartedEvent{
-						BaseEvent:   engine.BaseEvent{TabID: env.TabID},
-						SubagentID:  subagentID,
-						AgentType:   agentType,
-						Description: subDesc,
-						Background:  true,
-					})
-				}
-				jobCtx, cancel := context.WithCancel(context.Background())
+			label := "agent"
+			if p.Agent != "" {
+				label = "agent " + p.Agent
+			}
+			// startJob tracks the sub-agent as a background job; finishJob
+			// hands that job its report and wakes the session.
+			startJob := func(cancel func()) *tools.Job {
 				job := env.Jobs.AddAgent(label+": "+clipText(firstLineOf(subDesc), 80), cancel)
-				go func() {
-					report, err := run(jobCtx)
-					isErr := false
-					switch {
-					case err != nil:
-						isErr = true
-						job.AppendOutput("sub-agent failed: " + err.Error())
-						job.Finish(tools.ShellResult{ExitCode: 1})
-					case report == "":
-						isErr = true
-						job.AppendOutput("sub-agent returned no report")
-						job.Finish(tools.ShellResult{ExitCode: 1})
-					default:
-						job.AppendOutput(report)
-						job.Finish(tools.ShellResult{ExitCode: 0})
-					}
-					if env.Emit != nil {
-						env.Emit(engine.SubagentEndedEvent{
-							BaseEvent:  engine.BaseEvent{TabID: env.TabID},
-							SubagentID: subagentID,
-							IsError:    isErr,
-						})
-						env.Emit(engine.BgTaskEndedEvent{
-							BaseEvent: engine.BaseEvent{TabID: env.TabID},
-							JobID:     job.ID,
-						})
-					}
-					if sess != nil {
-						sess.agentFinished()
-					}
-				}()
 				if env.Emit != nil {
 					env.Emit(engine.BgTaskStartedEvent{
 						BaseEvent:   engine.BaseEvent{TabID: env.TabID},
@@ -206,12 +171,37 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 						Description: p.Description,
 					})
 				}
-				return agentTaskResult{
-					JobID: job.ID,
-					Agent: agentType,
-					Report: "started background " + label + " as " + job.ID +
-						"; collect the report with job_output (wait: true) and stop it with job_kill",
-				}, nil
+				return job
+			}
+			finishJob := func(job *tools.Job, report string, err error) {
+				isErr := false
+				switch {
+				case err != nil:
+					isErr = true
+					job.AppendOutput("sub-agent failed: " + err.Error())
+					job.Finish(tools.ShellResult{ExitCode: 1})
+				case report == "":
+					isErr = true
+					job.AppendOutput("sub-agent returned no report")
+					job.Finish(tools.ShellResult{ExitCode: 1})
+				default:
+					job.AppendOutput(report)
+					job.Finish(tools.ShellResult{ExitCode: 0})
+				}
+				if env.Emit != nil {
+					env.Emit(engine.SubagentEndedEvent{
+						BaseEvent:  engine.BaseEvent{TabID: env.TabID},
+						SubagentID: subagentID,
+						IsError:    isErr,
+					})
+					env.Emit(engine.BgTaskEndedEvent{
+						BaseEvent: engine.BaseEvent{TabID: env.TabID},
+						JobID:     job.ID,
+					})
+				}
+				if sess != nil {
+					sess.agentFinished()
+				}
 			}
 
 			if env.Emit != nil {
@@ -220,25 +210,80 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 					SubagentID:  subagentID,
 					AgentType:   agentType,
 					Description: subDesc,
-					Background:  false,
+					Background:  p.RunInBackground,
 				})
 			}
-			report, err := run(ctx)
-			isErr := err != nil || report == ""
-			if env.Emit != nil {
-				env.Emit(engine.SubagentEndedEvent{
-					BaseEvent:  engine.BaseEvent{TabID: env.TabID},
-					SubagentID: subagentID,
-					IsError:    isErr,
-				})
+
+			if p.RunInBackground {
+				jobCtx, cancel := context.WithCancel(context.Background())
+				job := startJob(cancel)
+				go func() {
+					report, err := run(jobCtx)
+					finishJob(job, report, err)
+				}()
+				return agentTaskResult{
+					JobID: job.ID,
+					Agent: agentType,
+					Report: "started background " + label + " as " + job.ID +
+						"; collect the report with job_output (wait: true) and stop it with job_kill",
+				}, nil
 			}
-			if err != nil {
-				return agentTaskResult{}, errors.New("sub-agent failed: " + err.Error())
+
+			// A foreground sub-agent runs on a context of its own that the
+			// turn's cancellation stops, so that when the user writes it can
+			// be handed off to a background job and outlive this call.
+			runCtx, cancelRun := context.WithCancel(context.Background())
+			stopWatch := context.AfterFunc(ctx, cancelRun)
+			type outcome struct {
+				report string
+				err    error
 			}
-			if report == "" {
-				return agentTaskResult{}, errors.New("sub-agent returned no report")
+			done := make(chan outcome, 1)
+			go func() {
+				report, err := run(runCtx)
+				done <- outcome{report, err}
+			}()
+			var steered <-chan struct{}
+			if env.Steering != nil {
+				steered = env.Steering.SteerSignal()
 			}
-			return agentTaskResult{Report: report, Agent: agentType}, nil
+			var yield <-chan time.Time
+			for {
+				select {
+				case o := <-done:
+					stopWatch()
+					cancelRun()
+					if env.Emit != nil {
+						env.Emit(engine.SubagentEndedEvent{
+							BaseEvent:  engine.BaseEvent{TabID: env.TabID},
+							SubagentID: subagentID,
+							IsError:    o.err != nil || o.report == "",
+						})
+					}
+					if o.err != nil {
+						return agentTaskResult{}, errors.New("sub-agent failed: " + o.err.Error())
+					}
+					if o.report == "" {
+						return agentTaskResult{}, errors.New("sub-agent returned no report")
+					}
+					return agentTaskResult{Report: o.report, Agent: agentType}, nil
+				case <-steered:
+					steered = nil
+					yield = time.After(tools.SteerYieldGrace)
+				case <-yield:
+					stopWatch()
+					job := startJob(cancelRun)
+					go func() {
+						o := <-done
+						finishJob(job, o.report, o.err)
+					}()
+					return agentTaskResult{
+						JobID:  job.ID,
+						Agent:  agentType,
+						Report: fmt.Sprintf(agentTaskYieldNote, label, job.ID),
+					}, nil
+				}
+			}
 		},
 	)
 }

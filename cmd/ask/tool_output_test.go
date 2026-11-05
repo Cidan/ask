@@ -601,3 +601,14 @@ func TestTodoBoxStyle_MarginMatchesControls(t *testing.T) {
 			todoBoxStyle.GetMarginLeft(), thinkingStyle.GetMarginLeft())
 	}
 }
+
+// A bash result that handed its command to a job has not exited, so it shows
+// no exit code; a finished command still does.
+func TestExtractExitCode_JobHandoffHasNone(t *testing.T) {
+	if _, ok := extractExitCode(map[string]any{"exit_code": float64(0), "job_id": "job-2", "output": "step 1"}); ok {
+		t.Error("a handed-off command must not read as exit 0")
+	}
+	if code, ok := extractExitCode(map[string]any{"exit_code": float64(2), "output": "boom"}); !ok || code != 2 {
+		t.Errorf("a finished command keeps its exit code: %d %v", code, ok)
+	}
+}

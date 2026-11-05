@@ -238,6 +238,17 @@ as most of all model calls).
   `first`, and each comes back under its own `==> job-N (…): status <==`
   heading (`reportJob` reads, filters, and delivers each), with `status`
   counting how many exited.
+- **The user writing ends every long wait.** `env.Steering` fires when
+  input is queued for the running turn. `job_output` returns at once
+  with a `note`. A foreground `bash` command that is still running
+  `SteerYieldGrace` (2s) later is not killed: it becomes a job
+  (`env.Jobs.Add` with the output so far, `finishDetachedShell` reading
+  the rest and still killing it at its own timeout, `BgTaskStartedEvent`
+  / `BgTaskEndedEvent`), and the call returns that output with `job_id`
+  and a `note` telling the model to answer, then `job_output` or
+  `job_kill`. A result carrying `job_id` shows no exit code in the TUI
+  (`extractExitCode`). Sub-agents get no `Steering`, so their tools never
+  hand off.
 - Foreground `bash` results carry a `notice` (`bashNotice`) when the
   command reads or searches files through the shell
   (`filters.FileReadCommands`: grep/rg/…, `sed -n`, cat/head/tail/nl on a
@@ -376,7 +387,11 @@ Still wired, workflow-only:
 `task` runs a research sub-agent on the parent model, or a named
 definition from `<available_agents>` (`agent:` param) on its own
 provider/model and tool grants. A foreground run blocks the call until
-the sub-agent returns. A background run (`run_in_background`) is an agent
+the sub-agent returns, on a context of its own that the turn's
+cancellation stops (`context.AfterFunc`); when the user writes and it is
+still running `tools.SteerYieldGrace` later, it is handed off to an agent
+job like a background run (`startJob` / `finishJob`) and the call
+returns the job id with `agentTaskYieldNote`. A background run (`run_in_background`) is an agent
 job; when it finishes it signals its session (`agentFinished`), and a
 chat tab's run loop, between turns only, asks `pendingAgentReports`: once
 no undelivered background agent is still running, one turn carries every

@@ -77,9 +77,10 @@ type ToolEnv struct {
 	// WorkflowRunner runs a workflow definition when selected in finalized_plan.
 	WorkflowRunner func(ctx context.Context, tabID int, def workflow.Def, src any) (string, error)
 
-	// Steering, when set, tells a tool blocked on a long wait (job_output)
-	// that the user sent the running turn a message, so it returns and the
-	// next model call takes the message.
+	// Steering, when set, tells a tool blocked on a long wait that the user
+	// sent the running turn a message, so it returns and the next model call
+	// takes the message: job_output stops waiting, and a foreground bash
+	// command or sub-agent is handed off to a background job.
 	Steering SteerSignaler
 
 	nudgeMu sync.Mutex

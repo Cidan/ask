@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/providers"
+	"github.com/Cidan/ask/pkg/tools"
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
@@ -207,5 +209,79 @@ func TestAgentTaskTool_NamedAgentSystemPrompt(t *testing.T) {
 	}
 	if !strings.Contains(systems[1], "PROJECT_INSTRUCTIONS_MARKER") {
 		t.Error("a research sub-agent gets the project's instructions")
+	}
+}
+
+type testSteering struct{ ch chan struct{} }
+
+func (s testSteering) SteerSignal() <-chan struct{} { return s.ch }
+
+// When the user writes while a foreground sub-agent works, the call returns
+// with the sub-agent still running as a background job, which receives the
+// report when it finishes.
+func TestAgentTaskTool_ForegroundYieldsToUserInput(t *testing.T) {
+	origModelBuilder, origGrace := engine.ModelBuilder, tools.SteerYieldGrace
+	tools.SteerYieldGrace = 20 * time.Millisecond
+	t.Cleanup(func() { engine.ModelBuilder, tools.SteerYieldGrace = origModelBuilder, origGrace })
+	release := make(chan struct{})
+	engine.ModelBuilder = func(ctx context.Context, p providers.Provider, cfg config.Config, modelID string) (adkmodel.LLM, error) {
+		return &mockADKModel{
+			name: modelID,
+			generateFunc: func(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+				return func(yield func(*adkmodel.LLMResponse, error) bool) {
+					select {
+					case <-release:
+					case <-ctx.Done():
+						yield(nil, ctx.Err())
+						return
+					}
+					yield(&adkmodel.LLMResponse{
+						Content:      &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{genai.NewPartFromText("slow findings")}},
+						FinishReason: genai.FinishReasonStop,
+					}, nil)
+				}
+			},
+		}, nil
+	}
+
+	env, events := newTestToolEnvSnapshot(t)
+	steer := testSteering{ch: make(chan struct{})}
+	close(steer.ch)
+	env.Steering = steer
+	tool := agentTaskTool(env, func() *agentSession { return nil })
+
+	resp := runTool(t, tool, agentTaskParams{Prompt: "dig through the logs", Description: "log dig"})
+	if resp.IsError || !strings.Contains(resp.Content, "still running as job-1") {
+		t.Fatalf("the call returns with the sub-agent handed to a job: %+v", resp)
+	}
+	job := env.Jobs.Get("job-1")
+	if job == nil {
+		t.Fatal("no job for the handed-off sub-agent")
+	}
+	if _, _, done, _ := job.Snapshot(); done {
+		t.Fatal("the sub-agent must keep running after the call returns")
+	}
+	close(release)
+	select {
+	case <-job.DoneCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handed-off sub-agent never finished")
+	}
+	if out, _, _, res := job.Snapshot(); out != "slow findings" || res.ExitCode != 0 {
+		t.Errorf("the job holds the report: %q %+v", out, res)
+	}
+	var started, ended bool
+	for deadline := time.Now().Add(2 * time.Second); !ended && time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		for _, m := range events() {
+			switch v := m.(type) {
+			case bgTaskStartedMsg:
+				started = started || v.taskID == "job-1"
+			case subagentEndedMsg:
+				ended = ended || !v.isError
+			}
+		}
+	}
+	if !started || !ended {
+		t.Errorf("the handoff shows as a background task and the sub-agent ends cleanly: started=%v ended=%v", started, ended)
 	}
 }

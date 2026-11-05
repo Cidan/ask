@@ -475,8 +475,12 @@ func formatToolInputValue(v any) string {
 // result map. Values arrive as float64 after the tool result round-trips
 // through JSON, but int/int64/json.Number are handled too. ok is false
 // for tools that carry no exit_code (read, edit, MCP, …) so the renderer
-// can tell "exit 0" apart from "not a shell result".
+// can tell "exit 0" apart from "not a shell result", and for a bash result
+// that handed its command to a job, which has not exited.
 func extractExitCode(resp map[string]any) (int, bool) {
+	if id, _ := resp["job_id"].(string); id != "" {
+		return 0, false
+	}
 	v, ok := resp["exit_code"]
 	if !ok {
 		return 0, false
