@@ -171,6 +171,40 @@ tool.
   first call. Workflows are opt-in — the steering prompt no longer forces
   a `workflow_list` check.
 
+## Batched read and grep
+
+Every tool call resends the whole conversation, so `read` and `grep`
+take many targets per call (transcripts showed bash `grep` and `sed -n`
+as most of all model calls).
+
+- `read`: `file_path` (+ `offset`/`limit`) for one file, `files` (each a
+  `file_path` with any number of `ranges`) for many, and `grep` (a list
+  of `GrepSearch`) to search in the same call. One file with at most one
+  range and no search renders exactly as a plain read (bare `cat -n`
+  lines, `next_offset`). Anything more is a batch (`readBatch`): ranges
+  of a file are sorted and merged so no line repeats, the file is
+  scanned once, and every range and search comes under its own
+  `==> <path> lines a-b of n <==` / `==> grep "<pat>" … <==` heading. A
+  file or search that fails reports `error: …` under its heading; only a
+  batch where everything failed is a Go error. The whole batch shares
+  one `MaxReadBytes` budget: the range that crosses it says where to
+  continue, and what follows is listed as not read. Every text file read
+  is recorded in the tracker.
+- `grep`: `GrepParams` embeds `GrepSearch` (`pattern`, `patterns`,
+  `path`, `include`, `literal_text`, `context`). One pattern renders
+  bare, as before; several each get a heading, run separately (each
+  capped at `MaxSearchHits` matches), and a bad one errors only under its
+  heading. `context` (max `MaxGrepContext`) adds the lines around each
+  match as `Line N- text` with `--` between groups; ripgrep runs with
+  `-C` (`parseRgLine` reads its `NUL` / `:` / `-` format) and the Go
+  fallback builds the same groups. The cap keeps the context of kept
+  matches and drops a dropped match's leading context.
+- Consumers read the call through `engine.ReadCallFiles` /
+  `ReadCallSearchPaths`: the context-aware wrapper (rules per file),
+  `MemoryAwareTool` (a recall per file), `AppendTouchedFile`, and the
+  TUI header (`toolPrimaryArg`: first file `(+N more)`, patterns joined
+  by ` | `).
+
 ## bash and jobs
 
 - `RunShell` (swappable) is the exec seam for tests. `RunShellProcess`
@@ -192,8 +226,23 @@ tool.
 - `safeShellCommands` (`pkg/tools/bash.go`) is the exact-word /
   prefix allowlist that skips the approval prompt.
 - `run_in_background` registers a `Job` in `env.Jobs`; `job_output`
-  (optionally waiting up to 30s) and `job_kill` (SIGKILL to the group)
-  manage it. `BgTaskStartedEvent` / `BgTaskEndedEvent` drive the UI.
+  and `job_kill` (SIGKILL to the group) manage it. `job_output` waits
+  (`wait`, or implied by `until` / `timeout`) through `waitForJob` until
+  the job exits, its raw output matches the `until` regexp (re-checked
+  every `jobUntilPoll` from the start of the last line seen, so a line
+  split across chunks still matches), `timeout` passes (`jobWaitTimeout`:
+  `JobWaitDefault` 600s, `JobWaitMax` 3600s), or `env.Steering` fires
+  because the user wrote to the running turn; `matched` and `note` say
+  which. One waiting call replaces a poll loop.
+- Foreground `bash` results carry a `notice` (`bashNotice`) when the
+  command reads or searches files through the shell
+  (`filters.FileReadCommands`: grep/rg/…, `sed -n`, cat/head/tail/nl on a
+  file, not a pipe-fed filter, a `-q`/`-c`/`-l` grep, an in-place sed, a
+  `tail -f`, a redirected write, or a heredoc body) or sleeps for
+  `bashSleepNudgeSeconds` or more (`filters.LongestSleep`). Each kind is
+  nudged on the first three calls of a session, then every tenth
+  (`ToolEnv.shouldNudge`), so the reminder corrects a habit without
+  filling the context. `BgTaskStartedEvent` / `BgTaskEndedEvent` drive the UI.
   The `task` tool's background mode rides the same manager as an agent
   job (`AddAgent`, labelled `agent <name>: <description>`). A job is
   `Delivered` once the model has its output — `job_output` on a finished

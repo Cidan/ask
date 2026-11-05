@@ -60,7 +60,8 @@ tool surface → `.claude/rules/tools.md`, workflow graph →
   (per-tool header from the call input; see `renderToolCallBlock` /
   `toolPrimaryArg`), `histToolResult` (per-tool body from
   `renderToolResultBlock`, and mode-dependent: **short** keeps the header
-  to one line — read → line count, bash → `exit N` only, edit/write and
+  to one line — read → line count (a batched read: files · lines ·
+  searches, `readResultSummary`), bash → `exit N` only, edit/write and
   every other tool (including errors) → nothing (the `▸` glyph carries the
   pass/fail signal); **full** adds the whole unclamped body), and `histDiff`
   (structured hunks, solid red/green backgrounds rendered

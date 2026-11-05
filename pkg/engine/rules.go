@@ -347,25 +347,42 @@ func (ct *ContextAwareTool) Run(ctx agent.Context, args any) (map[string]any, er
 		}
 	}
 
-	var targetPath string
-	name := ct.Inner.Name()
-	if name == "read" {
-		if p, ok := argsMap["file_path"].(string); ok {
-			targetPath = p
+	var files, dirs []string
+	if ct.Inner.Name() == "read" {
+		files = ReadCallFiles(argsMap)
+		for _, p := range ReadCallSearchPaths(argsMap) {
+			if p == "" {
+				p = ct.cwd
+			}
+			dirs = append(dirs, p)
 		}
 	} else {
-		if p, ok := argsMap["path"].(string); ok && p != "" {
-			targetPath = p
+		p, _ := argsMap["path"].(string)
+		if p == "" {
+			p = ct.cwd
 		}
-		if targetPath == "" {
-			targetPath = ct.cwd
-		}
+		dirs = []string{p}
 	}
 
-	if targetPath == "" {
-		return resp, err
+	var add []string
+	for _, p := range append(append([]string(nil), files...), dirs...) {
+		add = append(add, ct.instructionsFor(p)...)
+	}
+	for _, p := range files {
+		add = append(add, ct.rulesFor(p)...)
 	}
 
+	if len(add) > 0 {
+		resp = AppendToolResultText(resp, strings.Join(add, "\n\n"))
+	}
+
+	return resp, err
+}
+
+// instructionsFor returns the instruction files the model has not seen yet
+// in targetPath's directory and every parent up to the project root,
+// outermost first.
+func (ct *ContextAwareTool) instructionsFor(targetPath string) []string {
 	absPath := targetPath
 	if !filepath.IsAbs(absPath) {
 		absPath = filepath.Join(ct.cwd, absPath)
@@ -411,46 +428,83 @@ func (ct *ContextAwareTool) Run(ctx agent.Context, args any) (map[string]any, er
 		}
 		dir = filepath.Dir(dir)
 	}
+	return ctxAdd
+}
 
+// rulesFor fires every path-scoped rule matching a file read for the first
+// time this session.
+func (ct *ContextAwareTool) rulesFor(targetPath string) []string {
+	rel := ct.RelPath(targetPath)
+	if rel == "" {
+		return nil
+	}
 	var add []string
-	add = append(add, ctxAdd...)
+	for _, r := range ct.rules {
+		ct.mu.Lock()
+		fired := ct.firedRules[r.Path]
+		ct.mu.Unlock()
+		if fired || !r.Matches(rel) {
+			continue
+		}
+		ct.mu.Lock()
+		ct.firedRules[r.Path] = true
+		ct.mu.Unlock()
 
-	if name == "read" {
-		rel := ct.RelPath(targetPath)
-		if rel != "" {
-			for _, r := range ct.rules {
-				ct.mu.Lock()
-				fired := ct.firedRules[r.Path]
-				ct.mu.Unlock()
-				if fired || !r.Matches(rel) {
-					continue
-				}
-				ct.mu.Lock()
-				ct.firedRules[r.Path] = true
-				ct.mu.Unlock()
-
-				add = append(add, fmt.Sprintf("## Rule for %s (%s)\n\n%s", rel, r.Rel, r.Body))
-				// r.Links, not r.Body — Body is capped, Links are not.
-				// r.Root, not ct.root — a user-global rule resolves its
-				// links inside ~/.claude.
-				linkRoot := r.Root
-				if linkRoot == "" {
-					linkRoot = ct.root
-				}
-				if linked := LoadContextLinksFrom(linkRoot, r.Links); len(linked) > 0 {
-					for _, d := range linked {
-						add = append(add, fmt.Sprintf("### Included from %s\n\n%s", d.Path, d.Body))
-					}
-				}
+		add = append(add, fmt.Sprintf("## Rule for %s (%s)\n\n%s", rel, r.Rel, r.Body))
+		// r.Links, not r.Body — Body is capped, Links are not.
+		// r.Root, not ct.root — a user-global rule resolves its
+		// links inside ~/.claude.
+		linkRoot := r.Root
+		if linkRoot == "" {
+			linkRoot = ct.root
+		}
+		if linked := LoadContextLinksFrom(linkRoot, r.Links); len(linked) > 0 {
+			for _, d := range linked {
+				add = append(add, fmt.Sprintf("### Included from %s\n\n%s", d.Path, d.Body))
 			}
 		}
 	}
+	return add
+}
 
-	if len(add) > 0 {
-		resp = AppendToolResultText(resp, strings.Join(add, "\n\n"))
+// ReadCallFiles returns the files a read call names — file_path, then each
+// entry of files — without blanks or repeats.
+func ReadCallFiles(args map[string]any) []string {
+	var out []string
+	seen := map[string]bool{}
+	addPath := func(v any) {
+		p, _ := v.(string)
+		p = strings.TrimSpace(p)
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		out = append(out, p)
 	}
+	addPath(args["file_path"])
+	files, _ := args["files"].([]any)
+	for _, f := range files {
+		if m, ok := f.(map[string]any); ok {
+			addPath(m["file_path"])
+		}
+	}
+	return out
+}
 
-	return resp, err
+// ReadCallSearchPaths returns the path of each search in a read call's grep
+// list, "" for one that searches the working directory.
+func ReadCallSearchPaths(args map[string]any) []string {
+	var out []string
+	searches, _ := args["grep"].([]any)
+	for _, g := range searches {
+		m, ok := g.(map[string]any)
+		if !ok {
+			continue
+		}
+		p, _ := m["path"].(string)
+		out = append(out, strings.TrimSpace(p))
+	}
+	return out
 }
 
 func (ct *ContextAwareTool) RelPath(p string) string {

@@ -162,6 +162,75 @@ func TestWrapContextAwareTools_JITInjectionAndDedup(t *testing.T) {
 	}
 }
 
+func TestWrapContextAwareTools_BatchedReadFiresForEveryTarget(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cwd := t.TempDir()
+	writeTestDoc(t, cwd, "src/api/handler.go", "package api\n")
+	writeTestDoc(t, cwd, "web/ui/view.ts", "export {}\n")
+	writeTestDoc(t, cwd, "docs/CLAUDE.md", "docs-instructions-marker\n")
+	writeTestDoc(t, cwd, "docs/guide.md", "# guide\n")
+
+	rules := []Rule{
+		{Path: "/r/api.md", Rel: "api.md", Paths: []string{"src/api/**/*.go"}, Body: "API rule body."},
+		{Path: "/r/ui.md", Rel: "ui.md", Paths: []string{"web/**"}, Body: "UI rule body."},
+		{Path: "/r/docs.md", Rel: "docs.md", Paths: []string{"docs/**"}, Body: "Docs rule body."},
+	}
+	read := WrapContextAwareTools([]Tool{&fakeRuleTestTool{cwd: cwd}}, cwd, rules)[0]
+
+	resp, err := RunADKTool(testAgentCtx(), read, map[string]any{
+		"file_path": "src/api/handler.go",
+		"files": []any{
+			map[string]any{"file_path": "web/ui/view.ts", "ranges": []any{map[string]any{"offset": 1}}},
+			map[string]any{"file_path": "src/api/handler.go"},
+		},
+		"grep":        []any{map[string]any{"pattern": "guide", "path": "docs"}},
+		"description": "batched read",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := mustToolText(resp)
+	if strings.Count(content, "API rule body.") != 1 || !strings.Contains(content, "UI rule body.") {
+		t.Errorf("every file of a batched read fires its rules, once:\n%s", content)
+	}
+	if !strings.Contains(content, "docs-instructions-marker") {
+		t.Errorf("a batched search's directory brings its unseen instructions:\n%s", content)
+	}
+	if strings.Contains(content, "Docs rule body.") {
+		t.Error("a search fires no rule; only a file that is read does")
+	}
+
+	resp, err = RunADKTool(testAgentCtx(), read, map[string]any{
+		"file_path":   "src/api/handler.go",
+		"files":       []any{map[string]any{"file_path": "web/ui/view.ts"}},
+		"description": "read again",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content := mustToolText(resp); strings.Contains(content, "rule body.") || strings.Contains(content, "docs-instructions-marker") {
+		t.Errorf("rules and instructions already delivered are not sent again:\n%s", content)
+	}
+}
+
+func TestReadCallFilesAndSearchPaths(t *testing.T) {
+	args := map[string]any{
+		"file_path": "a.go",
+		"files": []any{
+			map[string]any{"file_path": "b.go"},
+			map[string]any{"file_path": "a.go"},
+			map[string]any{"file_path": "  "},
+		},
+		"grep": []any{map[string]any{"pattern": "x"}, map[string]any{"pattern": "y", "path": "pkg"}},
+	}
+	if got := ReadCallFiles(args); strings.Join(got, ",") != "a.go,b.go" {
+		t.Errorf("ReadCallFiles = %q", got)
+	}
+	if got := ReadCallSearchPaths(args); len(got) != 2 || got[0] != "" || got[1] != "pkg" {
+		t.Errorf("ReadCallSearchPaths = %q", got)
+	}
+}
+
 // The instruction files BuildSystemPrompt already inlined must never be
 // re-sent as a tool-result footer. Before this was fixed, reading a
 // 3KB file next to a CLAUDE.md returned a ~99KB result — the whole

@@ -58,6 +58,50 @@ func TestTurnGate_SteersOnlyALiveTurn(t *testing.T) {
 	}
 }
 
+func TestTurnGate_SteerSignalFiresWhileInputWaits(t *testing.T) {
+	closed := func(ch <-chan struct{}) bool {
+		select {
+		case <-ch:
+			return true
+		default:
+			return false
+		}
+	}
+	var g TurnGate
+	if g.SteerSignal() != nil {
+		t.Fatal("an idle gate has no steer signal")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	g.Begin(cancel)
+	sig := g.SteerSignal()
+	if sig == nil || closed(sig) {
+		t.Fatal("a running turn with nothing queued must have an open signal")
+	}
+	g.Steer(TurnInput{Text: "a"})
+	g.Steer(TurnInput{Text: "b"})
+	if !closed(sig) || !closed(g.SteerSignal()) {
+		t.Fatal("queued input must fire the signal, and keep it fired until taken")
+	}
+	g.Take(ctx)
+	next := g.SteerSignal()
+	if closed(next) {
+		t.Fatal("once taken, the signal waits for the next input")
+	}
+	g.Steer(TurnInput{Text: "c"})
+	if !closed(next) {
+		t.Fatal("input after a take fires the new signal")
+	}
+	g.Interrupt()
+	if g.SteerSignal() != nil {
+		t.Fatal("an interrupted turn has no steer signal")
+	}
+	g.End()
+	g.Begin(func() {})
+	if closed(g.SteerSignal()) {
+		t.Fatal("a new turn starts with an open signal")
+	}
+}
+
 func TestTurnGate_ACallWhoseContextIsDoneTakesNothing(t *testing.T) {
 	var g TurnGate
 	ctx, cancel := context.WithCancel(context.Background())

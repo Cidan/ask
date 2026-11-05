@@ -42,6 +42,11 @@ Related: `.claude/rules/tools.md`, `.claude/rules/providers.md`,
   and runs as the very next turn. `InterruptTurn` marks the turn
   interrupted: `IsBusy` is false at once, so what the user sends after
   Esc is a new turn, not steering for one that is unwinding.
+  `SteerSignal` hands out a channel closed once input is queued for the
+  running turn (replaced when `Take` takes it; nil when no turn takes
+  input). The TUI sets its gate as `ToolEnv.Steering`, so a `job_output`
+  wait ends the moment the user writes and the next call takes the
+  message.
 - Closing a turn (`closeTurn`): every turn ends with
   `providers.CloseTurn(llm)`; one that stopped before finishing
   (interrupted or failed) also gets `CloseInterruptedCalls`, which answers
@@ -382,10 +387,13 @@ status from `AgentGitStatus`, 40-line cap) → `ProjectContext(cwd)` →
   `WrapContextAwareTools`, which wraps `read`, `glob`, `grep`, `ls`:
   - on `read`, each matching scoped rule fires once per session
     (`firedRules`), appended as `## Rule for <rel> (<label>)` plus its
-    linked docs;
+    linked docs — for every file a batched read names
+    (`ReadCallFiles`: `file_path`, then each `files` entry), never for
+    a `grep` search inside one;
   - on any of the four, the target's directory and every parent up to
     the root are checked once (`seenCtx`) for instruction files the
-    model has not seen (`seenCtxFile`, seeded from
+    model has not seen — for a read, each of its files and the `path`
+    of each search in its `grep` list (`ReadCallSearchPaths`) (`seenCtxFile`, seeded from
     `AgentContextFiles(cwd)`), appended as `## Project instructions from
     <rel>`. A `CLAUDE.md` below cwd arrives this way, once. Keep the
     seeding — without it a read next to the root `CLAUDE.md` re-sends it.

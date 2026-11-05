@@ -508,3 +508,137 @@ func TestJobManager_UndeliveredAgents(t *testing.T) {
 		t.Errorf("owed after the last delivery = %q", got)
 	}
 }
+
+type fakeSteering struct{ ch chan struct{} }
+
+func (f fakeSteering) SteerSignal() <-chan struct{} { return f.ch }
+
+// One job_output call waits as long as it takes: it returns when the
+// output matches until, when the job exits, or when the user steers the
+// turn, and says why when the job is still running.
+func TestJobOutput_WaitEndsOnMatchExitOrSteer(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	old := jobUntilPoll
+	jobUntilPoll = 2 * time.Millisecond
+	t.Cleanup(func() { jobUntilPoll = old })
+	tool := JobOutputTool(env)
+
+	server := env.Jobs.Add("serve", false, nil)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		server.AppendOutput("booting\nlisten")
+		time.Sleep(20 * time.Millisecond)
+		server.AppendOutput("ing on :8080\n")
+	}()
+	res, err := runTypedTool[JobOutputResult](t, tool, JobOutputParams{JobID: server.ID, Until: `listening on :\d+`})
+	if err != nil {
+		t.Fatalf("until wait failed: %v", err)
+	}
+	if !res.Matched || res.Status != "still running" || !strings.Contains(res.Output, "listening on :8080") {
+		t.Errorf("until must match a line split across chunks and return with the job running: %+v", res)
+	}
+	res, _ = runTypedTool[JobOutputResult](t, tool, JobOutputParams{JobID: server.ID, Until: "booting"})
+	if !res.Matched {
+		t.Errorf("output already there matches at once: %+v", res)
+	}
+
+	build := env.Jobs.Add("make", false, nil)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		build.AppendOutput("done\n")
+		build.Finish(ShellResult{ExitCode: 2})
+	}()
+	res, err = runTypedTool[JobOutputResult](t, tool, JobOutputParams{JobID: build.ID, Wait: true})
+	if err != nil || res.Status != "exited with code 2" || res.Matched || res.Note != "" {
+		t.Errorf("a wait ends when the job exits: %+v %v", res, err)
+	}
+
+	steer := fakeSteering{ch: make(chan struct{})}
+	env.Steering = steer
+	stuck := env.Jobs.Add("tail -f log", false, nil)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		close(steer.ch)
+	}()
+	res, err = runTypedTool[JobOutputResult](t, tool, JobOutputParams{JobID: stuck.ID, Wait: true, Timeout: 3600})
+	if err != nil || !strings.Contains(res.Note, "user sent a message") || res.Matched {
+		t.Errorf("a message from the user ends the wait: %+v %v", res, err)
+	}
+
+	if _, err := runTypedTool[JobOutputResult](t, tool, JobOutputParams{JobID: stuck.ID, Until: "("}); err == nil {
+		t.Error("an invalid until pattern must fail")
+	}
+}
+
+func TestWaitForJob_TimesOutAndHonorsCancel(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	job := env.Jobs.Add("forever", false, nil)
+	matched, note, err := waitForJob(context.Background(), job, nil, 10*time.Millisecond, nil)
+	if err != nil || matched || !strings.Contains(note, "still running") {
+		t.Errorf("timeout = %v %q %v", matched, note, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := waitForJob(ctx, job, nil, time.Hour, nil); err == nil {
+		t.Error("a cancelled turn ends the wait with its error")
+	}
+	if got := jobWaitTimeout(0); got != JobWaitDefault {
+		t.Errorf("default wait = %v", got)
+	}
+	if got := jobWaitTimeout(99999); got != JobWaitMax {
+		t.Errorf("wait must cap at %v, got %v", JobWaitMax, got)
+	}
+	if got := jobWaitTimeout(90); got != 90*time.Second {
+		t.Errorf("wait of 90s = %v", got)
+	}
+}
+
+// A foreground bash call that reads files or waits with sleep carries a
+// notice pointing at the better tool: the first three times in a session,
+// then every tenth.
+func TestBashTool_NoticesForFileReadsAndSleeps(t *testing.T) {
+	env, _ := newTestToolEnv(t)
+	oldRun := RunShell
+	t.Cleanup(func() { RunShell = oldRun })
+	RunShell = func(dir, command string, extraEnv ...string) (*ShellHandle, error) {
+		out := make(chan string, 1)
+		done := make(chan ShellResult, 1)
+		out <- "ok\n"
+		close(out)
+		done <- ShellResult{ExitCode: 0}
+		return &ShellHandle{Output: out, Done: done, Kill: func() {}}, nil
+	}
+	tool := BashTool(env)
+	run := func(p BashParams) BashResult {
+		t.Helper()
+		res, err := runTypedTool[BashResult](t, tool, p)
+		if err != nil {
+			t.Fatalf("bash %q failed: %v", p.Command, err)
+		}
+		return res
+	}
+
+	res := run(BashParams{Command: "sleep 30; tail -2 /tmp/build.log"})
+	if !strings.Contains(res.Notice, "through bash (tail)") || !strings.Contains(res.Notice, "job_output") {
+		t.Errorf("a sleep then a file read earns both notices: %q", res.Notice)
+	}
+	if res := run(BashParams{Command: "go test ./..."}); res.Notice != "" {
+		t.Errorf("an ordinary command carries no notice: %q", res.Notice)
+	}
+	if res := run(BashParams{Command: "sleep 2; tmux capture-pane -p"}); res.Notice != "" {
+		t.Errorf("a short pause is not a wait: %q", res.Notice)
+	}
+	if res := run(BashParams{Command: "sleep 300", RunInBackground: true}); res.Notice != "" {
+		t.Errorf("a background sleep is the recommended shape, not a nudge: %q", res.Notice)
+	}
+
+	var nudged []int
+	for i := 2; i <= 20; i++ {
+		if run(BashParams{Command: "cd /r && grep -rn Foo ."}).Notice != "" {
+			nudged = append(nudged, i)
+		}
+	}
+	if fmt.Sprint(nudged) != "[2 3 10 20]" {
+		t.Errorf("file-read notices on calls %v, want [2 3 10 20]", nudged)
+	}
+}

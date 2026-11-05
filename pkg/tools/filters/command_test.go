@@ -111,3 +111,54 @@ func TestApply_PipelineUsesPrimaryCommand(t *testing.T) {
 		t.Errorf("expected savings from go-test filtering, got %d", saved)
 	}
 }
+
+// FileReadCommands flags the stages that read or search files through the
+// shell, and only those: a pipe-fed filter, a test-only grep, an in-place
+// sed, a followed tail, and a heredoc write are not reads.
+func TestFileReadCommands(t *testing.T) {
+	tests := []struct {
+		cmd  string
+		want string
+	}{
+		{`cd /home/u/repo && grep -rn "func Foo" --include=*.go .`, "grep"},
+		{`cd /r && sed -n '120,180p' core/events.lua`, "sed -n"},
+		{`sed -ne '1,5p' a.go; rg -n Needle pkg 2>/dev/null | head -20`, "sed -n,rg"},
+		{`cat go.mod && head -50 main.go && tail -n 20 log.txt`, "cat,head,tail"},
+		{`grep -n x a.go | grep -v y | sed -n 1,3p`, "grep"},
+		{`go test ./... 2>&1 | grep FAIL`, ""},
+		{`until grep -q READY /tmp/log; do sleep 5; done`, ""},
+		{`grep -c TODO main.go; grep -l TODO -r .`, ""},
+		{`sed -i 's/a/b/' x.go; sed -n -i 's/a/b/p' y.go`, ""},
+		{`tail -f /tmp/server.log`, ""},
+		{"cat > /tmp/x.md <<'EOF'\nhello\nEOF", ""},
+		{"cat > /tmp/x.sh <<'EOF'\ngrep -rn foo .\nsleep 900\nEOF\nbash /tmp/x.sh", ""},
+		{"python3 - <<EOF\nprint(1)\nEOF\ngrep -n x a.go", "grep"},
+		{"cat <<<\"$x\"; grep -n x a.go", "grep"},
+		{`echo "grep -rn x ." && ls`, ""},
+	}
+	for _, tt := range tests {
+		if got := strings.Join(FileReadCommands(tt.cmd), ","); got != tt.want {
+			t.Errorf("FileReadCommands(%q) = %q, want %q", tt.cmd, got, tt.want)
+		}
+	}
+}
+
+func TestLongestSleep(t *testing.T) {
+	tests := []struct {
+		cmd  string
+		want float64
+	}{
+		{`sleep 540; tail -2 /tmp/lint.err`, 540},
+		{`for i in $(seq 1 40); do grep -q done /tmp/x && break; sleep 15; done`, 15},
+		{`sleep 0.5; kill 1; sleep 1m`, 60},
+		{`sleep 1 2`, 3},
+		{`echo "sleep 900"`, 0},
+		{"python3 - <<'EOF'\nsleep 900\nEOF\nsleep 20", 20},
+		{`go test ./...`, 0},
+	}
+	for _, tt := range tests {
+		if got := LongestSleep(tt.cmd); got != tt.want {
+			t.Errorf("LongestSleep(%q) = %v, want %v", tt.cmd, got, tt.want)
+		}
+	}
+}

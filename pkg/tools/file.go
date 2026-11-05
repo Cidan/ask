@@ -5,18 +5,43 @@ import (
 	"errors"
 	"fmt"
 	"google.golang.org/adk/v2/agent"
+	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
-const ReadToolDescription = `Read a file from the filesystem. Returns the content with 1-based line numbers (cat -n format). Use offset/limit for large files; lines longer than 2000 chars are truncated. Reading a file is required before editing or overwriting it. Image files (png, jpg, gif, webp, bmp, tiff) are decoded and shown to you visually instead of as text, when the model has vision.`
+const ReadToolDescription = `Read files from the filesystem. Returns the content with 1-based line numbers (cat -n format); lines longer than 2000 chars are truncated. Read one file with file_path (offset/limit for a slice of it), or many at once with files, where each file takes any number of line ranges, and run grep searches in the same call with grep. Put everything you already know you need into one call: each extra call resends the whole conversation. In a batched call every file range and every search comes back under its own "==>" heading, and a file that fails reports its error there without failing the rest. Reading a file is required before editing or overwriting it. Image files (png, jpg, gif, webp, bmp, tiff) are decoded and shown to you visually instead of as text, when the model has vision. Use this tool, never cat, head, tail, or sed -n through bash.`
+
+// ReadRange is one slice of a file for the read tool.
+type ReadRange struct {
+	Offset int `json:"offset,omitempty" jsonschema:"1-based line number to start from (default 1)"`
+	Limit  int `json:"limit,omitempty" jsonschema:"maximum number of lines to return (default 2000)"`
+}
+
+// ReadFile is one file of a batched read.
+type ReadFile struct {
+	FilePath string      `json:"file_path" jsonschema:"absolute or cwd-relative path of the file to read"`
+	Ranges   []ReadRange `json:"ranges,omitempty" jsonschema:"line ranges to return (default: from line 1, up to 2000 lines)"`
+}
 
 type ReadParams struct {
-	FilePath    string `json:"file_path" jsonschema:"absolute or cwd-relative path of the file to read"`
-	Offset      int    `json:"offset,omitempty" jsonschema:"1-based line number to start reading from (default 1)"`
-	Limit       int    `json:"limit,omitempty" jsonschema:"maximum number of lines to return (default 2000)"`
-	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
+	FilePath    string       `json:"file_path,omitempty" jsonschema:"absolute or cwd-relative path of one file to read"`
+	Offset      int          `json:"offset,omitempty" jsonschema:"1-based line number to start reading file_path from (default 1)"`
+	Limit       int          `json:"limit,omitempty" jsonschema:"maximum number of lines of file_path to return (default 2000)"`
+	Files       []ReadFile   `json:"files,omitempty" jsonschema:"several files to read in this one call, each with any number of line ranges"`
+	Grep        []GrepSearch `json:"grep,omitempty" jsonschema:"grep searches to run in this same call, each with the grep tool's fields"`
+	Description string       `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
+}
+
+// ReadTargets lists the files a read call asks for, file_path first.
+func (p ReadParams) ReadTargets() []ReadFile {
+	if p.FilePath == "" {
+		return p.Files
+	}
+	first := ReadFile{FilePath: p.FilePath, Ranges: []ReadRange{{Offset: p.Offset, Limit: p.Limit}}}
+	return append([]ReadFile{first}, p.Files...)
 }
 
 // ReadResult is the read tool's response.
@@ -33,87 +58,314 @@ func ReadTool(env *ToolEnv) Tool {
 		"read",
 		ReadToolDescription,
 		func(ctx agent.Context, p ReadParams) (ReadResult, error) {
-			path := env.AbsPath(p.FilePath)
-			info, err := os.Stat(path)
-			if err != nil {
-				if os.IsNotExist(err) {
-					return ReadResult{}, fmt.Errorf("file not found: %s", path)
+			files := p.ReadTargets()
+			if len(files) == 0 && len(p.Grep) == 0 {
+				return ReadResult{}, errors.New("file_path, files, or grep is required")
+			}
+			if len(files) == 1 && len(files[0].Ranges) <= 1 && len(p.Grep) == 0 {
+				var r ReadRange
+				if len(files[0].Ranges) == 1 {
+					r = files[0].Ranges[0]
 				}
-				return ReadResult{}, fmt.Errorf("stat %s: %v", path, err)
+				return readOne(env, files[0].FilePath, r)
 			}
-			if info.IsDir() {
-				return ReadResult{}, fmt.Errorf("%s is a directory; use the ls tool instead", path)
-			}
-			if ImageExts[strings.ToLower(filepath.Ext(path))] {
-				return readImageFile(env, path)
-			}
-
-			f, err := os.Open(path)
-			if err != nil {
-				return ReadResult{}, fmt.Errorf("open %s: %v", path, err)
-			}
-			defer f.Close()
-
-			head := make([]byte, 8192)
-			n, _ := f.Read(head)
-			if LooksBinary(head[:n]) {
-				return ReadResult{}, fmt.Errorf("%s looks like a binary file; reading it would not be useful", path)
-			}
-			if _, err := f.Seek(0, 0); err != nil {
-				return ReadResult{}, fmt.Errorf("seek %s: %v", path, err)
-			}
-
-			offset := max(p.Offset, 1)
-			limit := p.Limit
-			if limit <= 0 {
-				limit = MaxReadLines
-			}
-
-			var out strings.Builder
-			sc := bufio.NewScanner(f)
-			sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-			lineNo := 0
-			emitted := 0
-			truncatedBytes := false
-			moreLines := false
-			for sc.Scan() {
-				lineNo++
-				if lineNo < offset {
-					continue
-				}
-				if emitted >= limit {
-					moreLines = true
-					break
-				}
-				fmt.Fprintf(&out, "%6d\t%s\n", lineNo, TruncateLine(sc.Text()))
-				emitted++
-				if out.Len() >= MaxReadBytes {
-					truncatedBytes = true
-					break
-				}
-			}
-			if err := sc.Err(); err != nil {
-				return ReadResult{}, fmt.Errorf("read %s: %v", path, err)
-			}
-
-			if env.Files != nil {
-				env.Files.RecordRead(path)
-			}
-			if emitted == 0 {
-				if offset > 1 {
-					return ReadResult{Content: fmt.Sprintf("(no lines at offset %d; file has %d lines)", offset, lineNo)}, nil
-				}
-				return ReadResult{Content: "(empty file)"}, nil
-			}
-
-			res := ReadResult{Content: out.String(), Lines: emitted}
-			if truncatedBytes || moreLines {
-				res.Truncated = true
-				res.NextOffset = offset + emitted
-			}
-			return res, nil
+			return readBatch(ctx, env, files, p.Grep)
 		},
 	)
+}
+
+// openTextFile opens path for reading as text, refusing a missing file, a
+// directory, and a binary file. image is true, with no file opened, for an
+// image extension.
+func openTextFile(path string) (f *os.File, image bool, err error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, fmt.Errorf("file not found: %s", path)
+		}
+		return nil, false, fmt.Errorf("stat %s: %v", path, err)
+	}
+	if info.IsDir() {
+		return nil, false, fmt.Errorf("%s is a directory; use the ls tool instead", path)
+	}
+	if ImageExts[strings.ToLower(filepath.Ext(path))] {
+		return nil, true, nil
+	}
+	f, err = os.Open(path)
+	if err != nil {
+		return nil, false, fmt.Errorf("open %s: %v", path, err)
+	}
+	head := make([]byte, 8192)
+	n, _ := f.Read(head)
+	if LooksBinary(head[:n]) {
+		f.Close()
+		return nil, false, fmt.Errorf("%s looks like a binary file; reading it would not be useful", path)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		f.Close()
+		return nil, false, fmt.Errorf("seek %s: %v", path, err)
+	}
+	return f, false, nil
+}
+
+func newLineScanner(f *os.File) *bufio.Scanner {
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	return sc
+}
+
+func readOne(env *ToolEnv, filePath string, r ReadRange) (ReadResult, error) {
+	path := env.AbsPath(filePath)
+	f, image, err := openTextFile(path)
+	if err != nil {
+		return ReadResult{}, err
+	}
+	if image {
+		return readImageFile(env, path)
+	}
+	defer f.Close()
+
+	offset := max(r.Offset, 1)
+	limit := r.Limit
+	if limit <= 0 {
+		limit = MaxReadLines
+	}
+
+	var out strings.Builder
+	sc := newLineScanner(f)
+	lineNo := 0
+	emitted := 0
+	truncatedBytes := false
+	moreLines := false
+	for sc.Scan() {
+		lineNo++
+		if lineNo < offset {
+			continue
+		}
+		if emitted >= limit {
+			moreLines = true
+			break
+		}
+		fmt.Fprintf(&out, "%6d\t%s\n", lineNo, TruncateLine(sc.Text()))
+		emitted++
+		if out.Len() >= MaxReadBytes {
+			truncatedBytes = true
+			break
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return ReadResult{}, fmt.Errorf("read %s: %v", path, err)
+	}
+
+	if env.Files != nil {
+		env.Files.RecordRead(path)
+	}
+	if emitted == 0 {
+		if offset > 1 {
+			return ReadResult{Content: fmt.Sprintf("(no lines at offset %d; file has %d lines)", offset, lineNo)}, nil
+		}
+		return ReadResult{Content: "(empty file)"}, nil
+	}
+
+	res := ReadResult{Content: out.String(), Lines: emitted}
+	if truncatedBytes || moreLines {
+		res.Truncated = true
+		res.NextOffset = offset + emitted
+	}
+	return res, nil
+}
+
+// lineSpan is a 1-based, inclusive run of lines.
+type lineSpan struct{ first, last int }
+
+// mergeRanges turns ranges into sorted spans with overlapping and adjacent
+// ones joined, so no line is returned twice.
+func mergeRanges(ranges []ReadRange) []lineSpan {
+	if len(ranges) == 0 {
+		ranges = []ReadRange{{}}
+	}
+	spans := make([]lineSpan, 0, len(ranges))
+	for _, r := range ranges {
+		first := max(r.Offset, 1)
+		limit := r.Limit
+		if limit <= 0 {
+			limit = MaxReadLines
+		}
+		last := first + limit - 1
+		if last < first {
+			last = math.MaxInt
+		}
+		spans = append(spans, lineSpan{first, last})
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i].first < spans[j].first })
+	merged := spans[:1]
+	for _, s := range spans[1:] {
+		cur := &merged[len(merged)-1]
+		if s.first <= cur.last+1 {
+			cur.last = max(cur.last, s.last)
+			continue
+		}
+		merged = append(merged, s)
+	}
+	return merged
+}
+
+// batchSection is one file range or search of a batched read.
+type batchSection struct {
+	heading string
+	body    string
+	lines   int
+}
+
+// readSpans reads the spans of one text file, each under its own heading,
+// stopping once budget bytes are written.
+func readSpans(path string, f *os.File, spans []lineSpan, budget int) ([]batchSection, bool, error) {
+	sc := newLineScanner(f)
+	sections := make([]batchSection, len(spans))
+	bodies := make([]strings.Builder, len(spans))
+	written := 0
+	cut := -1
+	lineNo := 0
+	si := 0
+	for sc.Scan() {
+		lineNo++
+		for si < len(spans) && lineNo > spans[si].last {
+			si++
+		}
+		if si == len(spans) || cut >= 0 || lineNo < spans[si].first {
+			continue
+		}
+		before := bodies[si].Len()
+		fmt.Fprintf(&bodies[si], "%6d\t%s\n", lineNo, TruncateLine(sc.Text()))
+		written += bodies[si].Len() - before
+		sections[si].lines++
+		if written >= budget {
+			cut = lineNo
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, false, fmt.Errorf("read %s: %v", path, err)
+	}
+	total := lineNo
+	truncated := cut >= 0
+	for i, s := range spans {
+		sec := &sections[i]
+		switch {
+		case total == 0:
+			sec.heading, sec.body = path, "(empty file)\n"
+			return sections[:1], false, nil
+		case sec.lines == 0 && s.first > total:
+			sec.heading = path
+			sec.body = fmt.Sprintf("(no lines at offset %d; file has %d lines)\n", s.first, total)
+		case sec.lines == 0:
+			sec.heading = path
+			sec.body = fmt.Sprintf("(not read: this call's %d-byte output cap was reached; read lines %d-%d in another call)\n", MaxReadBytes, s.first, s.last)
+		default:
+			last := s.first + sec.lines - 1
+			sec.heading = fmt.Sprintf("%s lines %d-%d of %d", path, s.first, last, total)
+			sec.body = bodies[i].String()
+			if cut >= 0 && cut == last && last < min(s.last, total) {
+				sec.body += fmt.Sprintf("(cut at the %d-byte output cap; continue at offset %d)\n", MaxReadBytes, last+1)
+			}
+		}
+	}
+	return sections, truncated, nil
+}
+
+func readBatch(ctx agent.Context, env *ToolEnv, files []ReadFile, searches []GrepSearch) (ReadResult, error) {
+	var sections []batchSection
+	var errs []string
+	written := 0
+	ok := 0
+	truncated := false
+	fail := func(heading string, err error) {
+		errs = append(errs, err.Error())
+		sections = append(sections, batchSection{heading: heading, body: "error: " + err.Error() + "\n"})
+	}
+	full := func(heading, what string) {
+		truncated = true
+		sections = append(sections, batchSection{heading: heading, body: fmt.Sprintf("(not read: this call's %d-byte output cap was reached; %s in another call)\n", MaxReadBytes, what)})
+	}
+
+	for _, rf := range files {
+		if strings.TrimSpace(rf.FilePath) == "" {
+			fail("(no file_path)", errors.New("file_path is required"))
+			continue
+		}
+		path := env.AbsPath(rf.FilePath)
+		if written >= MaxReadBytes {
+			full(path, "read it")
+			continue
+		}
+		f, image, err := openTextFile(path)
+		if err != nil {
+			fail(path, err)
+			continue
+		}
+		if image {
+			res, err := readImageFile(env, path)
+			if err != nil {
+				fail(path, err)
+				continue
+			}
+			ok++
+			sections = append(sections, batchSection{heading: path, body: res.Content + "\n"})
+			continue
+		}
+		got, cut, err := readSpans(path, f, mergeRanges(rf.Ranges), MaxReadBytes-written)
+		f.Close()
+		if err != nil {
+			fail(path, err)
+			continue
+		}
+		if env.Files != nil {
+			env.Files.RecordRead(path)
+		}
+		ok++
+		truncated = truncated || cut
+		for _, sec := range got {
+			written += len(sec.body)
+			sections = append(sections, sec)
+		}
+	}
+
+	for _, s := range searches {
+		patterns := s.AllPatterns()
+		if len(patterns) == 0 {
+			fail("grep", errors.New("pattern or patterns is required"))
+			continue
+		}
+		root := env.AbsPath(s.Path)
+		for _, pat := range patterns {
+			heading := grepLabel(pat, s)
+			if written >= MaxReadBytes {
+				full(heading, "run this search")
+				continue
+			}
+			body, errText := grepPattern(ctx, RgPath, pat, s, root)
+			if errText != "" {
+				fail(heading, errors.New(errText))
+				continue
+			}
+			ok++
+			written += len(body)
+			sections = append(sections, batchSection{heading: heading, body: body})
+		}
+	}
+
+	if ok == 0 {
+		return ReadResult{}, errors.New(strings.Join(errs, "; "))
+	}
+	var out strings.Builder
+	lines := 0
+	for i, sec := range sections {
+		if i > 0 {
+			out.WriteByte('\n')
+		}
+		fmt.Fprintf(&out, "==> %s <==\n%s\n", sec.heading, strings.TrimRight(sec.body, "\n"))
+		lines += sec.lines
+	}
+	return ReadResult{Content: out.String(), Lines: lines, Truncated: truncated}, nil
 }
 
 const WriteToolDescription = `Create or overwrite a file with the given content. Overwriting an existing file requires reading it first in this session. Parent directories are created automatically.`
