@@ -77,6 +77,29 @@ func TestExtractContextLinks(t *testing.T) {
 	if len(links) != 2 || links[0] != "Spec.MD" || links[1] != "docs/Guide.Md" {
 		t.Errorf("case-insensitive .md: %v", links)
 	}
+
+	// Segments that start with a dot or an underscore.
+	links = ExtractContextLinks("@.context/api.md, @docs/.notes/x.md and @_shared/y.md")
+	if strings.Join(links, ",") != ".context/api.md,docs/.notes/x.md,_shared/y.md" {
+		t.Errorf("dot and underscore segments: %v", links)
+	}
+}
+
+func TestLoadContextLinks_DotDirectoryLoadsRelativeEscapesDoNot(t *testing.T) {
+	root := t.TempDir()
+	writeTestDoc(t, root, ".context/api.md", "api-marker\n@.context/nested.md\n")
+	writeTestDoc(t, root, ".context/nested.md", "nested-marker\n")
+	writeTestDoc(t, root, "docs/guide.md", "guide-marker\n")
+
+	docs := LoadContextLinks(root, []string{"@.context/api.md @./docs/guide.md @../outside.md @docs/../docs/guide.md"})
+	var got []string
+	for _, d := range docs {
+		rel, _ := filepath.Rel(root, d.Path)
+		got = append(got, filepath.ToSlash(rel))
+	}
+	if strings.Join(got, ",") != ".context/api.md,.context/nested.md" {
+		t.Errorf("loaded %v; want the dot-directory doc and its nested link, and no ./, ../, or .. link", got)
+	}
 }
 
 func TestResolveContextLink(t *testing.T) {

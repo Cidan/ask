@@ -362,7 +362,8 @@ status from `AgentGitStatus`, 40-line cap) → `ProjectContext(cwd)` →
   fences are never followed.
 - `ResolveContextLink`: relative only (no `/`, `./`, `../` prefix), no
   `..`/`.` segments, `.md` case-insensitive, inside the root, regular
-  file.
+  file. A segment may start with a dot or underscore (a link into
+  `.context/`), which `contextLinkRe` matches and this resolves.
 - `LoadContextLinksFrom(root, links)`: breadth-first, deduped by absolute
   path, each file scanned for nested links before truncation,
   whitespace-only skipped. `LoadContextLinks(root, bodies)` rescans
