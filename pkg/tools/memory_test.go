@@ -290,4 +290,14 @@ func TestTool_MemoryAwareTool(t *testing.T) {
 	if strings.Contains(resp.Content, "Memory for") {
 		t.Errorf("did not expect memory block in glob tool output: %s", resp.Content)
 	}
+
+	otherFile := filepath.Join(cwd, "util.go")
+	_, _ = memory.Default().Upsert(context.Background(), memory.Concept{Scope: memory.ScopeFor(cwd), Kind: memory.KindProject, Topic: "helpers", Title: otherFile})
+	resp, err = RunToolWithJSON(testAgentCtx(), wrapped[0], `{"files":[{"file_path":"`+targetFile+`"},{"file_path":"`+otherFile+`"}]}`)
+	if err != nil {
+		t.Fatalf("batched readTool.Run failed: %v", err)
+	}
+	if !strings.Contains(resp.Content, "Memory for "+targetFile) || !strings.Contains(resp.Content, "Memory for "+otherFile) {
+		t.Errorf("a batched read recalls memory for each file, got:\n%s", resp.Content)
+	}
 }

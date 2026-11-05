@@ -380,6 +380,12 @@ func TestAppendTouchedFile(t *testing.T) {
 	if strings.Join(files, ",") != "a.go,c.go" {
 		t.Fatalf("files = %v", files)
 	}
+	files = AppendTouchedFile(files, "read", map[string]any{
+		"files": []any{map[string]any{"file_path": "d.go"}, map[string]any{"file_path": "a.go"}, map[string]any{"file_path": "e.go"}},
+	})
+	if strings.Join(files, ",") != "a.go,c.go,d.go,e.go" {
+		t.Fatalf("a batched read records each new file: %v", files)
+	}
 	for i := 0; i < memoryExtractMaxFiles+5; i++ {
 		files = AppendTouchedFile(files, "read", map[string]any{"file_path": "f" + itoa(int64(i))})
 	}

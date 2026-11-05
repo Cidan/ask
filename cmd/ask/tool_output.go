@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 
 	lipgloss "charm.land/lipgloss/v2"
+
+	"github.com/Cidan/ask/pkg/engine"
 )
 
 // Shared helpers for the "Tool Output" config tri-state: one gate,
@@ -70,12 +73,12 @@ var shortToolFields = map[string][]string{
 	"end_turn":     {"summary"},
 	"fetch":        {"url"},
 	"glob":         {"pattern"},
-	"grep":         {"include", "pattern"},
+	"grep":         {"include", "pattern", "patterns"},
 	"invoke_tool":  {"tool_name"},
 	"job_kill":     {"job_id"},
 	"job_output":   {"job_id"},
 	"ls":           {"path"},
-	"read":         {"file_path"},
+	"read":         {"file_path", "files", "grep"},
 	"search_tools": {"query"},
 	"task":         {"agent", "prompt"},
 	"web_search":   {"query"},
@@ -258,7 +261,18 @@ func toolPrimaryArg(name string, input map[string]any) string {
 	str := func(k string) string { s, _ := input[k].(string); return strings.TrimSpace(s) }
 	var v string
 	switch strings.ToLower(name) {
-	case "read", "write", "edit":
+	case "read":
+		if files := engine.ReadCallFiles(input); len(files) > 0 {
+			v = shortenPath(files[0])
+			if len(files) > 1 {
+				v += "  (+" + itoa(len(files)-1) + " more)"
+			}
+		} else if searches, _ := input["grep"].([]any); len(searches) > 0 {
+			if s, ok := searches[0].(map[string]any); ok {
+				v = "grep " + grepPatternsArg(s)
+			}
+		}
+	case "write", "edit":
 		if p := str("file_path"); p != "" {
 			v = shortenPath(p)
 		}
@@ -267,7 +281,7 @@ func toolPrimaryArg(name string, input map[string]any) string {
 			v = "$ " + firstLine(c)
 		}
 	case "grep":
-		if p := str("pattern"); p != "" {
+		if p := grepPatternsArg(input); p != "" {
 			if inc := str("include"); inc != "" {
 				v = p + "  (" + inc + ")"
 			} else {
@@ -286,6 +300,21 @@ func toolPrimaryArg(name string, input map[string]any) string {
 		v = str("query")
 	}
 	return truncate(v, 160)
+}
+
+// grepPatternsArg joins a grep's pattern and patterns for a header.
+func grepPatternsArg(input map[string]any) string {
+	var pats []string
+	if p, _ := input["pattern"].(string); strings.TrimSpace(p) != "" {
+		pats = append(pats, strings.TrimSpace(p))
+	}
+	more, _ := input["patterns"].([]any)
+	for _, m := range more {
+		if p, _ := m.(string); strings.TrimSpace(p) != "" {
+			pats = append(pats, strings.TrimSpace(p))
+		}
+	}
+	return strings.Join(pats, " | ")
 }
 
 // firstLine collapses a multi-line value (a heredoc command, say) to its
@@ -318,22 +347,63 @@ func renderToolResultBlock(name, output string, isError bool, exitCode int, hasE
 	return renderGenericResult(output, isError, mode)
 }
 
-// renderReadResult collapses a read to a one-line summary — the line
-// count, or the tool's own parenthetical notice ("(empty file)",
-// "(no lines at offset …)"). The file itself is on the call header; the
-// content is deliberately never dumped into history.
+// renderReadResult collapses a read to a one-line summary (readResultSummary).
+// The file itself is on the call header; the content is deliberately never
+// dumped into history.
 func renderReadResult(output string) string {
+	return outputStyle.Render(diffContextStyle.Render("  " + readResultSummary(output)))
+}
+
+// readHeadingRe matches a batched read's section heading; the group is the
+// file path or the "grep …" label.
+var readHeadingRe = regexp.MustCompile(`^==> (.+?)(?: lines \d+-\d+ of \d+)? <==$`)
+
+// readLineRe matches one numbered file line of a read result.
+var readLineRe = regexp.MustCompile(`(?m)^ *\d+\t`)
+
+// readResultSummary is a read's one-line summary: the line count, or the
+// tool's own parenthetical notice ("(empty file)", "(no lines at offset
+// …)"); for a batched read, how many files, lines, and searches it returned.
+func readResultSummary(output string) string {
 	trimmed := strings.TrimRight(output, "\n")
-	var summary string
 	switch {
 	case trimmed == "":
-		summary = "(empty)"
+		return "(empty)"
 	case strings.HasPrefix(trimmed, "("):
-		summary = trimmed
-	default:
-		summary = pluralReadLines(strings.Count(trimmed, "\n") + 1)
+		first, _, _ := strings.Cut(trimmed, "\n")
+		return first
+	case !strings.HasPrefix(trimmed, "==> "):
+		return pluralReadLines(len(readLineRe.FindAllStringIndex(trimmed, -1)))
 	}
-	return outputStyle.Render(diffContextStyle.Render("  " + summary))
+	files := map[string]bool{}
+	searches := 0
+	for _, ln := range strings.Split(trimmed, "\n") {
+		m := readHeadingRe.FindStringSubmatch(ln)
+		switch {
+		case m == nil:
+		case strings.HasPrefix(m[1], "grep "):
+			searches++
+		default:
+			files[m[1]] = true
+		}
+	}
+	var parts []string
+	if n := len(files); n > 0 {
+		if n == 1 {
+			parts = append(parts, "1 file")
+		} else {
+			parts = append(parts, itoa(n)+" files")
+		}
+		parts = append(parts, pluralReadLines(len(readLineRe.FindAllStringIndex(trimmed, -1))))
+	}
+	switch searches {
+	case 0:
+	case 1:
+		parts = append(parts, "1 search")
+	default:
+		parts = append(parts, itoa(searches)+" searches")
+	}
+	return strings.Join(parts, " · ")
 }
 
 // renderBashResult shows the exit code (green for 0, red otherwise). In full

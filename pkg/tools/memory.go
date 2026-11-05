@@ -417,14 +417,14 @@ func (m *MemoryAwareTool) Run(ctx agent.Context, args any) (map[string]any, erro
 		}
 	}
 
-	path, _ := argsMap["file_path"].(string)
-	path = strings.TrimSpace(path)
-	if path == "" {
+	var blocks []string
+	for _, path := range engine.ReadCallFiles(argsMap) {
+		if block := memory.FileBlock(ctx, m.Cwd, path); block != "" {
+			blocks = append(blocks, block)
+		}
+	}
+	if len(blocks) == 0 {
 		return resp, err
 	}
-	block := memory.FileBlock(ctx, m.Cwd, path)
-	if block == "" {
-		return resp, err
-	}
-	return engine.AppendToolResultText(resp, block), err
+	return engine.AppendToolResultText(resp, strings.Join(blocks, "\n\n")), err
 }

@@ -3,6 +3,8 @@ package filters
 import (
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -151,11 +153,28 @@ func itoa(n int) string {
 // that lives inside a quoted string, the source of garbage ledger keys
 // like `")"`, `esac`, or `done'`.
 func shellSplit(command string) [][]string {
+	var out [][]string
+	for _, st := range shellStages(command) {
+		out = append(out, st.fields)
+	}
+	return out
+}
+
+// shellStage is one stage of a command line. piped marks a stage that reads
+// the previous stage's output through a single |.
+type shellStage struct {
+	fields []string
+	piped  bool
+}
+
+// shellStages is shellSplit keeping, for each stage, whether a pipe feeds it.
+func shellStages(command string) []shellStage {
 	var (
-		stages  [][]string
+		stages  []shellStage
 		stage   []string
 		word    strings.Builder
 		hasWord bool
+		piped   bool
 	)
 	flushWord := func() {
 		if hasWord {
@@ -164,12 +183,13 @@ func shellSplit(command string) [][]string {
 			hasWord = false
 		}
 	}
-	flushStage := func() {
+	flushStage := func(nextPiped bool) {
 		flushWord()
 		if len(stage) > 0 {
-			stages = append(stages, stage)
+			stages = append(stages, shellStage{fields: stage, piped: piped})
 			stage = nil
 		}
+		piped = nextPiped
 	}
 
 	r := []rune(command)
@@ -238,19 +258,21 @@ func shellSplit(command string) [][]string {
 			}
 			hasWord = true
 		case c == '|':
-			flushStage()
 			i++
 			if i < n && r[i] == '|' {
+				flushStage(false)
 				i++
+			} else {
+				flushStage(true)
 			}
 		case c == ';':
-			flushStage()
+			flushStage(false)
 			i++
 		case c == '\n':
-			flushStage()
+			flushStage(false)
 			i++
 		case c == '&' && i+1 < n && r[i+1] == '&':
-			flushStage()
+			flushStage(false)
 			i += 2
 		case c == ' ' || c == '\t' || c == '\r':
 			flushWord()
@@ -261,7 +283,7 @@ func shellSplit(command string) [][]string {
 			i++
 		}
 	}
-	flushStage()
+	flushStage(false)
 	return stages
 }
 
@@ -505,3 +527,142 @@ func isEnvAssignment(f string) bool {
 // progOf returns the executable name of a field with any directory prefix
 // stripped (/usr/bin/git → git).
 func progOf(field string) string { return filepath.Base(field) }
+
+// FileReadCommands names, once each, the programs in command that read or
+// search files themselves rather than filter another stage's output: grep
+// and its kin, sed -n, and cat, head, tail, or nl given a file. A stage fed
+// by a pipe, a grep that only tests or counts (-q, -c, -l, -L), a sed that
+// edits in place, a tail that follows, and a stage that writes its output
+// to a file are not reads.
+func FileReadCommands(command string) []string {
+	var out []string
+	for _, st := range shellStages(stripHeredocs(command)) {
+		if st.piped {
+			continue
+		}
+		fs := stripLeadingNoise(st.fields)
+		if len(fs) == 0 || slices.ContainsFunc(fs[1:], isStdoutRedirect) {
+			continue
+		}
+		prog, args := progOf(fs[0]), fs[1:]
+		kind := ""
+		switch prog {
+		case "grep", "egrep", "fgrep", "rg", "ag", "ack":
+			if !hasShortFlag(args, "qclL") && !slices.Contains(args, "--quiet") && !slices.Contains(args, "--count") && !slices.Contains(args, "--files-with-matches") {
+				kind = prog
+			}
+		case "sed":
+			quiet := hasShortFlag(args, "n") || slices.Contains(args, "--quiet") || slices.Contains(args, "--silent")
+			if quiet && !hasShortFlag(args, "i") && !slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "--in-place") }) {
+				kind = "sed -n"
+			}
+		case "cat", "head", "tail", "nl":
+			if prog == "tail" && (hasShortFlag(args, "fF") || slices.Contains(args, "--follow")) {
+				break
+			}
+			if slices.ContainsFunc(args, func(a string) bool {
+				return a != "-" && !strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "<") && !isNumber(a)
+			}) {
+				kind = prog
+			}
+		}
+		if kind != "" && !slices.Contains(out, kind) {
+			out = append(out, kind)
+		}
+	}
+	return out
+}
+
+// LongestSleep returns the longest sleep, in seconds, that command runs
+// as a stage of its own; 0 when it sleeps not at all.
+func LongestSleep(command string) float64 {
+	longest := 0.0
+	for _, st := range shellStages(stripHeredocs(command)) {
+		fs := stripLeadingNoise(st.fields)
+		if len(fs) < 2 || progOf(fs[0]) != "sleep" {
+			continue
+		}
+		total := 0.0
+		for _, a := range fs[1:] {
+			total += sleepSeconds(a)
+		}
+		longest = max(longest, total)
+	}
+	return longest
+}
+
+var heredocRe = regexp.MustCompile(`<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)['"]?`)
+
+// stripHeredocs drops the body lines of every heredoc in command, so text a
+// command feeds to a program (a script, a file it writes) is not read as
+// commands of its own.
+func stripHeredocs(command string) string {
+	lines := strings.Split(command, "\n")
+	var out []string
+	for i := 0; i < len(lines); i++ {
+		out = append(out, lines[i])
+		for _, m := range heredocRe.FindAllStringSubmatchIndex(lines[i], -1) {
+			if m[0] > 0 && lines[i][m[0]-1] == '<' {
+				continue
+			}
+			tabs, delim := lines[i][m[2]:m[3]] == "-", lines[i][m[6]:m[7]]
+			for i+1 < len(lines) {
+				i++
+				body := lines[i]
+				if tabs {
+					body = strings.TrimLeft(body, "\t")
+				}
+				if body == delim {
+					break
+				}
+			}
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// sleepSeconds reads one sleep operand: a number with an optional s, m, h,
+// or d suffix.
+func sleepSeconds(a string) float64 {
+	unit := 1.0
+	switch {
+	case strings.HasSuffix(a, "s"):
+		a = strings.TrimSuffix(a, "s")
+	case strings.HasSuffix(a, "m"):
+		a, unit = strings.TrimSuffix(a, "m"), 60
+	case strings.HasSuffix(a, "h"):
+		a, unit = strings.TrimSuffix(a, "h"), 3600
+	case strings.HasSuffix(a, "d"):
+		a, unit = strings.TrimSuffix(a, "d"), 86400
+	}
+	v, err := strconv.ParseFloat(a, 64)
+	if err != nil || v < 0 {
+		return 0
+	}
+	return v * unit
+}
+
+// hasShortFlag reports whether a short-option cluster in args (-n, -rn,
+// -nE) carries any of the letters in set.
+func hasShortFlag(args []string, set string) bool {
+	for _, a := range args {
+		if len(a) < 2 || a[0] != '-' || a[1] == '-' {
+			continue
+		}
+		if strings.ContainsAny(a[1:], set) {
+			return true
+		}
+	}
+	return false
+}
+
+// isStdoutRedirect reports whether a field sends the stage's output to a
+// file: >, >>, 1>, &>, or one of those glued to its target.
+func isStdoutRedirect(f string) bool {
+	return strings.HasPrefix(f, ">") || strings.HasPrefix(f, "1>") || strings.HasPrefix(f, "&>")
+}
+
+func isNumber(a string) bool {
+	_, err := strconv.ParseFloat(strings.TrimPrefix(a, "+"), 64)
+	return err == nil
+}

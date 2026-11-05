@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -443,7 +444,7 @@ func generateOnce(ctx context.Context, llm model.LLM, modelID, instruction, cont
 	return sb.String(), usage, nil
 }
 
-// AppendTouchedFile records the file_path of a read/write/edit call,
+// AppendTouchedFile records the files of a read/write/edit call, each
 // once, up to memoryExtractMaxFiles.
 func AppendTouchedFile(files []string, toolName string, input map[string]any) []string {
 	switch toolName {
@@ -451,17 +452,15 @@ func AppendTouchedFile(files []string, toolName string, input map[string]any) []
 	default:
 		return files
 	}
-	path, _ := input["file_path"].(string)
-	path = strings.TrimSpace(path)
-	if path == "" || len(files) >= memoryExtractMaxFiles {
-		return files
-	}
-	for _, f := range files {
-		if f == path {
+	for _, path := range ReadCallFiles(input) {
+		if len(files) >= memoryExtractMaxFiles {
 			return files
 		}
+		if !slices.Contains(files, path) {
+			files = append(files, path)
+		}
 	}
-	return append(files, path)
+	return files
 }
 
 func clipHead(s string, n int) string {

@@ -76,6 +76,42 @@ type ToolEnv struct {
 
 	// WorkflowRunner runs a workflow definition when selected in finalized_plan.
 	WorkflowRunner func(ctx context.Context, tabID int, def workflow.Def, src any) (string, error)
+
+	// Steering, when set, tells a tool blocked on a long wait (job_output)
+	// that the user sent the running turn a message, so it returns and the
+	// next model call takes the message.
+	Steering SteerSignaler
+
+	nudgeMu sync.Mutex
+	nudges  map[string]int
+}
+
+// SteerSignaler hands out a channel that is closed once the running turn has
+// user input waiting for its next model call. engine.TurnGate is one.
+type SteerSignaler interface {
+	SteerSignal() <-chan struct{}
+}
+
+func (e *ToolEnv) steerSignal() <-chan struct{} {
+	if e.Steering == nil {
+		return nil
+	}
+	return e.Steering.SteerSignal()
+}
+
+// shouldNudge counts one more call that earns the nudge named kind and
+// reports whether this one carries it: the first three of a session, then
+// every tenth, so a habit gets corrected without the reminder filling the
+// context.
+func (e *ToolEnv) shouldNudge(kind string) bool {
+	e.nudgeMu.Lock()
+	defer e.nudgeMu.Unlock()
+	if e.nudges == nil {
+		e.nudges = map[string]int{}
+	}
+	e.nudges[kind]++
+	n := e.nudges[kind]
+	return n <= 3 || n%10 == 0
 }
 
 // NewToolEnv constructs a ToolEnv for a session.

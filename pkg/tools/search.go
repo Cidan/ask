@@ -175,13 +175,39 @@ func splitBraceAlts(s string) []string {
 	return append(alts, s[start:])
 }
 
-const GrepToolDescription = `Search file contents with a regular expression. Returns matching lines grouped by file, newest files first, capped at 100 matches. Set literal_text for exact-string search; use include to filter files (e.g. "*.go", "*.{ts,tsx}"). Uses ripgrep when available (respects .gitignore).`
+const GrepToolDescription = `Search file contents with regular expressions. Returns matching lines grouped by file, newest files first, capped at 100 matches per pattern. Pass several patterns at once in patterns — each is reported under its own "==> grep" heading — instead of making one call per pattern, and set context to get the lines around each match (marked "Line N-") so you rarely need a follow-up read. Set literal_text for exact-string search; use include to filter files (e.g. "*.go", "*.{ts,tsx}"). Uses ripgrep when available (respects .gitignore). To read files in the same call, use read with its grep field. Use this tool, never grep, rg, or find piped through bash.`
+
+// MaxGrepContext caps the context lines around each match.
+const MaxGrepContext = 20
+
+// GrepSearch is one grep request: the grep tool's parameters, and one entry
+// of the read tool's grep list.
+type GrepSearch struct {
+	Pattern     string   `json:"pattern,omitempty" jsonschema:"regular expression to search for (exact string when literal_text is set)"`
+	Patterns    []string `json:"patterns,omitempty" jsonschema:"several patterns to search in this one call, each reported under its own heading"`
+	Path        string   `json:"path,omitempty" jsonschema:"directory or file to search (default: working directory)"`
+	Include     string   `json:"include,omitempty" jsonschema:"only search files matching this glob, e.g. *.go or *.{ts,tsx}"`
+	LiteralText bool     `json:"literal_text,omitempty" jsonschema:"treat the patterns as literal strings instead of regexps"`
+	Context     int      `json:"context,omitempty" jsonschema:"lines to show before and after each match (default 0, max 20)"`
+}
+
+// AllPatterns returns pattern followed by patterns, without blanks or
+// repeats.
+func (s GrepSearch) AllPatterns() []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range append([]string{s.Pattern}, s.Patterns...) {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
+}
 
 type GrepParams struct {
-	Pattern     string `json:"pattern" jsonschema:"regular expression to search for (exact string when literal_text is set)"`
-	Path        string `json:"path,omitempty" jsonschema:"directory or file to search (default: working directory)"`
-	Include     string `json:"include,omitempty" jsonschema:"only search files matching this glob, e.g. *.go or *.{ts,tsx}"`
-	LiteralText bool   `json:"literal_text,omitempty" jsonschema:"treat pattern as a literal string instead of a regexp"`
+	GrepSearch
 	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
 }
 
@@ -198,10 +224,10 @@ func GrepTool(env *ToolEnv) Tool {
 		"grep",
 		GrepToolDescription,
 		func(ctx agent.Context, p GrepParams) (GrepResult, error) {
-			if p.Pattern == "" {
-				return GrepResult{}, errors.New("pattern is required")
+			if len(p.AllPatterns()) == 0 {
+				return GrepResult{}, errors.New("pattern or patterns is required")
 			}
-			out, errText := GrepRun(ctx, RgPath, p, env.AbsPath(p.Path))
+			out, errText := GrepRun(ctx, RgPath, p.GrepSearch, env.AbsPath(p.Path))
 			if errText != "" {
 				return GrepResult{}, errors.New(errText)
 			}
@@ -214,30 +240,73 @@ type GrepMatch struct {
 	File string
 	Line int
 	Text string
+	// Context marks a line shown around a match rather than a match.
+	Context bool
 }
 
 const MaxGrepLineChars = 500
 
-// GrepRun executes the search and renders the grouped output.
-func GrepRun(ctx context.Context, rgPath string, p GrepParams, root string) (string, string) {
+// GrepRun runs every pattern of s under root. One pattern renders bare; each
+// of several renders under its own heading, and a pattern that fails
+// reports its error there without failing the others. The error string is
+// set only when every pattern failed.
+func GrepRun(ctx context.Context, rgPath string, s GrepSearch, root string) (string, string) {
+	patterns := s.AllPatterns()
+	if len(patterns) == 1 {
+		return grepPattern(ctx, rgPath, patterns[0], s, root)
+	}
+	var out strings.Builder
+	var errs []string
+	for i, pat := range patterns {
+		if i > 0 {
+			out.WriteByte('\n')
+		}
+		out.WriteString(GrepHeading(pat, s))
+		body, errText := grepPattern(ctx, rgPath, pat, s, root)
+		if errText != "" {
+			errs = append(errs, errText)
+			body = "error: " + errText
+		}
+		out.WriteString(strings.TrimRight(body, "\n") + "\n")
+	}
+	if len(errs) == len(patterns) {
+		return "", strings.Join(errs, "; ")
+	}
+	return out.String(), ""
+}
+
+// GrepHeading is the section heading for one pattern of a batched search.
+func GrepHeading(pattern string, s GrepSearch) string {
+	return "==> " + grepLabel(pattern, s) + " <==\n"
+}
+
+func grepLabel(pattern string, s GrepSearch) string {
+	h := "grep " + strconv.Quote(pattern)
+	if s.Path != "" {
+		h += " in " + s.Path
+	}
+	if s.Include != "" {
+		h += " (" + s.Include + ")"
+	}
+	return h
+}
+
+func grepPattern(ctx context.Context, rgPath, pattern string, s GrepSearch, root string) (string, string) {
+	around := min(max(s.Context, 0), MaxGrepContext)
 	var matches []GrepMatch
 	var errText string
 	if rgPath != "" {
-		matches, errText = grepWithRg(ctx, rgPath, p, root)
+		matches, errText = grepWithRg(ctx, rgPath, pattern, s, around, root)
 	} else {
-		matches, errText = grepWithGo(ctx, p, root)
+		matches, errText = grepWithGo(ctx, pattern, s, around, root)
 	}
 	if errText != "" {
 		return "", errText
 	}
 	if len(matches) == 0 {
-		return "no matches found for " + p.Pattern, ""
+		return "no matches found for " + pattern + "\n", ""
 	}
-	truncated := false
-	if len(matches) > MaxSearchHits {
-		matches = matches[:MaxSearchHits]
-		truncated = true
-	}
+	matches, truncated := capGrepMatches(matches, around)
 
 	byFile := map[string][]GrepMatch{}
 	var files []string
@@ -259,12 +328,21 @@ func GrepRun(ctx context.Context, rgPath string, p GrepParams, root string) (str
 	for _, f := range files {
 		out.WriteString(f)
 		out.WriteByte('\n')
+		prev := 0
 		for _, m := range byFile[f] {
+			if around > 0 && prev > 0 && m.Line > prev+1 {
+				out.WriteString("  --\n")
+			}
+			prev = m.Line
 			text := m.Text
 			if len(text) > MaxGrepLineChars {
 				text = text[:MaxGrepLineChars] + "…"
 			}
-			fmt.Fprintf(&out, "  Line %d: %s\n", m.Line, text)
+			sep := ":"
+			if m.Context {
+				sep = "-"
+			}
+			fmt.Fprintf(&out, "  Line %d%s %s\n", m.Line, sep, text)
 		}
 		out.WriteByte('\n')
 	}
@@ -274,15 +352,50 @@ func GrepRun(ctx context.Context, rgPath string, p GrepParams, root string) (str
 	return out.String(), ""
 }
 
-func grepWithRg(ctx context.Context, rgPath string, p GrepParams, root string) ([]GrepMatch, string) {
+// capGrepMatches keeps the first MaxSearchHits matches and the context
+// lines that belong to them, reporting whether any match was dropped.
+func capGrepMatches(lines []GrepMatch, around int) ([]GrepMatch, bool) {
+	seen := 0
+	for i, m := range lines {
+		if m.Context {
+			continue
+		}
+		seen++
+		if seen <= MaxSearchHits {
+			continue
+		}
+		kept := lines[:i]
+		var last GrepMatch
+		for j := len(kept) - 1; j >= 0; j-- {
+			if !kept[j].Context {
+				last = kept[j]
+				break
+			}
+		}
+		for len(kept) > 0 {
+			t := kept[len(kept)-1]
+			if !t.Context || (t.File == last.File && t.Line <= last.Line+around) {
+				break
+			}
+			kept = kept[:len(kept)-1]
+		}
+		return kept, true
+	}
+	return lines, false
+}
+
+func grepWithRg(ctx context.Context, rgPath, pattern string, s GrepSearch, around int, root string) ([]GrepMatch, string) {
 	args := []string{"-n", "--no-heading", "--color=never", "--null"}
-	if p.LiteralText {
+	if s.LiteralText {
 		args = append(args, "-F")
 	}
-	if p.Include != "" {
-		args = append(args, "--glob", p.Include)
+	if s.Include != "" {
+		args = append(args, "--glob", s.Include)
 	}
-	args = append(args, "-e", p.Pattern, "--", root)
+	if around > 0 {
+		args = append(args, "-C", strconv.Itoa(around))
+	}
+	args = append(args, "-e", pattern, "--", root)
 	cmd := exec.CommandContext(ctx, rgPath, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -293,32 +406,25 @@ func grepWithRg(ctx context.Context, rgPath string, p GrepParams, root string) (
 	if err := cmd.Start(); err != nil {
 		return nil, "rg: " + err.Error()
 	}
-	var matches []GrepMatch
+	var lines []GrepMatch
+	found := 0
 	capped := false
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
-		if len(matches) > MaxSearchHits {
-			capped = true
-			_ = cmd.Process.Kill()
-			break
-		}
-		line := sc.Text()
-		nul := strings.IndexByte(line, 0)
-		if nul < 0 {
+		m, ok := parseRgLine(sc.Text())
+		if !ok {
 			continue
 		}
-		file := line[:nul]
-		rest := line[nul+1:]
-		colon := strings.IndexByte(rest, ':')
-		if colon < 0 {
-			continue
+		if !m.Context {
+			found++
+			if found > MaxSearchHits+1 {
+				capped = true
+				_ = cmd.Process.Kill()
+				break
+			}
 		}
-		n, err := strconv.Atoi(rest[:colon])
-		if err != nil {
-			continue
-		}
-		matches = append(matches, GrepMatch{File: file, Line: n, Text: rest[colon+1:]})
+		lines = append(lines, m)
 	}
 	err = cmd.Wait()
 	if err != nil && !capped {
@@ -332,19 +438,39 @@ func grepWithRg(ctx context.Context, rgPath string, p GrepParams, root string) (
 		}
 		return nil, "rg: " + detail
 	}
-	return matches, ""
+	return lines, ""
 }
 
-func grepWithGo(ctx context.Context, p GrepParams, root string) ([]GrepMatch, string) {
-	pattern := p.Pattern
-	if p.LiteralText {
+// parseRgLine reads one line of `rg -n --null` output: the path, a NUL, the
+// line number, then ':' before a match or '-' before a context line. The
+// "--" lines between context groups carry no NUL and are not lines.
+func parseRgLine(line string) (GrepMatch, bool) {
+	nul := strings.IndexByte(line, 0)
+	if nul < 0 {
+		return GrepMatch{}, false
+	}
+	rest := line[nul+1:]
+	sep := strings.IndexAny(rest, ":-")
+	if sep < 0 {
+		return GrepMatch{}, false
+	}
+	n, err := strconv.Atoi(rest[:sep])
+	if err != nil {
+		return GrepMatch{}, false
+	}
+	return GrepMatch{File: line[:nul], Line: n, Text: rest[sep+1:], Context: rest[sep] == '-'}, true
+}
+
+func grepWithGo(ctx context.Context, pattern string, s GrepSearch, around int, root string) ([]GrepMatch, string) {
+	if s.LiteralText {
 		pattern = regexp.QuoteMeta(pattern)
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return nil, "invalid pattern: " + err.Error()
 	}
-	var matches []GrepMatch
+	var lines []GrepMatch
+	found := 0
 	walkErr := filepath.WalkDir(root, func(fp string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -355,13 +481,13 @@ func grepWithGo(ctx context.Context, p GrepParams, root string) ([]GrepMatch, st
 			}
 			return ctx.Err()
 		}
-		if p.Include != "" {
+		if s.Include != "" {
 			rel, relErr := filepath.Rel(root, fp)
 			if relErr != nil {
 				return nil
 			}
 			rel = filepath.ToSlash(rel)
-			if !GlobMatch(p.Include, rel) && !GlobMatch(p.Include, path.Base(rel)) {
+			if !GlobMatch(s.Include, rel) && !GlobMatch(s.Include, path.Base(rel)) {
 				return nil
 			}
 		}
@@ -376,12 +502,27 @@ func grepWithGo(ctx context.Context, p GrepParams, root string) ([]GrepMatch, st
 		if LooksBinary(data[:min(len(data), 8192)]) {
 			return nil
 		}
-		for i, line := range strings.Split(string(data), "\n") {
-			if re.MatchString(line) {
-				matches = append(matches, GrepMatch{File: fp, Line: i + 1, Text: line})
-				if len(matches) > MaxSearchHits {
-					return filepath.SkipAll
+		text := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+		next := 0
+		for i, line := range text {
+			if !re.MatchString(line) {
+				continue
+			}
+			for c := max(next, i-around); c < i; c++ {
+				lines = append(lines, GrepMatch{File: fp, Line: c + 1, Text: text[c], Context: true})
+			}
+			lines = append(lines, GrepMatch{File: fp, Line: i + 1, Text: line})
+			next = i + 1
+			found++
+			if found > MaxSearchHits {
+				return filepath.SkipAll
+			}
+			for c := i + 1; c < min(i+1+around, len(text)); c++ {
+				if re.MatchString(text[c]) {
+					break
 				}
+				lines = append(lines, GrepMatch{File: fp, Line: c + 1, Text: text[c], Context: true})
+				next = c + 1
 			}
 		}
 		return ctx.Err()
@@ -389,7 +530,7 @@ func grepWithGo(ctx context.Context, p GrepParams, root string) ([]GrepMatch, st
 	if walkErr != nil && walkErr != filepath.SkipAll {
 		return nil, "grep walk: " + walkErr.Error()
 	}
-	return matches, ""
+	return lines, ""
 }
 
 const LsToolDescription = `List a directory as a tree. Directories end with /. Use depth to limit recursion; output is capped at 1000 entries.`

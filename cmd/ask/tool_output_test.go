@@ -249,6 +249,39 @@ func TestRenderToolResultBlock_ReadEmptyNoticePassesThrough(t *testing.T) {
 	}
 }
 
+func TestReadResultSummary(t *testing.T) {
+	cases := []struct{ name, output, want string }{
+		{"single file", "     1\tpackage main\n     2\t\n", "2 lines"},
+		{"single file with an appended rule", "     1\tpackage main\n\n## Rule for a.go (a.md)\n\nbody\n", "1 line"},
+		{"notice with an appended rule", "(empty file)\n\n## Rule for a.go (a.md)\n", "(empty file)"},
+		{"batch", "==> /r/a.go lines 1-2 of 9 <==\n     1\ta\n     2\tb\n\n" +
+			"==> /r/a.go lines 7-7 of 9 <==\n     7\tg\n\n" +
+			"==> /r/b.go <==\nerror: file not found: /r/b.go\n\n" +
+			"==> grep \"x\" in pkg <==\n/r/c.go\n  Line 3: x\n\n" +
+			"==> grep \"y\" <==\nno matches found for y\n", "2 files · 3 lines · 2 searches"},
+		{"grep only", "==> grep \"x\" <==\n/r/c.go\n  Line 3: x\n", "1 search"},
+	}
+	for _, c := range cases {
+		if got := readResultSummary(c.output); got != c.want {
+			t.Errorf("%s: summary = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestToolPrimaryArg_BatchedReadAndGrep(t *testing.T) {
+	read := map[string]any{"file_path": "/r/a.go", "files": []any{map[string]any{"file_path": "/r/b.go"}, map[string]any{"file_path": "/r/c.go"}}}
+	if got := toolPrimaryArg("read", read); !strings.Contains(got, "a.go") || !strings.HasSuffix(got, "(+2 more)") {
+		t.Errorf("batched read header = %q", got)
+	}
+	grepOnly := map[string]any{"grep": []any{map[string]any{"pattern": "Foo", "patterns": []any{"Bar"}}}}
+	if got := toolPrimaryArg("read", grepOnly); got != "grep Foo | Bar" {
+		t.Errorf("grep-only read header = %q", got)
+	}
+	if got := toolPrimaryArg("grep", map[string]any{"patterns": []any{"A", "B"}, "include": "*.go"}); got != "A | B  (*.go)" {
+		t.Errorf("multi-pattern grep header = %q", got)
+	}
+}
+
 func TestRenderToolResultBlock_BashShortShowsExitNotBody(t *testing.T) {
 	ok := renderToolResultBlock("bash", "all good", false, 0, true, toolOutputShort)
 	if !strings.Contains(ok, "exit 0") {

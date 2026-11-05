@@ -58,6 +58,9 @@ type TurnGate struct {
 	cancel      context.CancelFunc
 	interrupted bool
 	queued      []TurnInput
+	// steered is closed once input is queued for the running turn and
+	// replaced when that input is taken.
+	steered chan struct{}
 }
 
 // Begin marks a turn running; Interrupt stops it through cancel.
@@ -65,6 +68,20 @@ func (g *TurnGate) Begin(cancel context.CancelFunc) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.cancel, g.interrupted = cancel, false
+	g.steered = make(chan struct{})
+}
+
+// SteerSignal returns a channel that is closed once the running turn has
+// input waiting for its next model call, so a tool blocked on a long wait
+// can return and let that call take it. Nil, which never fires, when no
+// turn is taking input.
+func (g *TurnGate) SteerSignal() <-chan struct{} {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.cancel == nil || g.interrupted {
+		return nil
+	}
+	return g.steered
 }
 
 // Busy reports whether a turn is running and still taking input. An
@@ -85,6 +102,9 @@ func (g *TurnGate) Steer(in TurnInput) bool {
 	if g.cancel == nil || g.interrupted {
 		return false
 	}
+	if len(g.queued) == 0 {
+		close(g.steered)
+	}
 	g.queued = append(g.queued, in)
 	return true
 }
@@ -101,6 +121,7 @@ func (g *TurnGate) Take(ctx context.Context) []TurnInput {
 	}
 	taken := g.queued
 	g.queued = nil
+	g.steered = make(chan struct{})
 	return taken
 }
 

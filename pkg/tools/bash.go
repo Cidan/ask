@@ -2,11 +2,13 @@ package tools
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"google.golang.org/adk/v2/agent"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -15,13 +17,29 @@ import (
 
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/herdr"
+	"github.com/Cidan/ask/pkg/tools/filters"
 )
 
 const (
 	BashDefaultTimeout = 120 * time.Second
 	BashMaxTimeout     = 600 * time.Second
 	BashRawCap         = 4 * MaxToolOutput
+
+	JobWaitDefault = 600 * time.Second
+	JobWaitMax     = 3600 * time.Second
+
+	// bashSleepNudgeSeconds is the shortest sleep that earns the wait
+	// nudge; shorter ones are pauses (a UI settling), not waits.
+	bashSleepNudgeSeconds = 10
 )
+
+// jobUntilPoll is how often job_output re-checks a waiting job's output
+// against until.
+var jobUntilPoll = 250 * time.Millisecond
+
+const bashFileReadNotice = "You read or searched files through bash (%s). Use the read tool instead (files, each with any number of line ranges, plus grep searches, all in one call) and the grep tool (several patterns, context lines): one call does what took several bash commands, and a read brings in the project rules for the files it touches."
+
+const bashSleepNotice = "This command waited with sleep, and every wait like it costs a full model call. Start the slow thing, or a loop that checks for it, with run_in_background, then call job_output with wait: true and until: a regexp for the line you are waiting for. One call then waits up to an hour and returns the moment the job exits, its output matches, or the user sends a message."
 
 // ShellResult is the terminal state of a shell invocation.
 type ShellResult struct {
@@ -320,7 +338,7 @@ func (m *JobManager) KillAll() {
 	}
 }
 
-const BashToolDescription = `Run a shell command in the working directory and return its combined stdout/stderr (interleaved, truncated middle-out past 30000 chars). Output is automatically filtered to save tokens: progress/bookkeeping noise is stripped, and commands whose output is noise when they succeed (make, go build, cargo build, docker build, and similar) collapse to a one-line summary like "make: ok" on success while still showing the full error on failure. When filtering was lossy the untouched output is written to a file named in the result's raw_path field (read it to recover anything dropped). Set disable_token_savings to true if you strictly need the raw uncompressed output for a single command. Commands run in independent shells — no state persists between calls, so prefer absolute paths over cd. Set run_in_background for servers and long builds, then poll with job_output and stop with job_kill. Quote paths containing spaces.`
+const BashToolDescription = `Run a shell command in the working directory and return its combined stdout/stderr (interleaved, truncated middle-out past 30000 chars). Output is automatically filtered to save tokens: progress/bookkeeping noise is stripped, and commands whose output is noise when they succeed (make, go build, cargo build, docker build, and similar) collapse to a one-line summary like "make: ok" on success while still showing the full error on failure. When filtering was lossy the untouched output is written to a file named in the result's raw_path field (read it to recover anything dropped). Set disable_token_savings to true if you strictly need the raw uncompressed output for a single command. Commands run in independent shells — no state persists between calls, so prefer absolute paths over cd. Set run_in_background for servers, long builds, and anything you would otherwise wait on (CI, a deploy, a remote machine: background a loop that checks it), then wait for it with one job_output call (wait: true, until: a regexp) and stop it with job_kill — never wait with sleep. Never use bash to read or search files (cat, head, tail, sed -n, grep, rg, find): the read, grep, and glob tools do that, many files and patterns in one call. Quote paths containing spaces.`
 
 type BashParams struct {
 	Command             string `json:"command" jsonschema:"the shell command to execute"`
@@ -340,6 +358,7 @@ type BashResult struct {
 	Truncated bool   `json:"truncated,omitempty" jsonschema:"true when output exceeded the in-memory cap"`
 	RawPath   string `json:"raw_path,omitempty" jsonschema:"path to the untouched raw output when filtering was lossy; read it with the read tool (offset/limit) to recover anything the summary dropped"`
 	RawLines  int    `json:"raw_lines,omitempty" jsonschema:"line count of the raw_path file"`
+	Notice    string `json:"notice,omitempty" jsonschema:"a better way to do what this command did; follow it from now on"`
 }
 
 // JobOutputResult is the job_output tool's response.
@@ -350,6 +369,8 @@ type JobOutputResult struct {
 	Output   string `json:"output,omitempty"`
 	RawPath  string `json:"raw_path,omitempty" jsonschema:"path to the untouched raw output when filtering was lossy; read it with the read tool to recover anything the summary dropped"`
 	RawLines int    `json:"raw_lines,omitempty" jsonschema:"line count of the raw_path file"`
+	Matched  bool   `json:"matched,omitempty" jsonschema:"true when the wait ended because the output matched until"`
+	Note     string `json:"note,omitempty" jsonschema:"why the wait ended while the job still runs"`
 }
 
 // JobKillResult is the job_kill tool's response.
@@ -421,9 +442,10 @@ func BashTool(env *ToolEnv) Tool {
 						Description: p.Description,
 					})
 				}
-				return BashResult{JobID: job.ID, Output: "started background job " + job.ID + "; poll it with job_output and stop it with job_kill"}, nil
+				return BashResult{JobID: job.ID, Output: "started background job " + job.ID + "; wait for it with job_output (wait: true, until: a regexp) and stop it with job_kill"}, nil
 			}
 			defer unregisterSudo()
+			notice := env.bashNotice(command)
 
 			timeout := BashDefaultTimeout
 			if p.Timeout > 0 {
@@ -459,13 +481,14 @@ func BashTool(env *ToolEnv) Tool {
 						rawStr := buf.String()
 						result := bashResponse(handleFinalOutput(rawStr, res.ExitCode), rawTruncated, res)
 						MaybeSpill(&result, command, rawStr)
+						result.Notice = notice
 						return result, nil
 					}
 					collect(chunk)
 				case <-timer.C:
 					handle.Kill()
 					drainShellOutput(handle.Output, collect)
-					return BashResult{TimedOut: true, Output: TruncateMiddle(handleFinalOutput(buf.String(), -1))},
+					return BashResult{TimedOut: true, Output: TruncateMiddle(handleFinalOutput(buf.String(), -1)), Notice: notice},
 						fmt.Errorf("command timed out after %s and was killed", timeout)
 				case <-ctx.Done():
 					handle.Kill()
@@ -475,6 +498,19 @@ func BashTool(env *ToolEnv) Tool {
 			}
 		},
 	)
+}
+
+// bashNotice is the nudge a foreground command earns, if any: reading or
+// searching files through the shell, or waiting with sleep.
+func (e *ToolEnv) bashNotice(command string) string {
+	var notes []string
+	if reads := filters.FileReadCommands(command); len(reads) > 0 && e.shouldNudge("file-read") {
+		notes = append(notes, fmt.Sprintf(bashFileReadNotice, strings.Join(reads, ", ")))
+	}
+	if filters.LongestSleep(command) >= bashSleepNudgeSeconds && e.shouldNudge("sleep") {
+		notes = append(notes, bashSleepNotice)
+	}
+	return strings.Join(notes, " ")
 }
 
 func drainShellOutput(ch <-chan string, collect func(string)) {
@@ -494,12 +530,69 @@ func bashResponse(output string, rawTruncated bool, res ShellResult) BashResult 
 	return BashResult{Output: body, ExitCode: res.ExitCode, Truncated: rawTruncated}
 }
 
-const JobOutputToolDescription = `Read the accumulated output of a background job started with bash run_in_background. Set wait to block until the job exits (up to 30s).`
+const JobOutputToolDescription = `Read the output of a background job: a bash command started with run_in_background, or a background sub-agent. Set wait to block until the job exits, its output matches the until regexp, or timeout seconds pass (default 600, max 3600), whichever comes first; a message from the user also ends the wait. One waiting call replaces any number of polls, so never wait on a job, a build, CI, a deploy, or a remote machine with bash sleep or by calling job_output again and again. To wait on something that is not a job, start a bash loop that checks for it with run_in_background and wait on that job here.`
 
 type JobOutputParams struct {
 	JobID       string `json:"job_id" jsonschema:"the job id returned when the background command started"`
-	Wait        bool   `json:"wait,omitempty" jsonschema:"block until the job finishes (30s cap) before returning output"`
+	Wait        bool   `json:"wait,omitempty" jsonschema:"block until the job exits, its output matches until, or timeout passes, then return its output"`
+	Until       string `json:"until,omitempty" jsonschema:"regular expression; wait only until the job's output matches it (a server's ready line, a test's FAIL); implies wait"`
+	Timeout     int    `json:"timeout,omitempty" jsonschema:"seconds to wait at most (default 600, max 3600); implies wait"`
 	Description string `json:"description" jsonschema:"one short human-readable phrase (under 10 words) telling the user what this call is doing"`
+}
+
+// jobWaitTimeout is how long a job_output wait of the given seconds may
+// block: JobWaitDefault when unset, never past JobWaitMax.
+func jobWaitTimeout(seconds int) time.Duration {
+	if seconds <= 0 {
+		return JobWaitDefault
+	}
+	return min(time.Duration(seconds)*time.Second, JobWaitMax)
+}
+
+// waitForJob blocks until job exits, its raw output matches until (when
+// set), timeout passes, the user steers the turn, or ctx ends — which last is
+// the only error. note says why a wait ended with the job still running.
+func waitForJob(ctx context.Context, job *Job, until *regexp.Regexp, timeout time.Duration, steered <-chan struct{}) (matched bool, note string, err error) {
+	scanned := 0
+	check := func() bool {
+		if until == nil {
+			return false
+		}
+		out, _, _, _ := job.Snapshot()
+		if len(out) <= scanned {
+			return false
+		}
+		from := strings.LastIndexByte(out[:scanned], '\n') + 1
+		scanned = len(out)
+		return until.MatchString(out[from:])
+	}
+	if check() {
+		return true, "", nil
+	}
+	var tick <-chan time.Time
+	if until != nil {
+		t := time.NewTicker(jobUntilPoll)
+		defer t.Stop()
+		tick = t.C
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		select {
+		case <-job.DoneCh:
+			return check(), "", nil
+		case <-tick:
+			if check() {
+				return true, "", nil
+			}
+		case <-deadline.C:
+			return false, fmt.Sprintf("waited %s and the job is still running; wait again only if it is still worth it", timeout), nil
+		case <-steered:
+			return false, "the user sent a message, which arrives with this result; answer it, then call job_output again if you still need to wait", nil
+		case <-ctx.Done():
+			return false, "", ctx.Err()
+		}
+	}
 }
 
 // JobOutputTool returns the native job_output tool.
@@ -512,11 +605,20 @@ func JobOutputTool(env *ToolEnv) Tool {
 			if job == nil {
 				return JobOutputResult{}, errors.New("no such job: " + p.JobID)
 			}
-			if p.Wait {
-				select {
-				case <-job.DoneCh:
-				case <-time.After(30 * time.Second):
-				case <-ctx.Done():
+			var matched bool
+			var note string
+			if p.Wait || p.Until != "" || p.Timeout > 0 {
+				var until *regexp.Regexp
+				if p.Until != "" {
+					re, err := regexp.Compile(p.Until)
+					if err != nil {
+						return JobOutputResult{}, fmt.Errorf("invalid until pattern: %v", err)
+					}
+					until = re
+				}
+				var err error
+				matched, note, err = waitForJob(ctx, job, until, jobWaitTimeout(p.Timeout), env.steerSignal())
+				if err != nil {
 					return JobOutputResult{}, errors.New("cancelled while waiting for " + p.JobID)
 				}
 			}
@@ -560,7 +662,10 @@ func JobOutputTool(env *ToolEnv) Tool {
 			if strings.TrimSpace(body) == "" {
 				body = "(no output yet)"
 			}
-			result := JobOutputResult{JobID: p.JobID, Command: job.Command, Status: status, Output: body}
+			result := JobOutputResult{JobID: p.JobID, Command: job.Command, Status: status, Output: body, Matched: matched}
+			if !done {
+				result.Note = note
+			}
 			if done {
 				result.RawPath, result.RawLines = spillIfLossy(job.Command, rawOutput, body)
 			}

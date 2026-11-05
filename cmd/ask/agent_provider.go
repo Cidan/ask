@@ -163,6 +163,7 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 	session.compactor = session.newCompactor(session.contextWindow, llm, history, session.chunkSummarizer(p.prov, modelID))
 
 	session.env = newAgentToolEnv(args.Cwd, args.TabID, args.SkipAllPermissions, session.emit)
+	session.env.Steering = &session.gate
 	setupAgentSessionTools(session, cfg)
 
 	proc := &providerProc{

@@ -9,8 +9,10 @@ import (
 	"strings"
 )
 
-// contextLinkRe matches @path/to/file.md references in markdown bodies.
-var contextLinkRe = regexp.MustCompile(`@([A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)*(?i:\.md))`)
+// contextLinkRe matches @path/to/file.md references in markdown bodies. A
+// segment may start with a dot or underscore (@.context/api.md); the "."
+// and ".." segments it then also matches are refused by ResolveContextLink.
+var contextLinkRe = regexp.MustCompile(`@([A-Za-z0-9._][A-Za-z0-9_.-]*(?:/[A-Za-z0-9._][A-Za-z0-9_.-]*)*(?i:\.md))`)
 
 // LoadedContextDoc is one document that has been loaded for inclusion in
 // the system prompt — either a project instruction file or an @-linked
