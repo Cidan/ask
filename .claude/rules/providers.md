@@ -296,7 +296,10 @@ entering the workflows screen.
 `SteeringPrompt(SteeringOptions{InWorkflow, Cwd})` (`steering.go`) is the
 coder prompt tail; the in-workflow variant drops the confirmation gates
 and adds the `end_turn` requirement, and a `.claude/worktrees/` cwd adds
-the stay-inside-the-worktree clause.
+the stay-inside-the-worktree clause. Every variant (tab, workflow step,
+named agent) carries `<use_parallel_tool_calls>`, Anthropic's stronger
+parallel-tool-use prompt adapted to ask's batched read; it is the one
+place the harness asks for independent calls in one response.
 
 ## Adding a provider
 
