@@ -258,6 +258,11 @@ func (a app) Update(msg tea.Msg) (next tea.Model, cmd tea.Cmd) {
 	case hookSubagentStopMsg:
 		return a.dispatchByTabID(m.tabID, msg)
 
+	case toastShowMsg:
+		return a.dispatchToast(m.id, msg)
+	case toastExpireMsg:
+		return a.dispatchToast(m.id, msg)
+
 	case claudeUsageTickMsg:
 		// Re-arm the tick unconditionally so a claude-code tab opened later
 		// starts refreshing within one interval; only touch the network (and
@@ -384,6 +389,17 @@ func (a app) dispatchByTabID(tabID int, msg tea.Msg) (tea.Model, tea.Cmd) {
 		*a.tabs[idx] = mm
 	}
 	return a, cmd
+}
+
+// dispatchToast forwards a toast message to the tab that owns the toast
+// with that id. A toast from a tab that has since closed is dropped.
+func (a app) dispatchToast(toastID int, msg tea.Msg) (tea.Model, tea.Cmd) {
+	for _, t := range a.tabs {
+		if t.toast != nil && t.toast.id == toastID {
+			return a.dispatchByTabID(t.id, msg)
+		}
+	}
+	return a, nil
 }
 
 // broadcast forwards a message to every tab; each tab's Update filters by

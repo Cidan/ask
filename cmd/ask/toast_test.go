@@ -39,7 +39,6 @@ func TestToastRender_ActiveOverlaysOnTopRight(t *testing.T) {
 	tm := NewToastModel(20, time.Second)
 	tm.active = true
 	tm.text = "ok"
-	tm.expires = time.Now().Add(time.Second)
 	const rows = 6
 	row := strings.Repeat("x", 60)
 	in := strings.Repeat(row+"\n", rows-1) + row
@@ -67,43 +66,117 @@ func TestToastRender_ActiveOverlaysOnTopRight(t *testing.T) {
 	}
 }
 
-func TestToast_AutoDismissAfterDuration(t *testing.T) {
-	tm := NewToastModel(40, 50*time.Millisecond)
-	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
-	tm.clock = func() time.Time { return now }
-	cmd := tm.show("bye")
-	tm2, _ := tm.Update(cmd())
-	if !tm2.hasActive() {
+func TestToast_ShowArmsOneExpiryThatDismisses(t *testing.T) {
+	tm := NewToastModel(40, time.Millisecond)
+	tm, expire := tm.Update(tm.show("bye")())
+	if !tm.hasActive() {
 		t.Fatal("expected toast active right after show")
 	}
-	// First tick: still within duration.
-	tm3, tickCmd := tm2.Update(toastTickMsg{})
-	if !tm3.hasActive() {
-		t.Errorf("toast should still be active before duration elapses")
+	msgs := drainBatch(t, expire)
+	if len(msgs) != 1 {
+		t.Fatalf("show must arm exactly one timer, got %d msgs: %#v", len(msgs), msgs)
 	}
-	if tickCmd == nil {
-		t.Errorf("active toast should keep ticking")
+	if _, ok := msgs[0].(toastExpireMsg); !ok {
+		t.Fatalf("timer msg = %T, want toastExpireMsg", msgs[0])
 	}
-	// Advance the clock past expiry.
-	now = now.Add(time.Second)
-	tm3.clock = func() time.Time { return now }
-	tm4, doneCmd := tm3.Update(toastTickMsg{})
-	if tm4.hasActive() {
-		t.Errorf("toast should auto-dismiss once expired")
+	tm, cmd := tm.Update(msgs[0])
+	if tm.hasActive() || tm.text != "" {
+		t.Errorf("expiry should dismiss the toast: active=%v text=%q", tm.hasActive(), tm.text)
 	}
-	if doneCmd != nil {
-		t.Errorf("expired toast should stop scheduling ticks")
+	if cmd != nil {
+		t.Error("a dismissed toast must not schedule anything")
 	}
 }
 
-func TestToast_TickWithoutActiveIsHarmless(t *testing.T) {
-	tm := NewToastModel(40, time.Second)
-	tm2, cmd := tm.Update(toastTickMsg{})
-	if tm2.hasActive() {
-		t.Errorf("tick should not activate a dormant toast")
+func TestToast_EarlierShowsExpiryDoesNotDismissNewerShow(t *testing.T) {
+	tm := NewToastModel(40, time.Millisecond)
+	tm, first := tm.Update(tm.show("first")())
+	tm, second := tm.Update(tm.show("second")())
+	staleMsgs := drainBatch(t, first)
+	if len(staleMsgs) != 1 {
+		t.Fatalf("first show armed %d timers, want 1", len(staleMsgs))
+	}
+	tm, cmd := tm.Update(staleMsgs[0])
+	if !tm.hasActive() || tm.text != "second" {
+		t.Fatalf("stale expiry dismissed the newer toast: active=%v text=%q", tm.hasActive(), tm.text)
 	}
 	if cmd != nil {
-		t.Errorf("tick on dormant toast should not re-arm")
+		t.Error("a stale expiry must not re-arm")
+	}
+	liveMsgs := drainBatch(t, second)
+	if len(liveMsgs) != 1 {
+		t.Fatalf("second show armed %d timers, want 1", len(liveMsgs))
+	}
+	tm, _ = tm.Update(liveMsgs[0])
+	if tm.hasActive() {
+		t.Error("the latest show's expiry should dismiss the toast")
+	}
+}
+
+func TestToast_IgnoresAnotherToastsMessages(t *testing.T) {
+	tm := NewToastModel(40, time.Millisecond)
+	other := NewToastModel(40, time.Millisecond)
+	if tm.id == other.id {
+		t.Fatalf("toasts share id %d", tm.id)
+	}
+	tm, cmd := tm.Update(other.show("not mine")())
+	if tm.hasActive() || cmd != nil {
+		t.Fatalf("foreign show activated the toast: active=%v cmd=%v", tm.hasActive(), cmd != nil)
+	}
+	tm, _ = tm.Update(tm.show("mine")())
+	tm, cmd = tm.Update(toastExpireMsg{id: other.id, tag: tm.tag})
+	if !tm.hasActive() || cmd != nil {
+		t.Fatalf("foreign expiry touched the toast: active=%v cmd=%v", tm.hasActive(), cmd != nil)
+	}
+}
+
+func TestApp_ToastRoutesOnlyToOwningTab(t *testing.T) {
+	a := newSidebarTestApp(t, 3)
+	for _, tab := range a.tabs {
+		tab.toast = NewToastModel(80, time.Millisecond)
+	}
+	owner := a.tabs[1]
+
+	m1, cmd := a.Update(owner.toast.show("copied to clipboard")())
+	a = asApp(t, m1)
+	for i, tab := range a.tabs {
+		if got, want := tab.toast.hasActive(), tab.id == owner.id; got != want {
+			t.Errorf("tab %d toast active = %v, want %v", i, got, want)
+		}
+	}
+	timers := drainBatch(t, cmd)
+	if len(timers) != 1 {
+		t.Fatalf("one show armed %d timers across the app, want 1: %#v", len(timers), timers)
+	}
+
+	m2, cmd := a.Update(timers[0])
+	a = asApp(t, m2)
+	if owner.toast.hasActive() {
+		t.Error("expiry routed through the app should dismiss the owner's toast")
+	}
+	if cmd != nil {
+		if msgs := drainBatch(t, cmd); len(msgs) != 0 {
+			t.Errorf("expiry scheduled follow-up msgs: %#v", msgs)
+		}
+	}
+}
+
+func TestApp_ToastFromClosedTabIsDropped(t *testing.T) {
+	a := newSidebarTestApp(t, 2)
+	for _, tab := range a.tabs {
+		tab.toast = NewToastModel(80, time.Millisecond)
+	}
+	gone := NewToastModel(80, time.Millisecond)
+
+	m1, cmd := a.Update(gone.show("late")())
+	a = asApp(t, m1)
+	for i, tab := range a.tabs {
+		if tab.toast.hasActive() {
+			t.Errorf("tab %d showed a toast it does not own", i)
+		}
+	}
+	if cmd != nil {
+		t.Error("a toast with no owning tab must not arm a timer")
 	}
 }
 
@@ -118,7 +191,6 @@ func TestToastRender_LongMessageWrapsAcrossLines(t *testing.T) {
 	tm.text = "memory: create database \"ask_tests\": connectivity: " +
 		"could not reach bolt://localhost:7687 within 10s — verify the " +
 		"server is running and the credentials are correct"
-	tm.expires = time.Now().Add(time.Second)
 
 	chip := tm.renderChip()
 	rows := strings.Count(chip, "\n") + 1
@@ -142,7 +214,6 @@ func TestToastRender_BodyHeightCapsWithEllipsis(t *testing.T) {
 	tm.active = true
 	// 200 'x' chars at innerMax=16 wraps to 13 rows; we cap to 3.
 	tm.text = strings.Repeat("x", 200)
-	tm.expires = time.Now().Add(time.Second)
 
 	chip := tm.renderChip()
 	bodyLines := strings.Split(chip, "\n")
@@ -163,7 +234,6 @@ func TestToastRender_ShortMessageStaysSingleLine(t *testing.T) {
 	tm := NewToastModel(40, time.Second)
 	tm.active = true
 	tm.text = "memory off"
-	tm.expires = time.Now().Add(time.Second)
 
 	chip := tm.renderChip()
 	if got := strings.Count(chip, "\n") + 1; got != 3 {

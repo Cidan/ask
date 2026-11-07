@@ -378,7 +378,11 @@ lockstep (`.claude/rules/issues.md`).
   `textinput` that accepts paste (trailing newline dropped) and is
   cleared on close; "Incorrect password" shows only when the server
   flags the request as `retry` (same sudo asking again).
-- toast.go (`m.toast.show`), themes.go (16 themes in `themeRegistry`;
+- toast.go (`m.toast.show`; each tab's toast has its own id, and
+  `toastShowMsg` / `toastExpireMsg` carry it so `app.dispatchToast`
+  delivers them to the owning tab only — never broadcast them; a show
+  arms one expiry timer and bumps `tag`, so an earlier show's timer is a
+  no-op), themes.go (16 themes in `themeRegistry`;
   `applyTheme` fills every style var), selection.go, list_nav.go
   (↑/↓ and Ctrl+P/N for popovers), tab_title.go (`fallbackTabTitle`
   seeds, `generateTabTitleCmd` refines through the swappable

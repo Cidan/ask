@@ -2,6 +2,7 @@ package main
 
 import (
 	"strings"
+	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -13,13 +14,29 @@ import (
 // because the upstream library targets bubbletea v1 + lipgloss v0.13 and is
 // incompatible with our charm.land/bubbletea/v2 + lipgloss/v2 stack. We keep
 // the same shape — fixed max width, NewAlertCmd-style trigger msg, top-right
-// overlay logic, auto-expiring tick — but rewritten against v2.
+// overlay logic, auto-expiry — but rewritten against v2.
 
+var lastToastID int64
+
+func nextToastID() int {
+	return int(atomic.AddInt64(&lastToastID, 1))
+}
+
+// toastShowMsg and toastExpireMsg carry the id of the toast that
+// produced them, the way bubbles' spinner.TickMsg does: every tab owns
+// a toast, and the app routes these to the owner alone. A broadcast
+// would light every tab's toast and arm one timer per tab.
 type toastShowMsg struct {
+	id   int
 	text string
 }
 
-type toastTickMsg struct{}
+// toastExpireMsg dismisses the toast when tag still matches; a newer
+// show bumps the tag, so an earlier show's timer lands as a no-op.
+type toastExpireMsg struct {
+	id  int
+	tag int
+}
 
 // defaultToastMaxHeight caps how many wrapped body lines a single
 // toast can occupy before the tail gets truncated with an ellipsis.
@@ -36,12 +53,12 @@ type toastModel struct {
 	maxHeight int
 	duration  time.Duration
 
-	active  bool
-	text    string
-	expires time.Time
-	style   lipgloss.Style
-	prefix  string
-	clock   func() time.Time
+	id     int
+	tag    int
+	active bool
+	text   string
+	style  lipgloss.Style
+	prefix string
 }
 
 // NewToastModel returns a configured toast model. maxWidth caps the
@@ -56,7 +73,7 @@ func NewToastModel(maxWidth int, duration time.Duration) *toastModel {
 		maxWidth:  maxWidth,
 		maxHeight: defaultToastMaxHeight,
 		duration:  duration,
-		clock:     time.Now,
+		id:        nextToastID(),
 		prefix:    "✓",
 		style: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -70,30 +87,35 @@ func NewToastModel(maxWidth int, duration time.Duration) *toastModel {
 // returned, including the right-click copy path.
 func (t *toastModel) show(msg string) tea.Cmd {
 	return func() tea.Msg {
-		return toastShowMsg{text: msg}
+		return t.showMsg(msg)
 	}
 }
 
-// Update handles the activation msg and the periodic tick that drives
-// auto-dismiss. Returns the new model + a follow-up tick cmd while the
-// toast is still alive; nil otherwise so we don't spin.
+// showMsg is the activation message for this toast, for callers that
+// build their own tea.Cmd around it (the clipboard copy path).
+func (t *toastModel) showMsg(text string) toastShowMsg {
+	return toastShowMsg{id: t.id, text: text}
+}
+
+// Update handles this toast's activation and expiry messages and
+// ignores every other toast's. Each show arms exactly one timer for
+// the toast's duration.
 func (t *toastModel) Update(msg tea.Msg) (*toastModel, tea.Cmd) {
 	switch m := msg.(type) {
 	case toastShowMsg:
+		if m.id != t.id {
+			return t, nil
+		}
 		t.active = true
 		t.text = m.text
-		t.expires = t.clock().Add(t.duration)
-		return t, toastTickCmd()
-	case toastTickMsg:
-		if !t.active {
+		t.tag++
+		return t, toastExpireCmd(t.duration, t.id, t.tag)
+	case toastExpireMsg:
+		if m.id != t.id || m.tag != t.tag {
 			return t, nil
 		}
-		if !t.clock().Before(t.expires) {
-			t.active = false
-			t.text = ""
-			return t, nil
-		}
-		return t, toastTickCmd()
+		t.active = false
+		t.text = ""
 	}
 	return t, nil
 }
@@ -186,8 +208,8 @@ func (t *toastModel) applyTheme(th theme) {
 		Bold(true)
 }
 
-func toastTickCmd() tea.Cmd {
-	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
-		return toastTickMsg{}
+func toastExpireCmd(d time.Duration, id, tag int) tea.Cmd {
+	return tea.Tick(d, func(time.Time) tea.Msg {
+		return toastExpireMsg{id: id, tag: tag}
 	})
 }

@@ -324,9 +324,9 @@ func copyTextCmd(t *toastModel, text string) tea.Cmd {
 	}
 	return tea.Batch(clipboardOSC52Cmd(text), func() tea.Msg {
 		if err := clipboardCopyText(text); err != nil {
-			return toastShowMsg{text: "copy failed: " + err.Error()}
+			return t.showMsg("copy failed: " + err.Error())
 		}
-		return toastShowMsg{text: "copied to clipboard"}
+		return t.showMsg("copied to clipboard")
 	})
 }
 
@@ -347,7 +347,7 @@ func copyTextSilentCmd(t *toastModel, text string) tea.Cmd {
 	}
 	return tea.Batch(clipboardOSC52Cmd(text), func() tea.Msg {
 		if err := clipboardCopyText(text); err != nil {
-			return toastShowMsg{text: "copy failed: " + err.Error()}
+			return t.showMsg("copy failed: " + err.Error())
 		}
 		return nil
 	})
