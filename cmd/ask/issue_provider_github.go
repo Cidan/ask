@@ -623,8 +623,28 @@ type githubAPIIssue struct {
 	Assignees []githubAPIUserField `json:"assignees"`
 }
 
+// githubAPIUserField is a user reference. The MCP server sends it as
+// a REST-style `{"login": …}` object in some fields and as the bare
+// login string in others (assignee and assignees); both decode.
 type githubAPIUserField struct {
-	Login string `json:"login"`
+	Login string
+}
+
+func (u *githubAPIUserField) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		return nil
+	}
+	if len(b) > 0 && b[0] == '"' {
+		return json.Unmarshal(b, &u.Login)
+	}
+	var obj struct {
+		Login string `json:"login"`
+	}
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return err
+	}
+	u.Login = obj.Login
+	return nil
 }
 
 // githubAPIComment is the trim of a single comment payload.
@@ -747,7 +767,9 @@ func (g githubPageInfo) more() bool {
 //
 // The fallback walks top-level fields probing each as []githubAPIIssue
 // so a future server variant ({"data":[...]}, {"results":[...]}) keeps
-// working without a code change.
+// working without a code change. A known key that is present but does
+// not decode is an error, never an empty page: one malformed field
+// would otherwise blank the whole column without a word.
 func unmarshalIssueArray(raw []byte) ([]githubAPIIssue, error) {
 	var arr []githubAPIIssue
 	if err := json.Unmarshal(raw, &arr); err == nil {
@@ -767,9 +789,10 @@ func unmarshalIssueArray(raw []byte) ([]githubAPIIssue, error) {
 			continue
 		}
 		var inner []githubAPIIssue
-		if err := json.Unmarshal(field, &inner); err == nil {
-			return inner, nil
+		if err := json.Unmarshal(field, &inner); err != nil {
+			return nil, fmt.Errorf("%s: %w", key, err)
 		}
+		return inner, nil
 	}
 	for _, field := range wrapper {
 		var inner []githubAPIIssue

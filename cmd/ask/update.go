@@ -102,6 +102,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			s.loading = false
 		}
 		if msg.err != nil {
+			debugLog("%s page load (cursor=%q) err: %v", s.titleLower(), msg.requestedCursor, msg.err)
 			// First-chunk error shows the modal; subsequent-chunk
 			// errors are best-effort and just clear the fetching
 			// marker so a retry can happen on the next scroll trigger
@@ -118,7 +119,10 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			}
 			return m, nil
 		}
-		s.loadErr = nil
+		// No s.loadErr reset here: every new load clears it when it is
+		// dispatched, so an error still set came from another column of
+		// this same load, and it keeps the screen until dismissed or
+		// retried.
 		issues := append([]issue(nil), msg.page.Issues...)
 		chunk := issuePageChunk{
 			cursor:     msg.requestedCursor,

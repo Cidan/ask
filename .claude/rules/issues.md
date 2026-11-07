@@ -47,7 +47,10 @@ their `issuesState` (`m.issues` / `m.prs`, seeded by
   `loadingMessage` picked once per load. `loadingFrame` is a term of
   `contentFingerprint`, otherwise the frame cache would freeze it.
 - `loadErr` owns the screen until Enter/Esc (back to ask, cache
-  discarded) or `ActionReload` (retry).
+  discarded) or `ActionReload` (retry). Only a new load's dispatch
+  clears it: a later column's first-chunk success in the same load
+  does not, or one failing column would flash its error and then sit
+  empty. Every page-load error is `debugLog`ged with its cursor.
 
 ## Keys
 
@@ -112,7 +115,11 @@ their `issuesState` (`m.issues` / `m.prs`, seeded by
   `after=<endCursor>`; `search_issues` / `search_pull_requests` page
   by number with no `after`, so their cursor is the next page number
   (`githubSearchPage` / `githubSearchNextPage`, from `total_count`);
-  `issue_read` wraps results as `{"issue":…}` / `{"comments":[…]}`.
+  `issue_read` wraps results as `{"issue":…}` / `{"comments":[…]}`;
+  `assignee` / `assignees` are bare login strings while `user` is an
+  object, so `githubAPIUserField` decodes either. A known envelope key
+  (`issues`, `items`, …) that is present but does not decode is a
+  parse error, never an empty page.
   Every call starts with
   `resolveGitHubTarget` (github_auth.go), which follows the project's
   `MCP.GitHub.Auth`: blank is the saved PAT plus owner/repo from

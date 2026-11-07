@@ -329,6 +329,88 @@ func TestParseGitHubIssueList_EmptyResponsesAreNotErrors(t *testing.T) {
 	}
 }
 
+// The server sends assignee and assignees as bare login strings
+// (list_issues and search_issues alike) while user stays an object.
+// These payloads are trimmed from Cidan/BetterBags, where 24 of 41
+// open issues were assigned and every column parsed to nothing.
+func TestParseGitHubIssueList_StringAssignees(t *testing.T) {
+	cases := map[string]struct {
+		body string
+		want []issue
+	}{
+		"list_issues": {
+			body: `{"issues":[
+				{"number":1267,"title":"unassigned","state":"OPEN","created_at":"2026-11-07T21:19:28Z","assignees":[],"user":{"login":"Cidan"}},
+				{"number":1266,"title":"assigned","state":"OPEN","created_at":"2026-11-07T20:00:00Z","assignees":["Cidan"],"user":{"login":"Cidan"}}
+			],"pageInfo":{"hasNextPage":false,"endCursor":"Y3Vy"},"totalCount":41}`,
+			want: []issue{{number: 1267, assignee: "unassigned"}, {number: 1266, assignee: "Cidan"}},
+		},
+		"search_issues": {
+			body: `{"total_count":694,"incomplete_results":false,"items":[
+				{"number":1258,"title":"closed one","state":"closed","created_at":"2026-11-07T01:57:18Z",
+				 "assignee":"Cidan","assignees":["Cidan"],
+				 "user":{"avatar_url":"https://avatars.githubusercontent.com/u/10316253?v=4","id":10316253,"login":"DiegoSnip"}}
+			]}`,
+			want: []issue{{number: 1258, assignee: "Cidan"}},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			out, err := parseGitHubIssueList(&mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: tc.body}}})
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(out) != len(tc.want) {
+				t.Fatalf("got %d issues, want %d: %+v", len(out), len(tc.want), out)
+			}
+			for i, w := range tc.want {
+				if out[i].number != w.number || out[i].assignee != w.assignee {
+					t.Errorf("issue %d = #%d assignee %q, want #%d %q", i, out[i].number, out[i].assignee, w.number, w.assignee)
+				}
+			}
+		})
+	}
+}
+
+func TestGitHubAPIUserField_AcceptsLoginStringOrObject(t *testing.T) {
+	var v struct {
+		Object githubAPIUserField   `json:"object"`
+		String githubAPIUserField   `json:"string"`
+		Null   githubAPIUserField   `json:"null"`
+		Ptr    *githubAPIUserField  `json:"ptr"`
+		Mixed  []githubAPIUserField `json:"mixed"`
+	}
+	raw := `{"object":{"login":"fritz","id":1},"string":"Cidan","null":null,"ptr":"octo","mixed":["a",{"login":"b"}]}`
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if v.Object.Login != "fritz" || v.String.Login != "Cidan" || v.Null.Login != "" ||
+		v.Ptr == nil || v.Ptr.Login != "octo" ||
+		len(v.Mixed) != 2 || v.Mixed[0].Login != "a" || v.Mixed[1].Login != "b" {
+		t.Errorf("decoded %+v (ptr %+v)", v, v.Ptr)
+	}
+	var bad githubAPIUserField
+	if err := json.Unmarshal([]byte(`42`), &bad); err == nil {
+		t.Error("a number is neither a login nor a user object and must not decode")
+	}
+}
+
+// An issues/items array that is present but does not decode must
+// surface as an error. Returning an empty page instead is what left
+// the BetterBags board blank with nothing on screen to say why.
+func TestParseGitHubIssueList_UndecodableKnownKeyIsAnError(t *testing.T) {
+	for _, body := range []string{
+		`{"issues":[{"number":"not-a-number"}],"pageInfo":{}}`,
+		`{"items":[{"number":1,"assignees":[42]}],"total_count":1}`,
+		`{"issues":{"unexpected":"object"}}`,
+	} {
+		out, err := parseGitHubIssueList(&mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: body}}})
+		if err == nil {
+			t.Errorf("parse(%s) = %d issues, want an error", body, len(out))
+		}
+	}
+}
+
 func TestParseGitHubIssue_FromTextContent(t *testing.T) {
 	res := &mcp.CallToolResult{
 		Content: []mcp.Content{

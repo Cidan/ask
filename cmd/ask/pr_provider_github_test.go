@@ -65,6 +65,34 @@ func TestGitHubBuildSearchPRQ(t *testing.T) {
 	}
 }
 
+// search_pull_requests items carry assignee/assignees as bare login
+// strings, like the issue search; an undecodable items array is an
+// error rather than an empty column.
+func TestParseGitHubPRList_StringAssigneesAndErrors(t *testing.T) {
+	text := func(s string) *mcp.CallToolResult {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s}}}
+	}
+	out, err := parseGitHubPRList(text(`{"total_count":2,"incomplete_results":false,"items":[
+		{"number":12,"title":"assigned","state":"open","draft":false,"created_at":"2026-11-01T00:00:00Z",
+		 "assignee":"Cidan","assignees":["Cidan"],"user":{"login":"Cidan"}},
+		{"number":11,"title":"merged","state":"closed","merged_at":"2026-10-01T00:00:00Z","created_at":"2026-09-01T00:00:00Z",
+		 "assignees":[],"user":{"login":"fritz"}}
+	]}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(out) != 2 || out[0].assignee != "Cidan" || out[0].status != "open" ||
+		out[1].assignee != "unassigned" || out[1].status != "merged" {
+		t.Errorf("prs=%+v", out)
+	}
+	if out, err := parseGitHubPRList(text(`{"items":[{"number":"x"}],"total_count":1}`)); err == nil {
+		t.Errorf("undecodable items parsed to %d PRs, want an error", len(out))
+	}
+	if out, err := parseGitHubPRList(text(`{"items":[],"total_count":0}`)); err != nil || len(out) != 0 {
+		t.Errorf("empty search page: prs=%+v err=%v", out, err)
+	}
+}
+
 func TestParseGitHubPRMergeable(t *testing.T) {
 	cases := []struct {
 		name      string

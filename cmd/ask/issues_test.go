@@ -1114,10 +1114,48 @@ func TestIssues_PageLoadedMsgWithErrorPopulatesLoadErr(t *testing.T) {
 	}
 }
 
-func TestIssues_PageLoadedMsgWithSuccessClearsBothFlags(t *testing.T) {
+// The kanban loads every column's first chunk in parallel. One
+// column failing raises the error modal, and a later success from
+// another column of the same load must neither dismiss it (the error
+// would flash and vanish, leaving that column silently empty) nor be
+// dropped: its rows still land in their column.
+func TestIssues_ColumnErrorSurvivesAnotherColumnsSuccess(t *testing.T) {
+	m := enterIssuesScreen(t)
+	kv := m.issues.view.(*kanbanIssueView)
+	if len(kv.columns) < 2 {
+		t.Fatalf("setup: need at least 2 columns, got %d", len(kv.columns))
+	}
+	failing, succeeding := kv.columns[0].spec.Query, kv.columns[1].spec.Query
+	before := len(kv.columns[1].loaded)
+	m.issues.loading = true
+	gen := m.issues.queryGen
+
+	m, _ = runUpdate(t, m, issuePageLoadedMsg{
+		tabID: m.id, screen: screenIssues, gen: gen,
+		query: failing, requestedCursor: "",
+		err: fmt.Errorf("list_issues: parse: issues: bad assignee"),
+	})
+	m, _ = runUpdate(t, m, issuePageLoadedMsg{
+		tabID: m.id, screen: screenIssues, gen: gen,
+		query: succeeding, requestedCursor: "",
+		page: IssueListPage{Issues: []issue{{number: 4242, title: "late success"}}},
+	})
+
+	if m.issues.loading {
+		t.Errorf("loading should clear once first chunks have landed")
+	}
+	if m.issues.loadErr == nil || !strings.Contains(m.issues.loadErr.Error(), "bad assignee") {
+		t.Errorf("loadErr=%v: a success from another column must not dismiss the error", m.issues.loadErr)
+	}
+	kv = m.issues.view.(*kanbanIssueView)
+	if got := len(kv.columns[1].loaded); got != before+1 || kv.columns[1].loaded[got-1].number != 4242 {
+		t.Errorf("succeeding column rows=%d want %d ending in #4242", got, before+1)
+	}
+}
+
+func TestIssues_PageLoadedMsgWithSuccessClearsLoading(t *testing.T) {
 	m := enterIssuesScreen(t)
 	m.issues.loading = true
-	m.issues.loadErr = fmt.Errorf("stale")
 	m, _ = runUpdate(t, m, issuePageLoadedMsg{
 		tabID:           m.id,
 		screen:          screenIssues,
@@ -1130,7 +1168,7 @@ func TestIssues_PageLoadedMsgWithSuccessClearsBothFlags(t *testing.T) {
 		t.Errorf("loading should clear on successful load")
 	}
 	if m.issues.loadErr != nil {
-		t.Errorf("loadErr should clear on successful load; got %v", m.issues.loadErr)
+		t.Errorf("a successful load must not raise an error; got %v", m.issues.loadErr)
 	}
 	if len(issuesAll(m.issues)) == 0 {
 		t.Errorf("issues should be populated after success")
