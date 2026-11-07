@@ -1328,7 +1328,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		return m, copyCmd
 
-	case toastShowMsg, toastTickMsg:
+	case toastShowMsg, toastExpireMsg:
 		if m.toast == nil {
 			return m, nil
 		}
