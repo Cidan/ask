@@ -336,8 +336,10 @@ lockstep (`.claude/rules/issues.md`).
   Blink, Render Diffs, Tool Output, Skip All Permissions, Worktree,
   Theme, Default Provider, Web Search…, one
   `<Provider>...` row per `providers.All()` entry, Keybindings…) and
-  Project Options (config_project.go: GitHub MCP endpoint/PAT, Linear
-  endpoint/key/team, Issue provider, Worktree). The project Worktree
+  Project Options (config_project.go: GitHub auth (PAT or gh CLI,
+  `cycleGitHubAuth`, kills the proc like a saved field), GitHub MCP
+  endpoint/PAT, Linear endpoint/key/team, Issue provider, Worktree).
+  The project Worktree
   row cycles inherit → on → off and shadows the global flag;
   `config.WorktreeEnabled(cfg, cwd)` is the only resolver, and both
   toggles go through `applyEffectiveWorktree` so the session restarts

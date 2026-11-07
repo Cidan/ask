@@ -289,7 +289,12 @@ type ProjectMCPConfig struct {
 type GitHubMCPConfig struct {
 	Endpoint string `json:"endpoint,omitempty"`
 	Token    string `json:"token,omitempty"`
+	// Auth is the credential source: "" is Token, GitHubAuthGH is the
+	// gh CLI's login.
+	Auth string `json:"auth,omitempty"`
 }
+
+const GitHubAuthGH = "gh"
 
 const GitHubMCPDefaultEndpoint = "https://api.githubcopilot.com/mcp"
 

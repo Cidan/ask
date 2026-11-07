@@ -52,6 +52,7 @@ const (
 	agentDefaultBackoffFactor  = config.AgentDefaultBackoffFactor
 
 	githubMCPDefaultEndpoint     = config.GitHubMCPDefaultEndpoint
+	githubAuthGH                 = config.GitHubAuthGH
 	linearGraphQLDefaultEndpoint = config.LinearGraphQLDefaultEndpoint
 )
 

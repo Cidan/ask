@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"html"
 	"net/http"
-	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,11 +22,13 @@ import (
 // The provider holds a live MCP session keyed on the (endpoint,
 // token) pair so repeated ListIssues / GetIssue calls don't pay the
 // HTTP handshake cost every time. The session is rebuilt
-// transparently when the configured endpoint or token changes.
+// transparently when the configured endpoint or token changes —
+// including a gh CLI token that gh refreshed or re-issued.
 //
-// Cwd → owner/repo resolution: parsed from `git remote get-url
-// origin`. We only support GitHub URLs (HTTPS and SSH); other
-// remotes return an unconfigured-style error so the toast surfaces.
+// Cwd → repo and token resolution (resolveGitHubTarget, github_auth.go)
+// follows the project's credential source: a saved PAT with the
+// github.com `origin` remote, or the gh CLI's login with the repo
+// `gh repo view` picks.
 //
 // All MCP tool names below match the canonical GitHub MCP server
 // (list_issues, get_issue, list_issue_comments). If a future
@@ -66,23 +68,16 @@ const (
 func (p *githubIssueProvider) ID() string          { return "github" }
 func (p *githubIssueProvider) DisplayName() string { return "GitHub Issues" }
 
-// Configured reports whether the provider can dispatch a request.
-// Three things must line up: provider selected, MCP token set
-// (cfg.MCP.GitHub — the issue provider piggybacks on the project's
-// GitHub MCP slot), and cwd resolves to a github.com remote.
-// Endpoint is allowed to be empty — it falls through to the
+// Configured reports whether the provider can dispatch a request:
+// provider selected and the project's GitHub MCP slot reachable
+// (githubProjectReachable — a PAT plus a github.com remote, or gh
+// auth). Endpoint is allowed to be empty — it falls through to the
 // documented default.
 func (p *githubIssueProvider) Configured(cfg projectConfig, cwd string) bool {
 	if cfg.Issues.Provider != p.ID() {
 		return false
 	}
-	if cfg.MCP.GitHub.Token == "" {
-		return false
-	}
-	if _, _, err := resolveGitHubRepo(cwd); err != nil {
-		return false
-	}
-	return true
+	return githubProjectReachable(cfg.MCP.GitHub, cwd)
 }
 
 // ParseQuery walks space-separated tokens in the typed text and
@@ -250,25 +245,23 @@ func (p *githubIssueProvider) KanbanColumns() []KanbanColumnSpec {
 // when zero. Both paths pin a deterministic server-side default
 // sort (created desc) unless the query explicitly overrides it.
 //
-// The MCP server uses cursor-based pagination — we pass
+// list_issues uses cursor-based pagination — we pass
 // `after=<endCursor>` from the previous response (omitted entirely
 // on the first chunk so the server treats it as "first page").
 // NextCursor / HasMore come from the response envelope's pageInfo
 // block when present; when the server returns a bare array (older
 // shape) we fall back to HasMore = (len(issues) == perPage) and
-// leave NextCursor blank.
+// leave NextCursor blank. search_issues pages by number instead
+// (githubSearchNextPage).
 func (p *githubIssueProvider) ListIssues(ctx context.Context, cfg projectConfig, cwd string, query IssueQuery, page IssuePagination) (IssueListPage, error) {
-	if cfg.MCP.GitHub.Token == "" {
-		return IssueListPage{}, errIssueProviderNotConfigured
-	}
-	owner, repo, err := resolveGitHubRepo(cwd)
+	repo, token, err := resolveGitHubTarget(cfg.MCP.GitHub, cwd)
 	if err != nil {
-		return IssueListPage{}, fmt.Errorf("resolve repo: %w", err)
+		return IssueListPage{}, err
 	}
 	if page.PerPage <= 0 {
 		page.PerPage = githubDefaultPerPage
 	}
-	cs, err := p.connect(ctx, cfg.MCP.GitHub)
+	cs, err := p.connect(ctx, cfg.MCP.GitHub, token)
 	if err != nil {
 		return IssueListPage{}, err
 	}
@@ -276,7 +269,7 @@ func (p *githubIssueProvider) ListIssues(ctx context.Context, cfg projectConfig,
 	defer cancel()
 
 	gq, _ := query.(*githubQuery)
-	toolName, args := githubBuildListIssuesArgs(owner, repo, gq, page)
+	toolName, args := githubBuildListIssuesArgs(repo.owner, repo.name, gq, page)
 
 	res, err := cs.CallTool(cctx, &mcp.CallToolParams{
 		Name:      toolName,
@@ -291,6 +284,10 @@ func (p *githubIssueProvider) ListIssues(ctx context.Context, cfg projectConfig,
 	issues, err := parseGitHubIssueList(res)
 	if err != nil {
 		return IssueListPage{}, err
+	}
+	if toolName == githubToolSearchIssues {
+		next, more := githubSearchNextPage(res, githubSearchPage(page.Cursor), page.PerPage, len(issues))
+		return IssueListPage{Issues: issues, NextCursor: next, HasMore: more}, nil
 	}
 	nextCursor, hasNext, foundEnvelope := parseGitHubPageInfo(res)
 	hasMore := hasNext
@@ -317,14 +314,11 @@ func (p *githubIssueProvider) ListIssues(ctx context.Context, cfg projectConfig,
 // calls and merge; comments are best-effort since the description
 // alone is still a useful detail page if the second call fails.
 func (p *githubIssueProvider) GetIssue(ctx context.Context, cfg projectConfig, cwd string, number int) (issue, error) {
-	if cfg.MCP.GitHub.Token == "" {
-		return issue{}, errIssueProviderNotConfigured
-	}
-	owner, repo, err := resolveGitHubRepo(cwd)
+	repo, token, err := resolveGitHubTarget(cfg.MCP.GitHub, cwd)
 	if err != nil {
-		return issue{}, fmt.Errorf("resolve repo: %w", err)
+		return issue{}, err
 	}
-	cs, err := p.connect(ctx, cfg.MCP.GitHub)
+	cs, err := p.connect(ctx, cfg.MCP.GitHub, token)
 	if err != nil {
 		return issue{}, err
 	}
@@ -334,8 +328,8 @@ func (p *githubIssueProvider) GetIssue(ctx context.Context, cfg projectConfig, c
 		Name: githubToolIssueRead,
 		Arguments: map[string]any{
 			"method":       "get",
-			"owner":        owner,
-			"repo":         repo,
+			"owner":        repo.owner,
+			"repo":         repo.name,
 			"issue_number": number,
 		},
 	})
@@ -349,7 +343,7 @@ func (p *githubIssueProvider) GetIssue(ctx context.Context, cfg projectConfig, c
 	if err != nil {
 		return issue{}, err
 	}
-	if comments, cerr := p.fetchComments(ctx, cs, owner, repo, number); cerr == nil {
+	if comments, cerr := p.fetchComments(ctx, cs, repo.owner, repo.name, number); cerr == nil {
 		it.comments = comments
 	} else {
 		debugLog("github issue_read get_comments err: %v", cerr)
@@ -365,24 +359,21 @@ func (p *githubIssueProvider) GetIssue(ctx context.Context, cfg projectConfig, c
 // drops are short-circuited at the kanban layer and never reach
 // this method.
 func (p *githubIssueProvider) MoveIssue(ctx context.Context, cfg projectConfig, cwd string, it issue, target KanbanColumnSpec) error {
-	if cfg.MCP.GitHub.Token == "" {
-		return errIssueProviderNotConfigured
-	}
-	owner, repo, err := resolveGitHubRepo(cwd)
+	repo, token, err := resolveGitHubTarget(cfg.MCP.GitHub, cwd)
 	if err != nil {
-		return fmt.Errorf("resolve repo: %w", err)
+		return err
 	}
 	gq, ok := target.Query.(*githubQuery)
 	if !ok || gq == nil {
 		return fmt.Errorf("move: target column has no github query")
 	}
-	cs, err := p.connect(ctx, cfg.MCP.GitHub)
+	cs, err := p.connect(ctx, cfg.MCP.GitHub, token)
 	if err != nil {
 		return err
 	}
 	cctx, cancel := context.WithTimeout(ctx, githubMCPCallTimeout)
 	defer cancel()
-	toolName, args := githubBuildMoveIssueArgs(owner, repo, it.number, gq)
+	toolName, args := githubBuildMoveIssueArgs(repo.owner, repo.name, it.number, gq)
 	res, err := cs.CallTool(cctx, &mcp.CallToolParams{
 		Name:      toolName,
 		Arguments: args,
@@ -439,19 +430,19 @@ func githubBuildMoveIssueArgs(owner, repo string, issueNumber int, target *githu
 func (p *githubIssueProvider) SupportsCarry() bool { return true }
 
 // IssueRef resolves cwd to "owner/repo" via the same mechanism the
-// rest of the github provider uses (`git remote get-url origin`),
-// then assembles the canonical issueRef for `it`. Returns
+// rest of the github provider uses (resolveGitHubRepo), then
+// assembles the canonical issueRef for `it`. Returns
 // errIssueProviderNotConfigured when the project is unreachable —
 // callers translate that into the standard "issues not configured"
 // toast.
-func (p *githubIssueProvider) IssueRef(_ projectConfig, cwd string, it issue) (issueRef, error) {
-	owner, repo, err := resolveGitHubRepo(cwd)
+func (p *githubIssueProvider) IssueRef(cfg projectConfig, cwd string, it issue) (issueRef, error) {
+	repo, err := resolveGitHubRepo(cfg.MCP.GitHub, cwd)
 	if err != nil {
 		return issueRef{}, errIssueProviderNotConfigured
 	}
 	return issueRef{
 		Provider: p.ID(),
-		Project:  owner + "/" + repo,
+		Project:  repo.owner + "/" + repo.name,
 		Number:   it.number,
 	}, nil
 }
@@ -477,29 +468,30 @@ func (p *githubIssueProvider) fetchComments(ctx context.Context, cs *mcp.ClientS
 	return parseGitHubComments(res)
 }
 
-// connect returns a ready ClientSession for cfg, reusing the cached
-// session when (endpoint, token) match the previous call. A change
-// in either field tears down the old session and spins up a fresh
-// one against the new credentials. Concurrent callers serialise on
-// p.mu so a flurry of issues-screen renders only handshakes once.
-func (p *githubIssueProvider) connect(ctx context.Context, cfg githubMCPConfig) (*mcp.ClientSession, error) {
+// connect returns a ready ClientSession for cfg's endpoint and token
+// (resolveGitHubTarget's), reusing the cached session when (endpoint,
+// token) match the previous call. A change in either tears down the
+// old session and spins up a fresh one against the new credentials.
+// Concurrent callers serialise on p.mu so a flurry of issues-screen
+// renders only handshakes once.
+func (p *githubIssueProvider) connect(ctx context.Context, cfg githubMCPConfig, token string) (*mcp.ClientSession, error) {
 	endpoint := githubMCPEndpointOrDefault(cfg)
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.session != nil && p.cachedEndpoint == endpoint && p.cachedToken == cfg.Token {
+	if p.session != nil && p.cachedEndpoint == endpoint && p.cachedToken == token {
 		return p.session, nil
 	}
 	if p.session != nil {
 		_ = p.session.Close()
 		p.session = nil
 	}
-	cs, err := dialGitHubMCPSessionFn(ctx, endpoint, cfg.Token, githubMCPInitTimeout)
+	cs, err := dialGitHubMCPSessionFn(ctx, endpoint, token, githubMCPInitTimeout)
 	if err != nil {
 		return nil, err
 	}
 	p.session = cs
 	p.cachedEndpoint = endpoint
-	p.cachedToken = cfg.Token
+	p.cachedToken = token
 	return cs, nil
 }
 
@@ -529,6 +521,15 @@ func dialGitHubMCP(ctx context.Context, endpoint, token string, timeout time.Dur
 	cs, err := cli.Connect(cctx, transport, nil)
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", endpoint, err)
+	}
+	// CallTool sends a tool's Mcp-Param-* headers (its x-mcp-header
+	// parameters, which servers on protocol 2026-07-28 require) only
+	// for tools the session has listed.
+	for _, err := range cs.Tools(cctx, nil) {
+		if err != nil {
+			_ = cs.Close()
+			return nil, fmt.Errorf("list tools %s: %w", endpoint, err)
+		}
 	}
 	return cs, nil
 }
@@ -566,30 +567,6 @@ func (b *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 		r.Header.Set("Authorization", "Bearer "+b.token)
 	}
 	return b.base.RoundTrip(r)
-}
-
-// resolveGitHubRepo runs `git remote get-url origin` from cwd and
-// extracts (owner, repo) from the URL. Recognises both HTTPS
-// (https://github.com/o/r[.git]) and SSH (git@github.com:o/r[.git])
-// forms. Returns an error for non-github.com remotes — we deliberately
-// don't try to support gh.example.com / GHE / forks of the URL spec
-// here because the validation is the same backstop the /config
-// "Configured" check uses.
-func resolveGitHubRepo(cwd string) (owner, repo string, err error) {
-	if cwd == "" {
-		return "", "", fmt.Errorf("cwd is empty")
-	}
-	cmd := exec.Command("git", "-C", cwd, "remote", "get-url", "origin")
-	out, runErr := cmd.Output()
-	if runErr != nil {
-		return "", "", fmt.Errorf("git remote: %w", runErr)
-	}
-	url := strings.TrimSpace(string(out))
-	owner, repo, ok := parseGitHubRemoteURL(url)
-	if !ok {
-		return "", "", fmt.Errorf("not a github remote: %q", url)
-	}
-	return owner, repo, nil
 }
 
 // parseGitHubRemoteURL extracts (owner, repo) from a github remote
@@ -803,11 +780,19 @@ func unmarshalIssueArray(raw []byte) ([]githubAPIIssue, error) {
 	return nil, nil
 }
 
-// parseGitHubIssue unmarshals the get_issue tool result.
+// parseGitHubIssue unmarshals the issue_read get result: the bare
+// issue, or `{"issue": {...}}` as the server returns it on protocol
+// 2026-07-28.
 func parseGitHubIssue(res *mcp.CallToolResult) (issue, error) {
 	raw := pickJSONPayload(res)
 	if raw == nil {
 		return issue{}, fmt.Errorf("get_issue: empty payload")
+	}
+	var wrapped struct {
+		Issue *githubAPIIssue `json:"issue"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err == nil && wrapped.Issue != nil {
+		return githubAPIToIssue(*wrapped.Issue), nil
 	}
 	var gi githubAPIIssue
 	if err := json.Unmarshal(raw, &gi); err != nil {
@@ -816,7 +801,9 @@ func parseGitHubIssue(res *mcp.CallToolResult) (issue, error) {
 	return githubAPIToIssue(gi), nil
 }
 
-// parseGitHubComments unmarshals the list_issue_comments result.
+// parseGitHubComments unmarshals a get_comments result: a bare array
+// (pull_request_read, and issue_read on older protocols), or
+// `{"comments": [...]}` as issue_read returns it on 2026-07-28.
 func parseGitHubComments(res *mcp.CallToolResult) ([]issueComment, error) {
 	raw := pickJSONPayload(res)
 	if raw == nil {
@@ -824,7 +811,13 @@ func parseGitHubComments(res *mcp.CallToolResult) ([]issueComment, error) {
 	}
 	var arr []githubAPIComment
 	if err := json.Unmarshal(raw, &arr); err != nil {
-		return nil, fmt.Errorf("get_issue_comments: parse: %w", err)
+		var wrapped struct {
+			Comments []githubAPIComment `json:"comments"`
+		}
+		if werr := json.Unmarshal(raw, &wrapped); werr != nil || wrapped.Comments == nil {
+			return nil, fmt.Errorf("get_issue_comments: parse: %w", err)
+		}
+		arr = wrapped.Comments
 	}
 	out := make([]issueComment, 0, len(arr))
 	for _, c := range arr {
@@ -896,45 +889,84 @@ func githubSortAndOrder(q *githubQuery) (string, string) {
 	return sort, order
 }
 
+// githubListOrderBy maps a parsed sort field (ParseQuery admits only
+// these) to list_issues' orderBy enum.
+var githubListOrderBy = map[string]string{
+	"created":  "CREATED_AT",
+	"updated":  "UPDATED_AT",
+	"comments": "COMMENTS",
+}
+
 // githubBuildListIssuesArgs is the pure args-builder for the
 // list_issues / search_issues MCP call: chooses the tool name
-// based on query shape and assembles the argument map. `after`
-// is omitted from the map entirely when page.Cursor is empty
-// (the server treats absent as "first chunk"; an empty-string
-// cursor would round-trip as a bogus value and fail GraphQL
-// validation).
+// based on query shape and assembles the argument map.
+//
+// list_issues is GraphQL-backed: state is OPEN | CLOSED (absent
+// lists both), ordering is orderBy + direction, and paging is
+// `after=<endCursor>`, omitted on the first chunk (an empty-string
+// cursor fails GraphQL validation). search_issues pages by number,
+// so its cursor is the page to fetch (githubSearchPage).
 //
 // Pulled out of ListIssues so the cursor-shape contract is
 // covered by a fast unit test instead of an httptest MCP loop.
 func githubBuildListIssuesArgs(owner, repo string, gq *githubQuery, page IssuePagination) (string, map[string]any) {
-	useSearch := githubQueryNeedsSearch(gq)
-	sort, order := githubSortAndOrder(gq)
-	var toolName string
-	args := map[string]any{}
-	if useSearch {
-		toolName = githubToolSearchIssues
+	if githubQueryNeedsSearch(gq) {
 		// GitHub Copilot MCP names the search string "query" (not "q"
 		// like the REST API). Sending "q" returns "missing required
 		// parameter: query" from the server.
-		args["query"] = githubBuildSearchQ(owner, repo, gq)
-		args["perPage"] = page.PerPage
-	} else {
-		toolName = githubToolListIssues
-		state := "all"
-		if gq != nil && gq.state != "" {
-			state = gq.state
+		args := map[string]any{
+			"query":   githubBuildSearchQ(owner, repo, gq),
+			"perPage": page.PerPage,
 		}
-		args["owner"] = owner
-		args["repo"] = repo
-		args["state"] = state
-		args["sort"] = sort
-		args["direction"] = order
-		args["perPage"] = page.PerPage
+		if page.Cursor != "" {
+			args["page"] = githubSearchPage(page.Cursor)
+		}
+		return githubToolSearchIssues, args
+	}
+	sort, order := githubSortAndOrder(gq)
+	args := map[string]any{
+		"owner":     owner,
+		"repo":      repo,
+		"orderBy":   githubListOrderBy[sort],
+		"direction": strings.ToUpper(order),
+		"perPage":   page.PerPage,
+	}
+	if gq != nil && gq.state != "" && gq.state != "all" {
+		args["state"] = strings.ToUpper(gq.state)
 	}
 	if page.Cursor != "" {
 		args["after"] = page.Cursor
 	}
-	return toolName, args
+	return githubToolListIssues, args
+}
+
+// githubSearchPage is the 1-based results page a search cursor
+// names. search_issues and search_pull_requests page by number
+// rather than by GraphQL cursor, so the provider's opaque cursor
+// for them is the next page's number; "" is page 1.
+func githubSearchPage(cursor string) int {
+	if n, err := strconv.Atoi(cursor); err == nil && n > 1 {
+		return n
+	}
+	return 1
+}
+
+// githubSearchNextPage returns the cursor for the search page after
+// page, and whether there is one. The search responses carry
+// total_count and no pageInfo; without total_count a full page is
+// taken to mean another may follow.
+func githubSearchNextPage(res *mcp.CallToolResult, page, perPage, got int) (string, bool) {
+	more := got == perPage
+	var v struct {
+		TotalCount *int `json:"total_count"`
+	}
+	if raw := pickJSONPayload(res); raw != nil && json.Unmarshal(raw, &v) == nil && v.TotalCount != nil {
+		more = got > 0 && page*perPage < *v.TotalCount
+	}
+	if !more {
+		return "", false
+	}
+	return strconv.Itoa(page + 1), true
 }
 
 // githubQueryNeedsSearch reports whether a query has filters

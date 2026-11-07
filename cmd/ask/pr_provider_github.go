@@ -17,9 +17,9 @@ import (
 // kanban screen with PR-specific columns and an `m` keybind that
 // uses the IssueMerger capability to perform pre-flight + merge.
 //
-// Cwd → owner/repo resolution and MCP session connect/cache are
-// shared with githubIssueProvider via resolveGitHubRepo and
-// connectGitHubMCP — keeping a single session per (endpoint, token)
+// Cwd → repo and token resolution and MCP session connect/cache are
+// shared with githubIssueProvider via resolveGitHubTarget and
+// dialGitHubMCPSessionFn — keeping a single session per (endpoint, token)
 // across both providers so a tab on PRs and a tab on issues don't
 // pay double the handshake cost.
 //
@@ -61,18 +61,12 @@ const (
 func (p *githubPRProvider) ID() string          { return "github-prs" }
 func (p *githubPRProvider) DisplayName() string { return "GitHub Pull Requests" }
 
-// Configured mirrors the issue provider: the same MCP token slot
-// gates both, the same `git remote get-url origin` resolves the
-// project. If either fails, the screen surfaces the standard
-// "not configured" toast at the PRs screen-entry point.
+// Configured mirrors the issue provider: the same GitHub MCP slot
+// gates both (githubProjectReachable). If it fails, the screen
+// surfaces the standard "not configured" toast at the PRs
+// screen-entry point.
 func (p *githubPRProvider) Configured(cfg projectConfig, cwd string) bool {
-	if cfg.MCP.GitHub.Token == "" {
-		return false
-	}
-	if _, _, err := resolveGitHubRepo(cwd); err != nil {
-		return false
-	}
-	return true
+	return githubProjectReachable(cfg.MCP.GitHub, cwd)
 }
 
 // ParseQuery accepts the same surface-level token grammar as the
@@ -209,20 +203,18 @@ func (p *githubPRProvider) KanbanColumns() []KanbanColumnSpec {
 // because the column taxonomy (Open/Draft/Merged/Closed) needs the
 // search qualifiers; list_pull_requests' bare state filter can't
 // express the splits. PerPage defaults to githubDefaultPerPage on 0.
-// Cursor pagination follows the same `after=<endCursor>` contract
-// the issue provider uses.
+// Search pages by number, so the cursor is the next page's number
+// (githubSearchPage / githubSearchNextPage), as on the issue
+// provider's search path.
 func (p *githubPRProvider) ListIssues(ctx context.Context, cfg projectConfig, cwd string, query IssueQuery, page IssuePagination) (IssueListPage, error) {
-	if cfg.MCP.GitHub.Token == "" {
-		return IssueListPage{}, errIssueProviderNotConfigured
-	}
-	owner, repo, err := resolveGitHubRepo(cwd)
+	repo, token, err := resolveGitHubTarget(cfg.MCP.GitHub, cwd)
 	if err != nil {
-		return IssueListPage{}, fmt.Errorf("resolve repo: %w", err)
+		return IssueListPage{}, err
 	}
 	if page.PerPage <= 0 {
 		page.PerPage = githubDefaultPerPage
 	}
-	cs, err := p.connect(ctx, cfg.MCP.GitHub)
+	cs, err := p.connect(ctx, cfg.MCP.GitHub, token)
 	if err != nil {
 		return IssueListPage{}, err
 	}
@@ -230,7 +222,7 @@ func (p *githubPRProvider) ListIssues(ctx context.Context, cfg projectConfig, cw
 	defer cancel()
 
 	pq, _ := query.(*githubPRQuery)
-	args := githubBuildSearchPRsArgs(owner, repo, pq, page)
+	args := githubBuildSearchPRsArgs(repo.owner, repo.name, pq, page)
 
 	res, err := cs.CallTool(cctx, &mcp.CallToolParams{
 		Name:      githubToolSearchPullRequests,
@@ -246,15 +238,11 @@ func (p *githubPRProvider) ListIssues(ctx context.Context, cfg projectConfig, cw
 	if err != nil {
 		return IssueListPage{}, err
 	}
-	nextCursor, hasNext, foundEnvelope := parseGitHubPageInfo(res)
-	hasMore := hasNext
-	if !foundEnvelope {
-		hasMore = len(prs) == page.PerPage
-	}
+	next, more := githubSearchNextPage(res, githubSearchPage(page.Cursor), page.PerPage, len(prs))
 	return IssueListPage{
 		Issues:     prs,
-		NextCursor: nextCursor,
-		HasMore:    hasMore,
+		NextCursor: next,
+		HasMore:    more,
 	}, nil
 }
 
@@ -264,14 +252,11 @@ func (p *githubPRProvider) ListIssues(ctx context.Context, cfg projectConfig, cw
 // comments (file-line conversations) are intentionally out of scope
 // for this iteration — only the conversation tab.
 func (p *githubPRProvider) GetIssue(ctx context.Context, cfg projectConfig, cwd string, number int) (issue, error) {
-	if cfg.MCP.GitHub.Token == "" {
-		return issue{}, errIssueProviderNotConfigured
-	}
-	owner, repo, err := resolveGitHubRepo(cwd)
+	repo, token, err := resolveGitHubTarget(cfg.MCP.GitHub, cwd)
 	if err != nil {
-		return issue{}, fmt.Errorf("resolve repo: %w", err)
+		return issue{}, err
 	}
-	cs, err := p.connect(ctx, cfg.MCP.GitHub)
+	cs, err := p.connect(ctx, cfg.MCP.GitHub, token)
 	if err != nil {
 		return issue{}, err
 	}
@@ -281,8 +266,8 @@ func (p *githubPRProvider) GetIssue(ctx context.Context, cfg projectConfig, cwd 
 		Name: githubToolPullRequestRead,
 		Arguments: map[string]any{
 			"method":      "get",
-			"owner":       owner,
-			"repo":        repo,
+			"owner":       repo.owner,
+			"repo":        repo.name,
 			"pullNumber":  number,
 			"pull_number": number,
 		},
@@ -297,7 +282,7 @@ func (p *githubPRProvider) GetIssue(ctx context.Context, cfg projectConfig, cwd 
 	if err != nil {
 		return issue{}, err
 	}
-	if comments, cerr := p.fetchPRComments(ctx, cs, owner, repo, number); cerr == nil {
+	if comments, cerr := p.fetchPRComments(ctx, cs, repo.owner, repo.name, number); cerr == nil {
 		it.comments = comments
 	} else {
 		debugLog("github pull_request_read get_comments err: %v", cerr)
@@ -323,14 +308,14 @@ func (p *githubPRProvider) KanbanIssueStatus(KanbanColumnSpec) string { return "
 // IssueRef builds the canonical ref for a PR. We tag Provider as
 // "github-prs" so workflow-tracker keys can never collide with
 // regular issues that share a number.
-func (p *githubPRProvider) IssueRef(_ projectConfig, cwd string, it issue) (issueRef, error) {
-	owner, repo, err := resolveGitHubRepo(cwd)
+func (p *githubPRProvider) IssueRef(cfg projectConfig, cwd string, it issue) (issueRef, error) {
+	repo, err := resolveGitHubRepo(cfg.MCP.GitHub, cwd)
 	if err != nil {
 		return issueRef{}, errIssueProviderNotConfigured
 	}
 	return issueRef{
 		Provider: p.ID(),
-		Project:  owner + "/" + repo,
+		Project:  repo.owner + "/" + repo.name,
 		Number:   it.number,
 	}, nil
 }
@@ -359,14 +344,11 @@ func (p *githubPRProvider) SupportsCarry() bool { return false }
 // canMerge=true is returned for "clean", "unstable", "has_hooks";
 // every other state lands in the toast with a contextual reason.
 func (p *githubPRProvider) Mergeable(ctx context.Context, cfg projectConfig, cwd string, it issue) (mergeableState, error) {
-	if cfg.MCP.GitHub.Token == "" {
-		return mergeableState{}, errIssueProviderNotConfigured
-	}
-	owner, repo, err := resolveGitHubRepo(cwd)
+	repo, token, err := resolveGitHubTarget(cfg.MCP.GitHub, cwd)
 	if err != nil {
-		return mergeableState{}, fmt.Errorf("resolve repo: %w", err)
+		return mergeableState{}, err
 	}
-	cs, err := p.connect(ctx, cfg.MCP.GitHub)
+	cs, err := p.connect(ctx, cfg.MCP.GitHub, token)
 	if err != nil {
 		return mergeableState{}, err
 	}
@@ -376,8 +358,8 @@ func (p *githubPRProvider) Mergeable(ctx context.Context, cfg projectConfig, cwd
 		Name: githubToolPullRequestRead,
 		Arguments: map[string]any{
 			"method":      "get",
-			"owner":       owner,
-			"repo":        repo,
+			"owner":       repo.owner,
+			"repo":        repo.name,
 			"pullNumber":  it.number,
 			"pull_number": it.number,
 		},
@@ -401,20 +383,17 @@ func (p *githubPRProvider) Mergeable(ctx context.Context, cfg projectConfig, cwd
 // MCP server (conflicts that snuck in between Mergeable and Merge,
 // branch protection regressions, network issues) surface verbatim.
 func (p *githubPRProvider) Merge(ctx context.Context, cfg projectConfig, cwd string, it issue) error {
-	if cfg.MCP.GitHub.Token == "" {
-		return errIssueProviderNotConfigured
-	}
-	owner, repo, err := resolveGitHubRepo(cwd)
+	repo, token, err := resolveGitHubTarget(cfg.MCP.GitHub, cwd)
 	if err != nil {
-		return fmt.Errorf("resolve repo: %w", err)
+		return err
 	}
-	cs, err := p.connect(ctx, cfg.MCP.GitHub)
+	cs, err := p.connect(ctx, cfg.MCP.GitHub, token)
 	if err != nil {
 		return err
 	}
 	cctx, cancel := context.WithTimeout(ctx, githubMCPCallTimeout)
 	defer cancel()
-	args := githubBuildMergePRArgs(owner, repo, it.number, githubPRMergeMethod)
+	args := githubBuildMergePRArgs(repo.owner, repo.name, it.number, githubPRMergeMethod)
 	res, err := cs.CallTool(cctx, &mcp.CallToolParams{
 		Name:      githubToolMergePullRequest,
 		Arguments: args,
@@ -455,24 +434,24 @@ func (p *githubPRProvider) fetchPRComments(ctx context.Context, cs *mcp.ClientSe
 // transport. We could share the underlying cache between the two
 // providers, but each having its own keeps the lifecycle reasoning
 // local — closing one provider's session can't break the other.
-func (p *githubPRProvider) connect(ctx context.Context, cfg githubMCPConfig) (*mcp.ClientSession, error) {
+func (p *githubPRProvider) connect(ctx context.Context, cfg githubMCPConfig, token string) (*mcp.ClientSession, error) {
 	endpoint := githubMCPEndpointOrDefault(cfg)
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.session != nil && p.cachedEndpoint == endpoint && p.cachedToken == cfg.Token {
+	if p.session != nil && p.cachedEndpoint == endpoint && p.cachedToken == token {
 		return p.session, nil
 	}
 	if p.session != nil {
 		_ = p.session.Close()
 		p.session = nil
 	}
-	cs, err := dialGitHubMCPSessionFn(ctx, endpoint, cfg.Token, githubMCPInitTimeout)
+	cs, err := dialGitHubMCPSessionFn(ctx, endpoint, token, githubMCPInitTimeout)
 	if err != nil {
 		return nil, err
 	}
 	p.session = cs
 	p.cachedEndpoint = endpoint
-	p.cachedToken = cfg.Token
+	p.cachedToken = token
 	return cs, nil
 }
 
@@ -509,7 +488,7 @@ func githubBuildSearchPRsArgs(owner, repo string, pq *githubPRQuery, page IssueP
 		"perPage": page.PerPage,
 	}
 	if page.Cursor != "" {
-		args["after"] = page.Cursor
+		args["page"] = githubSearchPage(page.Cursor)
 	}
 	return args
 }

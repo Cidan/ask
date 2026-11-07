@@ -1024,7 +1024,7 @@ func TestSessionArgs_PopulatesAllFields(t *testing.T) {
 	if args.Cwd != "/cwd" || args.Model != "claude-fable-5" ||
 		args.Effort != "high" || !args.SkipAllPermissions ||
 		!args.Worktree || args.SessionID != "S-42" ||
-		args.ResumeCwd != "/cwd/.claude/worktrees/alpha" {
+		args.ResumeCwd != "/cwd/.claude/worktrees/alpha" || !args.ProjectMCP {
 		t.Errorf("sessionArgs mismatch: %+v", args)
 	}
 }

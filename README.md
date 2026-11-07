@@ -245,7 +245,11 @@ bound on the same screen.
 `Ctrl+I` opens the issue board for the project, `Ctrl+R` the GitHub
 pull-request board. Configure the tracker under `/config → Project
 Options`: the issue provider (`github` or `linear`), a GitHub MCP
-endpoint and PAT, or a Linear API key and team key.
+endpoint and either a PAT or your `gh` CLI login (`GitHub auth`), or a
+Linear API key and team key. With `gh`, ask asks `gh auth token` for
+the token on each call and `gh repo view` for the repository, so no
+credential is stored in `ask.json` and GitHub Enterprise hosts `gh` is
+logged in to work too.
 
 Columns fetch in parallel with cursor pagination. `↑`/`↓` move within a
 column, `←`/`→`/`Tab` change column, `Enter` opens the markdown detail,
@@ -337,8 +341,9 @@ every change writes immediately.
 | Vertex AI... / OpenRouter... | | The provider's settings (see [Providers](#providers)) |
 | Keybindings... | | Remap any global shortcut |
 
-Project Options (same modal) hold the issue provider, the GitHub MCP
-endpoint and PAT, the Linear endpoint, API key, and team key, a
+Project Options (same modal) hold the issue provider, the GitHub auth
+source (PAT or `gh` CLI), the GitHub MCP endpoint and PAT, the Linear
+endpoint, API key, and team key, a
 Worktree override (inherit / on / off, shadowing the global row for
 this project), and the project's user-scope workflows. Other keys the
 file stores:
