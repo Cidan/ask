@@ -18,10 +18,7 @@ func TestProjectGitHubMCP_ReturnsDescriptorWhenTokenSetEvenWithIssuesDisabled(t 
 		// Issues.Provider deliberately left empty — chat agent should
 		// still get the GitHub MCP entry.
 	})
-	if err := saveConfig(cfg); err != nil {
-		t.Fatalf("seed saveConfig: %v", err)
-	}
-	got := projectGitHubMCP(cwd)
+	got := projectGitHubMCP(cfg, cwd)
 	if got == nil {
 		t.Fatalf("projectGitHubMCP should return a descriptor when a token is set, regardless of Issues.Provider")
 	}
@@ -43,19 +40,15 @@ func TestProjectGitHubMCP_NilWhenTokenAbsent(t *testing.T) {
 	isolateHome(t)
 	cwd := t.TempDir()
 	// No saved config at all — projectGitHubMCP must default to nil.
-	if got := projectGitHubMCP(cwd); got != nil {
+	if got := projectGitHubMCP(askConfig{}, cwd); got != nil {
 		t.Errorf("projectGitHubMCP should be nil with no config; got %+v", got)
 	}
 	// Even if the project entry exists with the issue provider set
 	// to github, an empty token is still nil.
-	cfg, _ := loadConfig()
-	cfg = upsertProjectConfig(cfg, cwd, projectConfig{
+	cfg := upsertProjectConfig(askConfig{}, cwd, projectConfig{
 		Issues: issuesConfig{Provider: "github"},
 	})
-	if err := saveConfig(cfg); err != nil {
-		t.Fatalf("seed saveConfig: %v", err)
-	}
-	if got := projectGitHubMCP(cwd); got != nil {
+	if got := projectGitHubMCP(cfg, cwd); got != nil {
 		t.Errorf("projectGitHubMCP should be nil when token is empty; got %+v", got)
 	}
 }
@@ -66,8 +59,7 @@ func TestProjectGitHubMCP_NilWhenTokenAbsent(t *testing.T) {
 func TestProjectGitHubMCP_HonoursCustomEndpoint(t *testing.T) {
 	isolateHome(t)
 	cwd := t.TempDir()
-	cfg, _ := loadConfig()
-	cfg = upsertProjectConfig(cfg, cwd, projectConfig{
+	cfg := upsertProjectConfig(askConfig{}, cwd, projectConfig{
 		MCP: projectMCPConfig{
 			GitHub: githubMCPConfig{
 				Token:    "ghp_secret",
@@ -75,10 +67,7 @@ func TestProjectGitHubMCP_HonoursCustomEndpoint(t *testing.T) {
 			},
 		},
 	})
-	if err := saveConfig(cfg); err != nil {
-		t.Fatalf("seed saveConfig: %v", err)
-	}
-	got := projectGitHubMCP(cwd)
+	got := projectGitHubMCP(cfg, cwd)
 	if got == nil {
 		t.Fatalf("projectGitHubMCP should return a descriptor")
 	}
@@ -92,7 +81,7 @@ func TestProjectGitHubMCP_HonoursCustomEndpoint(t *testing.T) {
 // initial sessionArgs build can hit this path before cwd is set.
 func TestProjectGitHubMCP_NilOnEmptyCwd(t *testing.T) {
 	isolateHome(t)
-	if got := projectGitHubMCP(""); got != nil {
+	if got := projectGitHubMCP(askConfig{}, ""); got != nil {
 		t.Errorf("projectGitHubMCP(\"\") should be nil; got %+v", got)
 	}
 }

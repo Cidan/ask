@@ -366,6 +366,61 @@ func TestCycleIssueProvider_FlipsNoneToGitHubAndPersists(t *testing.T) {
 	}
 }
 
+// Enter on the GitHub auth row flips the project between its PAT and
+// the gh CLI and persists the choice; gh auth alone satisfies the
+// issue-provider cycle's GitHub activation gate.
+func TestProjectPicker_GitHubAuthRowTogglesAndGatesGitHubProvider(t *testing.T) {
+	isolateHome(t)
+	m := newTestModel(t, newFakeProvider())
+	m.cwd = t.TempDir()
+	m.toast = NewToastModel(40, time.Second)
+	m = m.openConfigProjectPicker()
+
+	authRow := func(m model) (int, configItem) {
+		t.Helper()
+		for i, r := range m.filteredProjectPickerItems() {
+			if r.id == "githubAuth" {
+				return i, r
+			}
+		}
+		t.Fatalf("githubAuth row missing")
+		return -1, configItem{}
+	}
+	toggle := func(m model) model {
+		t.Helper()
+		m.configProjectCursor, _ = authRow(m)
+		mi, _ := m.updateConfigProjectPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
+		return mi.(model)
+	}
+	savedGitHub := func() githubMCPConfig {
+		cfg, _ := loadConfig()
+		return loadProjectConfig(cfg, m.cwd).MCP.GitHub
+	}
+
+	if _, row := authRow(m); row.key != "PAT" {
+		t.Errorf("default auth summary=%q want PAT", row.key)
+	}
+	m = toggle(m)
+	if got := savedGitHub().Auth; got != githubAuthGH {
+		t.Fatalf("auth=%q want gh after one toggle", got)
+	}
+	if _, row := authRow(m); row.key != "gh CLI" {
+		t.Errorf("auth summary=%q want gh CLI", row.key)
+	}
+
+	mi, _ := m.cycleIssueProvider()
+	m = mi.(model)
+	cfg, _ := loadConfig()
+	if got := loadProjectConfig(cfg, m.cwd).Issues.Provider; got != "github" {
+		t.Errorf("provider=%q want github: gh auth should satisfy its activation gate", got)
+	}
+
+	m = toggle(m)
+	if got := savedGitHub().Auth; got != "" {
+		t.Errorf("auth=%q want PAT (empty) after the second toggle", got)
+	}
+}
+
 func TestCycleIssueProvider_WrapsBackToNone(t *testing.T) {
 	isolateHome(t)
 	m := newTestModel(t, newFakeProvider())

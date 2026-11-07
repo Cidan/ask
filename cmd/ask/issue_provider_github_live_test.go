@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/Cidan/ask/internal/testhome"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -79,15 +81,7 @@ func TestGitHubProvider_LiveDumpIssueRead(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cli := mcp.NewClient(&mcp.Implementation{Name: "ask-debug", Version: "0.1"}, nil)
-	transport := &mcp.StreamableClientTransport{
-		Endpoint: githubMCPDefaultEndpoint,
-		HTTPClient: &http.Client{
-			Transport: &bearerRoundTripper{base: http.DefaultTransport, token: token},
-			Timeout:   30 * time.Second,
-		},
-	}
-	cs, err := cli.Connect(ctx, transport, nil)
+	cs, err := dialGitHubMCP(ctx, githubMCPDefaultEndpoint, token, 30*time.Second)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -106,6 +100,13 @@ func TestGitHubProvider_LiveDumpIssueRead(t *testing.T) {
 			t.Fatalf("CallTool %s: %v", method, err)
 		}
 		t.Logf("--- method=%q IsError=%v ---", method, res.IsError)
+		if res.StructuredContent != nil {
+			b, _ := json.Marshal(res.StructuredContent)
+			if len(b) > 600 {
+				b = append(b[:600], "...(truncated)"...)
+			}
+			t.Logf("structured: %s", b)
+		}
 		for _, c := range res.Content {
 			if t2, ok := c.(*mcp.TextContent); ok {
 				text := t2.Text
@@ -129,28 +130,13 @@ func TestGitHubProvider_LiveDumpListIssuesPayload(t *testing.T) {
 	owner, repo := liveGitHubOwnerRepo(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cli := mcp.NewClient(&mcp.Implementation{Name: "ask-debug", Version: "0.1"}, nil)
-	transport := &mcp.StreamableClientTransport{
-		Endpoint: githubMCPDefaultEndpoint,
-		HTTPClient: &http.Client{
-			Transport: &bearerRoundTripper{base: http.DefaultTransport, token: token},
-			Timeout:   30 * time.Second,
-		},
-	}
-	cs, err := cli.Connect(ctx, transport, nil)
+	cs, err := dialGitHubMCP(ctx, githubMCPDefaultEndpoint, token, 30*time.Second)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	defer cs.Close()
-	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
-		Name: "list_issues",
-		Arguments: map[string]any{
-			"owner":   owner,
-			"repo":    repo,
-			"state":   "all",
-			"perPage": liveGitHubPerPage(),
-		},
-	})
+	tool, args := githubBuildListIssuesArgs(owner, repo, nil, IssuePagination{PerPage: liveGitHubPerPage()})
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
@@ -259,9 +245,77 @@ func TestGitHubProvider_LiveGetIssue(t *testing.T) {
 		t.Skip("no issues to fetch")
 	}
 	target := issues[0].number
+	if raw := os.Getenv("ASK_GITHUB_ISSUE"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil {
+			target = n
+		}
+	}
 	got, err := p.GetIssue(ctx, pc, cwd, target)
 	if err != nil {
 		t.Fatalf("GetIssue #%d: %v", target, err)
 	}
 	t.Logf("issue #%d %q (%d comments)", got.number, got.title, len(got.comments))
+}
+
+// TestGitHubProvider_LiveGHAuth drives gh auth for real: `gh repo view`
+// and `gh auth token` against the developer's own gh login, then the
+// issue and PR providers through the Copilot MCP endpoint and the
+// agent's descriptor. ASK_GITHUB_CWD names the checkout (default: this
+// one).
+func TestGitHubProvider_LiveGHAuth(t *testing.T) {
+	if os.Getenv("ASK_GITHUB_GH") == "" {
+		t.Skip("set ASK_GITHUB_GH=1 to run")
+	}
+	testhome.UseRealHome(t)
+	if os.Getenv("GH_CONFIG_DIR") == "" {
+		t.Setenv("GH_CONFIG_DIR", filepath.Join(os.Getenv("HOME"), ".config", "gh"))
+	}
+	cwd := os.Getenv("ASK_GITHUB_CWD")
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	pc := projectConfig{
+		Issues: issuesConfig{Provider: "github"},
+		MCP:    projectMCPConfig{GitHub: githubMCPConfig{Auth: githubAuthGH}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	repo, err := resolveGitHubRepo(pc.MCP.GitHub, cwd)
+	if err != nil {
+		t.Fatalf("resolveGitHubRepo: %v", err)
+	}
+	t.Logf("gh resolved %s/%s on %s", repo.owner, repo.name, repo.host)
+
+	p := &githubIssueProvider{}
+	pr := &githubPRProvider{}
+	t.Cleanup(func() {
+		for _, cs := range []*mcp.ClientSession{p.session, pr.session} {
+			if cs != nil {
+				_ = cs.Close()
+			}
+		}
+	})
+	page, err := p.ListIssues(ctx, pc, cwd, nil, IssuePagination{PerPage: 5})
+	if err != nil {
+		t.Fatalf("ListIssues: %v", err)
+	}
+	t.Logf("listed %d issues", len(page.Issues))
+	if len(page.Issues) > 0 {
+		got, err := p.GetIssue(ctx, pc, cwd, page.Issues[0].number)
+		if err != nil {
+			t.Fatalf("GetIssue #%d: %v", page.Issues[0].number, err)
+		}
+		t.Logf("issue #%d %q (%d comments)", got.number, got.title, len(got.comments))
+	}
+	prs, err := pr.ListIssues(ctx, pc, cwd, nil, IssuePagination{PerPage: 5})
+	if err != nil {
+		t.Fatalf("PR ListIssues: %v", err)
+	}
+	t.Logf("listed %d pull requests", len(prs.Issues))
+
+	desc := projectGitHubMCP(upsertProjectConfig(askConfig{}, cwd, pc), cwd)
+	if desc == nil || desc.Headers["Authorization"] == "" {
+		t.Fatalf("agent descriptor=%v want a bearer header from gh", desc != nil)
+	}
 }

@@ -93,6 +93,8 @@ Swap the package-level var in the test and restore it with `t.Cleanup`.
 | `providers.ModelsDevURL`, `ModelsDevHTTPClient`, `ModelsDevCachePath` | `pkg/providers/modelsdev.go` | models.dev fetch + cache |
 | `providers.ClaudeCodeStart` | `pkg/providers/claudecode_child.go` | the `claude` child process (a fake `ClaudeCodeProcess` speaking NDJSON; `fakeClaude` in `pkg/engine/compact_claudecode_test.go`) |
 | `plugin.RunGit`, `plugin.HTTPClient`, `plugin.ClaudeHome`, `plugin.Now` | `pkg/plugin` | git, HTTP, `~/.claude`, clock |
+| `runGH` (+ a fresh `ghRepos` cache) | `cmd/ask/github_auth.go` | the gh CLI (`fakeGH` in `github_auth_test.go`) |
+| `dialGitHubMCPSessionFn` | `cmd/ask/issue_provider_github.go` | the GitHub MCP handshake (`withFakeGitHubIssueMCPEndpoint`, `withFakeGitHubMCPEndpoint`) |
 
 Shared helpers in `cmd/ask/testhelpers_test.go`: `fakeProvider`
 (`newFakeProvider`, `withRegisteredProviders`), `mockADKModel`,

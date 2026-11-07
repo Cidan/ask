@@ -203,14 +203,15 @@ type ProviderSessionArgs struct {
 	// Topic is the tab's current memory topic at session start, so a
 	// resumed or re-dispatched session recalls with the same context.
 	Topic string
-	// ProjectMCP is the project-level MCP server (today: the GitHub
-	// MCP slot the github issue provider also piggybacks on), exposed
-	// to the chat agent so it can call the same tools ask uses for
-	// ctrl+i. nil when the project hasn't configured a token. The chat
-	// agent gets this whenever projectConfig.MCP.GitHub.Token is set,
-	// regardless of whether issues are wired up. Providers wire this
-	// into their MCP client; providers without an MCP surface ignore it.
-	ProjectMCP *issueMCPServer
+	// ProjectMCP attaches the project-level GitHub MCP server (the slot
+	// the github issue provider also piggybacks on) so the chat agent
+	// can call the same tools ask uses for ctrl+i, whenever the project
+	// has a GitHub credential source, regardless of whether issues are
+	// wired up. The descriptor (projectGitHubMCP) is resolved when the
+	// session attaches or reconciles its MCP servers, never while
+	// building args on the UI goroutine, because under gh auth it
+	// shells out to gh.
+	ProjectMCP bool
 	// Background marks a session no tab shows (a watcher's model run): its
 	// messages go only to its channel, never to the Bubble Tea program, and
 	// its turns are left out of memory extraction and deslop.

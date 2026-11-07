@@ -866,7 +866,7 @@ func (h *watcherHub) runSessionTarget(ctx context.Context, d watcher.Def, live *
 		Effort:             settings.Effort,
 		SkipAllPermissions: watcherSkipPermissions(cfg),
 		NewSessionID:       newUUIDv4(),
-		ProjectMCP:         projectGitHubMCP(d.Cwd),
+		ProjectMCP:         true,
 		Background:         true,
 		Agent:              agent,
 	}

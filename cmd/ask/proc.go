@@ -18,7 +18,7 @@ func (m model) sessionArgs() ProviderSessionArgs {
 		ResumeCwd:          m.resumeCwd,
 		AddedDirs:          append([]string(nil), m.addedDirs...),
 		Topic:              m.tabTopic,
-		ProjectMCP:         projectGitHubMCP(m.cwd),
+		ProjectMCP:         true,
 	}
 	if m.sessionMinted {
 		args.NewSessionID = m.sessionID
@@ -30,30 +30,6 @@ func (m model) sessionArgs() ProviderSessionArgs {
 		args.IsWorkflowFinalStep = m.workflowRun.StepIdx == len(m.workflowRun.Workflow.Steps)-1
 	}
 	return args
-}
-
-// projectGitHubMCP resolves the project-level GitHub MCP credentials
-// for cwd into a wire-shape descriptor, or nil when the project
-// hasn't configured a token.
-func projectGitHubMCP(cwd string) *issueMCPServer {
-	if cwd == "" {
-		return nil
-	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return nil
-	}
-	pc := loadProjectConfig(cfg, cwd)
-	if pc.MCP.GitHub.Token == "" {
-		return nil
-	}
-	return &issueMCPServer{
-		Name: "github",
-		URL:  githubMCPEndpointOrDefault(pc.MCP.GitHub),
-		Headers: map[string]string{
-			"Authorization": "Bearer " + pc.MCP.GitHub.Token,
-		},
-	}
 }
 
 func prepareProviderSession(args ProviderSessionArgs, worktreeName string) (ProviderSessionArgs, string, error) {

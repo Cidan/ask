@@ -150,6 +150,7 @@ func TestConfig_ProjectSettings(t *testing.T) {
 		MCP: ProjectMCPConfig{
 			GitHub: GitHubMCPConfig{
 				Token: "ghp_secret_token",
+				Auth:  GitHubAuthGH,
 			},
 			Linear: LinearMCPConfig{
 				Token:   "lin_api_key",
@@ -173,8 +174,11 @@ func TestConfig_ProjectSettings(t *testing.T) {
 	if loaded.Issues.Provider != "github" || loaded.Issues.Repo != "owner/repo" {
 		t.Errorf("mismatched issues config: %+v", loaded.Issues)
 	}
-	if loaded.MCP.GitHub.Token != "ghp_secret_token" {
-		t.Errorf("mismatched github token: %+v", loaded.MCP.GitHub)
+	if loaded.MCP.GitHub.Token != "ghp_secret_token" || loaded.MCP.GitHub.Auth != GitHubAuthGH {
+		t.Errorf("mismatched github mcp config: %+v", loaded.MCP.GitHub)
+	}
+	if IsProjectConfigEmpty(ProjectConfig{MCP: ProjectMCPConfig{GitHub: GitHubMCPConfig{Auth: GitHubAuthGH}}}) {
+		t.Error("a project whose only setting is gh auth must not count as empty")
 	}
 	if loaded.MCP.Linear.Token != "lin_api_key" || loaded.MCP.Linear.TeamKey != "ENG" {
 		t.Errorf("mismatched linear config: %+v", loaded.MCP.Linear)

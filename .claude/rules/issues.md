@@ -1,6 +1,7 @@
 ---
 paths:
   - "cmd/ask/issues.go"
+  - "cmd/ask/github_auth.go"
   - "cmd/ask/issue_search.go"
   - "cmd/ask/issue_provider.go"
   - "cmd/ask/issue_provider_github.go"
@@ -97,9 +98,35 @@ their `issuesState` (`m.issues` / `m.prs`, seeded by
   is the unconfigured default; `activeIssueProvider` /
   `activePRProvider` resolve from project config.
 - GitHub (issue_provider_github.go, pr_provider_github.go): the GitHub
-  MCP server, one cached session per (endpoint, token), owner/repo
-  from `git remote get-url origin`; `MoveIssue` is `issue_write` with
-  state + state_reason. Linear (issue_provider_linear.go): direct
+  MCP server, one cached session per (endpoint, token); `MoveIssue` is
+  `issue_write` with state + state_reason. The go-sdk negotiates
+  protocol 2026-07-28 with api.githubcopilot.com, where the server
+  rejects a `tools/call` lacking the `Mcp-Param-owner` / `-repo`
+  headers its schemas declare (`x-mcp-header`); the SDK only sends
+  them for tools the session has listed, so `dialGitHubMCP` pages
+  through `Tools` before returning. A stateful in-process test
+  server stays on 2025-11-25 and never checks — header tests use
+  `StreamableHTTPOptions{Stateless: true}`. Server contract, read
+  from its live `tools/list`: `list_issues` takes `state`
+  OPEN|CLOSED (absent = both), `orderBy` + `direction`, and
+  `after=<endCursor>`; `search_issues` / `search_pull_requests` page
+  by number with no `after`, so their cursor is the next page number
+  (`githubSearchPage` / `githubSearchNextPage`, from `total_count`);
+  `issue_read` wraps results as `{"issue":…}` / `{"comments":[…]}`.
+  Every call starts with
+  `resolveGitHubTarget` (github_auth.go), which follows the project's
+  `MCP.GitHub.Auth`: blank is the saved PAT plus owner/repo from
+  `git remote get-url origin` (github.com only); `gh` is the gh CLI —
+  the repo from `gh repo view --json owner,name,url` (any host gh is
+  logged in to; memoised per cwd + `git remote -v`, failures not
+  cached) and the token from `gh auth token --hostname <host>` on
+  every call, so a re-login rebuilds the session. `Configured` under
+  gh does no gh work (it runs on the UI goroutine); gh failures land
+  in the load-error modal verbatim. `runGH` is the test seam; no test
+  spawns gh. The chat agent's `github` MCP server comes from
+  `projectGitHubMCP`, resolved at session attach/reconcile when
+  `ProviderSessionArgs.ProjectMCP` is set, never in `sessionArgs`.
+  Linear (issue_provider_linear.go): direct
   GraphQL with a personal API key (`IssueRef.Separator` is `-`).
   mcp_linear.go exposes the same provider to the agent as the
   `linear_*` registry tools; mcp_linear_images.go fetches

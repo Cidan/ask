@@ -105,6 +105,7 @@ func (m model) projectPickerItems() []configItem {
 		lnTeam = "(unset)"
 	}
 	rows := []configItem{
+		{"GitHub auth", githubAuthSummary(pc.MCP.GitHub), "githubAuth"},
 		{"GitHub MCP endpoint", ghEndpoint, "githubMCPEndpoint"},
 		{"GitHub MCP PAT", maskedSummary(pc.MCP.GitHub.Token), "githubMCPToken"},
 		{"Linear GraphQL endpoint", lnEndpoint, "linearGraphQLEndpoint"},
@@ -207,6 +208,8 @@ func (m model) updateConfigProjectPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 		switch id {
 		case "issueProvider":
 			return m.cycleIssueProvider()
+		case "githubAuth":
+			return m.cycleGitHubAuth()
 		case "worktree":
 			return m.cycleProjectWorktree()
 		case "workflows":
@@ -250,7 +253,7 @@ func (m model) updateConfigProjectPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 // cycleIssueProvider advances Issues.Provider to the next reachable
 // entry in issueProviderRegistry, persists to disk, and shows a
 // toast. "Reachable" means the provider's per-project credentials
-// are populated — github needs MCP.GitHub.Token; linear needs both
+// are populated — github needs MCP.GitHub.Token or gh auth; linear needs both
 // MCP.Linear.Token and MCP.Linear.TeamKey. Providers that fail the
 // gate are skipped so the cycle always makes progress: noneIssue-
 // Provider is unconditional, so the wrap is guaranteed to terminate.
@@ -314,6 +317,32 @@ func (m model) cycleIssueProvider() (tea.Model, tea.Cmd) {
 	return m, m.toast.show(msg)
 }
 
+// cycleGitHubAuth flips the project's GitHub credential source between
+// the saved PAT and the gh CLI login, persists it, and kills the live
+// proc so the next input respawns the agent with the new credential
+// on its GitHub MCP server (the same reason commitConfigProjectField
+// does).
+func (m model) cycleGitHubAuth() (tea.Model, tea.Cmd) {
+	var next githubMCPConfig
+	if err := withConfigLock(func() error {
+		cfg, _ := loadConfig()
+		pc := loadProjectConfig(cfg, m.cwd)
+		if pc.MCP.GitHub.Auth == githubAuthGH {
+			pc.MCP.GitHub.Auth = ""
+		} else {
+			pc.MCP.GitHub.Auth = githubAuthGH
+		}
+		next = pc.MCP.GitHub
+		cfg = upsertProjectConfig(cfg, m.cwd, pc)
+		return saveConfig(cfg)
+	}); err != nil {
+		debugLog("project github auth saveConfig: %v", err)
+		return m, m.toast.show("config: " + err.Error())
+	}
+	m.killProc()
+	return m, m.toast.show("github: auth → " + githubAuthSummary(next))
+}
+
 // cycleProjectWorktree steps the project's worktree override through
 // inherit → on → off → inherit, persists it, and re-derives the tab's
 // effective flag (which restarts the session only when it moved).
@@ -368,7 +397,7 @@ func providerActivationReady(p IssueProvider, pc projectConfig) bool {
 	case "":
 		return true
 	case "github":
-		return pc.MCP.GitHub.Token != ""
+		return githubAuthConfigured(pc.MCP.GitHub)
 	case "linear":
 		return pc.MCP.Linear.Token != "" && pc.MCP.Linear.TeamKey != ""
 	}

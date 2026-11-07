@@ -249,15 +249,17 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 
 func agentSessionMCPServers(args ProviderSessionArgs, cfg askConfig) []agentMCPServer {
 	var servers []agentMCPServer
-	if args.ProjectMCP != nil {
-		servers = append(servers, agentMCPServer{
-			Name: args.ProjectMCP.Name,
-			Cfg: mcpServerConfig{
-				Type:    mcpServerTypeHTTP,
-				URL:     args.ProjectMCP.URL,
-				Headers: args.ProjectMCP.Headers,
-			},
-		})
+	if args.ProjectMCP {
+		if gh := projectGitHubMCP(cfg, args.Cwd); gh != nil {
+			servers = append(servers, agentMCPServer{
+				Name: gh.Name,
+				Cfg: mcpServerConfig{
+					Type:    mcpServerTypeHTTP,
+					URL:     gh.URL,
+					Headers: gh.Headers,
+				},
+			})
+		}
 	}
 	for _, named := range resolveMCPServers(toPkgConfig(cfg), args.Cwd) {
 		servers = append(servers, agentMCPServer{Name: named.Name, Cfg: named.Config})

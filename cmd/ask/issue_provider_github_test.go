@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -83,6 +86,41 @@ func withFakeGitHubIssueMCPEndpoint(t *testing.T) {
 	t.Cleanup(func() { dialGitHubMCPSessionFn = prev })
 	dialGitHubMCPSessionFn = func(ctx context.Context, endpoint, token string, timeout time.Duration) (*mcp.ClientSession, error) {
 		return prev(ctx, ts.URL, token, timeout)
+	}
+}
+
+// A server that annotates a tool parameter with x-mcp-header (the
+// GitHub Copilot server does for owner/repo) rejects a tools/call
+// that lacks the matching Mcp-Param-* header. The SDK only sends it
+// for tools the session has listed, so the shared dial must list them.
+func TestDialGitHubMCP_CallsCarryParamHeaders(t *testing.T) {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "gh-header-test", Version: "0.1"}, nil)
+	srv.AddTool(&mcp.Tool{
+		Name:        githubToolListIssues,
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"owner":{"type":"string","x-mcp-header":"owner"}}}`),
+	}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: `[]`}}}, nil
+	})
+	// Stateless negotiates protocol 2026-07-28, the version that
+	// enforces Mcp-Param-* headers; a stateful server stays on 2025-11-25.
+	ts := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv },
+		&mcp.StreamableHTTPOptions{Stateless: true}))
+	t.Cleanup(ts.Close)
+
+	cs, err := dialGitHubMCP(context.Background(), ts.URL, "tkn", 5*time.Second)
+	if err != nil {
+		t.Fatalf("dialGitHubMCP: %v", err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      githubToolListIssues,
+		Arguments: map[string]any{"owner": "Cidan"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("CallTool result error: %s", flattenContent(res.Content))
 	}
 }
 
@@ -361,6 +399,43 @@ func TestParseGitHubComments_Roundtrip(t *testing.T) {
 	}
 	if len(out) != 1 || out[0].author != "fritz" || out[0].body != "+1" {
 		t.Errorf("comment mismatch: %+v", out)
+	}
+}
+
+// On protocol 2026-07-28 the server wraps issue_read results — the
+// issue under "issue", the thread under "comments" — in both
+// StructuredContent and the text block; both shapes must parse.
+func TestParseGitHubIssueRead_WrappedShapes(t *testing.T) {
+	got, err := parseGitHubIssue(&mcp.CallToolResult{
+		StructuredContent: map[string]any{"issue": map[string]any{
+			"number": 1, "title": "paste dropped", "body": "## Summary", "state": "open",
+			"assignees": []any{map[string]any{"login": "Cidan"}},
+		}},
+		Content: []mcp.Content{&mcp.TextContent{Text: `{"issue":{"number":1}}`}},
+	})
+	if err != nil {
+		t.Fatalf("parseGitHubIssue: %v", err)
+	}
+	if got.number != 1 || got.title != "paste dropped" || got.description != "## Summary" || got.assignee != "Cidan" {
+		t.Errorf("issue=%+v", got)
+	}
+	comments, err := parseGitHubComments(&mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
+		Text: `{"comments":[{"body":"custom keybinds please","user":{"login":"lukasingem"},"created_at":"2026-05-07T08:52:43Z"}],"method":"get_comments"}`,
+	}}})
+	if err != nil {
+		t.Fatalf("parseGitHubComments: %v", err)
+	}
+	if len(comments) != 1 || comments[0].author != "lukasingem" || comments[0].body != "custom keybinds please" {
+		t.Errorf("comments=%+v", comments)
+	}
+	empty, err := parseGitHubComments(&mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
+		Text: `{"comments":[],"method":"get_comments"}`,
+	}}})
+	if err != nil || len(empty) != 0 {
+		t.Errorf("empty wrapped thread: comments=%+v err=%v", empty, err)
+	}
+	if _, err := parseGitHubComments(&mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: `{"other":1}`}}}); err == nil {
+		t.Error("an object with no comments field should be a parse error")
 	}
 }
 
@@ -773,14 +848,25 @@ func TestGitHubBuildListIssuesArgs_AfterOmittedWhenEmpty(t *testing.T) {
 	if args["perPage"] != 50 {
 		t.Errorf("perPage should always be present, got args=%+v", args)
 	}
-	if got := args["sort"]; got != "created" {
-		t.Errorf("sort=%v want created", got)
+	if got := args["orderBy"]; got != "CREATED_AT" {
+		t.Errorf("orderBy=%v want CREATED_AT", got)
 	}
-	if got := args["direction"]; got != "desc" {
-		t.Errorf("direction=%v want desc", got)
+	if got := args["direction"]; got != "DESC" {
+		t.Errorf("direction=%v want DESC", got)
 	}
 	if _, present := args["page"]; present {
 		t.Errorf("page must NOT be sent under cursor pagination, got args=%+v", args)
+	}
+	// list_issues' state enum is OPEN | CLOSED; "all" is the absence
+	// of the field, and it has no `sort` parameter.
+	for _, key := range []string{"state", "sort"} {
+		if _, present := args[key]; present {
+			t.Errorf("%s must be absent for a nil query, got args=%+v", key, args)
+		}
+	}
+	_, args = githubBuildListIssuesArgs("Cidan", "ask", &githubQuery{state: "all"}, IssuePagination{PerPage: 50})
+	if _, present := args["state"]; present {
+		t.Errorf("is:all must omit state, got args=%+v", args)
 	}
 }
 
@@ -804,11 +890,14 @@ func TestGitHubBuildListIssuesArgs_DefaultsSortAndDirection(t *testing.T) {
 	if tool != githubToolListIssues {
 		t.Fatalf("state-only query should route to list_issues, got %q", tool)
 	}
-	if got := args["sort"]; got != "created" {
-		t.Fatalf("sort=%v want created", got)
+	if got := args["state"]; got != "OPEN" {
+		t.Fatalf("state=%v want OPEN", got)
 	}
-	if got := args["direction"]; got != "desc" {
-		t.Fatalf("direction=%v want desc", got)
+	if got := args["orderBy"]; got != "CREATED_AT" {
+		t.Fatalf("orderBy=%v want CREATED_AT", got)
+	}
+	if got := args["direction"]; got != "DESC" {
+		t.Fatalf("direction=%v want DESC", got)
 	}
 }
 
@@ -821,36 +910,146 @@ func TestGitHubBuildListIssuesArgs_RespectsExplicitSortAndDirection(t *testing.T
 	if tool != githubToolListIssues {
 		t.Fatalf("state-only query should route to list_issues, got %q", tool)
 	}
-	if got := args["sort"]; got != "updated" {
-		t.Fatalf("sort=%v want updated", got)
+	if got := args["orderBy"]; got != "UPDATED_AT" {
+		t.Fatalf("orderBy=%v want UPDATED_AT", got)
 	}
-	if got := args["direction"]; got != "asc" {
-		t.Fatalf("direction=%v want asc", got)
+	if got := args["direction"]; got != "ASC" {
+		t.Fatalf("direction=%v want ASC", got)
+	}
+	_, args = githubBuildListIssuesArgs("Cidan", "ask", &githubQuery{state: "closed", sort: "comments"}, IssuePagination{PerPage: 50})
+	if args["orderBy"] != "COMMENTS" || args["state"] != "CLOSED" {
+		t.Fatalf("args=%+v want orderBy COMMENTS, state CLOSED", args)
 	}
 }
 
-func TestGitHubBuildListIssuesArgs_SearchPathHonoursCursor(t *testing.T) {
-	// search_issues path also uses cursor pagination — same
-	// contract: omit `after` when cursor is empty, pass through
-	// otherwise. `q` argument carries the assembled search
-	// expression instead of owner/repo/state.
+func TestGitHubBuildListIssuesArgs_SearchPathPagesByNumber(t *testing.T) {
+	// search_issues pages by number and has no `after` parameter: the
+	// first chunk sends no page, a later one sends the page its cursor
+	// names. `query` carries the assembled search expression instead
+	// of owner/repo/state.
 	gq := &githubQuery{state: "open", labels: []string{"bug"}}
 	tool, argsEmpty := githubBuildListIssuesArgs("Cidan", "ask", gq, IssuePagination{Cursor: "", PerPage: 30})
 	if tool != githubToolSearchIssues {
 		t.Errorf("label query should route to search_issues, got %q", tool)
 	}
-	if _, ok := argsEmpty["after"]; ok {
-		t.Errorf("after must be absent when cursor empty (search path), got args=%+v", argsEmpty)
+	for _, key := range []string{"after", "page", "q"} {
+		if _, ok := argsEmpty[key]; ok {
+			t.Errorf("%s must be absent on the first search chunk, got args=%+v", key, argsEmpty)
+		}
 	}
 	if _, ok := argsEmpty["query"]; !ok {
 		t.Errorf("search path must carry query arg, got args=%+v", argsEmpty)
 	}
-	if _, ok := argsEmpty["q"]; ok {
-		t.Errorf("search path must NOT send legacy q arg (server expects 'query'), got args=%+v", argsEmpty)
+	_, argsCursor := githubBuildListIssuesArgs("Cidan", "ask", gq, IssuePagination{Cursor: "3", PerPage: 30})
+	if got := argsCursor["page"]; got != 3 {
+		t.Errorf("page=%v want 3 (search path)", got)
 	}
-	_, argsCursor := githubBuildListIssuesArgs("Cidan", "ask", gq, IssuePagination{Cursor: "xyz", PerPage: 30})
-	if got := argsCursor["after"]; got != "xyz" {
-		t.Errorf("after=%v want %q (search path)", got, "xyz")
+	if _, ok := argsCursor["after"]; ok {
+		t.Errorf("search path must not send after, got args=%+v", argsCursor)
+	}
+}
+
+func TestGitHubBuildSearchPRsArgs_PagesByNumber(t *testing.T) {
+	args := githubBuildSearchPRsArgs("Cidan", "ask", &githubPRQuery{is: []string{"open"}}, IssuePagination{PerPage: 20})
+	if _, ok := args["page"]; ok {
+		t.Errorf("page must be absent on the first chunk, got args=%+v", args)
+	}
+	args = githubBuildSearchPRsArgs("Cidan", "ask", &githubPRQuery{is: []string{"open"}}, IssuePagination{Cursor: "2", PerPage: 20})
+	if args["page"] != 2 {
+		t.Errorf("page=%v want 2", args["page"])
+	}
+	if _, ok := args["after"]; ok {
+		t.Errorf("search_pull_requests has no after parameter, got args=%+v", args)
+	}
+}
+
+func TestGitHubSearchNextPage(t *testing.T) {
+	text := func(s string) *mcp.CallToolResult {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s}}}
+	}
+	cases := []struct {
+		name           string
+		res            *mcp.CallToolResult
+		page, per, got int
+		wantNext       string
+		wantMore       bool
+	}{
+		{"more by total_count", text(`{"total_count":5,"items":[]}`), 1, 2, 2, "2", true},
+		{"last page by total_count", text(`{"total_count":5,"items":[]}`), 3, 2, 1, "", false},
+		{"exact end", text(`{"total_count":4,"items":[]}`), 2, 2, 2, "", false},
+		{"empty page never loops", text(`{"total_count":9,"items":[]}`), 2, 2, 0, "", false},
+		{"no total, full page", text(`[{"number":1},{"number":2}]`), 1, 2, 2, "2", true},
+		{"no total, short page", text(`[{"number":1}]`), 1, 2, 1, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			next, more := githubSearchNextPage(tc.res, tc.page, tc.per, tc.got)
+			if next != tc.wantNext || more != tc.wantMore {
+				t.Errorf("next=%q more=%v want %q %v", next, more, tc.wantNext, tc.wantMore)
+			}
+		})
+	}
+}
+
+// A search-backed kanban column walks the result pages instead of
+// re-fetching page 1: the cursor handed back is the next page, and
+// the page the server receives is the one the cursor names.
+func TestGitHubIssueProvider_SearchColumnWalksPages(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	var (
+		mu       sync.Mutex
+		gotPages []any
+	)
+	srv := mcp.NewServer(&mcp.Implementation{Name: "gh-search-test", Version: "0.1"}, nil)
+	mcp.AddTool(srv, &mcp.Tool{Name: githubToolSearchIssues},
+		func(ctx context.Context, req *mcp.CallToolRequest, in map[string]any) (*mcp.CallToolResult, any, error) {
+			mu.Lock()
+			gotPages = append(gotPages, in["page"])
+			mu.Unlock()
+			body := `{"total_count":3,"incomplete_results":false,"items":[{"number":3,"title":"c","state":"closed"},{"number":2,"title":"b","state":"closed"}]}`
+			if in["page"] != nil {
+				body = `{"total_count":3,"incomplete_results":false,"items":[{"number":1,"title":"a","state":"closed"}]}`
+			}
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: body}}}, nil, nil
+		})
+	ts := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil))
+	t.Cleanup(ts.Close)
+	prev := dialGitHubMCPSessionFn
+	t.Cleanup(func() { dialGitHubMCPSessionFn = prev })
+	dialGitHubMCPSessionFn = func(ctx context.Context, endpoint, token string, timeout time.Duration) (*mcp.ClientSession, error) {
+		return prev(ctx, ts.URL, token, timeout)
+	}
+	dir := initGitRepo(t)
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/Cidan/ask")
+
+	p := &githubIssueProvider{}
+	t.Cleanup(func() {
+		if p.session != nil {
+			_ = p.session.Close()
+		}
+	})
+	cfg := projectConfig{MCP: projectMCPConfig{GitHub: githubMCPConfig{Token: "tkn"}}}
+	column := p.KanbanColumns()[1].Query
+	first, err := p.ListIssues(context.Background(), cfg, dir, column, IssuePagination{PerPage: 2})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if len(first.Issues) != 2 || !first.HasMore || first.NextCursor != "2" {
+		t.Fatalf("first page=%+v want 2 issues, more, cursor 2", first)
+	}
+	second, err := p.ListIssues(context.Background(), cfg, dir, column, IssuePagination{Cursor: first.NextCursor, PerPage: 2})
+	if err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	if len(second.Issues) != 1 || second.Issues[0].number != 1 || second.HasMore {
+		t.Fatalf("second page=%+v want issue 1 and no more", second)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !reflect.DeepEqual(gotPages, []any{nil, float64(2)}) {
+		t.Errorf("server saw pages %v want [<nil> 2]", gotPages)
 	}
 }
 
@@ -864,11 +1063,8 @@ func TestGitHubBuildListIssuesArgs_OpenKanbanColumnKeepsListPath(t *testing.T) {
 	if tool != githubToolListIssues {
 		t.Fatalf("open kanban column should stay on list_issues, got %q", tool)
 	}
-	if got := args["sort"]; got != "created" {
-		t.Fatalf("sort=%v want created", got)
-	}
-	if got := args["direction"]; got != "desc" {
-		t.Fatalf("direction=%v want desc", got)
+	if args["state"] != "OPEN" || args["orderBy"] != "CREATED_AT" || args["direction"] != "DESC" {
+		t.Fatalf("args=%+v want state OPEN, orderBy CREATED_AT, direction DESC", args)
 	}
 }
 
