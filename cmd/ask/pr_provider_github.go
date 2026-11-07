@@ -609,6 +609,9 @@ func parseGitHubPRList(res *mcp.CallToolResult) ([]issue, error) {
 //   - {"items":[...]} — the search_issues / search_pull_requests
 //     wrapper
 //   - any other object with exactly one array-of-PRs field
+//
+// As with unmarshalIssueArray, a known key that is present but does
+// not decode is an error rather than an empty page.
 func unmarshalPRArray(raw []byte) ([]githubAPIPR, error) {
 	var arr []githubAPIPR
 	if err := json.Unmarshal(raw, &arr); err == nil {
@@ -624,9 +627,10 @@ func unmarshalPRArray(raw []byte) ([]githubAPIPR, error) {
 			continue
 		}
 		var inner []githubAPIPR
-		if err := json.Unmarshal(field, &inner); err == nil {
-			return inner, nil
+		if err := json.Unmarshal(field, &inner); err != nil {
+			return nil, fmt.Errorf("%s: %w", key, err)
 		}
+		return inner, nil
 	}
 	for _, field := range wrapper {
 		var inner []githubAPIPR
