@@ -729,37 +729,6 @@ func (s *issuesState) reloadCurrentQuery() tea.Cmd {
 	return nil
 }
 
-// cycleView advances the active view to the next entry in
-// issueViewLayers. Returns true when the cycle moved (current view
-// participates in the layer cycle and the registry has more than
-// one entry), false when it didn't (the user is on the detail
-// view, or there's nothing else to cycle to). Selection is
-// dropped on swap so a stale highlight against the previous
-// layer's body can't leak into the new layer. With a single-entry
-// registry — the current state with kanban-only — Ctrl+I is a
-// quiet no-op that never rebuilds the view (rebuilding would
-// reset the kanban cursor for no user-visible benefit).
-func (s *issuesState) cycleView() bool {
-	if s.view == nil || len(issueViewLayers) <= 1 {
-		return false
-	}
-	cur := s.view.name()
-	idx := -1
-	for i, l := range issueViewLayers {
-		if l.name == cur {
-			idx = i
-			break
-		}
-	}
-	if idx == -1 {
-		return false
-	}
-	s.clearSelection()
-	next := issueViewLayers[(idx+1)%len(issueViewLayers)]
-	s.view = next.builder(s)
-	return true
-}
-
 // setView swaps the active sub-view, fitting the new view to the
 // previous one's dimensions so the user doesn't see a one-frame layout
 // glitch on swap.
@@ -1149,6 +1118,11 @@ func updateIssueScreenKey(m model, msg tea.KeyPressMsg, screen screenID) (model,
 	if msg.Mod == 0 && msg.Code == 'f' {
 		return m.dispatchIssueWorkflow(screen)
 	}
+	// Issues only: the triage prompt's caveat about user reports does
+	// not fit a pull request.
+	if screen == screenIssues && msg.Mod == 0 && msg.Code == 't' {
+		return m.triageIssueInNewTab()
+	}
 	v, cmd, handled := s.view.updateKey(s, msg)
 	if handled {
 		s.setView(v)
@@ -1338,6 +1312,48 @@ func (m model) dispatchIssueWorkflow(screen screenID) (model, tea.Cmd, bool) {
 	}
 	m = m.openWorkflowPicker(items, issueWorkflowSource(ref))
 	return m, nil, true
+}
+
+// triageIssueInNewTab opens a new ask tab in this tab's cwd whose first
+// turn asks the agent to triage the issue in focus. The screen handler
+// always treats `t` as consumed.
+func (m model) triageIssueInNewTab() (model, tea.Cmd, bool) {
+	s := m.issueStateForScreen(screenIssues)
+	if s == nil {
+		return m, nil, true
+	}
+	it, ok := focusedIssue(s.view)
+	if !ok {
+		return m, nil, true
+	}
+	if s.provider == nil {
+		return m, m.toast.show(s.titleLower() + " provider not configured"), true
+	}
+	ref, err := s.provider.IssueRef(s.projectCfg, m.cwd, it)
+	if err != nil {
+		return m, m.toast.show("could not resolve issue ref: " + err.Error()), true
+	}
+	req := openPromptTabMsg{cwd: m.cwd, prompt: issueTriagePrompt(ref)}
+	return m, func() tea.Msg { return req }, true
+}
+
+func issueTriagePrompt(ref issueRef) string {
+	return fmt.Sprintf("Please take a look at issue %s on %s and triage the next steps. "+
+		"Note that not all issues are valid, and a user report might be wrong, "+
+		"so make sure your investigation takes this into account.",
+		ref.Display(), issueTrackerName(ref.Provider))
+}
+
+// issueTrackerName is the tracker an issueRef.Provider id names, as a
+// person would write it. New backends extend the switch as they land.
+func issueTrackerName(providerID string) string {
+	switch providerID {
+	case "github":
+		return "GitHub"
+	case "linear":
+		return "Linear"
+	}
+	return providerID
 }
 
 // focusedIssue returns the issue currently in focus on the active
@@ -1707,6 +1723,7 @@ func (v *issueDetailView) hint() string {
 		"↑/↓ scroll",
 		"pgup/pgdn page",
 		"f run workflow",
+		"t triage",
 		"esc/backspace back",
 		keyClause(ActionScreenAsk, "back to ask"),
 	))
@@ -2270,12 +2287,15 @@ func (v *kanbanIssueView) hintFor(s *issuesState) string {
 		"←/→/tab column",
 		"enter open",
 	}
-	commonTail := []string{
-		"f run workflow",
+	commonTail := []string{"f run workflow"}
+	if s != nil && s.screen == screenIssues {
+		commonTail = append(commonTail, "t triage")
+	}
+	commonTail = append(commonTail,
 		"/ search",
 		keyClause(ActionReload, "reload"),
 		keyClause(ActionScreenAsk, "back"),
-	}
+	)
 	if s != nil && s.provider != nil && !s.provider.SupportsCarry() {
 		mid := []string{}
 		if _, ok := s.provider.(IssueMerger); ok {

@@ -1154,6 +1154,13 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		return m, nil
 
+	case submitPromptMsg:
+		if msg.tabID != m.id {
+			return m, nil
+		}
+		m.recordInputHistory(msg.text)
+		return m.sendToProvider(msg.text)
+
 	case tabTitleMsg:
 		if msg.tabID != m.id {
 			return m, nil
@@ -1502,12 +1509,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		// the user is looking at — message routing is by message type at
 		// the model layer, not by screen focus.
 		//
-		// Ctrl+I has overloaded semantics: from any other screen it
-		// enters the issues screen, but once already on issues it
-		// cycles through the layer views (list → kanban → … → list).
-		// Cycling is a no-op on views that aren't in the cycle (e.g.
-		// the detail view returned by Enter), which keeps Ctrl+I from
-		// surprising a user mid-read.
+		// An issue screen's own key pressed while on it toggles back to
+		// ask, leaving the same way ActionScreenAsk does.
 		km := currentKeyMap()
 		// Ctrl+P / Ctrl+N are popup list-navigation keys; a visible
 		// popover gets first claim on them even when a user rebinds a
@@ -1515,18 +1518,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		deferToPopover := (listNavPrev(msg) || listNavNext(msg)) && m.popoverOpen()
 		if km.Matches(ActionScreenIssues, msg) && !m.modalOpen() && !deferToPopover {
 			if m.screen == screenIssues {
-				if s := m.issueStateForScreen(screenIssues); s != nil {
-					s.cycleView()
-					// Landing on kanban kicks off N parallel column
-					// loads if columns are empty. The same call is a
-					// no-op when columns are already loaded (returning
-					// to kanban after a previous fetch shows the
-					// cached data immediately).
-					if kv, ok := s.view.(*kanbanIssueView); ok {
-						return m, kv.initialLoad(s)
-					}
-				}
-				return m, nil
+				m.discardIssueScreenState(screenIssues)
+				return m.switchScreen(screenAsk), nil
 			}
 			// Hard-gate the screen-switch on a configured provider:
 			// if the project has no provider (or the configured one
@@ -1544,13 +1537,8 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		}
 		if km.Matches(ActionScreenPRs, msg) && !m.modalOpen() && !deferToPopover {
 			if m.screen == screenPRs {
-				if s := m.issueStateForScreen(screenPRs); s != nil {
-					s.cycleView()
-					if kv, ok := s.view.(*kanbanIssueView); ok {
-						return m, kv.initialLoad(s)
-					}
-				}
-				return m, nil
+				m.discardIssueScreenState(screenPRs)
+				return m.switchScreen(screenAsk), nil
 			}
 			cfg, _ := loadConfig()
 			provider, pc := activePRProvider(cfg, m.cwd)

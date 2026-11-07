@@ -317,7 +317,8 @@ lockstep (`.claude/rules/issues.md`).
 
 ## Keys, input, overlays
 
-- keymap.go defaults: Ctrl+I issues, Ctrl+R PRs, Ctrl+W workflows,
+- keymap.go defaults: Ctrl+I issues, Ctrl+R PRs (each toggles back to
+  ask when pressed on its own screen), Ctrl+W workflows,
   Ctrl+G watchers, Ctrl+O ask, Ctrl+M model picker, Ctrl+S skills browser, Ctrl+F run a
   workflow on the chat, Ctrl+X task-list toggle, Ctrl+T/Ctrl+D
   new/close tab, Ctrl+←/→ and Ctrl+↑/↓ tab nav, Tab sidebar focus,

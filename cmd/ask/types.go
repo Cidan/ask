@@ -404,6 +404,20 @@ type focusTabMsg struct {
 	tabID int
 }
 
+// openPromptTabMsg asks the app layer to open a new tab in cwd and send
+// prompt as that tab's first turn (the issue screen's `t` triage).
+type openPromptTabMsg struct {
+	cwd    string
+	prompt string
+}
+
+// submitPromptMsg sends text as a user turn in the addressed tab, as if
+// it had been typed into the composer and submitted.
+type submitPromptMsg struct {
+	tabID int
+	text  string
+}
+
 // tabTitleMsg delivers the asynchronously-generated tab title
 // (tab_title.go). An empty title means generation failed — the
 // handler keeps the first-prompt fallback already on the model. The

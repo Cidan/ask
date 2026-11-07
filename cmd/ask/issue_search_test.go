@@ -21,7 +21,6 @@ func TestIssueSearchBox_OpensFromListOnSlash(t *testing.T) {
 
 func TestIssueSearchBox_OpensFromKanbanOnSlash(t *testing.T) {
 	m := enterIssuesScreen(t)
-	m, _ = runUpdate(t, m, ctrlKey('i'))
 	if m.issues.view.name() != "kanban" {
 		t.Fatalf("setup: not on kanban (got %q)", m.issues.view.name())
 	}

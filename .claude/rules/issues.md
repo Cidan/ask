@@ -25,10 +25,9 @@ their `issuesState` (`m.issues` / `m.prs`, seeded by
   stale `gen` is dropped), `loadCtx`/`cancelLoad` (a new query or
   screen re-entry cancels every in-flight fetch), `currentQuery`,
   `search`, selection, scrollbar, and the loading fields.
-- `issueView` is the sub-view interface. `issueViewLayers` holds the
-  cycle order and today contains only kanban; `cycleView` is kept so
-  the next view type is one registry entry. Detail (`Enter`) is outside
-  the cycle.
+- `issueView` is the sub-view interface. `issueViewLayers` is the view
+  registry and today contains only kanban; no key cycles views. Detail
+  (`Enter`) is outside the registry.
 - Kanban (`kanbanIssueView`) keeps per-column `loaded`, `nextCursor`,
   `hasMore`, `fetching` mirrored from the cache. Every cache mutation
   must update both sides: `removeIssueFromCache` /
@@ -58,11 +57,18 @@ their `issuesState` (`m.issues` / `m.prs`, seeded by
   `/` opens the search box (provider `QuerySyntaxHelp` underneath; Tab
   swaps raw/AI mode without rewriting the text), `f` runs a workflow
   on the focused issue (`dispatchIssueWorkflow`: focuses the live tab
-  when one already runs for that `issueRef.Key()`), `m` on the PRs
+  when one already runs for that `issueRef.Key()`), `t` on the issues
+  screen only (`triageIssueInNewTab`) emits `openPromptTabMsg`: the
+  app opens a tab in this tab's cwd (`openPromptTab`, as Ctrl+T would)
+  and sends `issueTriagePrompt(ref)` as its first turn through
+  `submitPromptMsg` (the composer's Enter path); `issueTrackerName`
+  maps provider ids to the tracker's name and new backends extend it.
+  `m` on the PRs
   screen starts `startPRMergeFlow` (`IssueMerger.Mergeable` pre-flight
   → confirm → `Merge`), `ActionReload` (unbound by default; Ctrl+R is
   the PRs screen) runs `reloadCurrentQuery`, double Ctrl+C closes the
-  tab.
+  tab. A screen's own key (Ctrl+I on issues, Ctrl+R on PRs) goes back
+  to ask exactly like Ctrl+O (`discardIssueScreenState`).
 - Kanban nav: ↑/↓/j/k rows, ←/→/h/l and Tab columns, PgUp/PgDn, g/G.
   Scrolling near the end of a column fetches the next chunk
   (`maybeFetchNextPage`, `fetching` guards a double fire).

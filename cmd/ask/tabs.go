@@ -200,6 +200,8 @@ func (a app) Update(msg tea.Msg) (next tea.Model, cmd tea.Cmd) {
 
 	case spawnWorkflowTabMsg:
 		return a.supplantWorkflow(m)
+	case openPromptTabMsg:
+		return a.openPromptTab(m)
 	case focusTabMsg:
 		idx := a.indexOfTab(m.tabID)
 		if idx < 0 {
@@ -465,6 +467,22 @@ func (a app) openTab() (tea.Model, tea.Cmd) {
 	modAny, resizeCmd := a.broadcastResize()
 	a2 := modAny.(app)
 	return a2, tea.Batch(resizeCmd, initCmd)
+}
+
+// openPromptTab opens a tab in req.cwd, as Ctrl+T would from there, and
+// sends req.prompt as its first turn.
+func (a app) openPromptTab(req openPromptTabMsg) (tea.Model, tea.Cmd) {
+	if req.cwd != "" {
+		_ = os.Chdir(req.cwd)
+	}
+	id := a.nextID
+	opened, openCmd := a.openTab()
+	na := opened.(app)
+	if na.indexOfTab(id) < 0 {
+		return na, openCmd
+	}
+	sent, sendCmd := na.dispatchByTabID(id, submitPromptMsg{tabID: id, text: req.prompt})
+	return sent, tea.Batch(openCmd, sendCmd)
 }
 
 // supplantWorkflow runs a workflow *inside* the originating tab
