@@ -592,51 +592,108 @@ func TestIssues_ScrollbarDragMovesScrollPosition(t *testing.T) {
 	}
 }
 
-func TestKanban_CtrlIOnSingleEntryCycleIsNoOp(t *testing.T) {
-	// issueViewLayers currently has one entry (kanban). Ctrl+I on
-	// the issues screen should call cycleView() but stay on the same
-	// kanban instance — rebuilding the view would reset the row/col
-	// cursor for no user-visible benefit. cycleView() is preserved
-	// as the cycle-infrastructure hook for future view types.
-	m := enterIssuesScreen(t)
-	before, ok := m.issues.view.(*kanbanIssueView)
-	if !ok {
-		t.Fatalf("setup: expected kanban view, got %T", m.issues.view)
-	}
-	m, _ = runUpdate(t, m, ctrlKey('i'))
-	after, ok := m.issues.view.(*kanbanIssueView)
-	if !ok {
-		t.Fatalf("Ctrl+I from kanban changed view type unexpectedly: %T", m.issues.view)
-	}
-	if after != before {
-		t.Errorf("Ctrl+I rebuilt the kanban view (lost the cursor); want same instance")
+// Pressing an issue screen's own key while on it goes back to ask, from
+// the board and from an open item, and leaves the way Ctrl+O does: the
+// screen's state is discarded so re-entry fetches fresh.
+func TestIssueScreens_OwnKeyTogglesBackToAsk(t *testing.T) {
+	for _, openDetail := range []bool{false, true} {
+		m := enterIssuesScreen(t)
+		if openDetail {
+			m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+			if m.issues.view.name() != "detail" {
+				t.Fatalf("setup: expected detail view, got %q", m.issues.view.name())
+			}
+		}
+		gen := m.issues.queryGen
+		m, _ = runUpdate(t, m, ctrlKey('i'))
+		if m.screen != screenAsk {
+			t.Errorf("detail=%v: Ctrl+I on issues should go back to ask, got %v", openDetail, m.screen)
+		}
+		if m.issues.queryGen == gen || len(issuesAll(m.issues)) != 0 {
+			t.Errorf("detail=%v: leaving with Ctrl+I should discard the board (gen %d → %d, %d rows left)",
+				openDetail, gen, m.issues.queryGen, len(issuesAll(m.issues)))
+		}
+
+		m = enterPRsScreen(t, newFakeMergerIssueProvider(), issue{number: 7, title: "Fix auth", status: "open"})
+		if openDetail {
+			m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+		}
+		m, _ = runUpdate(t, m, ctrlKey('r'))
+		if m.screen != screenAsk {
+			t.Errorf("detail=%v: Ctrl+R on PRs should go back to ask, got %v", openDetail, m.screen)
+		}
 	}
 }
 
-func TestCycleView_SingleEntryRegistryReturnsFalse(t *testing.T) {
-	// Direct unit test on the cycle helper: with one layer registered,
-	// cycleView() reports no-move so callers can decide whether to
-	// run any cycle-side-effects (kanban initialLoad, etc.).
-	s := newIssuesState()
-	s.provider = newFakeMockProvider(mockIssues())
-	s.view = issueViewLayers[0].builder(s)
-	if got := s.cycleView(); got {
-		t.Errorf("cycleView with single-entry registry should return false, got true")
+// t on an issue, from its board card or its detail view, asks the app
+// for a new tab in this tab's cwd whose first turn is the triage prompt
+// for that issue.
+func TestIssues_TriageKeyRequestsPromptTab(t *testing.T) {
+	for _, openDetail := range []bool{false, true} {
+		m := enterIssuesScreen(t)
+		m.cwd = "/work/proj"
+		if openDetail {
+			m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+		}
+		it, ok := focusedIssue(m.issues.view)
+		if !ok {
+			t.Fatalf("setup: no focused issue (detail=%v)", openDetail)
+		}
+		m, cmd := runUpdate(t, m, tea.KeyPressMsg{Code: 't', Text: "t"})
+		if m.screen != screenIssues {
+			t.Errorf("detail=%v: t should leave this tab on the board, got %v", openDetail, m.screen)
+		}
+		if cmd == nil {
+			t.Fatalf("detail=%v: t on an issue should request a tab", openDetail)
+		}
+		req, ok := cmd().(openPromptTabMsg)
+		if !ok {
+			t.Fatalf("detail=%v: t produced %T, want openPromptTabMsg", openDetail, cmd())
+		}
+		want := fmt.Sprintf("Please take a look at issue fake/project#%d on fake and triage the next steps. "+
+			"Note that not all issues are valid, and a user report might be wrong, "+
+			"so make sure your investigation takes this into account.", it.number)
+		if req.cwd != "/work/proj" || req.prompt != want {
+			t.Errorf("detail=%v: request = %+v, want cwd /work/proj and prompt %q", openDetail, req, want)
+		}
 	}
 }
 
-func TestKanban_CtrlIFromDetailIsNoOp(t *testing.T) {
-	// Detail view is not in the cycle, so Ctrl+I from detail must
-	// not move us off it (otherwise the user loses their reading
-	// position to a swap they didn't ask for).
+// Without a single issue in focus (mid-carry) t does nothing, and the
+// PR screen does not take t at all.
+func TestIssues_TriageKeyNeedsAFocusedIssue(t *testing.T) {
 	m := enterIssuesScreen(t)
-	m, _ = runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.issues.view.name() != "detail" {
-		t.Fatalf("setup: expected detail view")
+	m.issues.view.(*kanbanIssueView).carry.active = true
+	if _, cmd := runUpdate(t, m, tea.KeyPressMsg{Code: 't', Text: "t"}); cmd != nil {
+		if _, ok := cmd().(openPromptTabMsg); ok {
+			t.Error("t while carrying a card must not open a triage tab")
+		}
 	}
-	m, _ = runUpdate(t, m, ctrlKey('i'))
-	if m.issues.view.name() != "detail" {
-		t.Errorf("Ctrl+I from detail should be a no-op; got %q", m.issues.view.name())
+
+	m = enterPRsScreen(t, newFakeMergerIssueProvider(), issue{number: 7, title: "Fix auth", status: "open"})
+	if _, cmd := runUpdate(t, m, tea.KeyPressMsg{Code: 't', Text: "t"}); cmd != nil {
+		if _, ok := cmd().(openPromptTabMsg); ok {
+			t.Error("t on the PR screen must not open a triage tab")
+		}
+	}
+}
+
+func TestIssueTriagePrompt_NamesTheIssueAndTracker(t *testing.T) {
+	const note = " Note that not all issues are valid, and a user report might be wrong, " +
+		"so make sure your investigation takes this into account."
+	cases := []struct {
+		ref  issueRef
+		want string
+	}{
+		{issueRef{Provider: "github", Project: "Cidan/BetterBags", Number: 1267},
+			"Please take a look at issue Cidan/BetterBags#1267 on GitHub and triage the next steps." + note},
+		{issueRef{Provider: "linear", Project: "ENG", Number: 42, Separator: "-"},
+			"Please take a look at issue ENG-42 on Linear and triage the next steps." + note},
+	}
+	for _, tc := range cases {
+		if got := issueTriagePrompt(tc.ref); got != tc.want {
+			t.Errorf("issueTriagePrompt(%+v) =\n %q\nwant\n %q", tc.ref, got, tc.want)
+		}
 	}
 }
 
@@ -700,7 +757,6 @@ func TestKanban_HeaderAdvertisesKanbanView(t *testing.T) {
 	// so the header just needs to call out the kanban view at every
 	// width.
 	m := enterIssuesScreen(t)
-	m, _ = runUpdate(t, m, ctrlKey('i'))
 	v := m.issues.view.(*kanbanIssueView)
 	for _, w := range []int{50, 100, 200} {
 		v.resize(w, 20)
@@ -712,7 +768,6 @@ func TestKanban_HeaderAdvertisesKanbanView(t *testing.T) {
 
 func TestKanban_RightArrowMovesColumns(t *testing.T) {
 	m := enterIssuesScreen(t)
-	m, _ = runUpdate(t, m, ctrlKey('i'))
 	v := m.issues.view.(*kanbanIssueView)
 	if v.selColIdx != 0 {
 		t.Fatalf("setup: cursor should start in column 0, got %d", v.selColIdx)
@@ -726,7 +781,6 @@ func TestKanban_RightArrowMovesColumns(t *testing.T) {
 
 func TestKanban_DownArrowMovesWithinColumn(t *testing.T) {
 	m := enterIssuesScreen(t)
-	m, _ = runUpdate(t, m, ctrlKey('i'))
 	v := m.issues.view.(*kanbanIssueView)
 	if len(v.columns[0].loaded) < 2 {
 		t.Skip("first column has only one issue; can't test row navigation")
@@ -740,7 +794,6 @@ func TestKanban_DownArrowMovesWithinColumn(t *testing.T) {
 
 func TestKanban_TabCyclesColumns(t *testing.T) {
 	m := enterIssuesScreen(t)
-	m, _ = runUpdate(t, m, ctrlKey('i'))
 	v := m.issues.view.(*kanbanIssueView)
 	for i := 0; i < len(v.columns); i++ {
 		want := (i + 1) % len(v.columns)
@@ -754,7 +807,6 @@ func TestKanban_TabCyclesColumns(t *testing.T) {
 
 func TestKanban_EnterOpensDetailWithKanbanAsParent(t *testing.T) {
 	m := enterIssuesScreen(t)
-	m, _ = runUpdate(t, m, ctrlKey('i'))
 	v := m.issues.view.(*kanbanIssueView)
 	col := v.columns[v.selColIdx]
 	if len(col.loaded) == 0 {
@@ -783,7 +835,6 @@ func TestKanban_EnterOpensDetailWithKanbanAsParent(t *testing.T) {
 
 func TestKanban_BodyContainsAllStatuses(t *testing.T) {
 	m := enterIssuesScreen(t)
-	m, _ = runUpdate(t, m, ctrlKey('i'))
 	body := stripAnsi(m.activeScreen().view(m))
 	for _, it := range issuesAll(m.issues) {
 		if !strings.Contains(body, it.status) {
@@ -920,7 +971,6 @@ func TestIssues_ExitPromptShownWhenArmed(t *testing.T) {
 
 func TestKanban_MouseWheelMovesRowSelection(t *testing.T) {
 	m := enterIssuesScreen(t)
-	m, _ = runUpdate(t, m, ctrlKey('i'))
 	v := m.issues.view.(*kanbanIssueView)
 	if len(v.columns[v.selColIdx].loaded) < 2 {
 		t.Skip("first column has fewer than 2 issues; can't test wheel")
@@ -1250,7 +1300,6 @@ func TestCtrlR_ReloadCancelsInFlight(t *testing.T) {
 func TestCtrlR_ReloadFromKanbanReFiresInitialLoad(t *testing.T) {
 	reload := bindReloadForTest(t)
 	m := enterIssuesScreen(t)
-	m, _ = runUpdate(t, m, ctrlKey('i'))
 	if m.issues.view.name() != "kanban" {
 		t.Fatalf("setup: not on kanban")
 	}

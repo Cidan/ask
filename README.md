@@ -243,7 +243,8 @@ bound on the same screen.
 ## Issues and pull requests
 
 `Ctrl+I` opens the issue board for the project, `Ctrl+R` the GitHub
-pull-request board. Configure the tracker under `/config → Project
+pull-request board; pressing the same key again goes back to the chat.
+Configure the tracker under `/config → Project
 Options`: the issue provider (`github` or `linear`), a GitHub MCP
 endpoint and either a PAT or your `gh` CLI login (`GitHub auth`), or a
 Linear API key and team key. With `gh`, ask asks `gh auth token` for
@@ -257,7 +258,9 @@ column, `←`/`→`/`Tab` change column, `Enter` opens the markdown detail,
 and `Space` again drops it — the move is applied locally at once and
 rolled back with a toast if the provider call fails. `Esc` cancels a
 carry. Cards show `▸` / `✓` / `✗` for the latest workflow run on that
-issue, and `f` starts one.
+issue, and `f` starts one. `t` on an issue (card or detail) opens a new
+tab and asks the agent to triage it, noting that a user report might be
+wrong.
 
 ## Workflows
 

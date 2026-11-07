@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -25,6 +26,46 @@ func testAppWithTwoTabs(t *testing.T) app {
 		nextID: 3,
 		width:  first.width,
 		height: first.height,
+	}
+}
+
+// openPromptTabMsg opens a new active tab in the requested cwd and sends
+// the prompt there as its first turn, leaving the originating tab alone.
+func TestApp_OpenPromptTabSendsTheFirstTurn(t *testing.T) {
+	isolateHome(t)
+	t.Chdir(t.TempDir())
+	withRegisteredProviders(t, newFakeProvider())
+	a := testAppWithTwoTabs(t)
+	originItems := len(a.tabs[1].transcript)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newA, _ := a.Update(openPromptTabMsg{cwd: dir, prompt: "triage ENG-42"})
+	a2 := newA.(app)
+
+	if len(a2.tabs) != 3 || a2.active != 2 || a2.tabs[2].id != 3 {
+		t.Fatalf("tabs=%d active=%d: want a third tab, id 3, made active", len(a2.tabs), a2.active)
+	}
+	tab := a2.tabs[2]
+	if got, _ := filepath.EvalSymlinks(tab.cwd); got != dir {
+		t.Errorf("new tab cwd=%q want %q", tab.cwd, dir)
+	}
+	if n := len(tab.transcript); n == 0 || tab.transcript[n-1].kind != trUser || tab.transcript[n-1].text != "triage ENG-42" {
+		t.Errorf("new tab transcript=%+v: want the prompt sent as its user turn", tab.transcript)
+	}
+	if len(a2.tabs[1].transcript) != originItems {
+		t.Errorf("the originating tab's transcript changed: %+v", a2.tabs[1].transcript)
+	}
+}
+
+func TestSubmitPromptMsg_IgnoresOtherTabs(t *testing.T) {
+	m := newTestModel(t, newFakeProvider())
+	before := len(m.transcript)
+	m, cmd := runUpdate(t, m, submitPromptMsg{tabID: m.id + 1, text: "not mine"})
+	if cmd != nil || len(m.transcript) != before {
+		t.Errorf("a prompt for another tab must be ignored: cmd=%v transcript=%+v", cmd != nil, m.transcript)
 	}
 }
 
