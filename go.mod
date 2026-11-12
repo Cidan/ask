@@ -22,7 +22,7 @@ require (
 	golang.org/x/net v0.58.0
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/adk/v2 v2.0.0
-	google.golang.org/genai v1.67.0
+	google.golang.org/genai v1.77.1-0.20261111230557-78c23d63f56c
 )
 
 require (

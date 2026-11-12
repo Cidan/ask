@@ -85,6 +85,10 @@ sixteen themes re-paint the whole UI live.
   llama.cpp model. Recall is injected into the system prompt, per turn,
   and next to every file the agent reads; the agent can index notes on
   request; finished workflows are filed automatically.
+- **Decision models** — Gemini Decision 1 answers yes/no, choice, and
+  score questions with probabilities: a `decide` tool for triaging many
+  items at once, and a filter in front of memory extraction and recall
+  (see [Decision models](#decision-models)).
 - **Shell mode** — `!` on an empty prompt runs a line through `$SHELL`
   with streaming output, persistent `cd`, and its own history.
 - **Image attachments** — `Ctrl+V` pastes an image from the clipboard
@@ -327,33 +331,53 @@ request.
 
 ## Config
 
-`/config` opens a filterable modal backed by `~/.config/ask/ask.json`;
-every change writes immediately.
+`/config` opens a full-screen settings browser backed by
+`~/.config/ask/ask.json`; every change writes immediately. Sections run
+down the left, the focused section's settings sit on the right, and the
+focused setting's description is shown beneath them. `↑`/`↓` move (and
+flow from one section into the next), `Tab` jumps sections, and typing
+filters every section at once. On/off and multiple-choice settings change
+with `←`/`→` or `Enter`; lists (theme, decision model) open under the row
+with `Enter`, and the theme previews as you move; text settings are edited
+inline (`Enter` saves, `Esc` cancels, `Delete` clears back to the
+environment variable or default; secrets are masked).
 
-| Row | Default | What it does |
-|-----|---------|--------------|
-| Quiet Mode | on | Render the assistant's text once per completed block instead of streaming chunks |
-| Cursor Blink | on | Blinking input cursor |
-| Render Diffs | on | Show `edit` / `write` results as inline colored diffs |
-| Tool Output | short | `short` shows each tool call as the model's one-line description; `full` adds the parameters and output; `off` hides tool calls |
-| Skip All Permissions | off | Bypass the approval modal for every tool call (restarts the session) |
-| Worktree | off | Run each session inside an isolated git worktree under `.claude/worktrees/` (adds it to `.gitignore`); Project Options can override this per project |
-| Theme | default | Live-preview picker over 16 palettes |
-| Default Provider | vertex | Provider for new sessions |
-| Web Search... | | Brave Search API key for the agent's `web_search` tool (`BRAVE_API_KEY` also works) |
-| Vertex AI... / OpenRouter... | | The provider's settings (see [Providers](#providers)) |
-| Keybindings... | | Remap any global shortcut |
+| Section | Settings |
+|---------|----------|
+| Appearance | Theme (16 palettes), Quiet mode, Tool output (`full` / `short` / `off`), Render diffs, Cursor blink |
+| Session | Default provider (for new tabs), Skip all permissions (restarts the session), Worktree (each session in its own git worktree under `.claude/worktrees/`), Auto-compact, Deslop output and its model |
+| Providers | Each provider's settings, grouped with whether it is ready (see [Providers](#providers)) |
+| Decisions | The decision model and the Gemini API key (see [Decision models](#decision-models)) |
+| Memory | The extraction model, Skip empty turns, Filter recalled memory, Browse memories |
+| Web search | Brave Search API key for `web_search` (`BRAVE_API_KEY` also works) |
+| Project | GitHub auth (PAT or `gh` CLI), GitHub MCP endpoint and PAT, Linear endpoint, API key, and team key, the issue provider, a Worktree override (inherit / on / off), and the project's workflows |
+| Keybindings | Every global shortcut: `Enter` rebinds, `Ctrl+R` restores the default, `Delete` unbinds |
 
-Project Options (same modal) hold the issue provider, the GitHub auth
-source (PAT or `gh` CLI), the GitHub MCP endpoint and PAT, the Linear
-endpoint, API key, and team key, a
-Worktree override (inherit / on / off, shadowing the global row for
-this project), and the project's user-scope workflows. Other keys the
-file stores:
+Other keys the file stores:
 `providers.<id>.model` (last pick per provider), `recentModels`,
 `keybindings`, `mcpServers`, `effort`, `ui.retry` (`maxRetries`,
 `initialDelayMs`, `backoffFactor` for the agent's retry on transient
 errors), and `projects.<root>` blocks.
+
+## Decision models
+
+A decision model answers closed-set questions — yes/no, pick one option,
+rate on a scale — with calibrated probabilities instead of text, in one
+fast, cheap call that can carry up to a thousand questions. ask supports
+Google's Gemini Decision 1 through the Gemini API (an AI Studio API key,
+under `/config → Decisions` or `GEMINI_API_KEY`); Vertex AI support
+follows when Google ships it there. With a key set:
+
+- the agent has a `decide` tool for triaging, filtering, routing, and
+  ranking many things at once — search hits, files, issues, screenshots,
+  PDFs — instead of reading each one;
+- memory extraction is skipped for turns the decision model judges hold
+  nothing worth remembering (Memory → Skip empty turns);
+- the memories recalled for each turn are filtered to the ones that bear
+  on the prompt (Memory → Filter recalled memory).
+
+Every decision call is priced on the tab's cost meter. On the Gemini API
+free tier, Google may use requests to improve its products.
 
 ## MCP servers
 

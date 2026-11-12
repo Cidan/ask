@@ -8,8 +8,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/memory"
+	"github.com/Cidan/ask/pkg/providers"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
@@ -74,6 +76,7 @@ type MemoryRecallHook struct {
 	cwd     string
 	topic   func() string
 	onTopic func(string)
+	onSpend func(providers.Usage)
 
 	mu         sync.Mutex
 	exclude    map[int64]bool
@@ -84,9 +87,10 @@ type MemoryRecallHook struct {
 
 // PreloadMemoryTool builds the recall hook. topic supplies the tab's
 // current topic (nil means none); onTopic receives the topic each turn's
-// hits imply (nil to ignore).
-func PreloadMemoryTool(cwd string, topic func() string, onTopic func(string)) *MemoryRecallHook {
-	return &MemoryRecallHook{cwd: cwd, topic: topic, onTopic: onTopic}
+// hits imply (nil to ignore); onSpend receives the usage of the decision
+// model call that filters the recall (nil to ignore).
+func PreloadMemoryTool(cwd string, topic func() string, onTopic func(string), onSpend func(providers.Usage)) *MemoryRecallHook {
+	return &MemoryRecallHook{cwd: cwd, topic: topic, onTopic: onTopic, onSpend: onSpend}
 }
 
 func (h *MemoryRecallHook) Name() string { return "preload_memory" }
@@ -134,7 +138,9 @@ func (h *MemoryRecallHook) blockFor(ctx agent.Context, text string) string {
 	if h.topic != nil {
 		current = h.topic()
 	}
-	block, topic := memory.RecallBlock(ctx, h.cwd, text, current, h.exclude)
+	cfg, _ := config.Load()
+	filter := engine.MemoryRecallFilter(ctx, cfg, h.onSpend)
+	block, topic := memory.RecallBlock(ctx, h.cwd, text, current, h.exclude, filter)
 	h.invocation = inv
 	h.block = block
 	if topic != "" && h.onTopic != nil {

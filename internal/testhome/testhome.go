@@ -37,6 +37,9 @@ func Main(m *testing.M, env ...string) {
 			_ = os.Unsetenv(key)
 		}
 	}
+	// A decision model key in the developer's environment would send every
+	// memory recall and extraction a test runs to the real Gemini API.
+	_ = os.Unsetenv("GEMINI_API_KEY")
 	for i := 0; i+1 < len(vars); i += 2 {
 		if err := os.Setenv(vars[i], vars[i+1]); err != nil {
 			fmt.Fprintln(os.Stderr, "testhome:", err)

@@ -435,10 +435,38 @@ and enqueues it. `AppendTouchedFile` collects the read/write/edit paths a
 turn touched. `DebugLog` is the engine's debug seam (the TUI points it at
 `debugLog`). Detail in `pkg/memory/CLAUDE.md`.
 
+## Decision models (decision.go)
+
+`DeciderBuilder(ctx, cfg)` (swappable — the seam for every decision call,
+as `ModelBuilder` is for LLMs) resolves `providers.ResolveDecisionTarget`
+and builds its `providers.Decider`; with no decision provider configured it
+returns `ErrNoDecisionModel`, which every caller treats as "feature off",
+never as a failure. Three callers:
+
+- **Memory extraction gate** (`memoryWorthExtracting`, first step of
+  `MemoryExtractor.process`): one yes/no question (`memoryGateQuestion`,
+  mirroring `memoryExtractInstruction`'s kinds) over the clipped prompt and
+  answer; extraction is skipped when p(durable) <
+  `memoryGateSkipBelow` (0.2 — low on purpose). The gate fails open: off
+  (`config.MemoryExtractGateEnabled`), no decider, or an error all extract.
+  Its usage goes to `MemoryTurn.OnUsage`.
+- **Recall filter** (`MemoryRecallFilter(ctx, cfg, onUsage)` →
+  `decisionRecallFilter`, a `memory.RelevanceFilter`): one yes/no per
+  recalled concept (key `m<id>`, title plus body clipped to
+  `memoryRecallBodyCap`) over `Request:\n<prompt>`; keeps p >=
+  `memoryRecallKeepAbove` (0.3) in recall order. nil when
+  `config.MemoryRecallFilterEnabled` is off or no decider runs.
+- **`decide` tool** (`pkg/tools/decide.go`).
+
+`SpendEvent{Source, Usage}` is how a tool or request hook reports a call
+outside the session's own model calls: `Run` adds it to `RunResult` spend
+(the tool factory's listener), the TUI routes it to `recordSpend`.
+
 ## File map
 
 - Runtime: `engine.go`, `run.go`, `session.go`, `coordinator.go`,
-  `retry.go`, `usage.go`, `compact.go`, `plugins.go`, `workflow_run.go`.
+  `retry.go`, `usage.go`, `compact.go`, `plugins.go`, `workflow_run.go`,
+  `decision.go`.
 - History archive: `history.go` (store, rendering, read, search),
   `history_tools.go`, `history_summarize.go`.
 - Contracts: `interaction.go`, `events.go`, `types.go`.

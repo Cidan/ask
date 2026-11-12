@@ -271,6 +271,9 @@ func (e *MemoryExtractor) process(ctx context.Context, turn MemoryTurn) error {
 		return nil
 	}
 	cfg, _ := e.opts.LoadConfig()
+	if !memoryWorthExtracting(ctx, cfg, turn) {
+		return nil
+	}
 	providerID, modelID := MemoryExtractModel(cfg, turn.Provider)
 	prov, ok := providers.Get(providerID)
 	if !ok {

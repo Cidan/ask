@@ -1683,17 +1683,14 @@ func TestUpdate_PasteMsgInNonInputModesIsAbsorbed(t *testing.T) {
 }
 
 func TestUpdate_PasteMsgInConfigProjectFieldEditorRoutes(t *testing.T) {
-	m := newTestModel(t, newFakeProvider())
-	m.mode = modeConfig
-	m.configProjectPickerActive = true
-	m.configProjectFieldEditing = "githubMCPToken"
-	m.configProjectFieldDraft = "ghp_"
+	m := configEnter(t, newTestModel(t, newFakeProvider()), "project:githubMCPToken")
+	m.config.input.SetValue("ghp_")
 	m.input.SetValue("composer-untouched")
 
 	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "abcd"})
 
-	if m2.configProjectFieldDraft != "ghp_abcd" {
-		t.Errorf("paste should append to project field draft: %q", m2.configProjectFieldDraft)
+	if m2.config.input.Value() != "ghp_abcd" {
+		t.Errorf("paste should append to project field draft: %q", m2.config.input.Value())
 	}
 	if m2.input.Value() != "composer-untouched" {
 		t.Errorf("composer must not receive the paste while a project field is open: %q", m2.input.Value())
@@ -1879,34 +1876,19 @@ func TestUpdate_PasteMsgInAskModalCancelConfirmIsAbsorbed(t *testing.T) {
 	}
 }
 
-// modeConfig with no field editor open should still absorb paste —
-// the picker rows are not text inputs and there is no destination
-// for the pasted content.
+// modeConfig with no field editor open keeps a paste away from the
+// composer: it lands in the screen's filter.
 func TestUpdate_PasteMsgInConfigWithoutEditorIsAbsorbed(t *testing.T) {
-	cases := []struct {
-		name                string
-		projectPickerActive bool
-	}{
-		{"no picker", false},
-		{"project picker open, no field", true},
+	m := newTestModel(t, newFakeProvider()).startConfigModal()
+	m.input.SetValue("seed")
+
+	m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "leak"})
+
+	if m2.input.Value() != "seed" {
+		t.Errorf("paste in modeConfig without editor must be absorbed: got %q", m2.input.Value())
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			m := newTestModel(t, newFakeProvider())
-			m.mode = modeConfig
-			m.configProjectPickerActive = c.projectPickerActive
-			m.input.SetValue("seed")
-
-			m2, _ := runUpdate(t, m, tea.PasteMsg{Content: "leak"})
-
-			if m2.input.Value() != "seed" {
-				t.Errorf("paste in modeConfig without editor must be absorbed: got %q", m2.input.Value())
-			}
-			if m2.configProjectFieldDraft != "" {
-				t.Errorf("paste must not leak into field drafts: project=%q",
-					m2.configProjectFieldDraft)
-			}
-		})
+	if m2.config.editing != "" || m2.config.query != "leak" {
+		t.Errorf("paste goes to the filter, never an editor: editing=%q query=%q", m2.config.editing, m2.config.query)
 	}
 }
 

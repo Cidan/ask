@@ -259,18 +259,25 @@ func validateProvider(p Provider) error {
 	if strings.TrimSpace(p.ID()) == "" {
 		return fmt.Errorf("providers: %T has an empty id", p)
 	}
+	return validateSettings(p.ID(), p.Settings())
+}
+
+func validateSettings(id string, settings []SettingField) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("providers: a provider has an empty id")
+	}
 	seen := make(map[string]bool)
-	for _, f := range p.Settings() {
+	for _, f := range settings {
 		if f.Key == "" {
-			return fmt.Errorf("providers: %s declares a setting with an empty key", p.ID())
+			return fmt.Errorf("providers: %s declares a setting with an empty key", id)
 		}
 		for _, reserved := range config.ProviderConfigReservedKeys {
 			if f.Key == reserved {
-				return fmt.Errorf("providers: %s declares a setting under the reserved key %q", p.ID(), f.Key)
+				return fmt.Errorf("providers: %s declares a setting under the reserved key %q", id, f.Key)
 			}
 		}
 		if seen[f.Key] {
-			return fmt.Errorf("providers: %s declares the setting %q twice", p.ID(), f.Key)
+			return fmt.Errorf("providers: %s declares the setting %q twice", id, f.Key)
 		}
 		seen[f.Key] = true
 	}

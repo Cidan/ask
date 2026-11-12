@@ -10,6 +10,8 @@ paths:
   - "cmd/ask/agent_run.go"
   - "cmd/ask/config_fields.go"
   - "cmd/ask/config_modal.go"
+  - "cmd/ask/config_rows.go"
+  - "pkg/engine/decision.go"
   - "cmd/ask/model_catalog.go"
   - "cmd/ask/model_picker.go"
   - "cmd/ask/model_picker_view.go"
@@ -175,6 +177,56 @@ ClaudeCode{}}`; Vertex is `DefaultProviderID()`. All three implement
   workflow state blocks — is not restarted; each workflow step gets a
   fresh child anyway); tab-title and workflow-step children are closed
   by their run, chat/session children by `Session.Close`.
+
+## Decision providers (`decision.go`, `gemini_decisions.go`)
+
+A decision model answers closed-set questions about one input with
+probabilities and writes no text, so it is not a `Provider` (it cannot be
+a `model.LLM`). The contract is its own:
+
+- **Question shapes** are the three every decision model answers:
+  `QuestionYesNo` (optional `Yes`/`No` descriptions; answer `Yes` =
+  p(yes)), `QuestionChoice` (`Options` key → when it applies; answer
+  `Choice` + `Probabilities`), `QuestionScore` (`Levels`, lowest first;
+  answer `Score` = expected level index, `Levels` = per-level
+  probabilities, `Level()` = argmax). Every answer has `Confidence`.
+  `DecisionRequest{Input []*genai.Part, Questions map[key]Question}`;
+  `Validate` checks the shape every model shares, a provider enforces its
+  own limits (key format, question count). A refusal is
+  `*DecisionBlockedError`.
+- `Decider.Decide(ctx, req) (DecisionResult{Answers, Usage}, error)`.
+  `DecisionProvider` = `ID`, `DisplayName`, `Settings`, `Configured`,
+  `DecisionModels` (catalog, first is the default; `DecisionModel` carries
+  `InputUSDPerMTok`, `ContextWindow`, `MaxQuestions`), `BuildDecider`.
+  It shares `Provider`'s identity, `SettingField`s, and the
+  `Config.Providers[id]` block on purpose: a provider that serves both
+  (Vertex, once Google ships decisions there) implements both interfaces
+  under one id and one set of credentials, and is registered in both
+  registries. The method names differ from `Provider`'s
+  (`DecisionModels`, not `ModelOptions`/`DefaultModel`) so one type can.
+- Registry: `builtinDecisionProviders` (`GeminiAPI{}` today),
+  `RegisterDecisionProvider` (panics like `Register`, and on an empty
+  catalog), `GetDecisionProvider`, `DecisionProviders`.
+- `ResolveDecisionTarget(cfg)`: `Config.Decisions.{provider,model}` when
+  set (and configured), else the first registered decision provider with
+  credentials on its default model; `DecisionModelFor` keeps an unlisted
+  model id usable with unknown price. `DecisionUsage` prices input only
+  (decision models write no output); an unpriced model leaves the cost
+  unknown. Build deciders only through `engine.DeciderBuilder`.
+- **Gemini API** (`GeminiAPI`, id `gemini`): the Gemini Developer API
+  (AI Studio) by API key — setting `apiKey` (Secret, env `GEMINI_API_KEY`).
+  Model `gemini-decision-1` ($0.10/M input, 262,144-token window, 1000
+  questions). It calls `client.Decisions.Create` of go-genai's
+  interactions client with `APIVersion: "v1beta"` (the SDK's Gemini API
+  default is v1, which has no Decisions endpoint); go-genai is pinned to a
+  main-branch commit for it until a release ships it. Adjacent text parts
+  are merged with a blank line (the API joins text blocks with no
+  separator); media goes by MIME prefix to image/audio/video blocks, the
+  rest to document blocks. The SDK retries 408/409/429/5xx itself. Seam:
+  `GeminiBaseURL` (an httptest server). Not on Vertex yet — Google lists it
+  as coming soon; the interactions client already builds Vertex's
+  `projects/<p>/locations/<l>` path, so Vertex support is `Vertex`
+  implementing `DecisionProvider`.
 
 ## Usage and cost (`usage.go`)
 
@@ -351,11 +403,13 @@ abstraction, do not add the edit.
 
 ## UI
 
-- `cmd/ask/config_fields.go` is the only field-editor picker. A
-  provider's `/config` row and screen come from `providers.All()` and
-  `p.Settings()`; Web Search rides the same picker with its own
-  store. Do not clone a picker for a new provider or a new settings
-  screen — open `openFieldsPicker` with a `[]SettingField`.
+- `/config` (`cmd/ask/config_rows.go`) generates a provider's rows from
+  `providers.All()` and `p.Settings()` (Providers section, one group per
+  provider with its ready/not-configured status) and a decision
+  provider's from `providers.DecisionProviders()` (Decisions section,
+  skipping one that is also an LLM provider — its settings are already
+  under Providers). `settingRow` is the one text row over a
+  `SettingField`; a new provider adds no UI code.
 - The model picker's key prompt is `providers.SecretField(p)`; a
   provider without a `Secret` setting never prompts.
 - `ProviderConfigured(cfg, id)` is the one gate for "can this provider

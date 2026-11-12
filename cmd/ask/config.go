@@ -1,10 +1,8 @@
 package main
 
 import (
-	"strings"
 	"time"
 
-	lipgloss "charm.land/lipgloss/v2"
 	"github.com/Cidan/ask/pkg/config"
 )
 
@@ -146,45 +144,4 @@ func recordRecentModel(providerID, modelID string) {
 	}); err != nil {
 		debugLog("recordRecentModel %s/%s: %v", providerID, modelID, err)
 	}
-}
-
-func maskedSummary(v string) string {
-	if v == "" {
-		return "(not set)"
-	}
-	return "configured"
-}
-
-func plainSummary(v string) string {
-	if v == "" {
-		return "(not set)"
-	}
-	return v
-}
-
-type memoryPickerRow struct {
-	name string
-	key  string
-	id   string
-}
-
-func renderMemoryPickerRow(r memoryPickerRow, width int, selected bool) string {
-	nameW := lipgloss.Width(r.name)
-	keyW := lipgloss.Width(r.key)
-	pad := width - nameW - keyW
-	if pad < 1 {
-		pad = 1
-	}
-	if selected {
-		plain := r.name + strings.Repeat(" ", pad) + r.key
-		if w := lipgloss.Width(plain); w < width {
-			plain += strings.Repeat(" ", width-w)
-		}
-		return configSelectedRowStyle.Render(plain)
-	}
-	line := r.name + strings.Repeat(" ", pad)
-	if r.key != "" {
-		line += configKeyDimStyle.Render(r.key)
-	}
-	return padRight(line, width)
 }

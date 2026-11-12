@@ -106,21 +106,6 @@ func filterShortInputs(name string, input map[string]any) map[string]any {
 	return out
 }
 
-// nextToolOutputMode advances the tri-state for /config row cycling:
-// full → short → off → full. Unknown values reset to the default so
-// the picker never gets stuck on an invalid setting.
-func nextToolOutputMode(cur toolOutputMode) toolOutputMode {
-	switch cur {
-	case toolOutputFull:
-		return toolOutputShort
-	case toolOutputShort:
-		return toolOutputOff
-	case toolOutputOff:
-		return toolOutputFull
-	}
-	return defaultToolOutputMode
-}
-
 // toolPhraseFieldDoc is the schema doc every native tool's
 // "description" param carries (struct tags repeat it verbatim; the
 // bridge adapter injects it into generated schemas). One sentence,

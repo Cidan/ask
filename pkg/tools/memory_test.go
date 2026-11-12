@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/memory"
+	"github.com/Cidan/ask/pkg/providers"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
@@ -190,7 +192,7 @@ func TestTool_PreloadMemoryHookInjectsIntoUserMessage(t *testing.T) {
 	}
 
 	var gotTopic string
-	hook := PreloadMemoryTool(cwd, func() string { return "previous" }, func(topic string) { gotTopic = topic })
+	hook := PreloadMemoryTool(cwd, func() string { return "previous" }, func(topic string) { gotTopic = topic }, nil)
 	if hook.Name() != "preload_memory" || hook.Description() == "" || hook.IsLongRunning() {
 		t.Fatal("hook identity")
 	}
@@ -251,6 +253,57 @@ func TestTool_PreloadMemoryHookInjectsIntoUserMessage(t *testing.T) {
 	req5 := &model.LLMRequest{Contents: []*genai.Content{user}}
 	if err := hook.ProcessRequest(actx, req5); err != nil || len(req5.Contents[0].Parts) != 1 {
 		t.Fatal("closed memory must be a no-op")
+	}
+}
+
+func TestTool_PreloadMemoryHookFiltersWithTheDecisionModel(t *testing.T) {
+	cwd := openToolTestMemory(t)
+	ctx := context.Background()
+	svc := memory.Default()
+	for _, title := range []string{"answers should be short", "answers should be brief"} {
+		_, _ = svc.Upsert(ctx, memory.Concept{Scope: memory.ScopeFor(cwd), Kind: memory.KindFeedback, Topic: "style", Title: title})
+	}
+	for i := 0; i < memory.DefaultTopK; i++ {
+		id, _ := svc.Upsert(ctx, memory.Concept{Scope: memory.ScopeGlobal, Kind: memory.KindReference, Title: "unrelated dashboard " + string(rune('a'+i))})
+		_, _ = svc.Reinforce(ctx, id)
+	}
+	d := &fakeDecider{answer: func(input string, _ string, q providers.Question) (providers.Answer, error) {
+		if !strings.Contains(input, "Request:\nanswers should be short") {
+			t.Errorf("the prompt is the shared input: %q", input)
+		}
+		yes := 0.05
+		if strings.Contains(q.Instructions, "short") {
+			yes = 0.9
+		}
+		return providers.Answer{Kind: q.Kind, Yes: yes}, nil
+	}}
+	useFakeDecider(t, d)
+
+	var spent []providers.Usage
+	hook := PreloadMemoryTool(cwd, nil, nil, func(u providers.Usage) { spent = append(spent, u) })
+	user := genai.NewContentFromText("answers should be short", genai.RoleUser)
+	req := &model.LLMRequest{Contents: []*genai.Content{user}}
+	if err := hook.ProcessRequest(hookCtx{Context: testAgentCtx(), user: user, inv: "inv-1"}, req); err != nil {
+		t.Fatal(err)
+	}
+	block := hook.Block()
+	if !strings.Contains(block, "answers should be short") || strings.Contains(block, "answers should be brief") {
+		t.Fatalf("the filter keeps only what it judges relevant: %q", block)
+	}
+	if len(d.reqs) != 1 || len(spent) != 1 || spent[0].InputTokens != 100 {
+		t.Fatalf("one decision call per turn, its usage reported: reqs=%d spent=%+v", len(d.reqs), spent)
+	}
+
+	off := false
+	if err := config.Save(config.Config{Memory: config.MemoryConfig{RecallFilter: &off}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = config.Save(config.Config{}) })
+	if err := hook.ProcessRequest(hookCtx{Context: testAgentCtx(), user: user, inv: "inv-2"}, req); err != nil {
+		t.Fatal(err)
+	}
+	if block := hook.Block(); !strings.Contains(block, "answers should be brief") || len(d.reqs) != 1 {
+		t.Fatalf("with the filter off, recall is unfiltered and no call is made: %q (reqs %d)", block, len(d.reqs))
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Cidan/ask/pkg/providers"
+	"github.com/Cidan/ask/pkg/tools"
 	"google.golang.org/adk/v2/session"
 )
 
@@ -28,6 +29,7 @@ const (
 	spendMemory     = "memory"
 	spendSubagent   = "subagent"
 	spendCompaction = "compaction"
+	spendDecision   = tools.SpendDecision
 )
 
 type usageLedgerEntry struct {

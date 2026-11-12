@@ -1348,17 +1348,14 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		return m, cmd
 
 	case tea.PasteMsg:
-		if m.mode == modeConfig && m.configFields.active && m.configFields.editing != "" {
-			return m.applyFieldsPickerPaste(msg.Content)
+		if m.mode == modeConfig {
+			return m.applyConfigPaste(msg.Content)
 		}
 		if m.mode == modeModelPicker {
 			return m.applyModelPickerPaste(msg.Content)
 		}
 		if m.mode == modeSkillsBrowser {
 			return m.applySkillsBrowserPaste(msg.Content)
-		}
-		if m.mode == modeConfig && m.configProjectPickerActive && m.configProjectFieldEditing != "" {
-			return m.applyConfigProjectPaste(msg.Content)
 		}
 		if m.mode == modeAskQuestion {
 			return m.applyAskPaste(msg.Content)

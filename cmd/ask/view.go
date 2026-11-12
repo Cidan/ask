@@ -791,15 +791,15 @@ func (m model) View() tea.View {
 	needApproval := m.mode == modeApproval
 	needSudoPassword := m.mode == modeSudoPassword
 	needMCPAuth := m.mode == modeMCPAuth
-	needConfig := m.mode == modeConfig
-	// The model picker is composited at the app layer (tabs.go) so it can
-	// cover the sidebar; the tab body draws nothing for it.
+	// The model picker and /config are composited at the app layer
+	// (tabs.go) so they can cover the sidebar; the tab body draws nothing
+	// for them.
 	needCancelConfirm := m.cancelTurnConfirming && m.mode == modeInput
 	needCloseTabConfirm := m.closeTabConfirming && m.mode == modeInput
 	needMergeConfirm := m.mergePRConfirming && m.mode == modeInput
 	needFinalizedPlan := m.mode == modeFinalizedPlan
 
-	if (needBox || needModal || needApproval || needSudoPassword || needMCPAuth || needConfig || needCancelConfirm || needCloseTabConfirm || needMergeConfirm || needFinalizedPlan) && m.width > 0 && m.height > 0 {
+	if (needBox || needModal || needApproval || needSudoPassword || needMCPAuth || needCancelConfirm || needCloseTabConfirm || needMergeConfirm || needFinalizedPlan) && m.width > 0 && m.height > 0 {
 		cbStart := time.Now()
 		canvas := uv.NewScreenBuffer(m.width, m.height)
 		uv.NewStyledString(body).Draw(canvas, image.Rectangle{
@@ -916,131 +916,6 @@ func (m model) View() tea.View {
 				Min: image.Pt(mX, mY),
 				Max: image.Pt(mX+mW, mY+mH),
 			})
-		}
-		if needConfig {
-			modal := m.viewConfigModal()
-			mW := lipgloss.Width(modal)
-			mH := lipgloss.Height(modal)
-			mX := (m.width - mW) / 2
-			mY := (m.height - mH) / 2
-			if mX < 0 {
-				mX = 0
-			}
-			if mY < 0 {
-				mY = 0
-			}
-			uv.NewStyledString(modal).Draw(canvas, image.Rectangle{
-				Min: image.Pt(mX, mY),
-				Max: image.Pt(mX+mW, mY+mH),
-			})
-			// Parent submenus (Global / Project) draw first so the leaf
-			// pickers (Theme / Provider / Memory) opened from inside them
-			// can layer on top. Reversing the order would let the parent
-			// overdraw the leaf — the leaf still owns the keyboard via
-			// updateConfigModal's flag-priority order, but the user sees
-			// nothing happen.
-			if m.configGlobalPickerActive {
-				picker := m.viewConfigGlobalPicker()
-				pW := lipgloss.Width(picker)
-				pH := lipgloss.Height(picker)
-				pX := (m.width - pW) / 2
-				pY := (m.height - pH) / 2
-				if pX < 0 {
-					pX = 0
-				}
-				if pY < 0 {
-					pY = 0
-				}
-				uv.NewStyledString(picker).Draw(canvas, image.Rectangle{
-					Min: image.Pt(pX, pY),
-					Max: image.Pt(pX+pW, pY+pH),
-				})
-			}
-			if m.configProjectPickerActive {
-				picker := m.viewConfigProjectPicker()
-				pW := lipgloss.Width(picker)
-				pH := lipgloss.Height(picker)
-				pX := (m.width - pW) / 2
-				pY := (m.height - pH) / 2
-				if pX < 0 {
-					pX = 0
-				}
-				if pY < 0 {
-					pY = 0
-				}
-				uv.NewStyledString(picker).Draw(canvas, image.Rectangle{
-					Min: image.Pt(pX, pY),
-					Max: image.Pt(pX+pW, pY+pH),
-				})
-			}
-			if m.configThemePickerActive {
-				picker := m.viewThemePicker()
-				pW := lipgloss.Width(picker)
-				pH := lipgloss.Height(picker)
-				pX := (m.width - pW) / 2
-				pY := (m.height - pH) / 2
-				if pX < 0 {
-					pX = 0
-				}
-				if pY < 0 {
-					pY = 0
-				}
-				uv.NewStyledString(picker).Draw(canvas, image.Rectangle{
-					Min: image.Pt(pX, pY),
-					Max: image.Pt(pX+pW, pY+pH),
-				})
-			}
-			if m.configProviderPickerActive {
-				picker := m.viewConfigProviderPicker()
-				pW := lipgloss.Width(picker)
-				pH := lipgloss.Height(picker)
-				pX := (m.width - pW) / 2
-				pY := (m.height - pH) / 2
-				if pX < 0 {
-					pX = 0
-				}
-				if pY < 0 {
-					pY = 0
-				}
-				uv.NewStyledString(picker).Draw(canvas, image.Rectangle{
-					Min: image.Pt(pX, pY),
-					Max: image.Pt(pX+pW, pY+pH),
-				})
-			}
-			if m.configFields.active {
-				picker := m.viewFieldsPicker()
-				pW := lipgloss.Width(picker)
-				pH := lipgloss.Height(picker)
-				pX := (m.width - pW) / 2
-				pY := (m.height - pH) / 2
-				if pX < 0 {
-					pX = 0
-				}
-				if pY < 0 {
-					pY = 0
-				}
-				uv.NewStyledString(picker).Draw(canvas, image.Rectangle{
-					Min: image.Pt(pX, pY),
-					Max: image.Pt(pX+pW, pY+pH),
-				})
-			}
-			if m.configKeybindingsPickerActive {
-				picker := m.viewConfigKeybindingsPicker()
-				pW := lipgloss.Width(picker)
-				pH := lipgloss.Height(picker)
-				pX := (m.width - pW) / 2
-				pY := (m.height - pH) / 2
-				if pX < 0 {
-					pX = 0
-				}
-				if pY < 0 {
-					pY = 0
-				}
-				uv.NewStyledString(picker).Draw(canvas, image.Rectangle{
-					Min: image.Pt(pX, pY),
-					Max: image.Pt(pX+pW, pY+pH),
-				})
-			}
 		}
 		if needCancelConfirm {
 			confirm := m.viewCancelTurnConfirm()

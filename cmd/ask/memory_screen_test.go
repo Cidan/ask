@@ -203,21 +203,14 @@ func TestMemoryBrowser_ReinforceDemoteForget(t *testing.T) {
 }
 
 func TestGlobalConfig_MemoryRow(t *testing.T) {
-	m := fieldsFixture(t)
-	var row configItem
-	for _, it := range m.globalConfigItems() {
-		if it.id == "memory" {
-			row = it
-		}
-	}
-	if row.name != "Memory..." || row.key != "session provider (cheapest)" {
+	m := configFixture(t)
+	if row := configRowByID(t, m, "memoryModel"); row.label != "Extraction model" || row.value != "session provider (cheapest)" {
 		t.Fatalf("memory row = %+v", row)
 	}
 
 	// Enter on the row opens the shared model picker retargeted at the
 	// memory extraction override, with the synthetic Automatic row on top.
-	mi, _ := m.handleGlobalConfigEnter("memory")
-	m = mi.(model)
+	m = configEnter(t, m, "memoryModel")
 	if m.mode != modeModelPicker || m.modelPicker == nil || !m.modelPicker.memoryTarget {
 		t.Fatalf("memory row must open the memory-targeted model picker: mode=%v picker=%v", m.mode, m.modelPicker)
 	}
@@ -226,7 +219,7 @@ func TestGlobalConfig_MemoryRow(t *testing.T) {
 	}
 
 	// Choosing a concrete provider+model persists the pair and returns to
-	// /config (not the chat input), leaving the Global Options submenu open.
+	// /config (not the chat input), on the row the picker was opened from.
 	res, _ := m.dispatchModelPick(modelPickerEntry{providerID: "fake", providerName: "Fake", modelID: "m-two"})
 	m = res.(model)
 	if m.mode != modeConfig || m.modelPicker != nil {

@@ -15,10 +15,12 @@ tool surface → `.claude/rules/tools.md`, workflow graph →
   tab-addressed messages with `dispatchByTabID` and everything else
   with `broadcast` (each tab filters with `matchesTabID`,
   coordinator.go). `app.View` joins the active body with the sidebar
-  (`joinBodySidebar`) and composites the three full-frame overlays —
-  model picker, skills browser, and the `/savings` overlay — with
+  (`joinBodySidebar`) and composites the full-frame overlays — model
+  picker, skills browser, `/savings`, `/memory`, and `/config` — with
   `drawOverlayCentered` so they cover the sidebar. Every other overlay is
-  drawn inside the tab.
+  drawn inside the tab. A toast is drawn inside the tab, under them, so a
+  full-frame overlay reports outcomes on its own screen (`/config`'s
+  notice line).
 - `model.Update` is a value receiver; mutating helpers are pointer
   receivers (Go takes `&m` on the local copy). A deferred `layout()`
   runs after every Update.
@@ -333,24 +335,40 @@ lockstep (`.claude/rules/issues.md`).
   close-tab confirm; Ctrl+C/Ctrl+D twice on an empty prompt closes the
   tab. `sendToProvider`, slash dispatch, Ctrl+M and `Init` refuse when
   `validateAskCwd` fails.
-- `/config` (config_modal.go): Global Options (Quiet Mode, Cursor
-  Blink, Render Diffs, Tool Output, Skip All Permissions, Worktree,
-  Theme, Default Provider, Web Search…, one
-  `<Provider>...` row per `providers.All()` entry, Keybindings…) and
-  Project Options (config_project.go: GitHub auth (PAT or gh CLI,
-  `cycleGitHubAuth`, kills the proc like a saved field), GitHub MCP
-  endpoint/PAT, Linear endpoint/key/team, Issue provider, Worktree).
-  The project Worktree
-  row cycles inherit → on → off and shadows the global flag;
-  `config.WorktreeEnabled(cfg, cwd)` is the only resolver, and both
-  toggles go through `applyEffectiveWorktree` so the session restarts
-  only when the effective value moved. The Global row shows the
-  on-disk global value (plus any project shadow), not `m.worktree`.
-  `/cd` and shell-mode `cd` re-derive `m.worktree` for the new cwd;
-  only `/cd` clears the worktree name. `fieldsPickerState`
-  (config_fields.go) is the only field editor: opened with a
-  `[]providers.SettingField` plus load/save closures; rows show stored
-  / `from $ENV` / default; chrome is `renderLayeredConfigBox`.
+- `/config` (config_modal.go state and keys, config_rows.go rows,
+  config_modal_view.go drawing; `modeConfig`, `m.config`
+  `*configScreenState`, composited in tabs.go like `/memory`): a
+  full-frame two-pane settings screen. Sections down the left —
+  Appearance, Session, Providers, Decisions, Memory, Web search,
+  Project · <root>, Keybindings (`⚠` when one needs attention: the
+  default provider unconfigured) — the focused section's rows on the
+  right under group headings, and the focused row's description in the
+  three lines below them. Rows are rebuilt from the saved config and the
+  tab on every frame (`configSections`); the state holds only position,
+  the filter, and what is in progress. Row kinds: toggle and choice
+  (segmented `[current]`; Enter and ←/→ step), select (Enter opens a
+  dropdown under the row — the theme list previews live and Esc reverts —
+  ←/→ step), text (`settingRow` over a `providers.SettingField`, edited
+  inline in a bubbles `textinput`, `EchoPassword` for secrets; Enter
+  validates and saves, a failed `Validate` keeps the draft; Delete clears
+  the stored value back to env/default; paste reaches the editor), action
+  (deslop/extraction model pickers, which return to `/config` through
+  `closeModelPickerToConfig` with `m.config` kept; Browse memories;
+  Workflows), and keybinding (Enter captures the next key — every key,
+  Enter/Delete/r included, is a binding; Esc cancels; Ctrl+R restores the
+  default; Delete unbinds). ↑↓ (and Ctrl+P/N) flow across section edges,
+  Tab/Shift+Tab jump sections, Home/End/PgUp/PgDn; typing filters every
+  section at once (label, group, section, description, value), Esc clears
+  the filter then closes. Every save goes through `saveConfigWith` (the
+  config lock) and acknowledges on the filter line (`say`). Saving a
+  provider's field restarts the tab only when it runs on that provider;
+  project credentials, GitHub auth, and skip-all-permissions always
+  restart it; the global and project Worktree rows go through
+  `applyEffectiveWorktree` (`config.WorktreeEnabled` is the only
+  resolver), so the session restarts only when the effective value moved.
+  The issue provider steps in either direction, skipping providers whose
+  credentials are missing (`providerActivationReady`). `config_box.go`
+  keeps the small list box the workflows builder's pickers still use.
 - Model picker (model_picker.go, model_picker_view.go,
   model_catalog.go): one `NormalBorder` box, list ~38% / detail pane of
   `ModelMetaFor` facts; recents first, then per-provider natural sort;
@@ -404,8 +422,9 @@ lockstep (`.claude/rules/issues.md`).
   weight — ↑↓, Enter expands the body, Tab cycles weight/recent/kind,
   type to filter, `+`/`-` reinforce/demote, Ctrl+X twice forgets,
   Ctrl+R reloads; a closed memory service toasts instead of opening.
-  `/config → Memory...` (`memoryFields`, `openMemoryFieldsPicker`) edits
-  the extraction provider/model (`Config.Memory`).
+  `/config → Memory` edits the extraction provider/model
+  (`Config.Memory`, through the retargeted model picker) and the two
+  decision-model toggles (`memory.extractGate`, `memory.recallFilter`).
 
 ## Shell mode (shell.go)
 
@@ -484,6 +503,7 @@ lockstep (`.claude/rules/issues.md`).
   tool_output.go, tab_title.go, usage.go.
 - Overlays: ask_question.go, ask_wire.go, approval.go,
   finalized_plan.go, sudo_password.go, config.go, config_modal.go,
+  config_modal_view.go, config_rows.go, config_box.go,
   config_fields.go, config_project.go, config_keybindings.go,
   model_picker.go, model_picker_view.go, model_catalog.go,
   skills_browser.go, skills_browser_view.go.

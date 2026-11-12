@@ -10,6 +10,7 @@ import (
 
 	"github.com/Cidan/ask/pkg/diff"
 	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/workflow"
 )
 
@@ -193,6 +194,19 @@ func (env *ToolEnv) ApprovalDenied(ctx context.Context, toolName string, input m
 		return "The user denied permission for this tool call. Do not retry it; either proceed without it or end your turn and explain what you need."
 	}
 	return ""
+}
+
+// SpendDecision is the spend source of decision model calls.
+const SpendDecision = "decision"
+
+// RecordSpend reports a call a tool made on the session's behalf outside the
+// session's own model calls, so it reaches the cost meter and the session's
+// usage ledger.
+func (env *ToolEnv) RecordSpend(source string, u providers.Usage) {
+	if env == nil || env.Emit == nil || (u.InputTokens == 0 && !u.CostKnown()) {
+		return
+	}
+	env.Emit(engine.SpendEvent{BaseEvent: engine.BaseEvent{TabID: env.TabID}, Source: source, Usage: u})
 }
 
 // AbsPath resolves a relative or absolute path against the session Cwd.

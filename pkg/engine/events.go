@@ -14,6 +14,7 @@ const (
 	EventKindToolDiff        EventKind = "tool_diff"
 	EventKindUsage           EventKind = "usage"
 	EventKindCost            EventKind = "cost"
+	EventKindSpend           EventKind = "spend"
 	EventKindModelInfo       EventKind = "model_info"
 	EventKindTodoUpdate      EventKind = "todo_update"
 	EventKindSubagentStarted EventKind = "subagent_started"
@@ -126,6 +127,17 @@ func NewUsageEvent(tabID int, u providers.Usage) UsageEvent {
 }
 
 func (UsageEvent) Kind() EventKind { return EventKindUsage }
+
+// SpendEvent records a call a tool or request hook made on the session's
+// behalf outside the session's own model calls — a decision model call.
+// Source names what it was for (the TUI's usage-ledger kind).
+type SpendEvent struct {
+	BaseEvent
+	Source string          `json:"source"`
+	Usage  providers.Usage `json:"usage"`
+}
+
+func (SpendEvent) Kind() EventKind { return EventKindSpend }
 
 // CostEvent records estimated monetary cost for an API step.
 type CostEvent struct {

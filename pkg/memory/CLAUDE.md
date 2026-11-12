@@ -72,9 +72,16 @@ last exchange (`TurnFromSession`) and hands it to the installed
 - `SystemBlock(ctx, cwd)`: `Top` `DefaultTopK` (15) with `DefaultBodies`
   (3) bodies under `## Project memory` — the `<project_memory>` block
   `pkg/engine/prompt.go` builds once per session.
-- `RecallBlock(ctx, cwd, prompt, topic, exclude)`: per-turn recall,
-  `DefaultRecallK` (15), returns the block and the inferred topic; ids in
-  `exclude` (`TopIDs`, what the system block already shows) are dropped.
+- `RecallBlock(ctx, cwd, prompt, topic, exclude, filter)`: per-turn
+  recall, `DefaultRecallK` (15), returns the block and the inferred topic;
+  ids in `exclude` (`TopIDs`, what the system block already shows) are
+  dropped. A non-nil `RelevanceFilter` changes the shape: recall draws
+  `FilteredRecallCandidates` (30) **silently**, the filter keeps the ones
+  that bear on the prompt (in order), at most `DefaultRecallK` are shown,
+  and only those are bumped (`Service.Touch`, the implicit bump `Recall`
+  skipped). A failing filter falls back to the unfiltered top
+  `DefaultRecallK`. The filter is the decision model's
+  (`engine.MemoryRecallFilter`); `pkg/memory` never imports a provider.
 - `FileBlock(ctx, cwd, path)`: a silent 5-hit recall on the path, titles
   only, for the file tools.
 - `DefaultHookTimeout` (8s) bounds all of them.
@@ -144,7 +151,13 @@ last exchange (`TurnFromSession`) and hands it to the installed
   the nearest list inserts) and its topic is touched and handed to
   `OnTopic`. Queue of 32, drop-oldest when full, `Close` cancels the job
   in flight; `Drain` is the test seam. Usage goes to `OnUsage` (the TUI
-  posts a `costMsg`).
+  posts a `costMsg`). Before that call, when a decision model is
+  configured and `memory.extractGate` is not false, a yes/no decision
+  call judges whether the turn holds anything durable and skips the
+  extraction when it does not (`pkg/engine/CLAUDE.md`, Decision models).
+- Per-turn filter: with a decision model and `memory.recallFilter` not
+  false, the recall hook passes `engine.MemoryRecallFilter` to
+  `RecallBlock`; its call's usage reaches the hook's `onSpend`.
 
 Closed service: every prompt block returns `""`, `MemoryAwareTool` passes
 through, the recall hook is a no-op, `SearchMemory` returns empty,

@@ -319,6 +319,10 @@ func (a app) View() tea.View {
 		v.Content = drawOverlayCentered(v.Content, overlay, a.width, a.height)
 		v.Cursor = nil
 	}
+	if overlay := a.activeTab().configOverlay(a.width, a.height); overlay != "" {
+		v.Content = drawOverlayCentered(v.Content, overlay, a.width, a.height)
+		v.Cursor = nil
+	}
 	if a.sidebarFocus {
 		// The list owns the keyboard; a blinking caret in the
 		// input would claim otherwise.
@@ -547,12 +551,7 @@ func (a app) supplantWorkflow(req spawnWorkflowTabMsg) (tea.Model, tea.Cmd) {
 	t.modelPicker = nil
 	t.skillsBrowser = nil
 	t.workflowPicker = nil
-	t.configGlobalPickerActive = false
-	t.configProjectPickerActive = false
-	t.configThemePickerActive = false
-	t.configProviderPickerActive = false
-	t.configFields = fieldsPickerState{}
-	t.configKeybindingsPickerActive = false
+	t.config = nil
 	t.lastContentFP = ""
 	if t.fc != nil {
 		t.fc.vpFP = ""

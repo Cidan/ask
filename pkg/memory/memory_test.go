@@ -426,7 +426,7 @@ func TestPromptBlocksThroughDefault(t *testing.T) {
 	if SystemBlock(ctx, cwd) != "" || TopIDs(ctx, cwd) != nil || FileBlock(ctx, cwd, "main.go") != "" {
 		t.Fatal("closed service must render nothing")
 	}
-	if block, topic := RecallBlock(ctx, cwd, "anything", "T", nil); block != "" || topic != "t" {
+	if block, topic := RecallBlock(ctx, cwd, "anything", "T", nil, nil); block != "" || topic != "t" {
 		t.Fatalf("closed RecallBlock = %q/%q", block, topic)
 	}
 	if err := Open(Options{DBPath: filepath.Join(t.TempDir(), "d.db"), Embedder: NewFakeEmbedder(512)}); err != nil {
@@ -443,20 +443,82 @@ func TestPromptBlocksThroughDefault(t *testing.T) {
 	if !ids[top] || !ids[other] {
 		t.Fatalf("TopIDs = %v", ids)
 	}
-	block, topic := RecallBlock(ctx, cwd, "make test", "", ids)
+	block, topic := RecallBlock(ctx, cwd, "make test", "", ids, nil)
 	if block != "" {
 		t.Fatalf("ids in the system block must be excluded: %q", block)
 	}
 	if topic != "build" {
 		t.Fatalf("topic = %q", topic)
 	}
-	block, _ = RecallBlock(ctx, cwd, "make test", "", nil)
+	block, _ = RecallBlock(ctx, cwd, "make test", "", nil, nil)
 	if !strings.Contains(block, "## Relevant memory") || !strings.Contains(block, "builds llama") {
 		t.Fatalf("RecallBlock: %q", block)
 	}
 	file := FileBlock(ctx, cwd, "make test")
 	if !strings.Contains(file, "## Memory for make test") {
 		t.Fatalf("FileBlock: %q", file)
+	}
+}
+
+type keepFilter struct {
+	keep func(Concept) bool
+	err  error
+	got  []Concept
+}
+
+func (f *keepFilter) Relevant(_ context.Context, _ string, cs []Concept) ([]Concept, error) {
+	f.got = append([]Concept(nil), cs...)
+	if f.err != nil {
+		return nil, f.err
+	}
+	var out []Concept
+	for _, c := range cs {
+		if f.keep(c) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func TestRecallBlockFilteredCountsOnlyWhatItKeeps(t *testing.T) {
+	_ = Close()
+	defer Close()
+	ctx := context.Background()
+	cwd := filepath.Join(t.TempDir(), "proj")
+	if err := Open(Options{DBPath: filepath.Join(t.TempDir(), "d.db"), Embedder: NewFakeEmbedder(512)}); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var ids []int64
+	for i := 0; i < 20; i++ {
+		id, err := Upsert(ctx, Concept{Scope: ScopeFor(cwd), Kind: KindProject, Title: "deploy pipeline staging cluster step " + string(rune('a'+i))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	keep := ids[3]
+	f := &keepFilter{keep: func(c Concept) bool { return c.ID == keep }}
+	block, _ := RecallBlock(ctx, cwd, "deploy pipeline staging cluster step", "", nil, f)
+	if len(f.got) != 20 {
+		t.Fatalf("the filter chooses among more candidates than an unfiltered recall shows: got %d", len(f.got))
+	}
+	if n := strings.Count(block, "\n- #"); n != 1 || !strings.Contains(block, "step d") {
+		t.Fatalf("only the kept concept is shown: %q", block)
+	}
+	for _, id := range ids {
+		c, err := Default().Get(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := map[bool]int64{true: 1, false: 0}[id == keep]; c.AccessCount != want {
+			t.Errorf("#%d access count = %d, want %d: only what the filter kept counts as recalled", id, c.AccessCount, want)
+		}
+	}
+
+	failing := &keepFilter{err: context.DeadlineExceeded}
+	block, _ = RecallBlock(ctx, cwd, "deploy pipeline staging cluster step", "", nil, failing)
+	if n := strings.Count(block, "\n- #"); n != DefaultRecallK {
+		t.Fatalf("a failing filter falls back to the unfiltered top %d, got %d", DefaultRecallK, n)
 	}
 }
 

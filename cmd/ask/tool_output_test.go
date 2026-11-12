@@ -165,23 +165,6 @@ func TestRenderToolCallBlock_ShortUnknownToolHeaderOnly(t *testing.T) {
 	}
 }
 
-func TestNextToolOutputMode_Cycles(t *testing.T) {
-	// /config row cycles full → short → off → full. Unknown values reset
-	// to the default so the picker can never wedge.
-	if got := nextToolOutputMode(toolOutputFull); got != toolOutputShort {
-		t.Errorf("full → %q want %q", got, toolOutputShort)
-	}
-	if got := nextToolOutputMode(toolOutputShort); got != toolOutputOff {
-		t.Errorf("short → %q want %q", got, toolOutputOff)
-	}
-	if got := nextToolOutputMode(toolOutputOff); got != toolOutputFull {
-		t.Errorf("off → %q want %q", got, toolOutputFull)
-	}
-	if got := nextToolOutputMode("garbage"); got != defaultToolOutputMode {
-		t.Errorf("garbage → %q want %q", got, defaultToolOutputMode)
-	}
-}
-
 func TestParseToolOutputMode_Defaults(t *testing.T) {
 	// Empty and unrecognized values fall through to the default so a typo
 	// in ask.json never silences tool output entirely.

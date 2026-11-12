@@ -12,6 +12,7 @@ import (
 	"github.com/Cidan/ask/pkg/config"
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/providers"
+	"github.com/Cidan/ask/pkg/tools"
 	adkmodel "google.golang.org/adk/v2/model"
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
@@ -128,6 +129,38 @@ func TestSidebar_ReadingMeasuredAgainstItsModel(t *testing.T) {
 	m2, _ := runUpdate(t, m, usageMsg{tokens: 100_000, provider: providers.ClaudeCodeProviderID, model: "haiku"})
 	if got := m2.sidebarCost(); !strings.HasPrefix(got, "50%") {
 		t.Fatalf("sidebarCost = %q, want 50%% of haiku's 200k window", got)
+	}
+}
+
+// A tool's own model call — decide, the memory recall filter — is the
+// session's spend: the session's tool env sends its SpendEvent to
+// recordSpend, while every other event still streams to the tab.
+func TestSessionTools_RouteToolSpendToTheLedger(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("BRAVE_API_KEY", "")
+	cwd := t.TempDir()
+	s := testSpendSession(t, cwd, "s3")
+	var streamed []tea.Msg
+	s.env = newAgentToolEnv(cwd, 1, true, func(m tea.Msg) { streamed = append(streamed, m) })
+	s.provider = providers.Vertex{}
+	setupAgentSessionTools(s, askConfig{})
+	if !hasToolNamed(s.coreTools, "decide") {
+		t.Fatal("decide is a core tool")
+	}
+
+	s.env.RecordSpend(tools.SpendDecision, providers.Usage{Provider: providers.GeminiAPIProviderID, Model: providers.GeminiDecision1, InputTokens: 1000, CostUSD: 0.0001, CostSource: providers.CostPriced})
+	if got := drainCostMsgs(s.ch); math.Abs(got-0.0001) > 1e-12 {
+		t.Fatalf("decision cost on the meter = %v", got)
+	}
+	if entries := s.store.loadUsageLedger("s3", cwd); len(entries) != 1 || entries[0].Kind != spendDecision || entries[0].Usage.InputTokens != 1000 {
+		t.Fatalf("ledger = %+v", entries)
+	}
+	if len(streamed) != 0 {
+		t.Errorf("a spend event is not a tab message: %+v", streamed)
+	}
+	s.env.Emit(engine.StatusEvent{Status: "working"})
+	if len(streamed) != 1 {
+		t.Errorf("other events still stream: %+v", streamed)
 	}
 }
 

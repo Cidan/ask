@@ -88,33 +88,6 @@ func TestHandleCommand_SlashClearAlsoClearsWorktree(t *testing.T) {
 	}
 }
 
-// TestConfigToggleWorktreeOff_ClearsWorktreeName proves that flipping
-// Worktree off in /config detaches the current tab from its worktree
-// so the next turn runs in the project root.
-// toggleGlobalConfigRow navigates the new layered /config: it
-// opens the modal, drills into Global Options, finds the row by id,
-// dispatches Enter, and returns the resulting model. Centralised so
-// each per-row toggle test doesn't repeat the navigation prologue
-// after the layering refactor.
-func toggleGlobalConfigRow(t *testing.T, m model, rowID string) model {
-	t.Helper()
-	m = m.openConfigGlobalPicker()
-	items := m.filteredGlobalConfigItems()
-	cursor := -1
-	for i, it := range items {
-		if it.id == rowID {
-			cursor = i
-			break
-		}
-	}
-	if cursor < 0 {
-		t.Fatalf("global config row %q not found in %+v", rowID, items)
-	}
-	m.configGlobalCursor = cursor
-	mi, _ := m.updateConfigGlobalPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
-	return mi.(model)
-}
-
 // seedWorktreeConfig writes the global flag and, when project is
 // non-nil, a project override for cwd, mirroring what newTab would
 // have resolved into m.worktree.
@@ -138,6 +111,8 @@ func projectWorktreeOverride(t *testing.T, cwd string) *bool {
 	return loadProjectConfig(cfg, cwd).Worktree
 }
 
+// Flipping Worktree off in /config detaches the current tab from its
+// worktree so the next turn runs in the project root.
 func TestConfigToggleWorktreeOff_ClearsWorktreeName(t *testing.T) {
 	isolateHome(t)
 	p := newFakeProvider()
@@ -207,10 +182,8 @@ func TestConfigToggleWorktreeGlobal_ShadowedByProjectOverride(t *testing.T) {
 	if cfg.UI.Worktree == nil || !*cfg.UI.Worktree {
 		t.Errorf("global flag should still be persisted on, got %v", cfg.UI.Worktree)
 	}
-	for _, it := range mm.globalConfigItems() {
-		if it.id == "worktree" && it.key != "on (project: on)" {
-			t.Errorf("global row should show the shadow, got %q", it.key)
-		}
+	if row := configRowByID(t, mm, "worktree"); !strings.Contains(row.desc, "overrides it (on)") {
+		t.Errorf("the global row should say the project shadows it, got %q", row.desc)
 	}
 }
 
@@ -220,93 +193,54 @@ func TestProjectWorktreeRow_CyclesInheritOnOffAndPersists(t *testing.T) {
 	withRegisteredProviders(t, p)
 	m := newTestModel(t, p)
 	seedWorktreeConfig(t, m.cwd, false, nil)
-	m = m.startConfigModal()
-	m = m.openConfigProjectPicker()
+	m = focusConfigRow(t, m.startConfigModal(), "projectWorktree")
 
 	rowValue := func(m model) string {
-		for _, it := range m.projectPickerItems() {
-			if it.id == "worktree" {
-				return it.key
-			}
-		}
-		t.Fatal("project picker has no worktree row")
-		return ""
+		r := configRowByID(t, m, "projectWorktree")
+		return r.options[r.current]
 	}
-	if got := rowValue(m); got != "(global: off)" {
-		t.Fatalf("initial row=%q want (global: off)", got)
+	if got := rowValue(m); got != "inherit (off)" {
+		t.Fatalf("initial row=%q want inherit (off)", got)
 	}
 
-	mi, _ := m.cycleProjectWorktree()
-	m = mi.(model)
+	m = pressConfig(t, m, tea.KeyPressMsg{Code: tea.KeyRight})
 	if v := projectWorktreeOverride(t, m.cwd); v == nil || !*v {
-		t.Fatalf("first cycle should persist override on, got %v", v)
+		t.Fatalf("first step should persist override on, got %v", v)
 	}
 	if !m.worktree {
 		t.Error("override on should flip the tab's effective flag on")
 	}
 	if got := rowValue(m); got != "on" {
-		t.Errorf("row after first cycle=%q want on", got)
+		t.Errorf("row after first step=%q want on", got)
 	}
 
 	m.worktreeName = "ask-claude-projectoff"
 	m.proc = &providerProc{}
-	mi, _ = m.cycleProjectWorktree()
-	m = mi.(model)
+	m = pressConfig(t, m, tea.KeyPressMsg{Code: tea.KeyRight})
 	if v := projectWorktreeOverride(t, m.cwd); v == nil || *v {
-		t.Fatalf("second cycle should persist override off, got %v", v)
+		t.Fatalf("second step should persist override off, got %v", v)
 	}
-	if m.worktree {
-		t.Error("override off should flip the tab's effective flag off")
-	}
-	if m.worktreeName != "" {
-		t.Errorf("override off should clear worktreeName, got %q", m.worktreeName)
-	}
-	if m.proc != nil {
-		t.Error("override off should kill the open proc")
+	if m.worktree || m.worktreeName != "" || m.proc != nil {
+		t.Errorf("override off flips the tab off, clears its worktree, and restarts it: worktree=%v name=%q proc=%v", m.worktree, m.worktreeName, m.proc)
 	}
 	if got := rowValue(m); got != "off" {
-		t.Errorf("row after second cycle=%q want off", got)
+		t.Errorf("row after second step=%q want off", got)
 	}
 
-	mi, _ = m.cycleProjectWorktree()
-	m = mi.(model)
+	m = pressConfig(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if v := projectWorktreeOverride(t, m.cwd); v != nil {
-		t.Fatalf("third cycle should clear the override, got %v", *v)
+		t.Fatalf("third step should clear the override, got %v", *v)
 	}
 	cfg, _ := loadConfig()
 	if _, ok := cfg.Projects[projectKey(m.cwd)]; ok {
 		t.Error("clearing the only project setting should prune the project block")
 	}
-	if got := rowValue(m); got != "(global: off)" {
-		t.Errorf("row after third cycle=%q want (global: off)", got)
+	if got := rowValue(m); got != "inherit (off)" {
+		t.Errorf("row after third step=%q want inherit (off)", got)
 	}
 }
 
-// Enter on the Worktree row of Project Options dispatches the cycle.
-func TestProjectPicker_EnterOnWorktreeRowCycles(t *testing.T) {
-	isolateHome(t)
-	p := newFakeProvider()
-	withRegisteredProviders(t, p)
-	m := newTestModel(t, p)
-	m = m.startConfigModal()
-	m = m.openConfigProjectPicker()
-	rows := m.filteredProjectPickerItems()
-	for i, it := range rows {
-		if it.id == "worktree" {
-			m.configProjectCursor = i
-		}
-	}
-	mi, _ := m.updateConfigProjectPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
-	mm := mi.(model)
-	if v := projectWorktreeOverride(t, mm.cwd); v == nil || !*v {
-		t.Fatalf("Enter should persist override on, got %v", v)
-	}
-	if !mm.worktree {
-		t.Error("Enter should flip the tab's effective flag on")
-	}
-}
-
-// Clearing the override back to inherit must re-derive from the global
+// Stepping the override back to inherit must re-derive from the global
 // flag: with global on, the tab goes back to worktree mode.
 func TestProjectWorktreeRow_ClearingOverrideFallsBackToGlobal(t *testing.T) {
 	isolateHome(t)
@@ -316,10 +250,9 @@ func TestProjectWorktreeRow_ClearingOverrideFallsBackToGlobal(t *testing.T) {
 	off := false
 	seedWorktreeConfig(t, m.cwd, true, &off)
 	m.worktree = false
-	mi, _ := m.cycleProjectWorktree()
-	m = mi.(model)
+	m = pressConfig(t, focusConfigRow(t, m, "projectWorktree"), tea.KeyPressMsg{Code: tea.KeyRight})
 	if v := projectWorktreeOverride(t, m.cwd); v != nil {
-		t.Fatalf("cycling from off should clear the override, got %v", *v)
+		t.Fatalf("stepping from off should clear the override, got %v", *v)
 	}
 	if !m.worktree {
 		t.Error("inherit with global on should flip the tab's effective flag on")

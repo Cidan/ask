@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	lipgloss "charm.land/lipgloss/v2"
 )
 
 // TestApp_TabNavigationHonoursKeymapOverride proves the tabs.go
@@ -106,363 +105,142 @@ func TestUpdate_ScreenShortcutIgnoresLockModifiers(t *testing.T) {
 	}
 }
 
-// The /config keybindings picker must persist captures to
-// ~/.config/ask/ask.json so the next process startup sees the
-// override. End-to-end: open the picker, simulate Enter to enter
-// capture, simulate a custom keypress, then read the saved file
-// back through loadConfig.
-func TestConfigKeybindingsPicker_CapturePersistsToDisk(t *testing.T) {
+func keyRowID(a Action) string { return "key:" + string(a) }
+
+// A captured binding is written to ~/.config/ask/ask.json, so the next
+// process startup sees the override, and the cached keymap is refreshed.
+func TestConfigKeybindings_CapturePersistsToDisk(t *testing.T) {
 	isolateHome(t)
 	invalidateKeyMapCache()
 	defer invalidateKeyMapCache()
 
-	m := newTestModel(t, newFakeProvider())
-	m.mode = modeConfig
-	m.configKeybindingsPickerActive = true
-	// Cursor lands on the first action — ActionScreenIssues by the
-	// order in actionMeta. Verify the precondition so the rest of
-	// the test fails loudly if actionMeta reorders.
-	if actionMeta[0].Action != ActionScreenIssues {
-		t.Fatalf("test depends on actionMeta[0]=ActionScreenIssues; got %s",
-			actionMeta[0].Action)
+	m := configEnter(t, newTestModel(t, newFakeProvider()), keyRowID(ActionScreenIssues))
+	if !m.config.capturing {
+		t.Fatal("Enter on a keybinding row waits for the new key")
 	}
-
-	// Enter capture mode.
-	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	if !m2.configKeybindingsCapturing {
-		t.Fatalf("Enter on row should enter capture mode")
+	m = pressConfig(t, m, tea.KeyPressMsg{Mod: tea.ModAlt | tea.ModShift, Code: 'x'})
+	if m.config.capturing || m.config.noticeErr {
+		t.Fatalf("capture ends after recording a key: capturing=%v notice=%q", m.config.capturing, m.config.notice)
 	}
-
-	// Capture a new binding.
-	m3, _ := runUpdate(t, m2, tea.KeyPressMsg{Mod: tea.ModAlt | tea.ModShift, Code: 'x'})
-	if m3.configKeybindingsCapturing {
-		t.Errorf("capture should end after recording a key")
-	}
-	if m3.configKeybindingsError != "" {
-		t.Errorf("unexpected capture error: %q", m3.configKeybindingsError)
-	}
-
-	// Persisted to disk.
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	got := cfg.Keybindings[string(ActionScreenIssues)]
-	if got != "alt+shift+x" {
+	if got := cfg.Keybindings[string(ActionScreenIssues)]; got != "alt+shift+x" {
 		t.Errorf("Keybindings[%s] = %q, want alt+shift+x", ActionScreenIssues, got)
 	}
-
-	// Cache invalidated; currentKeyMap reflects the new binding.
 	if b := currentKeyMap()[ActionScreenIssues]; b != (KeyBinding{Mod: tea.ModAlt | tea.ModShift, Code: 'x'}) {
 		t.Errorf("currentKeyMap not refreshed after persist: %+v", b)
 	}
 }
 
-func TestConfigKeybindingsPicker_EmacsListNav(t *testing.T) {
+// While capturing, every key is a binding — the ones that mean something
+// on the screen (r, Ctrl+R, Ctrl+U, Delete, Enter) included — and lock
+// modifiers are stripped.
+func TestConfigKeybindings_CaptureRecordsAnyKey(t *testing.T) {
+	cases := []struct {
+		name string
+		key  tea.KeyPressMsg
+		want string
+	}{
+		{"lock modifiers stripped", tea.KeyPressMsg{Mod: tea.ModAlt | tea.ModCapsLock | tea.ModScrollLock, Code: 'x'}, "alt+x"},
+		{"function key", tea.KeyPressMsg{Mod: tea.ModCtrl, Code: tea.KeyF5}, "ctrl+f5"},
+		{"plain r", tea.KeyPressMsg{Code: 'r', Text: "r"}, "r"},
+		{"ctrl+r", tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'r'}, "ctrl+r"},
+		{"ctrl+u", tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'u'}, "ctrl+u"},
+		{"delete", tea.KeyPressMsg{Code: tea.KeyDelete}, "del"},
+		{"enter", tea.KeyPressMsg{Code: tea.KeyEnter}, "enter"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			isolateHome(t)
+			invalidateKeyMapCache()
+			defer invalidateKeyMapCache()
+			m := configEnter(t, newTestModel(t, newFakeProvider()), keyRowID(ActionScreenIssues))
+			m = pressConfig(t, m, c.key)
+			if m.config.noticeErr {
+				t.Fatalf("capture errored: %q", m.config.notice)
+			}
+			cfg, _ := loadConfig()
+			if got := cfg.Keybindings[string(ActionScreenIssues)]; got != c.want {
+				t.Errorf("captured binding=%q want %q", got, c.want)
+			}
+			if !currentKeyMap().Matches(ActionScreenIssues, tea.KeyPressMsg{Mod: stripKeyLockModifiers(c.key.Mod), Code: c.key.Code}) {
+				t.Error("the captured binding matches after reload")
+			}
+		})
+	}
+}
+
+// Esc during capture aborts without writing — backing out must never
+// clobber a binding.
+func TestConfigKeybindings_EscDuringCaptureDoesNotPersist(t *testing.T) {
 	isolateHome(t)
 	invalidateKeyMapCache()
 	defer invalidateKeyMapCache()
 
-	m := newTestModel(t, newFakeProvider())
-	m.mode = modeConfig
-	m.configKeybindingsPickerActive = true
-
-	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'n'})
-	if m2.configKeybindingsCursor != 1 {
-		t.Fatalf("Ctrl+N cursor=%d want 1", m2.configKeybindingsCursor)
+	m := configEnter(t, newTestModel(t, newFakeProvider()), keyRowID(ActionScreenIssues))
+	m = pressConfig(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.config == nil || m.config.capturing || m.mode != modeConfig {
+		t.Fatalf("Esc ends the capture and keeps the screen: mode=%v", m.mode)
 	}
-	m3, _ := runUpdate(t, m2, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'p'})
-	if m3.configKeybindingsCursor != 0 {
-		t.Fatalf("Ctrl+P cursor=%d want 0", m3.configKeybindingsCursor)
+	if cfg, _ := loadConfig(); len(cfg.Keybindings) != 0 {
+		t.Errorf("a cancelled capture writes nothing: %+v", cfg.Keybindings)
 	}
 }
 
-func TestConfigKeybindingsPicker_CaptureStripsLockModifiers(t *testing.T) {
+// Rebinding to the default removes the entry, so ask.json never
+// accumulates dead overrides.
+func TestConfigKeybindings_RebindToDefaultRemovesEntry(t *testing.T) {
 	isolateHome(t)
 	invalidateKeyMapCache()
 	defer invalidateKeyMapCache()
-
-	m := newTestModel(t, newFakeProvider())
-	m.mode = modeConfig
-	m.configKeybindingsPickerActive = true
-	m.configKeybindingsCapturing = true
-	m.configKeybindingsCursor = 0
-
-	m2, _ := runUpdate(t, m, tea.KeyPressMsg{
-		Mod:  tea.ModAlt | tea.ModCapsLock | tea.ModScrollLock,
-		Code: 'x',
-	})
-	if m2.configKeybindingsError != "" {
-		t.Fatalf("capture errored: %q", m2.configKeybindingsError)
-	}
-	cfg, _ := loadConfig()
-	if got := cfg.Keybindings[string(ActionScreenIssues)]; got != "alt+x" {
-		t.Errorf("captured binding=%q want alt+x", got)
-	}
-}
-
-func TestConfigKeybindingsPicker_CaptureFunctionKeyRoundTrips(t *testing.T) {
-	isolateHome(t)
-	invalidateKeyMapCache()
-	defer invalidateKeyMapCache()
-
-	m := newTestModel(t, newFakeProvider())
-	m.mode = modeConfig
-	m.configKeybindingsPickerActive = true
-	m.configKeybindingsCapturing = true
-	m.configKeybindingsCursor = 0
-
-	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: tea.KeyF5})
-	if m2.configKeybindingsError != "" {
-		t.Fatalf("capture errored: %q", m2.configKeybindingsError)
-	}
-	cfg, _ := loadConfig()
-	if got := cfg.Keybindings[string(ActionScreenIssues)]; got != "ctrl+f5" {
-		t.Fatalf("captured binding=%q want ctrl+f5", got)
-	}
-	if !currentKeyMap().Matches(ActionScreenIssues, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: tea.KeyF5}) {
-		t.Error("captured function-key binding should match after reload")
-	}
-}
-
-func TestKeybindingsExpandInnerWidthGrowsToFitLine(t *testing.T) {
-	rows := [][2]string{{"Run workflow on chat", "ctrl+shift+f"}}
-	rowsInnerW := keybindingsPickerInnerWidth(200, rows)
-	prompt := "Press the new key combination for Run workflow on chat (currently ctrl+shift+f)."
-	got := keybindingsExpandInnerWidth(200, rowsInnerW, prompt)
-	if got <= rowsInnerW {
-		t.Fatalf("expanded inner width=%d should grow past row inner width=%d", got, rowsInnerW)
-	}
-	if got < lipgloss.Width(prompt) {
-		t.Errorf("expanded inner width=%d should fit line width=%d on a wide terminal", got, lipgloss.Width(prompt))
-	}
-}
-
-func TestKeybindingsExpandInnerWidthCapsToTerminal(t *testing.T) {
-	rows := [][2]string{{"Run workflow on chat", "ctrl+shift+f"}}
-	rowsInnerW := keybindingsPickerInnerWidth(30, rows)
-	prompt := "Press the new key combination for Run workflow on chat (currently ctrl+shift+f)."
-	got := keybindingsExpandInnerWidth(30, rowsInnerW, prompt)
-	maxInnerW := 30 - themePickerBoxStyle.GetHorizontalFrameSize()
-	if got > maxInnerW {
-		t.Fatalf("expanded inner width=%d exceeds terminal cap=%d", got, maxInnerW)
-	}
-}
-
-func TestKeybindingsPickerWidthCapsToTerminal(t *testing.T) {
-	rows := [][2]string{
-		{"Run workflow on chat", "ctrl+shift+right"},
-	}
-	innerW := keybindingsPickerInnerWidth(30, rows)
-	maxInnerW := 30 - themePickerBoxStyle.GetHorizontalFrameSize()
-	if innerW > maxInnerW {
-		t.Fatalf("inner width=%d exceeds max terminal inner width=%d", innerW, maxInnerW)
-	}
-	label, binding := fitKeybindingPickerRowParts(rows[0][0], rows[0][1], innerW)
-	if got := lipgloss.Width(label) + lipgloss.Width(binding) + 1; got > innerW {
-		t.Errorf("fitted cells width=%d exceeds inner width=%d", got, innerW)
-	}
-	if got := lipgloss.Width(truncateForRow("enter rebind · r reset · u unbind · esc close", innerW)); got > innerW {
-		t.Errorf("help width=%d exceeds inner width=%d", got, innerW)
-	}
-}
-
-// Esc during capture must abort without writing to disk — otherwise
-// a user reviewing bindings could accidentally clobber one just by
-// pressing Esc to back out.
-func TestConfigKeybindingsPicker_EscDuringCaptureDoesNotPersist(t *testing.T) {
-	isolateHome(t)
-	invalidateKeyMapCache()
-	defer invalidateKeyMapCache()
-
-	m := newTestModel(t, newFakeProvider())
-	m.mode = modeConfig
-	m.configKeybindingsPickerActive = true
-	m.configKeybindingsCapturing = true
-	m.configKeybindingsCursor = 0
-
-	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
-	if m2.configKeybindingsCapturing {
-		t.Errorf("Esc should exit capture")
-	}
-	if !m2.configKeybindingsPickerActive {
-		t.Errorf("Esc during capture must NOT close the picker")
-	}
-
-	cfg, _ := loadConfig()
-	if len(cfg.Keybindings) != 0 {
-		t.Errorf("Esc-cancelled capture should not write to disk; got %+v", cfg.Keybindings)
-	}
-}
-
-// Re-binding back to the default value must remove the entry from
-// cfg.Keybindings so the config file doesn't accumulate dead
-// overrides over time.
-func TestConfigKeybindingsPicker_RebindToDefaultRemovesEntry(t *testing.T) {
-	isolateHome(t)
-	invalidateKeyMapCache()
-	defer invalidateKeyMapCache()
-
-	// Seed the config with an override so we can observe it disappear.
-	if err := saveConfig(askConfig{
-		Keybindings: map[string]string{
-			string(ActionScreenIssues): "alt+x",
-		},
-	}); err != nil {
+	if err := saveConfig(askConfig{Keybindings: map[string]string{string(ActionScreenIssues): "alt+x"}}); err != nil {
 		t.Fatalf("saveConfig: %v", err)
 	}
-
-	m := newTestModel(t, newFakeProvider())
-	m.mode = modeConfig
-	m.configKeybindingsPickerActive = true
-	m.configKeybindingsCursor = 0
-	m.configKeybindingsCapturing = true
-
-	// Capture the default value.
+	m := configEnter(t, newTestModel(t, newFakeProvider()), keyRowID(ActionScreenIssues))
 	def := defaultKeyBindings[ActionScreenIssues]
-	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Mod: def.Mod, Code: def.Code})
-	if m2.configKeybindingsError != "" {
-		t.Errorf("capture errored: %q", m2.configKeybindingsError)
-	}
-
-	cfg, _ := loadConfig()
-	if _, ok := cfg.Keybindings[string(ActionScreenIssues)]; ok {
+	m = pressConfig(t, m, tea.KeyPressMsg{Mod: def.Mod, Code: def.Code})
+	if cfg, _ := loadConfig(); cfg.Keybindings[string(ActionScreenIssues)] != "" {
 		t.Errorf("re-binding to default should remove the entry: %+v", cfg.Keybindings)
 	}
 }
 
-// Pressing 'r' in row-navigation mode resets the focused row to its
-// compiled-in default. Without this hotkey, a user who captured the
-// wrong key has no recovery path from inside the picker — they would
-// have to remember the original default to capture it back, or
-// hand-edit ~/.config/ask/ask.json.
-func TestConfigKeybindingsPicker_ResetRestoresDefault(t *testing.T) {
+// Ctrl+R on a keybinding row restores its default; Delete unbinds it.
+func TestConfigKeybindings_ResetAndUnbind(t *testing.T) {
 	isolateHome(t)
 	invalidateKeyMapCache()
 	defer invalidateKeyMapCache()
-
-	// Seed an override so we can observe it being cleared.
-	if err := saveConfig(askConfig{
-		Keybindings: map[string]string{
-			string(ActionScreenWorkflows): "alt+q",
-		},
-	}); err != nil {
+	if err := saveConfig(askConfig{Keybindings: map[string]string{string(ActionScreenWorkflows): "alt+q"}}); err != nil {
 		t.Fatalf("saveConfig: %v", err)
 	}
-
-	m := newTestModel(t, newFakeProvider())
-	m.mode = modeConfig
-	m.configKeybindingsPickerActive = true
-	// Park the cursor on the Workflows row.
-	for i, am := range actionMeta {
-		if am.Action == ActionScreenWorkflows {
-			m.configKeybindingsCursor = i
-			break
-		}
+	m := focusConfigRow(t, newTestModel(t, newFakeProvider()), keyRowID(ActionScreenWorkflows))
+	if r := configRowByID(t, m, keyRowID(ActionScreenWorkflows)); r.value != "alt+q" {
+		t.Fatalf("the row shows the override: %q", r.value)
 	}
-
-	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Code: 'r'})
-	if m2.configKeybindingsCapturing {
-		t.Errorf("reset must not enter capture mode")
+	m = pressConfig(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'r'})
+	if m.config.capturing {
+		t.Error("reset must not start a capture")
 	}
-	if m2.configKeybindingsError != "" {
-		t.Errorf("reset errored: %q", m2.configKeybindingsError)
-	}
-
 	cfg, _ := loadConfig()
 	if _, ok := cfg.Keybindings[string(ActionScreenWorkflows)]; ok {
-		t.Errorf("reset should remove the override entry: %+v", cfg.Keybindings)
+		t.Errorf("reset removes the override: %+v", cfg.Keybindings)
 	}
 	if b := currentKeyMap()[ActionScreenWorkflows]; b != defaultKeyBindings[ActionScreenWorkflows] {
-		t.Errorf("reset should restore the default; got %+v", b)
-	}
-}
-
-// Pressing 'u' in row-navigation mode unbinds the focused action. The
-// zero-value KeyBinding is persisted as the empty string; Matches()
-// then returns false for every keypress so the action is silently
-// disabled. Recovery is via 'r' (reset to default) on the same row.
-func TestConfigKeybindingsPicker_UnbindWritesZeroBinding(t *testing.T) {
-	isolateHome(t)
-	invalidateKeyMapCache()
-	defer invalidateKeyMapCache()
-
-	m := newTestModel(t, newFakeProvider())
-	m.mode = modeConfig
-	m.configKeybindingsPickerActive = true
-	for i, am := range actionMeta {
-		if am.Action == ActionScreenWorkflows {
-			m.configKeybindingsCursor = i
-			break
-		}
+		t.Errorf("reset restores the default; got %+v", b)
 	}
 
-	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Code: 'u'})
-	if m2.configKeybindingsCapturing {
-		t.Errorf("unbind must not enter capture mode")
-	}
-	if m2.configKeybindingsError != "" {
-		t.Errorf("unbind errored: %q", m2.configKeybindingsError)
-	}
-
-	cfg, _ := loadConfig()
-	got, present := cfg.Keybindings[string(ActionScreenWorkflows)]
-	if !present {
-		t.Fatalf("unbind should persist an explicit empty entry; got %+v", cfg.Keybindings)
-	}
-	if got != "" {
-		t.Errorf("unbind should store empty string; got %q", got)
+	m = pressConfig(t, m, tea.KeyPressMsg{Code: tea.KeyDelete})
+	cfg, _ = loadConfig()
+	if got, ok := cfg.Keybindings[string(ActionScreenWorkflows)]; !ok || got != "" {
+		t.Fatalf("Delete persists an explicit empty binding: %+v", cfg.Keybindings)
 	}
 	def := defaultKeyBindings[ActionScreenWorkflows]
 	if currentKeyMap().Matches(ActionScreenWorkflows, tea.KeyPressMsg{Mod: def.Mod, Code: def.Code}) {
-		t.Error("unbound action must not match its former default keypress")
+		t.Error("an unbound action must not match its former default keypress")
 	}
-}
-
-// 'u' must NOT trigger an unbind while in capture mode — otherwise the
-// user can never bind a key to 'u' itself. The captured key should be
-// recorded as the binding, same as any other letter key.
-func TestConfigKeybindingsPicker_UInCaptureModeRecordsBinding(t *testing.T) {
-	isolateHome(t)
-	invalidateKeyMapCache()
-	defer invalidateKeyMapCache()
-
-	m := newTestModel(t, newFakeProvider())
-	m.mode = modeConfig
-	m.configKeybindingsPickerActive = true
-	m.configKeybindingsCursor = 0
-	m.configKeybindingsCapturing = true
-
-	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'u'})
-	if m2.configKeybindingsError != "" {
-		t.Fatalf("capture errored: %q", m2.configKeybindingsError)
-	}
-	cfg, _ := loadConfig()
-	if got := cfg.Keybindings[string(actionMeta[0].Action)]; got != "ctrl+u" {
-		t.Errorf("captured binding=%q want ctrl+u", got)
-	}
-}
-
-// 'r' in capture mode must record as the binding, not trigger a reset
-// — otherwise the user can never actually bind to 'r' itself.
-func TestConfigKeybindingsPicker_RInCaptureModeRecordsBinding(t *testing.T) {
-	isolateHome(t)
-	invalidateKeyMapCache()
-	defer invalidateKeyMapCache()
-
-	m := newTestModel(t, newFakeProvider())
-	m.mode = modeConfig
-	m.configKeybindingsPickerActive = true
-	m.configKeybindingsCursor = 0
-	m.configKeybindingsCapturing = true
-
-	m2, _ := runUpdate(t, m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'r'})
-	if m2.configKeybindingsError != "" {
-		t.Fatalf("capture errored: %q", m2.configKeybindingsError)
-	}
-	cfg, _ := loadConfig()
-	if got := cfg.Keybindings[string(actionMeta[0].Action)]; got != "ctrl+r" {
-		t.Errorf("captured binding=%q want ctrl+r", got)
+	if r := configRowByID(t, m, keyRowID(ActionScreenWorkflows)); r.value != "(unbound)" {
+		t.Errorf("the row reads unbound: %q", r.value)
 	}
 }
 
@@ -644,34 +422,6 @@ func TestWorkflowsBuilderHint_ReflectsRebindAndUnbind(t *testing.T) {
 	}
 	if !strings.Contains(got, "/workflows") {
 		t.Errorf("unbound hint should fall back to the slash command; got %q", got)
-	}
-}
-
-// TestKeybindingsPicker_RendersGroupHeadings proves the picker draws
-// the four group headings — Screens, Tabs, Pickers & dispatch, App —
-// so the user can spot the action they want without scanning a flat
-// list of twelve.
-func TestKeybindingsPicker_RendersGroupHeadings(t *testing.T) {
-	isolateHome(t)
-	invalidateKeyMapCache()
-	defer invalidateKeyMapCache()
-
-	m := newTestModel(t, newFakeProvider())
-	m.width = 120
-	m.mode = modeConfig
-	m.configKeybindingsPickerActive = true
-
-	body := m.viewConfigKeybindingsPicker()
-	for _, heading := range []string{"Screens", "Tabs", "Pickers & dispatch", "App"} {
-		if !strings.Contains(body, heading) {
-			t.Errorf("picker body missing heading %q; got:\n%s", heading, body)
-		}
-	}
-	// Sanity: every action label still renders.
-	for _, item := range actionMeta {
-		if !strings.Contains(body, item.Label) {
-			t.Errorf("picker body missing label %q", item.Label)
-		}
 	}
 }
 

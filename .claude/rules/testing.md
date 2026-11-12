@@ -48,7 +48,9 @@ real-model memory test skips itself unless
   the whole binary, and `cmd/ask` and `pkg/engine` also point
   `ASK_CLAUDE_BIN` at nothing (`testhome.NoClaude`) so no test starts
   the real CLI. `testhome.Main` also unsets every `HERDR_*` variable, so
-  a suite started inside a herdr pane never reports into it. A new such
+  a suite started inside a herdr pane never reports into it, and
+  `GEMINI_API_KEY`, so the memory gate and recall filter every session
+  test runs never reach the real Gemini API. A new such
   package adds the same `TestMain`. Opt-in live tests that drive real
   tools call `testhome.UseRealHome(t)`.
 - `t.TempDir()` for every file-system test; `t.Chdir(...)` when cwd
@@ -77,6 +79,8 @@ Swap the package-level var in the test and restore it with `t.Cleanup`.
 | Seam | Where | Replaces |
 |------|-------|----------|
 | `engine.ModelBuilder` | `pkg/engine/run.go` | the ADK model for a provider (scripted `mockLLM` / `scriptedModel` / `fakeLLM`) |
+| `engine.DeciderBuilder` | `pkg/engine/decision.go` | the decision model (`scriptedDecider` in `pkg/engine`, `fakeDecider` / `useFakeDecider` in `pkg/tools`) |
+| `providers.GeminiBaseURL` | `pkg/providers/gemini_decisions.go` | the Gemini API endpoint (an httptest server speaking `/v1beta/decisions`) |
 | `engine.GenerateStream` | `pkg/engine/run.go` | GenAI streaming |
 | `engine.AgentGitStatus` | `pkg/engine/prompt.go` | git status in `<env>` |
 | `agentSendToProgram` | `cmd/ask/agent_tools.go` | modal routing into the Bubble Tea program |
