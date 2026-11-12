@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -79,6 +80,21 @@ func TestPathComplete_TildePrefix(t *testing.T) {
 	}
 	if !saw {
 		t.Errorf("expected ~/docs in results: %v", got)
+	}
+}
+
+// After Tab completes "cd ~/docs/", the picker lists what is inside ~/docs,
+// as it does for a path without ~.
+func TestPathComplete_TildeTrailingSlashListsContents(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	if err := os.MkdirAll(filepath.Join(home, "docs", "notes"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	got := pathComplete("~/docs/")
+	if want := []string{"~/docs", "~/docs/notes"}; !slices.Equal(got, want) {
+		t.Errorf("pathComplete(~/docs/)=%v want %v", got, want)
 	}
 }
 

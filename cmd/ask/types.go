@@ -674,6 +674,13 @@ type model struct {
 	shellHistory      []string
 	shellHistoryIdx   int
 	shellHistoryDraft string
+	// shellCwd is where a shell-mode cd inside the tab's worktree left
+	// off; it only counts while it is inside the current worktree
+	// (shellDir), so a worktree change needs no reset.
+	shellCwd string
+	// promptFor is the state the input prompt's path was last built
+	// from; layout rebuilds the prompt when it moves.
+	promptFor promptKey
 
 	// config is the /config screen state (config_modal.go). Non-nil while
 	// modeConfig is up, and kept while a model picker opened from it is,
@@ -707,6 +714,9 @@ type model struct {
 	skipAllPermissions bool
 	worktree           bool
 	worktreeName       string
+	// linkedWorktree is the tab's worktree when one of the project's
+	// link targets pointed at it at the last check (refreshLinked).
+	linkedWorktree string
 
 	// addedDirs lists absolute paths the user has registered with
 	// /add-dir for the current tab. Each entry surfaces to the active

@@ -26,6 +26,9 @@ const (
 	configAction
 	// configKey is a keybinding; Enter captures the next key pressed.
 	configKey
+	// configList is a list of values; Enter opens it under the row to add,
+	// edit, and remove items.
+	configList
 )
 
 // configRow is one setting. Rows are rebuilt from the saved config and the
@@ -51,6 +54,16 @@ type configRow struct {
 	save    func(*askConfig, string)
 	onSaved func(model) model
 	tag     string
+
+	// List rows: the items, the add row's label, how a new list is
+	// written, what an entered item is stored as (or why it is refused),
+	// and the completions for an item being typed. onSaved and tag apply
+	// as for text rows.
+	items    []string
+	addLabel string
+	saveList func(*askConfig, []string)
+	accept   func(string) (string, error)
+	complete func(string) []pathMatch
 
 	action Action
 }
@@ -317,6 +330,22 @@ func (m model) configProjectSection(cfg askConfig) configSection {
 	worktree := choiceRow("projectWorktree", "Worktree", worktreeOpts, []string{"inherit", "on", "off"}, wtCur,
 		"Overrides the global Worktree setting for this project: inherit follows Session → Worktree.")
 	worktree.group = "Work"
+	root := m.cwd
+	links := configRow{id: "projectLinks", kind: configList, group: "Work", label: "Link targets", tag: "project",
+		value: linkTargetsSummary(pc.Links), items: pc.Links, addLabel: "+ Add target",
+		desc: "Symlinks that " + hintOr(keyHintFor(ActionWorktreeLink), "the link key") +
+			" points at this tab's worktree, and back at the project root on the next press or once cleanup removes that worktree. Enter opens the list; paths complete from the filesystem as you type.",
+		saveList: func(c *askConfig, items []string) {
+			p := loadProjectConfig(*c, root)
+			p.Links = items
+			*c = upsertProjectConfig(*c, root, p)
+		},
+		accept:   func(v string) (string, error) { return acceptLinkTarget(v, root) },
+		complete: func(q string) []pathMatch { return linkTargetMatches(q, root) },
+		onSaved: func(m model) model {
+			m.refreshLinked()
+			return m
+		}}
 	wfDesc := "(none)"
 	switch n := len(pc.Workflows.Items); {
 	case n == 1:
@@ -324,7 +353,7 @@ func (m model) configProjectSection(cfg askConfig) configSection {
 	case n > 1:
 		wfDesc = fmt.Sprintf("%d workflows", n)
 	}
-	sec.rows = append(sec.rows, issues, worktree, configRow{id: "workflows", kind: configAction, group: "Work", label: "Workflows", value: wfDesc,
+	sec.rows = append(sec.rows, issues, worktree, links, configRow{id: "workflows", kind: configAction, group: "Work", label: "Workflows", value: wfDesc,
 		desc: "Opens the workflows builder (Ctrl+W) for this project's pipelines."})
 	return sec
 }

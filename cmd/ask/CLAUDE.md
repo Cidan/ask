@@ -331,7 +331,8 @@ lockstep (`.claude/rules/issues.md`).
 - keymap.go defaults: Ctrl+I issues, Ctrl+R PRs (each toggles back to
   ask when pressed on its own screen), Ctrl+W workflows,
   Ctrl+G watchers, Ctrl+O ask, Ctrl+M model picker, Ctrl+S skills browser, Ctrl+F run a
-  workflow on the chat, Ctrl+X task-list toggle, Ctrl+T/Ctrl+D
+  workflow on the chat, Ctrl+X task-list toggle, Ctrl+L worktree link
+  (chat and shell input; worktree_link.go), Ctrl+T/Ctrl+D
   new/close tab, Ctrl+←/→ and Ctrl+↑/↓ tab nav, Tab sidebar focus,
   Ctrl+Z suspend; `ActionReload` ships unbound. `currentKeyMap()` is
   cached and invalidated when `/config → Keybindings`
@@ -363,9 +364,17 @@ lockstep (`.claude/rules/issues.md`).
   the stored value back to env/default; paste reaches the editor), action
   (deslop/extraction model pickers, which return to `/config` through
   `closeModelPickerToConfig` with `m.config` kept; Browse memories;
-  Workflows), and keybinding (Enter captures the next key — every key,
+  Workflows), keybinding (Enter captures the next key — every key,
   Enter/Delete/r included, is a binding; Esc cancels; Ctrl+R restores the
-  default; Delete unbinds). ↑↓ (and Ctrl+P/N) flow across section edges,
+  default; Delete unbinds), and list (`configList`: Enter opens the items
+  under the row with an add row last — ↑↓ walk them, Enter edits the
+  focused item or adds one in a `textinput`, Delete removes, Esc closes;
+  while an item is entered, `row.complete` lists path completions beneath
+  it — `completeDirEntries` in paths.go, shared with the chat path picker —
+  Tab takes the highlighted one (a directory keeps its trailing slash to
+  descend), ↑↓ move the highlight, Enter stores what is typed after
+  `row.accept` cleans or refuses it, duplicates refused; every change saves
+  through `row.saveList`). ↑↓ (and Ctrl+P/N) flow across section edges,
   Tab/Shift+Tab jump sections, Home/End/PgUp/PgDn; typing filters every
   section at once (label, group, section, description, value), Esc clears
   the filter then closes. Every save goes through `saveConfigWith` (the
@@ -443,8 +452,20 @@ lockstep (`.claude/rules/issues.md`).
   `shellBatchMsg` per render. Past `shellOutputCap` (100) the scanners
   keep draining so the child never blocks and emit one truncation
   marker through `CompareAndSwap`.
-- The done handler reads the tmpfile and `os.Chdir`s when it differs,
-  so `cd` persists. `killShellProc` SIGKILLs the process group.
+- Commands run in `shellDir()`: the tab's worktree when it has one on
+  disk (`shellWorktree`), else `m.cwd`. The done handler reads the
+  tmpfile: a pwd inside the worktree only sets `m.shellCwd` (ask's own
+  cwd never enters a worktree — `validateAskCwd`), and `shellDir` honours
+  it only while it is inside the *current* worktree, so a worktree change
+  needs no reset; any other pwd that differs from `m.cwd` `os.Chdir`s and
+  moves the tab's project as before. `killShellProc` SIGKILLs the
+  process group.
+- The input prompt's path is `promptPath()`: the project, plus `/subdir`
+  when a shell cd went inside the tab's worktree (the worktree itself is
+  on the status chip, never repeated here).
+  `layout()` rebuilds it whenever `promptKey{cwd, worktreeName,
+  shellCwd}` moves, and `providerCwdMsg` rebuilds it because the worktree
+  directory may only appear on disk then.
 - Never combine `Setpgid` with `Setsid` on one `SysProcAttr`: the
   child's `setpgid(2)` fails with EPERM on a session leader. Output is
   piped, so curses programs are not supported. The slash and path
@@ -500,6 +521,27 @@ lockstep (`.claude/rules/issues.md`).
   (`prepareProviderSessionAt`) is the last-line guard: with worktree
   mode on at a checkout, `args.Cwd` must be inside `.claude/worktrees/`
   (a resumed session recorded at the project root is honored).
+- **Links** (worktree_link.go): `ProjectConfig.Links` (`/config →
+  Project → Link targets`, a list row completed by `linkTargetMatches` —
+  directories and symlinks, each link with where it points — and checked
+  by `acceptLinkTarget`, which refuses a real file or directory at the
+  path or a missing folder; `~` and project-relative paths resolved by
+  `resolveLinkTarget`) are symlinks something outside ask reads —
+  a game's AddOns folder, a web root. `ActionWorktreeLink` (Ctrl+L) runs
+  `toggleLinks` with no model call: every target goes to the tab's
+  worktree (its project root when it has none), or back to the project
+  root when all of them already point at that worktree. Only symlinks and
+  missing paths are touched — a real file or directory at a target is
+  reported and left alone, a missing parent is an error — and each swap
+  renames a fresh symlink over the target (`swapLink`) so the target is
+  never absent. A move broadcasts `worktreeLinksChangedMsg` so every tab
+  re-runs `refreshLinked`, which sets `m.linkedWorktree` and the chip's
+  `· linked` marker.
+- `pruneWorktrees` ends with `relinkOrphanedLinks`: a target pointing
+  into one of the project's worktrees that is no longer on disk (pruned
+  just now, or deleted outside ask) goes back to the project root. Links
+  into worktrees that still exist — another tab's, another live ask's, a
+  dirty one prune kept — are never moved.
 
 ## File map
 
@@ -519,7 +561,7 @@ lockstep (`.claude/rules/issues.md`).
 - Provider and session: provider.go, agent_provider.go, agent_run.go,
   agent_session.go, proc.go, proc_stream.go, coordinator.go,
   event_adapter.go, interaction_adapter.go, virtual_session.go,
-  worktree.go, worktree_words.go.
+  worktree.go, worktree_link.go, worktree_words.go.
 - Tool glue: agent_tools.go, agent_tools_task.go, agent_tools_bridge.go.
 - Issues and PRs (`.claude/rules/issues.md`): issues.go,
   issue_search.go, issue_provider.go, issue_provider_github.go,

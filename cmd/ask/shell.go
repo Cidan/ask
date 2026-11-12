@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,6 +59,47 @@ func userShell() string {
 	return "/bin/sh"
 }
 
+// shellWorktree is the tab's worktree directory when it exists on disk,
+// else "".
+func (m model) shellWorktree() string {
+	if m.worktreeName == "" {
+		return ""
+	}
+	wt := worktreePath(m.cwd, m.worktreeName)
+	if info, err := os.Stat(wt); err != nil || !info.IsDir() {
+		return ""
+	}
+	return wt
+}
+
+// shellDir is where a shell-mode command runs: the tab's worktree when it
+// has one (where the last cd inside it left off), else the project.
+func (m model) shellDir() string {
+	wt := m.shellWorktree()
+	if wt == "" {
+		return m.cwd
+	}
+	if m.shellCwd != "" && pathWithin(m.shellCwd, wt) {
+		return m.shellCwd
+	}
+	return wt
+}
+
+// relInside returns p relative to dir when p lies inside dir (dir itself
+// is "."), comparing symlink-resolved paths when the literal ones differ.
+func relInside(p, dir string) (string, bool) {
+	if !pathWithin(p, dir) {
+		rp, errP := filepath.EvalSymlinks(p)
+		rd, errD := filepath.EvalSymlinks(dir)
+		if errP != nil || errD != nil || !pathWithin(rp, rd) {
+			return "", false
+		}
+		p, dir = rp, rd
+	}
+	rel, err := filepath.Rel(dir, p)
+	return rel, err == nil
+}
+
 // POSIX single-quote escaping — bash, zsh, and fish all treat single-quoted
 // strings as literal, so one helper covers every supported user shell.
 func shellSingleQuote(s string) string {
@@ -78,6 +120,7 @@ func (m *model) startShellCmd(input string) tea.Cmd {
 
 	wrapped := input + "\npwd > " + shellSingleQuote(tmpPath) + "\n"
 	cmd := exec.Command(userShell(), "-c", wrapped)
+	cmd.Dir = m.shellDir()
 	// Own process group so we can SIGKILL children (e.g. sleep 100) on cancel.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 

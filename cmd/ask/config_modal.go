@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/cursor"
@@ -31,6 +32,16 @@ type configScreenState struct {
 	choosing    string
 	choice      int
 	themeBackup string
+
+	// listing is the id of the list row whose items are open under it;
+	// item is their cursor, where one past the last item is the add row.
+	// While entering, input edits the focused item (a new one on the add
+	// row), matches are its path completions and match their cursor.
+	listing  string
+	item     int
+	entering bool
+	matches  []pathMatch
+	match    int
 
 	// notice is the last action's outcome, shown on the filter line.
 	notice    string
@@ -164,6 +175,8 @@ func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.updateConfigCapture(msg)
 	case s.choosing != "":
 		return m.updateConfigChooser(msg)
+	case s.listing != "":
+		return m.updateConfigList(msg)
 	}
 	secs := m.configSections()
 	s.section = clampIndex(s.section, len(secs))
@@ -266,6 +279,10 @@ func (m model) configActivate(row configRow) (tea.Model, tea.Cmd) {
 		return m, nil
 	case configAction:
 		return m.runConfigAction(row.id)
+	case configList:
+		s.listing, s.item, s.entering = row.id, 0, false
+		s.say("", false)
+		return m, nil
 	}
 	return m, nil
 }
@@ -549,6 +566,17 @@ func (m model) applyConfigPaste(text string) (tea.Model, tea.Cmd) {
 		s.input, cmd = s.input.Update(tea.PasteMsg{Content: text})
 		return m, cmd
 	}
+	if s.listing != "" {
+		if !s.entering {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		s.input, cmd = s.input.Update(tea.PasteMsg{Content: text})
+		if row, ok := rowByID(m.configSections(), s.listing); ok {
+			s.refreshListMatches(row)
+		}
+		return m, cmd
+	}
 	if !strings.ContainsAny(text, "\n\r") {
 		s.query += text
 		s.cursor = 0
@@ -675,6 +703,160 @@ func (m model) updateConfigChooser(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if row.id == "theme" {
 		m = m.previewTheme(s.choice)
 	}
+	return m, nil
+}
+
+// updateConfigList drives an open list row: ↑↓ walk its items and the add
+// row, Enter edits the focused item or starts a new one, Delete removes
+// the focused item, Esc closes the list.
+func (m model) updateConfigList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	s := m.config
+	row, ok := rowByID(m.configSections(), s.listing)
+	if !ok {
+		s.listing, s.entering, s.matches = "", false, nil
+		return m, nil
+	}
+	if s.entering {
+		return m.updateConfigListEntry(row, msg)
+	}
+	n := len(row.items) + 1
+	s.item = clampIndex(s.item, n)
+	switch {
+	case msg.Code == tea.KeyEsc, msg.Mod == tea.ModCtrl && msg.Code == 'c':
+		s.listing = ""
+	case listNavPrev(msg):
+		s.item = listNavWrap(s.item, -1, n)
+	case listNavNext(msg):
+		s.item = listNavWrap(s.item, +1, n)
+	case msg.Code == tea.KeyHome:
+		s.item = 0
+	case msg.Code == tea.KeyEnd:
+		s.item = n - 1
+	case msg.Code == tea.KeyEnter:
+		value := ""
+		if s.item < len(row.items) {
+			value = row.items[s.item]
+		}
+		return m.openConfigListEntry(row, value), nil
+	case msg.Code == tea.KeyDelete:
+		if s.item < len(row.items) {
+			removed := row.items[s.item]
+			return m.saveConfigList(row, slices.Delete(slices.Clone(row.items), s.item, s.item+1), "removed "+clipPathLeft(removed, 28))
+		}
+	}
+	return m, nil
+}
+
+func (m model) openConfigListEntry(row configRow, value string) model {
+	s := m.config
+	ti := textinput.New()
+	ti.Prompt = ""
+	ti.Placeholder = "type a path · tab completes"
+	ti.SetValue(value)
+	ti.CursorEnd()
+	ti.SetWidth(max(configValueWidth(m.width)-4, 10))
+	ti.Focus()
+	s.input, s.entering = ti, true
+	s.refreshListMatches(row)
+	s.say("", false)
+	return m
+}
+
+func (s *configScreenState) refreshListMatches(row configRow) {
+	s.matches, s.match = nil, 0
+	if row.complete != nil {
+		s.matches = row.complete(s.input.Value())
+	}
+}
+
+// updateConfigListEntry drives the input of an item being entered: Tab
+// takes the highlighted completion (a directory keeps a trailing slash to
+// go on into it), ↑↓ move the highlight, Enter stores what is typed.
+func (m model) updateConfigListEntry(row configRow, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	s := m.config
+	switch {
+	case msg.Code == tea.KeyEsc, msg.Mod == tea.ModCtrl && msg.Code == 'c':
+		s.entering, s.matches = false, nil
+		return m, nil
+	case msg.Code == tea.KeyEnter:
+		return m.commitConfigListEntry(row, strings.TrimSpace(s.input.Value()))
+	case msg.Code == tea.KeyTab:
+		if len(s.matches) > 0 {
+			pick := s.matches[clampIndex(s.match, len(s.matches))]
+			value := pick.path
+			if pick.dir {
+				value += "/"
+			}
+			s.input.SetValue(value)
+			s.input.CursorEnd()
+			s.refreshListMatches(row)
+		}
+		return m, nil
+	case listNavPrev(msg):
+		if len(s.matches) > 0 {
+			s.match = listNavWrap(s.match, -1, len(s.matches))
+		}
+		return m, nil
+	case listNavNext(msg):
+		if len(s.matches) > 0 {
+			s.match = listNavWrap(s.match, +1, len(s.matches))
+		}
+		return m, nil
+	}
+	before := s.input.Value()
+	var cmd tea.Cmd
+	s.input, cmd = s.input.Update(msg)
+	if s.input.Value() != before {
+		s.refreshListMatches(row)
+	}
+	return m, cmd
+}
+
+// commitConfigListEntry stores an entered item in place of the focused one,
+// or after the rest from the add row. An empty or unchanged entry just
+// closes the input; a refused or duplicate one keeps it open.
+func (m model) commitConfigListEntry(row configRow, value string) (tea.Model, tea.Cmd) {
+	s := m.config
+	editing := s.item < len(row.items)
+	if value == "" || (editing && value == row.items[s.item]) {
+		s.entering, s.matches = false, nil
+		return m, nil
+	}
+	if row.accept != nil {
+		accepted, err := row.accept(value)
+		if err != nil {
+			s.say("✗ "+row.label+": "+err.Error(), true)
+			return m, nil
+		}
+		value = accepted
+	}
+	if i := slices.Index(row.items, value); i >= 0 && !(editing && i == s.item) {
+		s.say("✗ "+row.label+": "+value+" is already in the list", true)
+		return m, nil
+	}
+	items := slices.Clone(row.items)
+	verb := "updated "
+	if editing {
+		items[s.item] = value
+	} else {
+		items = append(items, value)
+		verb = "added "
+	}
+	s.entering, s.matches = false, nil
+	return m.saveConfigList(row, items, verb+clipPathLeft(value, 28))
+}
+
+func (m model) saveConfigList(row configRow, items []string, what string) (tea.Model, tea.Cmd) {
+	if len(items) == 0 {
+		items = nil
+	}
+	if _, err := saveConfigWith(func(c *askConfig) { row.saveList(c, items) }); err != nil {
+		return m.configSaveFailed(err)
+	}
+	if row.onSaved != nil {
+		m = row.onSaved(m)
+	}
+	m.config.say("✓ "+row.tag+": "+row.label+" "+what, false)
 	return m, nil
 }
 

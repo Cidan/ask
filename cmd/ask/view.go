@@ -137,6 +137,9 @@ func buildGlamourStyle(t theme) ansi.StyleConfig {
 const renderAheadEntries = 10
 
 func (m *model) layout() {
+	if (promptKey{m.cwd, m.worktreeName, m.shellCwd}) != m.promptFor {
+		m.refreshPrompt()
+	}
 	atBottom := m.chat.AtBottom()
 	inputH := m.inputAreaHeight()
 	extra := m.pendingBlockHeight() + m.todoBlockHeight() + m.spinnerBlockHeight() + m.statusChipHeight()
@@ -731,8 +734,27 @@ func (m *model) appendUserQueued(text string, images ...chatImage) {
 	m.pushTranscript(transcriptItem{kind: trUserQueued, text: text, images: images})
 }
 
+// promptKey is the tab state the input prompt's path is drawn from.
+type promptKey struct{ cwd, worktree, shellCwd string }
+
+// promptPath is where the input prompt says the tab is: the project, plus
+// how far a shell cd went inside the tab's worktree. The worktree itself is
+// on the status chip.
+func (m model) promptPath() string {
+	label := shortCwdOf(m.cwd)
+	wt := m.shellWorktree()
+	if wt == "" {
+		return label
+	}
+	if rel, err := filepath.Rel(wt, m.shellDir()); err == nil && rel != "." {
+		label += string(filepath.Separator) + rel
+	}
+	return label
+}
+
 func (m *model) refreshPrompt() {
-	cwd := shortCwd()
+	m.promptFor = promptKey{m.cwd, m.worktreeName, m.shellCwd}
+	cwd := m.promptPath()
 	indent := "   "
 	line0 := indent + cwd + " > "
 	width := lipgloss.Width(line0)
@@ -1446,7 +1468,11 @@ func (m model) statusChipHeight() int {
 func (m model) worktreeChip() string {
 	var parts []string
 	if m.worktreeName != "" {
-		parts = append(parts, dimStyle.Render("[🌳 "+m.worktreeName+"]"))
+		label := "[🌳 " + m.worktreeName
+		if m.linkedWorktree == m.worktreeName {
+			label += " · linked"
+		}
+		parts = append(parts, dimStyle.Render(label+"]"))
 	}
 	if n := len(m.bgTasks); n > 0 {
 		label := "agent"
@@ -1678,7 +1704,7 @@ func (m model) renderPathBox() string {
 	rows := make([]string, pathBoxHeight)
 
 	if len(matches) == 0 {
-		searched, _ := expandTilde(m.pathQuery())
+		searched, _ := expandTildeDir(m.pathQuery())
 		dir, _ := filepath.Split(searched)
 		if dir == "" {
 			dir = "."

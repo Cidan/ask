@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -59,21 +60,47 @@ func (m *model) refreshPathMatches() {
 	}
 }
 
-func pathComplete(query string) []string {
-	expanded, tildeStripped := expandTilde(query)
+// pathMatch is one completion offered while a path is typed: the path as it
+// would be typed, whether it is a directory to descend into, and where a
+// symlink points.
+type pathMatch struct {
+	path string
+	dir  bool
+	dest string
+}
+
+// dirCompletion is one entry completeDirEntries found: the path spelled the
+// way the query was typed, where it is on disk, and the entry itself.
+type dirCompletion struct {
+	path   string
+	onDisk string
+	entry  fs.DirEntry
+}
+
+// completeDirEntries lists the entries of query's directory whose names
+// start with query's last element (case-insensitively; hidden ones only
+// when that element starts with '.') and that keep accepts. Paths are
+// spelled the way query is: under ~ when it starts with ~, relative when it
+// is relative — read from base, or the working directory when base is "".
+func completeDirEntries(query, base string, keep func(fs.DirEntry) bool) ([]dirCompletion, error) {
+	expanded, tildeStripped := expandTildeDir(query)
 	dir, prefix := filepath.Split(expanded)
 	if dir == "" {
 		dir = "."
 	}
-	entries, err := os.ReadDir(dir)
+	readDir := dir
+	if base != "" && !filepath.IsAbs(dir) {
+		readDir = filepath.Join(base, dir)
+	}
+	entries, err := os.ReadDir(readDir)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	showHidden := strings.HasPrefix(prefix, ".")
 	prefixLower := strings.ToLower(prefix)
-	var out []string
+	var out []dirCompletion
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !keep(e) {
 			continue
 		}
 		name := e.Name()
@@ -93,10 +120,23 @@ func pathComplete(query string) []string {
 		} else if dir == "." {
 			full = name
 		}
-		out = append(out, full)
+		out = append(out, dirCompletion{path: full, onDisk: filepath.Join(readDir, name), entry: e})
 	}
-	sort.Strings(out)
-	if prefix == "" {
+	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
+	return out, nil
+}
+
+func pathComplete(query string) []string {
+	found, err := completeDirEntries(query, "", fs.DirEntry.IsDir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, c := range found {
+		out = append(out, c.path)
+	}
+	expanded, _ := expandTildeDir(query)
+	if _, prefix := filepath.Split(expanded); prefix == "" {
 		parent := strings.TrimRight(query, "/")
 		if parent != "" {
 			out = append([]string{parent}, out...)
@@ -126,6 +166,31 @@ func expandTilde(p string) (string, bool) {
 		return filepath.Join(home, p[2:]), true
 	}
 	return p, false
+}
+
+// expandTildeDir is expandTilde for a query being completed: a trailing
+// slash, which asks for the directory's contents, survives the expansion.
+func expandTildeDir(p string) (string, bool) {
+	out, stripped := expandTilde(p)
+	if strings.HasSuffix(p, "/") && !strings.HasSuffix(out, "/") {
+		out += "/"
+	}
+	return out, stripped
+}
+
+// tildePath spells p under ~ when it is inside the home directory.
+func tildePath(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if strings.HasPrefix(p, home+string(os.PathSeparator)) {
+		return "~" + strings.TrimPrefix(p, home)
+	}
+	return p
 }
 
 func resolvePath(p string) string {

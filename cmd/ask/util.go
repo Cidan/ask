@@ -138,14 +138,6 @@ func padRight(s string, w int) string {
 	return s + strings.Repeat(" ", pad)
 }
 
-func shortCwd() string {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "?"
-	}
-	return shortCwdOf(cwd)
-}
-
 func shortCwdOf(cwd string) string {
 	if cwd == "" {
 		return "?"
