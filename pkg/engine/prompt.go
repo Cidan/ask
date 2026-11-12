@@ -431,6 +431,7 @@ func BuildSystemPrompt(opts PromptOptions) string {
 		InWorkflow: opts.InWorkflow,
 		Headless:   agent && !opts.InWorkflow,
 		Cwd:        opts.Cwd,
+		Decisions:  DecisionsAvailable(),
 	}))
 
 	return b.String()

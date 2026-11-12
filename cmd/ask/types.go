@@ -234,8 +234,10 @@ type toolCallMsg struct {
 	name       string
 	input      map[string]any
 	background bool
-	tabID      int
-	proc       *providerProc
+	// nested is a call decide ran on the model's behalf, shown under it.
+	nested bool
+	tabID  int
+	proc   *providerProc
 }
 
 // toolResultMsg carries a tool's output back to the UI. Rendered with
@@ -255,6 +257,7 @@ type toolResultMsg struct {
 	exitCode    int
 	hasExitCode bool
 	background  bool
+	nested      bool
 	tabID       int
 	proc        *providerProc
 }
@@ -330,6 +333,8 @@ type historyEntry struct {
 	toolInput    map[string]any
 	toolInflight bool
 	toolErrored  bool
+	// toolNested marks a call decide ran, drawn indented under it.
+	toolNested bool
 
 	// wrapped is the soft-wrapped slice of rendered lines for the
 	// width recorded in wrappedFor. It is the only thing chatView

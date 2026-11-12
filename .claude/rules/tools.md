@@ -97,22 +97,71 @@ Closed-set questions answered by the configured decision model
 (`engine.DeciderBuilder`; contract in `.claude/rules/providers.md`).
 Params: `input` (shared text), `files` (read from disk: `text/*`, JSON,
 XML become text parts headed `File <path>:`; anything else inline data by
-extension, then sniffed MIME; `DecideMaxFileBytes` 50 MB each), `items`
-(each item is its own request after the shared input, up to
-`DecideMaxItems` 100, `decideConcurrency` 8 at once; one failed item is
-an `error:` line, all failing is the error), and `questions` (`key`,
-`type` `yes_no`|`choice`|`score`, `question`, `yes`/`no`, `options`
+extension, then sniffed MIME; `DecideMaxFileBytes` 50 MB each), `calls`,
+`scope`, `items` (each item is its own request after the shared input, up
+to `DecideMaxItems` 100), and `questions` (`key`, `type`
+`yes_no`|`choice`|`score`, `question`, `yes`/`no`, `options`
 `[{key, when}]`, `levels`). Options are a list, not a map, so strict
-schema validators accept it. The reply's `answers` is one line per
-question in the order asked (`yes — p(yes) 0.94`, options by
-probability, `1.12 on 0-2 · most likely 1 "label" (0.82)`) plus `model`.
-No decision model is a non-error `notice` (`DecideNoModelNotice`), like
-`web_search` without a key. Not approval-gated: it sends content to the
-user's own configured model provider, as every model call does. Each
-call's usage is reported with `env.RecordSpend(SpendDecision, u)` — an
-`engine.SpendEvent` the TUI's session env routes to `recordSpend` (cost
-meter and usage ledger) and `engine.Run` adds to the run's spend; the
-memory recall hook reports its filter call the same way.
+schema validators accept it. No decision model is a non-error `notice`
+(`DecideNoModelNotice`), like `web_search` without a key — and no call
+runs. Not approval-gated itself: it sends content to the user's own
+configured model provider, as every model call does.
+
+**Inner calls** (`calls: [{tool, args, description}]`, up to
+`DecideMaxCalls` 50, `decideConcurrency` 8 at once) gather what the
+questions are about without the output entering the model's context.
+There is one tool implementation, not a second: each call is looked up in
+the session's own tool set (`env.Tools`, a `ToolLookup` —
+`SessionTools{Core, Registry}` set by whatever assembles the session:
+`setupAgentSessionTools`, `BuildCoreTools` / `BuildSubagentTools`, the
+`task` tool's sub-agent env) — the exact wrapped tools the model calls —
+prepared by `prepareCall` (shared with `invoke_tool`: description phrase
+copied in, required params checked), and run with `engine.RunADKTool`.
+So bash still asks for approval, output filters still apply, and the
+rules, instruction files, and memory a read brings in are kept: they go
+to the decision model with the result. What differs is carried by the
+call's context (`engine.InnerCall`, `scope.ForCall().Context(ctx)`):
+- the rules wrapper delivers against the decide's own `ruleDelivery`
+  (every applicable rule and instruction file, the ones in the session's
+  prompt included, once per decide) and never marks anything delivered to
+  the session's model;
+- `recordRead` skips the read tracker, so an inner read never satisfies
+  read-before-edit;
+- `queueImage` (read of an image, `render_design`, MCP image results)
+  hands images to the decision model, as parts after that call's JSON,
+  instead of the session's `ImageSink`.
+Refused (`decideRefused`): `decide`, `task`, `invoke_tool`, `todos`,
+`write`, `edit`, `job_kill`, the workflow-control and hook tools, and any
+non-`mcp__` tool whose name has a changing verb (`create`, `edit`,
+`delete`, `run`, `install`, `index`, …). MCP tools are allowed, as they
+are through `invoke_tool`. Each call that runs emits `ToolCallEvent` /
+`ToolResultEvent` with `Parent` = the decide's call id, which the TUI
+nests under the decide.
+
+The decision model sees each call as one JSON object
+(`{"call", "tool", "args", "result" | "error"}`) plus its images. `scope`
+`all` (default) asks every question once over every call; `each` asks
+them of each call's result on its own (one request per call, labelled by
+its address), alongside `items` units.
+
+**Records and peeking.** Every decide gets an id (`d1`, `d2`, … —
+`env.nextDecisionID`, continuing from a resumed session's records) and
+saves an `engine.DecisionRecord` (call id, model, answers, every call's
+args and raw result) in session state (`engine.SaveDecision`), which the
+model never sees. The reply's `answers` is one line per question in the
+order asked (`yes — p(yes) 0.94`, options by probability, `1.12 on 0-2 ·
+most likely 1 "label" (0.82)`; per call or item under `[n] label` when
+asked separately), then an index of `decision:<id>/<n>` addresses with
+each call's size or error; `id` and `model` ride alongside. `read` and
+`grep` take those addresses wherever they take a path (`decision:d4` for
+every call, `decision:d4/3` for one) — `openReadSource` /
+`resolveSearchTarget` feed the same line-range and matching code
+(`readSpans`, `matchText`) the files go through.
+
+Each decision call's usage is reported with `env.RecordSpend(SpendDecision,
+u)` — an `engine.SpendEvent` the TUI's session env routes to
+`recordSpend` (cost meter and usage ledger) and `engine.Run` adds to the
+run's spend; the memory recall hook reports its filter call the same way.
 
 **History tools are neither.** `history_summary`, `history_read`, and
 `history_search` (`pkg/engine/history_tools.go`) are not in any tool list:
@@ -224,6 +273,10 @@ as most of all model calls).
   `-C` (`parseRgLine` reads its `NUL` / `:` / `-` format) and the Go
   fallback builds the same groups. The cap keeps the context of kept
   matches and drops a dropped match's leading context.
+- A path of the form `decision:<id>[/<n>]` reads or searches a decide's
+  stored raw results instead of the file system (see decide above); it is
+  not a file, so the wrappers add no rules or memory for it and the read
+  tracker records nothing.
 - Consumers read the call through `engine.ReadCallFiles` /
   `ReadCallSearchPaths`: the context-aware wrapper (rules per file),
   `MemoryAwareTool` (a recall per file), `AppendTouchedFile`, and the

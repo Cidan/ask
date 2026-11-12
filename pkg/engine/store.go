@@ -624,13 +624,16 @@ func cloneEvent(event *session.Event) *session.Event {
 	return &cp
 }
 
+// trimTempDeltaState drops from the stored copy of an event the state it
+// must not keep: temp: keys, and decision records, which are saved once in
+// the file's state rather than again inside the event that made them.
 func trimTempDeltaState(event *session.Event) *session.Event {
 	if len(event.Actions.StateDelta) == 0 {
 		return event
 	}
 	filtered := make(map[string]any)
 	for k, v := range event.Actions.StateDelta {
-		if !strings.HasPrefix(k, session.KeyPrefixTemp) {
+		if !strings.HasPrefix(k, session.KeyPrefixTemp) && !strings.HasPrefix(k, decisionStatePrefix) {
 			filtered[k] = v
 		}
 	}

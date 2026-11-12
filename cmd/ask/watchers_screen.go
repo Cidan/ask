@@ -955,7 +955,11 @@ func (s *watchersScreenState) transcriptLines(out *[]string, width int, markdown
 			if phrase != "" {
 				line += " — " + phrase
 			}
-			*out = append(*out, "  "+glyph.Render("▸")+" "+truncateForRow(line, max(1, width-4)))
+			indent := "  "
+			if it.nested {
+				indent = "    "
+			}
+			*out = append(*out, indent+glyph.Render("▸")+" "+truncateForRow(line, max(1, width-len(indent)-2)))
 		case trToolResult:
 			if it.isError {
 				*out = append(*out, "    "+errStyle.Render(truncateForRow("✗ "+toolErrorReason(it.output), max(1, width-6))))

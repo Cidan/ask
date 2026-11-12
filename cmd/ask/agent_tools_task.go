@@ -130,6 +130,7 @@ func agentTaskTool(env *agentToolEnv, getSession func() *agentSession) tools.Too
 			} else {
 				toolsList = wrapFileToolsWithMemory(tools.CoreTools(subEnv, deferredFn, true), env.Cwd)
 			}
+			subEnv.Tools = tools.SessionTools{Core: func() []tools.Tool { return toolsList }, Registry: deferredFn}
 
 			run := func(runCtx context.Context) (string, error) {
 				toolsList = wrapContextAwareTools(toolsList, env.Cwd, discoverRules(env.Cwd))

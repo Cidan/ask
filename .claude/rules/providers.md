@@ -351,7 +351,11 @@ and adds the `end_turn` requirement, and a `.claude/worktrees/` cwd adds
 the stay-inside-the-worktree clause. Every variant (tab, workflow step,
 named agent) carries `<use_parallel_tool_calls>`, Anthropic's stronger
 parallel-tool-use prompt adapted to ask's batched read; it is the one
-place the harness asks for independent calls in one response.
+place the harness asks for independent calls in one response. With
+`Decisions` (a decision model can run — `engine.DecisionsAvailable`) every
+variant also carries `<use_decide>`, which steers the model toward
+`decide` for judgments over many things and toward gathering inside it
+so bulk output stays out of context.
 
 ## Adding a provider
 

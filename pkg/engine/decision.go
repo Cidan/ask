@@ -28,6 +28,16 @@ var DeciderBuilder = func(ctx context.Context, cfg config.Config) (providers.Dec
 	return d, target, nil
 }
 
+// DecisionsAvailable reports whether the saved config has a decision model
+// that can run — what decides whether a session's prompt steers it toward
+// decide. A session's prompt is built once, so a key added mid-session
+// steers the next session.
+func DecisionsAvailable() bool {
+	cfg, _ := config.Load()
+	_, ok := providers.ResolveDecisionTarget(cfg)
+	return ok
+}
+
 const (
 	memoryGateKey = "durable"
 	// memoryGateSkipBelow is the probability of "durable" under which a

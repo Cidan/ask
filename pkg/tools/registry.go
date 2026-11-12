@@ -178,23 +178,32 @@ func (t *invokeToolImpl) Run(ctx agent.Context, args any) (map[string]any, error
 	}
 
 	params, _ := argsMap["params"].(map[string]any)
+	desc, _ := argsMap["description"].(string)
+	params, err := prepareCall(inner, params, desc)
+	if err != nil {
+		return map[string]any{"result": err.Error(), "is_error": true}, nil
+	}
+	return RunADKTool(ctx, inner, params)
+}
+
+// prepareCall readies params for a call to inner that the model did not
+// make on the wire (invoke_tool's, decide's inner calls): phrase is copied
+// in as the description when inner requires one and none was given, and
+// every required parameter is checked — ADK validates only wire calls.
+func prepareCall(inner Tool, params map[string]any, phrase string) (map[string]any, error) {
 	if params == nil {
 		params = map[string]any{}
 	}
 	info := ExtractToolInfo(inner)
-	desc, _ := argsMap["description"].(string)
-	if _, has := params["description"]; !has && desc != "" && requiresField(info, "description") {
-		params["description"] = desc
+	if _, has := params["description"]; !has && phrase != "" && requiresField(info, "description") {
+		params["description"] = phrase
 	}
 	for _, required := range info.Required {
 		if _, ok := params[required]; !ok {
-			return map[string]any{
-				"result":   fmt.Sprintf("missing required parameter %q for %s — check its input_schema via search_tools", required, name),
-				"is_error": true,
-			}, nil
+			return nil, fmt.Errorf("missing required parameter %q for %s — check its input_schema via search_tools", required, inner.Name())
 		}
 	}
-	return RunADKTool(ctx, inner, params)
+	return params, nil
 }
 
 func requiresField(info ToolInfo, field string) bool {

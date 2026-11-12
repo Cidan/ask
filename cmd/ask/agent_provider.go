@@ -242,6 +242,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		s.coreTools = wrapFileToolsWithMemory(s.coreTools, s.args.Cwd)
 	}
 	s.coreTools = wrapContextAwareTools(s.coreTools, s.args.Cwd, discoverRules(s.args.Cwd))
+	env.Tools = tools.SessionTools{Core: func() []tools.Tool { return s.coreTools }, Registry: s.deferredTools}
 	s.deferredBase = agentLinearTools(env)
 	s.deferredBase = append(s.deferredBase, agentMemoryTools(env)...)
 	s.deferredBase = append(s.deferredBase, agentExtensionTools(env)...)

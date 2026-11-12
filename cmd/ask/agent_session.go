@@ -72,7 +72,23 @@ func (st *agentSessionStore) loadTranscript(id string) ([]transcriptItem, error)
 	if err != nil {
 		return nil, err
 	}
-	return loadTranscriptFromEvents(file.Events, st.loadDeslop(id, file.Cwd))
+	return loadTranscriptFromEvents(file.Events, st.loadDeslop(id, file.Cwd), decisionsByCall(file.State))
+}
+
+// decisionsByCall indexes a stored session's decision records by the decide
+// call that made each, so replay can put its inner calls back under it.
+func decisionsByCall(state map[string]any) map[string]engine.DecisionRecord {
+	recs := engine.DecisionRecordsIn(state)
+	if len(recs) == 0 {
+		return nil
+	}
+	out := make(map[string]engine.DecisionRecord, len(recs))
+	for _, r := range recs {
+		if r.CallID != "" {
+			out[r.CallID] = r
+		}
+	}
+	return out
 }
 
 // loadTranscriptFromEvents maps a slice of session.Event to the faithful,
@@ -87,7 +103,11 @@ func (st *agentSessionStore) loadTranscript(id string) ([]transcriptItem, error)
 // deslop, when non-empty, maps a raw assistant block's hash to its display-time
 // rewrite. A matching block is shown desloped, exactly as it was live; the raw
 // text (from the untouched session file) is still what's keyed and hashed.
-func loadTranscriptFromEvents(events []*session.Event, deslop map[string]string) ([]transcriptItem, error) {
+//
+// decisions maps a decide call's id to its record: the inner calls it ran
+// never became events, so they are replayed from the record, nested under
+// the decide as they were shown live.
+func loadTranscriptFromEvents(events []*session.Event, deslop map[string]string, decisions map[string]engine.DecisionRecord) ([]transcriptItem, error) {
 	var items []transcriptItem
 
 	for _, e := range events {
@@ -151,6 +171,9 @@ func loadTranscriptFromEvents(events []*session.Event, deslop map[string]string)
 				toolInput:  input,
 				background: bg,
 			})
+			if rec, ok := decisions[p.FunctionCall.ID]; ok && p.FunctionCall.ID != "" {
+				items = append(items, decisionCallItems(rec)...)
+			}
 		}
 
 		var nonThoughtTexts []string
@@ -185,6 +208,19 @@ func loadTranscriptFromEvents(events []*session.Event, deslop map[string]string)
 		}
 	}
 	return items, nil
+}
+
+// decisionCallItems is a decision's inner calls as nested transcript items.
+func decisionCallItems(rec engine.DecisionRecord) []transcriptItem {
+	items := make([]transcriptItem, 0, 2*len(rec.Calls))
+	for _, c := range rec.Calls {
+		text, isErr := c.Text()
+		exitCode, hasExit := extractExitCode(c.Result)
+		items = append(items,
+			transcriptItem{kind: trToolCall, toolName: c.Tool, toolInput: c.Args, nested: true, errored: isErr},
+			transcriptItem{kind: trToolResult, toolName: c.Tool, output: text, isError: isErr, exitCode: exitCode, hasExitCode: hasExit, nested: true})
+	}
+	return items
 }
 
 func (st *agentSessionStore) materialize(workspace string, turns []NeutralTurn) (string, string, error) {

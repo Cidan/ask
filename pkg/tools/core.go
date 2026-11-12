@@ -38,7 +38,9 @@ func BuildCoreTools(args engine.ToolFactoryArgs, attachWebSearch bool) []Tool {
 		core = append(core, EndTurnTool(env))
 		core = append(core, WorkflowStepTools(env, args.WorkflowFinalStep)...)
 	}
-	return withProjectContext(core, env.Cwd)
+	core = withProjectContext(core, env.Cwd)
+	env.Tools = SessionTools{Core: func() []Tool { return core }, Registry: registryFunc}
+	return core
 }
 
 // withProjectContext gives a headless session's tools what a tab's have:
@@ -63,7 +65,9 @@ func BuildSubagentTools(args engine.ToolFactoryArgs, attachWebSearch bool) []Too
 	registryFunc := func() []Tool {
 		return nil
 	}
-	return withProjectContext(CoreTools(env, registryFunc, attachWebSearch), env.Cwd)
+	core := withProjectContext(CoreTools(env, registryFunc, attachWebSearch), env.Cwd)
+	env.Tools = SessionTools{Core: func() []Tool { return core }, Registry: registryFunc}
+	return core
 }
 
 // CoreTools returns the standard core wire tools for an agent session.

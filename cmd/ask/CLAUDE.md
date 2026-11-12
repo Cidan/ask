@@ -76,6 +76,15 @@ tool surface → `.claude/rules/tools.md`, workflow graph →
   cross-provider swap load the transcript and project through the same
   path, so replay can't drift from live. `m.history` is the persistent
   backing store view.go mutates in place; never rebuild it per frame.
+- A call `decide` ran on the model's behalf arrives as a
+  `toolCallMsg`/`toolResultMsg` with `nested` (its engine event carried a
+  `Parent`); the transcript item and history entry keep it
+  (`nested` / `toolNested`) and `nestToolBlock` indents the block under
+  the decide — in the projection, `settleToolCall`, and the in-flight
+  re-render. Inner calls never become session events, so `/resume`
+  replays them from the session's decision records
+  (`decisionsByCall(file.State)` → `loadTranscriptFromEvents`, inserted
+  after the decide call with the matching function-call id).
 - In-flight tool glyph: a `toolCallMsg` marks its `histToolCall` entry
   `toolInflight` and bumps `m.inflightToolCount`; the matching
   `toolResultMsg` calls `settleToolCall` (FIFO by tool name — the live

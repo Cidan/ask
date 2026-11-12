@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"google.golang.org/adk/v2/agent"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -15,6 +14,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/Cidan/ask/pkg/engine"
+	"google.golang.org/adk/v2/agent"
 )
 
 const GlobToolDescription = `Find files by glob pattern, relative to the search path. Supports ** for crossing directories and {a,b} alternation (e.g. "**/*.go", "src/**/*.{ts,tsx}"). Results are sorted by modification time, newest first.`
@@ -227,7 +229,11 @@ func GrepTool(env *ToolEnv) Tool {
 			if len(p.AllPatterns()) == 0 {
 				return GrepResult{}, errors.New("pattern or patterns is required")
 			}
-			out, errText := GrepRun(ctx, RgPath, p.GrepSearch, env.AbsPath(p.Path))
+			target, err := resolveSearchTarget(ctx, env, p.Path)
+			if err != nil {
+				return GrepResult{}, err
+			}
+			out, errText := grepRun(ctx, RgPath, p.GrepSearch, target)
 			if errText != "" {
 				return GrepResult{}, errors.New(errText)
 			}
@@ -251,9 +257,34 @@ const MaxGrepLineChars = 500
 // reports its error there without failing the others. The error string is
 // set only when every pattern failed.
 func GrepRun(ctx context.Context, rgPath string, s GrepSearch, root string) (string, string) {
+	return grepRun(ctx, rgPath, s, searchTarget{root: root})
+}
+
+// searchTarget is where a search runs: a directory or file on disk, or the
+// raw results of a decision.
+type searchTarget struct {
+	root    string
+	sources []engine.DecisionText
+}
+
+// resolveSearchTarget turns a search's path into its target: a decision
+// address (decision:d4, decision:d4/3) searches that decision's raw
+// results, anything else the file system under the session's cwd.
+func resolveSearchTarget(ctx agent.Context, env *ToolEnv, p string) (searchTarget, error) {
+	if addr, ok := engine.ParseDecisionAddress(p); ok {
+		sources, err := engine.DecisionTexts(ctx, addr)
+		if err != nil {
+			return searchTarget{}, err
+		}
+		return searchTarget{root: addr.String(), sources: sources}, nil
+	}
+	return searchTarget{root: env.AbsPath(p)}, nil
+}
+
+func grepRun(ctx context.Context, rgPath string, s GrepSearch, target searchTarget) (string, string) {
 	patterns := s.AllPatterns()
 	if len(patterns) == 1 {
-		return grepPattern(ctx, rgPath, patterns[0], s, root)
+		return grepPattern(ctx, rgPath, patterns[0], s, target)
 	}
 	var out strings.Builder
 	var errs []string
@@ -262,7 +293,7 @@ func GrepRun(ctx context.Context, rgPath string, s GrepSearch, root string) (str
 			out.WriteByte('\n')
 		}
 		out.WriteString(GrepHeading(pat, s))
-		body, errText := grepPattern(ctx, rgPath, pat, s, root)
+		body, errText := grepPattern(ctx, rgPath, pat, s, target)
 		if errText != "" {
 			errs = append(errs, errText)
 			body = "error: " + errText
@@ -291,14 +322,17 @@ func grepLabel(pattern string, s GrepSearch) string {
 	return h
 }
 
-func grepPattern(ctx context.Context, rgPath, pattern string, s GrepSearch, root string) (string, string) {
+func grepPattern(ctx context.Context, rgPath, pattern string, s GrepSearch, target searchTarget) (string, string) {
 	around := min(max(s.Context, 0), MaxGrepContext)
 	var matches []GrepMatch
 	var errText string
-	if rgPath != "" {
-		matches, errText = grepWithRg(ctx, rgPath, pattern, s, around, root)
-	} else {
-		matches, errText = grepWithGo(ctx, pattern, s, around, root)
+	switch {
+	case target.sources != nil:
+		matches, errText = grepInTexts(pattern, s, around, target.sources)
+	case rgPath != "":
+		matches, errText = grepWithRg(ctx, rgPath, pattern, s, around, target.root)
+	default:
+		matches, errText = grepWithGo(ctx, pattern, s, around, target.root)
 	}
 	if errText != "" {
 		return "", errText
@@ -461,13 +495,67 @@ func parseRgLine(line string) (GrepMatch, bool) {
 	return GrepMatch{File: line[:nul], Line: n, Text: rest[sep+1:], Context: rest[sep] == '-'}, true
 }
 
-func grepWithGo(ctx context.Context, pattern string, s GrepSearch, around int, root string) ([]GrepMatch, string) {
+func grepRegexp(pattern string, s GrepSearch) (*regexp.Regexp, string) {
 	if s.LiteralText {
 		pattern = regexp.QuoteMeta(pattern)
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return nil, "invalid pattern: " + err.Error()
+	}
+	return re, ""
+}
+
+// matchText appends re's matches in one text, with around lines of
+// context, to lines. It reports false once more than MaxSearchHits matches
+// are found, so the caller stops searching.
+func matchText(re *regexp.Regexp, file string, text []string, around int, lines *[]GrepMatch, found *int) bool {
+	next := 0
+	for i, line := range text {
+		if !re.MatchString(line) {
+			continue
+		}
+		for c := max(next, i-around); c < i; c++ {
+			*lines = append(*lines, GrepMatch{File: file, Line: c + 1, Text: text[c], Context: true})
+		}
+		*lines = append(*lines, GrepMatch{File: file, Line: i + 1, Text: line})
+		next = i + 1
+		*found++
+		if *found > MaxSearchHits {
+			return false
+		}
+		for c := i + 1; c < min(i+1+around, len(text)); c++ {
+			if re.MatchString(text[c]) {
+				break
+			}
+			*lines = append(*lines, GrepMatch{File: file, Line: c + 1, Text: text[c], Context: true})
+			next = c + 1
+		}
+	}
+	return true
+}
+
+// grepInTexts searches in-memory texts — a decision's raw results — the
+// way grepWithGo searches files.
+func grepInTexts(pattern string, s GrepSearch, around int, sources []engine.DecisionText) ([]GrepMatch, string) {
+	re, errText := grepRegexp(pattern, s)
+	if errText != "" {
+		return nil, errText
+	}
+	var lines []GrepMatch
+	found := 0
+	for _, src := range sources {
+		if !matchText(re, src.Name, strings.Split(strings.TrimSuffix(src.Text, "\n"), "\n"), around, &lines, &found) {
+			break
+		}
+	}
+	return lines, ""
+}
+
+func grepWithGo(ctx context.Context, pattern string, s GrepSearch, around int, root string) ([]GrepMatch, string) {
+	re, errText := grepRegexp(pattern, s)
+	if errText != "" {
+		return nil, errText
 	}
 	var lines []GrepMatch
 	found := 0
@@ -503,27 +591,8 @@ func grepWithGo(ctx context.Context, pattern string, s GrepSearch, around int, r
 			return nil
 		}
 		text := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
-		next := 0
-		for i, line := range text {
-			if !re.MatchString(line) {
-				continue
-			}
-			for c := max(next, i-around); c < i; c++ {
-				lines = append(lines, GrepMatch{File: fp, Line: c + 1, Text: text[c], Context: true})
-			}
-			lines = append(lines, GrepMatch{File: fp, Line: i + 1, Text: line})
-			next = i + 1
-			found++
-			if found > MaxSearchHits {
-				return filepath.SkipAll
-			}
-			for c := i + 1; c < min(i+1+around, len(text)); c++ {
-				if re.MatchString(text[c]) {
-					break
-				}
-				lines = append(lines, GrepMatch{File: fp, Line: c + 1, Text: text[c], Context: true})
-				next = c + 1
-			}
+		if !matchText(re, fp, text, around, &lines, &found) {
+			return filepath.SkipAll
 		}
 		return ctx.Err()
 	})

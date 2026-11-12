@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"google.golang.org/adk/v2/agent"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/Cidan/ask/pkg/engine"
+	"google.golang.org/adk/v2/agent"
 )
 
 const ReadToolDescription = `Read files from the filesystem. Returns the content with 1-based line numbers (cat -n format); lines longer than 2000 chars are truncated. Read one file with file_path (offset/limit for a slice of it), or many at once with files, where each file takes any number of line ranges, and run grep searches in the same call with grep. Put everything you already know you need into one call: each extra call resends the whole conversation. In a batched call every file range and every search comes back under its own "==>" heading, and a file that fails reports its error there without failing the rest. Reading a file is required before editing or overwriting it. Image files (png, jpg, gif, webp, bmp, tiff) are decoded and shown to you visually instead of as text, when the model has vision. Use this tool, never cat, head, tail, or sed -n through bash.`
@@ -67,7 +70,7 @@ func ReadTool(env *ToolEnv) Tool {
 				if len(files[0].Ranges) == 1 {
 					r = files[0].Ranges[0]
 				}
-				return readOne(env, files[0].FilePath, r)
+				return readOne(ctx, env, files[0].FilePath, r)
 			}
 			return readBatch(ctx, env, files, p.Grep)
 		},
@@ -108,22 +111,77 @@ func openTextFile(path string) (f *os.File, image bool, err error) {
 	return f, false, nil
 }
 
-func newLineScanner(f *os.File) *bufio.Scanner {
-	sc := bufio.NewScanner(f)
+func newLineScanner(r io.Reader) *bufio.Scanner {
+	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	return sc
 }
 
-func readOne(env *ToolEnv, filePath string, r ReadRange) (ReadResult, error) {
-	path := env.AbsPath(filePath)
+// readSource is what one read target opens to: a file, or the raw results
+// of a decision (decision:d4, decision:d4/3) kept in the session's state.
+type readSource struct {
+	name  string
+	r     io.ReadCloser
+	image bool
+	file  bool
+}
+
+func openReadSource(ctx agent.Context, env *ToolEnv, target string) (readSource, error) {
+	if addr, ok := engine.ParseDecisionAddress(target); ok {
+		text, err := decisionReadText(ctx, addr)
+		if err != nil {
+			return readSource{}, err
+		}
+		return readSource{name: addr.String(), r: io.NopCloser(strings.NewReader(text))}, nil
+	}
+	path := env.AbsPath(target)
 	f, image, err := openTextFile(path)
+	if err != nil {
+		return readSource{}, err
+	}
+	return readSource{name: path, r: f, image: image, file: true}, nil
+}
+
+// decisionReadText is the text read shows for a decision address: one
+// call's raw result, or every call's under a heading naming its address.
+func decisionReadText(ctx agent.Context, addr engine.DecisionAddress) (string, error) {
+	texts, err := engine.DecisionTexts(ctx, addr)
+	if err != nil {
+		return "", err
+	}
+	if addr.Call > 0 {
+		return texts[0].Text, nil
+	}
+	rec, _ := engine.LoadDecision(ctx, addr.ID)
+	var b strings.Builder
+	for i, t := range texts {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		fmt.Fprintf(&b, "### %s · %s\n%s\n", t.Name, engine.DecisionCallLabel(rec.Calls[i]), strings.TrimRight(t.Text, "\n"))
+	}
+	return b.String(), nil
+}
+
+// recordRead counts a read of a file as the model having read it — unless
+// decide made the read, whose result the model never saw.
+func recordRead(ctx agent.Context, env *ToolEnv, src readSource) {
+	if src.file && env.Files != nil && engine.InnerCallOf(ctx) == nil {
+		env.Files.RecordRead(src.name)
+	}
+}
+
+func readOne(ctx agent.Context, env *ToolEnv, filePath string, r ReadRange) (ReadResult, error) {
+	src, err := openReadSource(ctx, env, filePath)
 	if err != nil {
 		return ReadResult{}, err
 	}
-	if image {
-		return readImageFile(env, path)
+	if src.image {
+		return readImageFile(ctx, env, src.name)
 	}
-	defer f.Close()
+	defer src.r.Close()
+	path := src.name
+	f := src.r
 
 	offset := max(r.Offset, 1)
 	limit := r.Limit
@@ -157,9 +215,7 @@ func readOne(env *ToolEnv, filePath string, r ReadRange) (ReadResult, error) {
 		return ReadResult{}, fmt.Errorf("read %s: %v", path, err)
 	}
 
-	if env.Files != nil {
-		env.Files.RecordRead(path)
-	}
+	recordRead(ctx, env, src)
 	if emitted == 0 {
 		if offset > 1 {
 			return ReadResult{Content: fmt.Sprintf("(no lines at offset %d; file has %d lines)", offset, lineNo)}, nil
@@ -219,7 +275,7 @@ type batchSection struct {
 
 // readSpans reads the spans of one text file, each under its own heading,
 // stopping once budget bytes are written.
-func readSpans(path string, f *os.File, spans []lineSpan, budget int) ([]batchSection, bool, error) {
+func readSpans(path string, f io.Reader, spans []lineSpan, budget int) ([]batchSection, bool, error) {
 	sc := newLineScanner(f)
 	sections := make([]batchSection, len(spans))
 	bodies := make([]strings.Builder, len(spans))
@@ -292,18 +348,21 @@ func readBatch(ctx agent.Context, env *ToolEnv, files []ReadFile, searches []Gre
 			fail("(no file_path)", errors.New("file_path is required"))
 			continue
 		}
-		path := env.AbsPath(rf.FilePath)
+		path := rf.FilePath
+		if !engine.IsDecisionAddress(path) {
+			path = env.AbsPath(path)
+		}
 		if written >= MaxReadBytes {
 			full(path, "read it")
 			continue
 		}
-		f, image, err := openTextFile(path)
+		src, err := openReadSource(ctx, env, rf.FilePath)
 		if err != nil {
 			fail(path, err)
 			continue
 		}
-		if image {
-			res, err := readImageFile(env, path)
+		if src.image {
+			res, err := readImageFile(ctx, env, src.name)
 			if err != nil {
 				fail(path, err)
 				continue
@@ -312,15 +371,13 @@ func readBatch(ctx agent.Context, env *ToolEnv, files []ReadFile, searches []Gre
 			sections = append(sections, batchSection{heading: path, body: res.Content + "\n"})
 			continue
 		}
-		got, cut, err := readSpans(path, f, mergeRanges(rf.Ranges), MaxReadBytes-written)
-		f.Close()
+		got, cut, err := readSpans(src.name, src.r, mergeRanges(rf.Ranges), MaxReadBytes-written)
+		src.r.Close()
 		if err != nil {
 			fail(path, err)
 			continue
 		}
-		if env.Files != nil {
-			env.Files.RecordRead(path)
-		}
+		recordRead(ctx, env, src)
 		ok++
 		truncated = truncated || cut
 		for _, sec := range got {
@@ -335,14 +392,18 @@ func readBatch(ctx agent.Context, env *ToolEnv, files []ReadFile, searches []Gre
 			fail("grep", errors.New("pattern or patterns is required"))
 			continue
 		}
-		root := env.AbsPath(s.Path)
+		target, err := resolveSearchTarget(ctx, env, s.Path)
+		if err != nil {
+			fail(grepLabel(patterns[0], s), err)
+			continue
+		}
 		for _, pat := range patterns {
 			heading := grepLabel(pat, s)
 			if written >= MaxReadBytes {
 				full(heading, "run this search")
 				continue
 			}
-			body, errText := grepPattern(ctx, RgPath, pat, s, root)
+			body, errText := grepPattern(ctx, RgPath, pat, s, target)
 			if errText != "" {
 				fail(heading, errors.New(errText))
 				continue
