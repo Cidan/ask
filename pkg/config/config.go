@@ -291,6 +291,9 @@ type ProjectConfig struct {
 	MCPServers  map[string]MCPServerConfig `json:"mcpServers,omitempty"`
 	MCPDisabled map[string]bool            `json:"mcpDisabled,omitempty"`
 	Worktree    *bool                      `json:"worktree,omitempty"`
+	// Links are symlink paths the link key points at the tab's worktree
+	// (or back at the project root).
+	Links []string `json:"links,omitempty"`
 }
 
 // WorktreeEnabled resolves the effective worktree flag for cwd: the
@@ -760,6 +763,9 @@ func IsProjectConfigEmpty(pc ProjectConfig) bool {
 		return false
 	}
 	if pc.Worktree != nil {
+		return false
+	}
+	if len(pc.Links) > 0 {
 		return false
 	}
 	return true

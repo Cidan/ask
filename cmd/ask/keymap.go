@@ -60,6 +60,10 @@ const (
 	ActionSidebarFocus   Action = "sidebar.focus"
 	ActionTaskListToggle Action = "tasklist.toggle"
 	ActionAppSuspend     Action = "app.suspend"
+	// ActionWorktreeLink (default Ctrl+L) points the project's link
+	// targets at the tab's worktree, or back at the project root
+	// (worktree_link.go).
+	ActionWorktreeLink Action = "worktree.link"
 )
 
 // KeyBinding is a parsed Mod+Code pair. The zero value (Mod==0,
@@ -261,6 +265,7 @@ var defaultKeyBindings = map[Action]KeyBinding{
 	ActionTabNextAlt:   {Mod: tea.ModCtrl, Code: tea.KeyDown},
 	ActionSidebarFocus: {Code: tea.KeyTab},
 	ActionAppSuspend:   {Mod: tea.ModCtrl, Code: 'z'},
+	ActionWorktreeLink: {Mod: tea.ModCtrl, Code: 'l'},
 }
 
 func init() {
@@ -379,6 +384,9 @@ var actionGroups = []actionMetaGroup{
 		{ActionChatWorkflow, "Run workflow on chat"},
 		{ActionTaskListToggle, "Toggle task list"},
 		{ActionReload, "Reload issues/PRs"},
+	}},
+	{Heading: "Worktree", Items: []actionMetaItem{
+		{ActionWorktreeLink, "Link targets to this worktree"},
 	}},
 	{Heading: "App", Items: []actionMetaItem{
 		{ActionAppSuspend, "Suspend ask"},

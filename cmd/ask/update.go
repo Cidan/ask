@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -365,7 +366,13 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 		if name != "" && m.workflowRun != nil && m.workflowRun.supplanted != nil {
 			m.workflowRun.supplanted.worktreeName = name
 		}
+		m.refreshLinked()
+		m.refreshPrompt()
 		m.lastContentFP = ""
+		return m, nil
+
+	case worktreeLinksChangedMsg:
+		m.refreshLinked()
 		return m, nil
 
 	case providerModelMsg:
@@ -1428,7 +1435,15 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 			m.shellOutTrIdx = -1
 			m.shellCh = nil
 			m.shellProc = nil
-			if d.newCwd != "" && d.newCwd != m.cwd {
+			var rel string
+			inside := false
+			wt := m.shellWorktree()
+			if wt != "" && d.newCwd != "" {
+				rel, inside = relInside(d.newCwd, wt)
+			}
+			if inside {
+				m.shellCwd = filepath.Join(wt, rel)
+			} else if d.newCwd != "" && d.newCwd != m.cwd {
 				if err := os.Chdir(d.newCwd); err == nil {
 					m.cwd = d.newCwd
 					// The live session keeps its worktree; only the
@@ -1653,6 +1668,9 @@ func (m model) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	if km.Matches(ActionWorktreeLink, msg) {
+		return m.toggleWorktreeLink()
+	}
 	if km.Matches(ActionProviderSwitch, msg) {
 		if m.busy() {
 			// Don't allow swapping mid-turn — the stream reader is
@@ -1866,6 +1884,9 @@ func (m model) updateShellInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m = m.exitShellMode()
 		return m, nil
+	}
+	if currentKeyMap().Matches(ActionWorktreeLink, msg) {
+		return m.toggleWorktreeLink()
 	}
 	if running {
 		if msg.Mod == 0 && msg.Code == tea.KeyEnter {

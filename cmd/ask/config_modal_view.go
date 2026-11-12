@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	lipgloss "charm.land/lipgloss/v2"
@@ -168,6 +169,11 @@ func (m model) renderConfigPane(s *configScreenState, secs []configSection, page
 			focusLine = len(list) + at
 			list = append(list, chooser...)
 		}
+		if i == cursor && s.listing == pr.row.id {
+			items, at := renderConfigList(s, pr.row, w)
+			focusLine = len(list) + at
+			list = append(list, items...)
+		}
 	}
 	if len(page) == 0 {
 		list = append(list, dimStyle.Render("  (no settings match)"))
@@ -260,6 +266,12 @@ func configRowValue(row configRow, w int) (string, string) {
 	case configAction:
 		v := clipText(row.value, w-3)
 		return v + " ›", v + dimStyle.Render(" ›")
+	case configList:
+		v := clipText(row.value, w-3)
+		if len(row.items) == 0 {
+			return v + " ▾", dimStyle.Render(v + " ▾")
+		}
+		return v + " ▾", v + dimStyle.Render(" ▾")
 	}
 	v := clipText(row.value, w)
 	if strings.HasPrefix(row.value, "(") || strings.HasPrefix(row.value, "from $") || strings.HasSuffix(row.value, "(default)") {
@@ -287,10 +299,91 @@ func renderConfigChooser(s *configScreenState, row configRow, w int) ([]string, 
 	return lines, s.choice - start
 }
 
+// renderConfigList is an open list row under it, aligned with the value
+// column: each item, then the add row. While an item is entered its line is
+// the input, with the input's path completions beneath. It returns the lines
+// and which one is focused.
+func renderConfigList(s *configScreenState, row configRow, w int) ([]string, int) {
+	labelW := configLabelWidthFor(w)
+	valueW := w - labelW
+	indent := strings.Repeat(" ", labelW)
+	n := len(row.items)
+	cur := clampIndex(s.item, n+1)
+	var lines []string
+	focus := 0
+	for i := 0; i <= n; i++ {
+		text := row.addLabel
+		if i < n {
+			text = clipPathLeft(row.items[i], valueW-2)
+		}
+		switch {
+		case i == cur && s.entering:
+			focus = len(lines)
+			lines = append(lines, indent+selectedStyle.Render("▸ ")+s.input.View())
+			matches, at := renderConfigListMatches(s, indent+"  ", valueW-2)
+			if len(matches) > 0 {
+				focus = len(lines) + at
+			}
+			lines = append(lines, matches...)
+		case i == cur:
+			focus = len(lines)
+			lines = append(lines, indent+configSelectedRowStyle.Render(padRight("▸ "+text, valueW)))
+		case i == n:
+			lines = append(lines, indent+"  "+dimStyle.Render(text))
+		default:
+			lines = append(lines, indent+"  "+text)
+		}
+	}
+	return lines, focus
+}
+
+// renderConfigListMatches lists the completions for the item being entered
+// by name — the input shows the folder — with a directory's trailing slash
+// and where a symlink points.
+func renderConfigListMatches(s *configScreenState, indent string, w int) ([]string, int) {
+	if len(s.matches) == 0 {
+		return nil, 0
+	}
+	cur := clampIndex(s.match, len(s.matches))
+	start, end := modelPickerWindow(len(s.matches), cur, configChooserMax)
+	lines := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		mt := s.matches[i]
+		name := filepath.Base(mt.path)
+		if mt.dir {
+			name += "/"
+		}
+		name = clipText(name, max(w-2, 8))
+		tail := ""
+		if mt.dest != "" {
+			tail = dimStyle.Render(" → " + mt.dest)
+		}
+		if i == cur {
+			lines = append(lines, indent+selectedStyle.Render("▸ "+name)+tail)
+			continue
+		}
+		lines = append(lines, indent+"  "+name+tail)
+	}
+	return lines, cur - start
+}
+
+// clipPathLeft fits p in w cells by dropping its start, keeping the end
+// where a path's telling part is.
+func clipPathLeft(p string, w int) string {
+	if over := lipgloss.Width(p) - w; over > 0 && w > 1 {
+		return xansi.TruncateLeft(p, over+1, "…")
+	}
+	return p
+}
+
 func configHelp(s *configScreenState, cur *configPageRow) string {
 	switch {
 	case s.editing != "":
 		return "enter save · esc cancel"
+	case s.listing != "" && s.entering:
+		return "tab complete · ↑↓ pick a match · enter save · esc cancel"
+	case s.listing != "":
+		return "↑↓ move · enter edit or add · del remove · esc close"
 	case s.capturing:
 		return "press the new key combination · esc cancel"
 	case s.choosing != "":
@@ -314,6 +407,8 @@ func configHelp(s *configScreenState, cur *configPageRow) string {
 		return "enter open · " + base
 	case configKey:
 		return "enter rebind · ctrl+r default · del unbind · " + base
+	case configList:
+		return "enter open list · " + base
 	}
 	return base
 }

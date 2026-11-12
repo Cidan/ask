@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -290,6 +291,27 @@ func TestProjectConfig_WorktreeOverrideRoundTripsAndPrunes(t *testing.T) {
 	}
 	if _, ok := cfg.Projects[ProjectKey(projectDir)]; ok {
 		t.Fatal("clearing the override should prune the empty project block")
+	}
+}
+
+func TestProjectConfig_LinksRoundTripAndKeepTheBlock(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	projectDir := filepath.Join(t.TempDir(), "proj")
+	_ = os.MkdirAll(projectDir, 0o755)
+
+	links := []string{"~/wow/_retail_/Interface/AddOns/BetterBags", "/srv/www/site"}
+	if IsProjectConfigEmpty(ProjectConfig{Links: links}) {
+		t.Fatal("link targets alone must keep the project block alive")
+	}
+	if err := SaveProject(projectDir, ProjectConfig{Links: links}); err != nil {
+		t.Fatalf("SaveProject: %v", err)
+	}
+	loaded, err := LoadProject(projectDir)
+	if err != nil {
+		t.Fatalf("LoadProject: %v", err)
+	}
+	if !slices.Equal(loaded.Links, links) {
+		t.Fatalf("Links=%q want %q", loaded.Links, links)
 	}
 }
 

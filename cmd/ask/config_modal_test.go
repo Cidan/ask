@@ -133,7 +133,7 @@ func TestConfigScreen_EverySettingHasADescribedRow(t *testing.T) {
 		"decisionModel", "decision:" + providers.GeminiAPIProviderID + ":" + providers.GeminiFieldAPIKey,
 		"memoryModel", "memoryGate", "memoryFilter", "memoryBrowse", "braveApiKey",
 		"githubAuth", "project:githubMCPEndpoint", "project:githubMCPToken", "project:linearGraphQLEndpoint",
-		"project:linearAPIKey", "project:linearTeamKey", "issueProvider", "projectWorktree", "workflows"}
+		"project:linearAPIKey", "project:linearTeamKey", "issueProvider", "projectWorktree", "projectLinks", "workflows"}
 	for _, p := range providers.All() {
 		for _, f := range p.Settings() {
 			want = append(want, "provider:"+p.ID()+":"+f.Key)

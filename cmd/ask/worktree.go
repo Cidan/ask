@@ -135,7 +135,8 @@ func samePathOrResolved(a, b string) bool {
 // plus directory removal after verifying the workspace has no pending diff. In
 // both modes we skip workspaces locked by another live ask or by a foreign
 // non-ask reason, and we never prune when ask itself is launched inside one of
-// those workspaces.
+// those workspaces. Afterwards, link targets left pointing at a worktree that
+// is gone point back at the project root (relinkOrphanedLinks).
 func pruneWorktrees() {
 	cwd := getwdOrEmpty()
 	backend := worktreeBackendAt(cwd)
@@ -145,6 +146,7 @@ func pruneWorktrees() {
 	if worktreeNameFromCwd(cwd) != "" {
 		return
 	}
+	defer relinkOrphanedLinks(cwd)
 	entries, err := os.ReadDir(filepath.Join(cwd, ".claude", "worktrees"))
 	if err != nil {
 		if !os.IsNotExist(err) {
