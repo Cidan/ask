@@ -670,50 +670,10 @@ type model struct {
 	shellHistoryIdx   int
 	shellHistoryDraft string
 
-	configFilter string
-	configCursor int
-
-	configThemePickerActive bool
-	configThemeCursor       int
-	configThemeBackup       string
-
-	// configProviderPickerActive toggles the /config sub-picker that
-	// sets cfg.Provider (default for new tabs). Uses the theme-picker
-	// pattern so Esc restores the original value.
-	configProviderPickerActive bool
-	configProviderCursor       int
-	configProviderBackup       string
-
-	// configFields is the data-driven field editor behind every
-	// /config → <provider>... row and Web Search (config_fields.go).
-	// Active while .active is set; .editing names the field whose
-	// inline editor is open.
-	configFields fieldsPickerState
-
-	// /config now layers into Global Options (existing knobs) vs
-	// Project Options (per-cwd issue provider). configGlobalPicker-
-	// Active is the gate for the Global submenu — it carries the
-	// rows that lived directly on the top-level /config row list
-	// before the layering. configProjectPickerActive opens the
-	// per-cwd surface; its inline editor uses the same pattern as
-	// the memory picker (configProjectFieldEditing/Draft).
-	configGlobalPickerActive bool
-	configGlobalCursor       int
-
-	configProjectPickerActive bool
-	configProjectCursor       int
-	configProjectFieldEditing string
-	configProjectFieldDraft   string
-
-	// configKeybindingsPickerActive toggles the /config → Keybindings
-	// sub-picker. Rows are the actions from actionMeta. Pressing Enter
-	// on a row flips configKeybindingsCapturing — the next non-Esc
-	// keypress is recorded as the new binding. Esc during capture
-	// cancels without persisting.
-	configKeybindingsPickerActive bool
-	configKeybindingsCursor       int
-	configKeybindingsCapturing    bool
-	configKeybindingsError        string
+	// config is the /config screen state (config_modal.go). Non-nil while
+	// modeConfig is up, and kept while a model picker opened from it is,
+	// so closing the picker lands back where the user was.
+	config *configScreenState
 
 	// modelPicker is the Ctrl+M unified provider/model picker state
 	// (model_picker.go). Non-nil while modeModelPicker is up; applying

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"github.com/Cidan/ask/pkg/engine"
+	"github.com/Cidan/ask/pkg/providers"
 )
 
 func init() {
@@ -85,7 +86,8 @@ func CoreTools(env *ToolEnv, registry func() []Tool, attachWebSearch bool) []Too
 		FetchTool(env),
 		TodosTool(env),
 		LoadMemoryTool(env.Cwd),
-		PreloadMemoryTool(env.Cwd, nil, nil),
+		PreloadMemoryTool(env.Cwd, nil, nil, func(u providers.Usage) { env.RecordSpend(SpendDecision, u) }),
+		DecideTool(env),
 		RenderDesignTool(env.ImageSink),
 		NewImageInjectionHook(env.ImageSink, env.SupportsImages),
 		SearchToolsTool(registry),
@@ -119,7 +121,7 @@ func IsCoreTool(name string) bool {
 		"fetch", "todos", "task", "end_turn", "search_tools", "invoke_tool",
 		"web_search", "workflow_list", "workflow_get", "workflow_create", "workflow_edit",
 		"workflow_delete", "workflow_copy", "load_memory", "preload_memory",
-		"render_design", "inject_tool_images":
+		"render_design", "inject_tool_images", "decide":
 		return true
 	default:
 		return false

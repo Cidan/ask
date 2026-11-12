@@ -292,6 +292,26 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	// does not leak a child past the return.
 	defer CloseModel(llm)
 
+	var spend RunResult
+	var spendMu sync.Mutex
+	addSpend := func(u providers.Usage) {
+		spendMu.Lock()
+		defer spendMu.Unlock()
+		spend.Usage = append(spend.Usage, u)
+		if u.CostKnown() {
+			spend.CostUSD += u.CostUSD
+			spend.CostKnown = true
+		}
+	}
+	toolListener := func(ev EngineEvent) {
+		if s, ok := ev.(SpendEvent); ok {
+			addSpend(s.Usage)
+		}
+		if opts.EventListener != nil {
+			opts.EventListener(ev)
+		}
+	}
+
 	var agentTools []Tool
 	if len(opts.Tools) > 0 {
 		agentTools = append(agentTools, opts.Tools...)
@@ -300,7 +320,7 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			Cwd:                opts.Cwd,
 			TabID:              0,
 			SkipPermissions:    opts.SkipAllPermissions,
-			EventListener:      opts.EventListener,
+			EventListener:      toolListener,
 			InteractionHandler: opts.InteractionHandler,
 			AttachWebSearch:    true,
 			SupportsImages:     func() bool { return prov.SupportsImages(modelID) },
@@ -340,18 +360,6 @@ func (e *Engine) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		}
 		if callOpts.MaxOutputTokens > 0 {
 			genConfig.MaxOutputTokens = callOpts.MaxOutputTokens
-		}
-	}
-
-	var spend RunResult
-	var spendMu sync.Mutex
-	addSpend := func(u providers.Usage) {
-		spendMu.Lock()
-		defer spendMu.Unlock()
-		spend.Usage = append(spend.Usage, u)
-		if u.CostKnown() {
-			spend.CostUSD += u.CostUSD
-			spend.CostKnown = true
 		}
 	}
 

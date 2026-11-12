@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
@@ -118,18 +119,13 @@ func TestLoadTranscriptDeslopSurvivesResume(t *testing.T) {
 }
 
 func TestDeslopToggleWritesConfig(t *testing.T) {
-	isolateHome(t)
-	m := newTestModel(t, newFakeProvider())
-
-	res, _ := m.handleGlobalConfigEnter("deslop")
+	m := configFixture(t)
+	m = configEnter(t, m, "deslop")
 	if cfg, _ := loadConfig(); cfg.Deslop.Enabled == nil || !*cfg.Deslop.Enabled {
 		t.Fatalf("first toggle should enable deslop: %+v", cfg.Deslop)
 	}
-
-	mm := res.(model)
-	if _, _ = mm.handleGlobalConfigEnter("deslop"); true {
-		if cfg, _ := loadConfig(); cfg.Deslop.Enabled == nil || *cfg.Deslop.Enabled {
-			t.Fatalf("second toggle should disable deslop: %+v", cfg.Deslop)
-		}
+	m = pressConfig(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cfg, _ := loadConfig(); cfg.Deslop.Enabled == nil || *cfg.Deslop.Enabled {
+		t.Fatalf("second toggle should disable deslop: %+v", cfg.Deslop)
 	}
 }

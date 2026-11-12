@@ -197,6 +197,7 @@ var (
 	agentLoadMemoryTool      = tools.LoadMemoryTool
 	agentPreloadMemoryTool   = tools.PreloadMemoryTool
 	agentRenderDesignTool    = tools.RenderDesignTool
+	agentDecideTool          = tools.DecideTool
 	agentImageInjectionHook  = tools.NewImageInjectionHook
 	agentNewImageSink        = tools.NewImageSink
 )
@@ -329,6 +330,7 @@ func subagentTools(def subagentDef, env *agentToolEnv, deferred func() []tools.T
 		"fetch":        tools.FetchTool(env),
 		"todos":        tools.TodosTool(env),
 		"web_search":   tools.WebSearchTool(env),
+		"decide":       tools.DecideTool(env),
 		"search_tools": tools.SearchToolsTool(deferred),
 	}
 	for _, wt := range tools.WorkflowTools(env) {
@@ -341,7 +343,7 @@ func subagentTools(def subagentDef, env *agentToolEnv, deferred func() []tools.T
 	granted := wrapFileToolsWithMemory(engine.SubagentTools(def, available), env.Cwd)
 	return append(granted,
 		agentLoadMemoryTool(env.Cwd),
-		agentPreloadMemoryTool(env.Cwd, topic, onTopic),
+		agentPreloadMemoryTool(env.Cwd, topic, onTopic, func(u providers.Usage) { env.RecordSpend(tools.SpendDecision, u) }),
 		agentImageInjectionHook(env.ImageSink, env.SupportsImages),
 	)
 }

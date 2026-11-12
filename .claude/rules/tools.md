@@ -53,7 +53,7 @@ only rebuilds the deferred list; `s.coreTools` is fixed).
 
 Core today (`setupAgentSessionTools`): `read`, `write`, `edit`, `glob`,
 `grep`, `ls`, `bash`, `job_output`, `job_kill`, `fetch`, `todos`,
-`load_memory`, `preload_memory`, `render_design`, `task`,
+`load_memory`, `preload_memory`, `decide`, `render_design`, `task`,
 `search_tools`, `invoke_tool`, `web_search`; plus the six `workflow_*`
 tools outside a workflow run, and — only during a workflow run —
 `end_turn` (the step's log-summary contract) on every step and
@@ -87,7 +87,32 @@ model can surface and run workflows without a `search_tools`
 round-trip first), and `render_design` (kept on the wire so the model
 reaches for the design-preview canvas while it is making visual
 decisions rather than only after a `search_tools` round-trip; flip it to
-`s.deferredBase` / the registry func to make it discovery-only).
+`s.deferredBase` / the registry func to make it discovery-only), and
+`decide` (the user asked for it on the wire, so the model reaches for a
+cheap calibrated judgment while triaging instead of reading every item).
+
+## decide (`pkg/tools/decide.go`)
+
+Closed-set questions answered by the configured decision model
+(`engine.DeciderBuilder`; contract in `.claude/rules/providers.md`).
+Params: `input` (shared text), `files` (read from disk: `text/*`, JSON,
+XML become text parts headed `File <path>:`; anything else inline data by
+extension, then sniffed MIME; `DecideMaxFileBytes` 50 MB each), `items`
+(each item is its own request after the shared input, up to
+`DecideMaxItems` 100, `decideConcurrency` 8 at once; one failed item is
+an `error:` line, all failing is the error), and `questions` (`key`,
+`type` `yes_no`|`choice`|`score`, `question`, `yes`/`no`, `options`
+`[{key, when}]`, `levels`). Options are a list, not a map, so strict
+schema validators accept it. The reply's `answers` is one line per
+question in the order asked (`yes — p(yes) 0.94`, options by
+probability, `1.12 on 0-2 · most likely 1 "label" (0.82)`) plus `model`.
+No decision model is a non-error `notice` (`DecideNoModelNotice`), like
+`web_search` without a key. Not approval-gated: it sends content to the
+user's own configured model provider, as every model call does. Each
+call's usage is reported with `env.RecordSpend(SpendDecision, u)` — an
+`engine.SpendEvent` the TUI's session env routes to `recordSpend` (cost
+meter and usage ledger) and `engine.Run` adds to the run's spend; the
+memory recall hook reports its filter call the same way.
 
 **History tools are neither.** `history_summary`, `history_read`, and
 `history_search` (`pkg/engine/history_tools.go`) are not in any tool list:

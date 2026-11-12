@@ -10,6 +10,9 @@ import (
 const (
 	// DefaultRecallK is how many concepts a per-turn recall returns.
 	DefaultRecallK = 15
+	// FilteredRecallCandidates is how many concepts a filtered per-turn
+	// recall hands its RelevanceFilter to choose from.
+	FilteredRecallCandidates = 30
 	// DefaultTopK is how many top-weighted concepts open a session.
 	DefaultTopK = 15
 	// DefaultBodies is how many of the leading concepts carry their body
@@ -79,17 +82,33 @@ func SystemBlock(ctx context.Context, cwd string) string {
 	return FormatConcepts(concepts, "Project memory", memoryNote, DefaultBodies)
 }
 
+// RelevanceFilter narrows recalled concepts to the ones that bear on a
+// prompt, keeping their order. Similarity recall finds what is near the
+// prompt's words; a filter judges what actually helps with it.
+type RelevanceFilter interface {
+	Relevant(ctx context.Context, prompt string, concepts []Concept) ([]Concept, error)
+}
+
 // RecallBlock returns the per-turn block for prompt and the topic the
 // hits imply. ids already in the system block are dropped so a turn does
 // not repeat what the session opened with.
-func RecallBlock(ctx context.Context, cwd, prompt, topic string, exclude map[int64]bool) (string, string) {
+//
+// With a filter, recall draws FilteredRecallCandidates silently, the
+// filter picks among them, and only what it keeps (at most DefaultRecallK)
+// is shown and counted as recalled. A failing filter falls back to the
+// unfiltered top DefaultRecallK.
+func RecallBlock(ctx context.Context, cwd, prompt, topic string, exclude map[int64]bool, filter RelevanceFilter) (string, string) {
 	svc := Default()
 	if !svc.IsOpen() || strings.TrimSpace(prompt) == "" {
 		return "", NormalizeTopic(topic)
 	}
 	recallCtx, cancel := context.WithTimeout(ctx, DefaultHookTimeout)
 	defer cancel()
-	res, err := svc.Recall(recallCtx, RecallQuery{Cwd: cwd, Query: prompt, Topic: topic, K: DefaultRecallK})
+	q := RecallQuery{Cwd: cwd, Query: prompt, Topic: topic, K: DefaultRecallK}
+	if filter != nil {
+		q.K, q.Silent = FilteredRecallCandidates, true
+	}
+	res, err := svc.Recall(recallCtx, q)
 	if err != nil {
 		return "", NormalizeTopic(topic)
 	}
@@ -99,6 +118,15 @@ func RecallBlock(ctx context.Context, cwd, prompt, topic string, exclude map[int
 			continue
 		}
 		kept = append(kept, c)
+	}
+	if filter != nil {
+		if relevant, err := filter.Relevant(recallCtx, prompt, kept); err == nil {
+			kept = relevant
+		}
+		if len(kept) > DefaultRecallK {
+			kept = kept[:DefaultRecallK]
+		}
+		_ = svc.Touch(recallCtx, kept)
 	}
 	return FormatConcepts(kept, "Relevant memory", "", DefaultBodies), res.Topic
 }

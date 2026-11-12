@@ -4,403 +4,682 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/cursor"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
-	lipgloss "charm.land/lipgloss/v2"
-	"github.com/Cidan/ask/pkg/providers"
+	"github.com/Cidan/ask/pkg/config"
 )
 
-type configItem struct {
-	name string
-	key  string
-	id   string
+// configScreenState is the /config screen: sections down the left, the
+// focused section's settings on the right, the focused setting's
+// description beneath them. Rows are derived from the saved config on every
+// frame (configSections); this holds only where the user is and what they
+// are in the middle of.
+type configScreenState struct {
+	section int
+	// cursor indexes the current page: the section's rows, or every
+	// matching row while query filters.
+	cursor int
+	query  string
+
+	// editing is the id of the text row whose inline editor is open.
+	editing string
+	input   textinput.Model
+	// capturing is set while a keybinding row waits for its new key.
+	capturing bool
+	// choosing is the id of the select row whose list is open; choice is
+	// the list's cursor and themeBackup the theme to restore on Esc.
+	choosing    string
+	choice      int
+	themeBackup string
+
+	// notice is the last action's outcome, shown on the filter line.
+	notice    string
+	noticeErr bool
 }
 
-// configItemsAll is the *top-level* /config row list. The screen
-// is layered into Global Options (existing knobs lifted into a
-// submenu) and Project Options (per-cwd issue provider) so adding
-// per-project surfaces doesn't pollute the global namespace. The
-// Global / Project openers are themselves selectable rows; Enter
-// drops the user into the matching sub-picker.
-func (m model) configItemsAll() []configItem {
-	return []configItem{
-		{"Global Options", "", "global"},
-		{"Project Options", "", "project"},
-	}
-}
-
-// globalConfigItems is what previously lived directly on the
-// top-level /config row list. Now it's the body of the Global
-// Options submenu — same content, just one layer deeper. Returning
-// these rows here (rather than inlining inside the global picker
-// view) keeps the filter / cursor logic usable across both the
-// view and the Enter dispatcher.
-func (m model) globalConfigItems() []configItem {
-	quiet := "off"
-	if m.quietMode {
-		quiet = "on"
-	}
-	blink := "off"
-	if m.cursorBlink {
-		blink = "on"
-	}
-	diffs := "off"
-	if m.renderDiffs {
-		diffs = "on"
-	}
-	toolOut := string(m.toolOutputMode)
-	skipPerms := "off"
-	if m.skipAllPermissions {
-		skipPerms = "on"
-	}
-	// The Default Provider row reflects what's saved on disk, not the
-	// current tab's provider. The picker only writes cfg.Provider and
-	// leaves m.provider alone, so reading m.provider here would show a
-	// stale value on the second /config open.
-	provName := "(none)"
-	cfg, _ := loadConfig()
-	if p := providerByID(cfg.Provider); p != nil {
-		provName = p.DisplayName()
-	}
-	webSearch := "off"
-	if resolveBraveAPIKey(cfg.WebSearch) != "" {
-		webSearch = "on"
-	}
-	worktree := onOff(cfg.UI.Worktree != nil && *cfg.UI.Worktree)
-	if pv := loadProjectConfig(cfg, m.cwd).Worktree; pv != nil {
-		worktree += " (project: " + onOff(*pv) + ")"
-	}
-	deslop := onOff(cfg.Deslop.Enabled != nil && *cfg.Deslop.Enabled)
-	autoCompact := onOff(cfg.AutoCompact == nil || *cfg.AutoCompact)
-	items := []configItem{
-		{"Quiet Mode", quiet, "quiet"},
-		{"Cursor Blink", blink, "cursorBlink"},
-		{"Render Diffs", diffs, "renderDiffs"},
-		{"Tool Output", toolOut, "toolOutput"},
-		{"Skip All Permissions", skipPerms, "skipAllPermissions"},
-		{"Worktree", worktree, "worktree"},
-		{"Auto-Compact", autoCompact, "autoCompact"},
-		{"Theme", m.themeName, "theme"},
-		{"Default Provider", provName, "provider"},
-		{"Web Search...", webSearch, "webSearch"},
-		{"Memory...", memoryConfigSummary(cfg), "memory"},
-		{"Deslop Output", deslop, "deslop"},
-		{"Deslop Model...", deslopConfigSummary(cfg), "deslopModel"},
-	}
-	// One settings row per registered provider, generated from the
-	// registry: the row reads "on" once the provider has its credentials.
-	for _, p := range providers.All() {
-		items = append(items, configItem{p.DisplayName() + "...", providerConfigSummary(cfg, p), providerConfigItemID(p)})
-	}
-	items = append(items, configItem{"Keybindings...", "", "keybindings"})
-	return items
-}
-
-const providerConfigItemPrefix = "provider:"
-
-func providerConfigItemID(p providers.Provider) string {
-	return providerConfigItemPrefix + p.ID()
-}
-
-func providerConfigSummary(cfg askConfig, p providers.Provider) string {
-	if p.Configured(cfg.ProviderConfig(p.ID())) {
-		return "on"
-	}
-	return "off"
+// configPageRow is a row on the current page and the section it is from.
+type configPageRow struct {
+	row     configRow
+	section int
 }
 
 func (m model) startConfigModal() model {
 	(&m).clearSelection()
 	m.mode = modeConfig
-	m.configFilter = ""
-	m.configCursor = 0
+	m.config = &configScreenState{}
 	return m
 }
 
 func (m model) clearConfigModal() model {
 	m.mode = modeInput
-	m.configFilter = ""
-	m.configCursor = 0
+	m.config = nil
 	return m
 }
 
-func (m model) filteredConfigItems() []configItem {
-	all := m.configItemsAll()
-	if m.configFilter == "" {
-		return all
+// page is what the right pane lists: the current section's rows, or with a
+// query, every row whose label, group, section, or description matches.
+func (s *configScreenState) page(secs []configSection) []configPageRow {
+	q := strings.ToLower(strings.TrimSpace(s.query))
+	if q == "" {
+		sec := secs[clampIndex(s.section, len(secs))]
+		out := make([]configPageRow, len(sec.rows))
+		for i, r := range sec.rows {
+			out[i] = configPageRow{row: r, section: s.section}
+		}
+		return out
 	}
-	q := strings.ToLower(m.configFilter)
-	out := make([]configItem, 0, len(all))
-	for _, it := range all {
-		if strings.Contains(strings.ToLower(it.name), q) {
-			out = append(out, it)
+	var out []configPageRow
+	for si, sec := range secs {
+		for _, r := range sec.rows {
+			hay := strings.ToLower(r.label + " " + r.group + " " + sec.title + " " + r.desc + " " + r.value)
+			if strings.Contains(hay, q) {
+				out = append(out, configPageRow{row: r, section: si})
+			}
 		}
 	}
 	return out
 }
 
+func clampIndex(i, n int) int {
+	if i >= n {
+		i = n - 1
+	}
+	if i < 0 {
+		i = 0
+	}
+	return i
+}
+
+// current returns the focused row.
+func (s *configScreenState) current(secs []configSection) (configPageRow, bool) {
+	page := s.page(secs)
+	if len(page) == 0 {
+		return configPageRow{}, false
+	}
+	return page[clampIndex(s.cursor, len(page))], true
+}
+
+// rowByID finds a row anywhere on the screen.
+func rowByID(secs []configSection, id string) (configRow, bool) {
+	for _, sec := range secs {
+		for _, r := range sec.rows {
+			if r.id == id {
+				return r, true
+			}
+		}
+	}
+	return configRow{}, false
+}
+
+// move steps the cursor by delta. Unfiltered, stepping past either end of
+// a section flows into the neighbouring one.
+func (s *configScreenState) move(secs []configSection, delta int) {
+	if s.query != "" {
+		n := len(s.page(secs))
+		if n > 0 {
+			s.cursor = listNavWrap(clampIndex(s.cursor, n), delta, n)
+		}
+		return
+	}
+	next := s.cursor + delta
+	switch n := len(secs[s.section].rows); {
+	case next >= n:
+		s.section = (s.section + 1) % len(secs)
+		s.cursor = 0
+	case next < 0:
+		s.section = (s.section - 1 + len(secs)) % len(secs)
+		s.cursor = len(secs[s.section].rows) - 1
+	default:
+		s.cursor = next
+	}
+}
+
+func (s *configScreenState) jumpSection(secs []configSection, delta int) {
+	if s.query != "" {
+		if cur, ok := s.current(secs); ok {
+			s.section = cur.section
+		}
+		s.query = ""
+	}
+	s.section = (s.section + delta + len(secs)) % len(secs)
+	s.cursor = 0
+}
+
+func (s *configScreenState) say(text string, isErr bool) {
+	s.notice, s.noticeErr = text, isErr
+}
+
 func (m model) updateConfigModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	s := m.config
+	if s == nil {
+		return m.clearConfigModal(), nil
+	}
 	if msg.Mod == tea.ModCtrl && msg.Code == 'd' {
 		return m, closeTabCmd(m.id)
 	}
-	if m.configThemePickerActive {
-		return m.updateThemePicker(msg)
-	}
-	if m.configProviderPickerActive {
-		return m.updateConfigProviderPicker(msg)
-	}
-	if m.configFields.active {
-		return m.updateFieldsPicker(msg)
-	}
-	if m.configKeybindingsPickerActive {
-		return m.updateConfigKeybindingsPicker(msg)
-	}
-	// New layered sub-pickers: global (the existing flat list, now
-	// one layer deeper) and project (per-cwd issues config). Both
-	// hide their parent and own the keyboard until they're closed.
-	if m.configProjectPickerActive {
-		return m.updateConfigProjectPicker(msg)
-	}
-	if m.configGlobalPickerActive {
-		return m.updateConfigGlobalPicker(msg)
-	}
-	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
-		return m.clearConfigModal(), nil
-	}
-	items := m.filteredConfigItems()
 	switch {
-	case msg.Code == tea.KeyEsc:
+	case s.editing != "":
+		return m.updateConfigEditor(msg)
+	case s.capturing:
+		return m.updateConfigCapture(msg)
+	case s.choosing != "":
+		return m.updateConfigChooser(msg)
+	}
+	secs := m.configSections()
+	s.section = clampIndex(s.section, len(secs))
+	cur, hasRow := s.current(secs)
+	switch {
+	case msg.Mod == tea.ModCtrl && msg.Code == 'c':
 		return m.clearConfigModal(), nil
+	case msg.Code == tea.KeyEsc:
+		if s.query != "" {
+			s.query, s.cursor = "", 0
+			return m, nil
+		}
+		return m.clearConfigModal(), nil
+	case msg.Code == tea.KeyTab && msg.Mod == tea.ModShift:
+		s.jumpSection(secs, -1)
+	case msg.Code == tea.KeyTab:
+		s.jumpSection(secs, +1)
 	case listNavPrev(msg):
-		m.configCursor = listNavWrap(m.configCursor, -1, len(items))
-		return m, nil
+		s.move(secs, -1)
 	case listNavNext(msg):
-		m.configCursor = listNavWrap(m.configCursor, +1, len(items))
+		s.move(secs, +1)
+	case msg.Code == tea.KeyPgUp:
+		s.cursor = max(s.cursor-10, 0)
+	case msg.Code == tea.KeyPgDown:
+		s.cursor = clampIndex(s.cursor+10, len(s.page(secs)))
+	case msg.Code == tea.KeyHome:
+		s.cursor = 0
+	case msg.Code == tea.KeyEnd:
+		s.cursor = len(s.page(secs)) - 1
+	case msg.Code == tea.KeyLeft && msg.Mod == 0:
+		if hasRow {
+			return m.configStep(cur.row, -1)
+		}
+	case msg.Code == tea.KeyRight && msg.Mod == 0:
+		if hasRow {
+			return m.configStep(cur.row, +1)
+		}
+	case msg.Code == tea.KeyEnter:
+		if hasRow {
+			return m.configActivate(cur.row)
+		}
+	case msg.Code == tea.KeyDelete:
+		if hasRow {
+			return m.configClear(cur.row)
+		}
+	case msg.Mod == tea.ModCtrl && msg.Code == 'r':
+		if hasRow && cur.row.kind == configKey {
+			return m.configResetKey(cur.row)
+		}
+	case msg.Code == tea.KeyBackspace:
+		if s.query != "" {
+			r := []rune(s.query)
+			s.query, s.cursor = string(r[:len(r)-1]), 0
+		}
+	default:
+		if configTextInputKey(msg) {
+			s.query += msg.Text
+			s.cursor = 0
+		}
+	}
+	s.cursor = clampIndex(s.cursor, len(s.page(secs)))
+	return m, nil
+}
+
+// configStep moves a toggle, choice, or select row one value in dir.
+func (m model) configStep(row configRow, dir int) (tea.Model, tea.Cmd) {
+	switch row.kind {
+	case configToggle:
+		return m.flipConfigToggle(row.id)
+	case configChoice, configSelect:
+		if row.id == "issueProvider" {
+			return m.cycleIssueProviderDir(dir)
+		}
+		n := len(row.options)
+		if n == 0 {
+			return m, nil
+		}
+		return m.setConfigChoice(row, (row.current+dir+n)%n)
+	}
+	return m, nil
+}
+
+// configActivate is Enter on a row.
+func (m model) configActivate(row configRow) (tea.Model, tea.Cmd) {
+	s := m.config
+	switch row.kind {
+	case configToggle, configChoice:
+		return m.configStep(row, +1)
+	case configSelect:
+		s.choosing, s.choice = row.id, row.current
+		if row.id == "theme" {
+			s.themeBackup = m.themeName
+		}
+		return m, nil
+	case configText:
+		return m.openConfigEditor(row), nil
+	case configKey:
+		s.capturing = true
+		s.say("", false)
+		return m, nil
+	case configAction:
+		return m.runConfigAction(row.id)
+	}
+	return m, nil
+}
+
+func (m model) runConfigAction(id string) (tea.Model, tea.Cmd) {
+	switch id {
+	case "deslopModel":
+		return m.openDeslopModelPicker()
+	case "memoryModel":
+		return m.openMemoryModelPicker()
+	case "memoryBrowse":
+		m = m.clearConfigModal()
+		return m.openMemoryBrowser()
+	case "workflows":
+		m = m.clearConfigModal()
+		m = m.switchScreen(screenWorkflows)
+		if m.workflowsBuilder == nil {
+			m.workflowsBuilder = newWorkflowsBuilderState(m.cwd)
+		} else {
+			m.workflowsBuilder.refreshItems()
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+// saveConfigWith runs mutate on the saved config under the lock and
+// returns what was saved.
+func saveConfigWith(mutate func(*askConfig)) (askConfig, error) {
+	var saved askConfig
+	err := withConfigLock(func() error {
+		cfg, _ := loadConfig()
+		mutate(&cfg)
+		saved = cfg
+		return saveConfig(cfg)
+	})
+	return saved, err
+}
+
+func (m model) configSaveFailed(err error) (tea.Model, tea.Cmd) {
+	debugLog("config save: %v", err)
+	m.config.say("✗ save failed: "+err.Error(), true)
+	return m, nil
+}
+
+// flipConfigToggle flips one on/off setting and applies it to the tab.
+func (m model) flipConfigToggle(id string) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	var err error
+	label := id
+	switch id {
+	case "quiet":
+		m.quietMode = !m.quietMode
+		v := m.quietMode
+		_, err = saveConfigWith(func(c *askConfig) { c.UI.QuietMode = &v })
+		(&m).refreshHistory()
+		label = "Quiet mode " + onOff(v)
+	case "cursorBlink":
+		m.cursorBlink = !m.cursorBlink
+		applyCursorBlink(&m.input, m.cursorBlink)
+		v := m.cursorBlink
+		_, err = saveConfigWith(func(c *askConfig) { c.UI.CursorBlink = &v })
+		if v {
+			cmd = cursor.Blink
+		}
+		label = "Cursor blink " + onOff(v)
+	case "renderDiffs":
+		m.renderDiffs = !m.renderDiffs
+		v := m.renderDiffs
+		_, err = saveConfigWith(func(c *askConfig) { c.UI.RenderDiffs = &v })
+		(&m).refreshHistory()
+		label = "Render diffs " + onOff(v)
+	case "skipAllPermissions":
+		m.skipAllPermissions = !m.skipAllPermissions
+		v := m.skipAllPermissions
+		_, err = saveConfigWith(func(c *askConfig) { c.UI.SkipAllPermissions = &v })
+		m.killProc()
+		label = "Skip all permissions " + onOff(v) + " — session restarts"
+	case "worktree":
+		var saved askConfig
+		saved, err = saveConfigWith(func(c *askConfig) {
+			v := c.UI.Worktree == nil || !*c.UI.Worktree
+			c.UI.Worktree = &v
+		})
+		if err == nil {
+			m = m.applyEffectiveWorktree(saved)
+			label = "Worktree " + onOff(*saved.UI.Worktree)
+		}
+	case "autoCompact":
+		var saved askConfig
+		saved, err = saveConfigWith(func(c *askConfig) {
+			v := c.AutoCompact != nil && !*c.AutoCompact
+			c.AutoCompact = &v
+		})
+		label = "Auto-compact " + onOff(saved.AutoCompact == nil || *saved.AutoCompact)
+	case "deslop":
+		var saved askConfig
+		saved, err = saveConfigWith(func(c *askConfig) {
+			v := c.Deslop.Enabled == nil || !*c.Deslop.Enabled
+			c.Deslop.Enabled = &v
+		})
+		label = "Deslop output " + onOff(saved.Deslop.Enabled != nil && *saved.Deslop.Enabled)
+	case "memoryGate":
+		var saved askConfig
+		saved, err = saveConfigWith(func(c *askConfig) {
+			v := !config.MemoryExtractGateEnabled(*c)
+			c.Memory.ExtractGate = &v
+		})
+		label = "Skip empty turns " + onOff(config.MemoryExtractGateEnabled(saved))
+	case "memoryFilter":
+		var saved askConfig
+		saved, err = saveConfigWith(func(c *askConfig) {
+			v := !config.MemoryRecallFilterEnabled(*c)
+			c.Memory.RecallFilter = &v
+		})
+		label = "Filter recalled memory " + onOff(config.MemoryRecallFilterEnabled(saved))
+	default:
+		return m, nil
+	}
+	if err != nil {
+		return m.configSaveFailed(err)
+	}
+	if m.config != nil {
+		m.config.say("✓ "+label, false)
+	}
+	return m, cmd
+}
+
+// setConfigChoice sets a choice or select row to its idx'th value.
+func (m model) setConfigChoice(row configRow, idx int) (tea.Model, tea.Cmd) {
+	if idx < 0 || idx >= len(row.options) {
+		return m, nil
+	}
+	value := row.options[idx]
+	if idx < len(row.values) {
+		value = row.values[idx]
+	}
+	label := row.label + " → " + row.options[idx]
+	var err error
+	switch row.id {
+	case "theme":
+		m = m.previewTheme(idx)
+		theme := m.themeName
+		_, err = saveConfigWith(func(c *askConfig) { c.UI.Theme = theme })
+		(&m).refreshHistory()
+	case "toolOutput":
+		m.toolOutputMode = toolOutputMode(value)
+		_, err = saveConfigWith(func(c *askConfig) { c.UI.ToolOutput = value })
+		(&m).refreshHistory()
+	case "provider":
+		_, err = saveConfigWith(func(c *askConfig) { c.Provider = value })
+		label += " (applies to new tabs)"
+	case "decisionModel":
+		p, mid, _ := strings.Cut(value, "/")
+		_, err = saveConfigWith(func(c *askConfig) { c.Decisions = config.DecisionsConfig{Provider: p, Model: mid} })
+	case "githubAuth":
+		_, err = saveConfigWith(func(c *askConfig) {
+			pc := loadProjectConfig(*c, m.cwd)
+			pc.MCP.GitHub.Auth = value
+			*c = upsertProjectConfig(*c, m.cwd, pc)
+		})
+		m.killProc()
+		label += " — session restarts"
+	case "projectWorktree":
+		var saved askConfig
+		saved, err = saveConfigWith(func(c *askConfig) {
+			pc := loadProjectConfig(*c, m.cwd)
+			switch value {
+			case "on":
+				v := true
+				pc.Worktree = &v
+			case "off":
+				v := false
+				pc.Worktree = &v
+			default:
+				pc.Worktree = nil
+			}
+			*c = upsertProjectConfig(*c, m.cwd, pc)
+		})
+		if err == nil {
+			m = m.applyEffectiveWorktree(saved)
+		}
+	default:
+		return m, nil
+	}
+	if err != nil {
+		return m.configSaveFailed(err)
+	}
+	if m.config != nil {
+		m.config.say("✓ "+label, false)
+	}
+	return m, nil
+}
+
+// cycleIssueProviderDir moves the project's issue provider to the next
+// entry in dir whose credentials are set ("none" always is), persists it,
+// and reports which providers it skipped.
+func (m model) cycleIssueProviderDir(dir int) (tea.Model, tea.Cmd) {
+	var next IssueProvider
+	var skipped []string
+	_, err := saveConfigWith(func(c *askConfig) {
+		pc := loadProjectConfig(*c, m.cwd)
+		cur := 0
+		for i, p := range issueProviderRegistry {
+			if p.ID() == pc.Issues.Provider {
+				cur = i
+				break
+			}
+		}
+		n := len(issueProviderRegistry)
+		for step := 1; step <= n; step++ {
+			cand := issueProviderRegistry[((cur+dir*step)%n+n)%n]
+			if !providerActivationReady(cand, pc) {
+				skipped = append(skipped, cand.DisplayName())
+				continue
+			}
+			next = cand
+			break
+		}
+		pc.Issues.Provider = next.ID()
+		*c = upsertProjectConfig(*c, m.cwd, pc)
+	})
+	if err != nil {
+		return m.configSaveFailed(err)
+	}
+	text := "✓ Issue provider → " + next.DisplayName()
+	if len(skipped) > 0 {
+		text += " (skipped, no credentials: " + strings.Join(skipped, ", ") + ")"
+	}
+	if m.config != nil {
+		m.config.say(text, false)
+	}
+	return m, nil
+}
+
+func (m model) openConfigEditor(row configRow) model {
+	s := m.config
+	ti := textinput.New()
+	ti.Prompt = ""
+	ti.Placeholder = row.field.Hint
+	if row.field.Secret {
+		ti.EchoMode = textinput.EchoPassword
+	}
+	ti.SetValue(row.stored)
+	ti.CursorEnd()
+	ti.SetWidth(max(configValueWidth(m.width)-2, 10))
+	ti.Focus()
+	s.editing, s.input = row.id, ti
+	s.say("", false)
+	return m
+}
+
+func (m model) updateConfigEditor(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	s := m.config
+	switch {
+	case msg.Code == tea.KeyEsc, msg.Mod == tea.ModCtrl && msg.Code == 'c':
+		s.editing = ""
 		return m, nil
 	case msg.Code == tea.KeyEnter:
-		if m.configCursor < 0 || m.configCursor >= len(items) {
-			return m.clearConfigModal(), nil
-		}
-		switch items[m.configCursor].id {
-		case "global":
-			m = m.openConfigGlobalPicker()
-			return m, nil
-		case "project":
-			m = m.openConfigProjectPicker()
+		row, ok := rowByID(m.configSections(), s.editing)
+		if !ok {
+			s.editing = ""
 			return m, nil
 		}
-		return m.clearConfigModal(), nil
-	case msg.Code == tea.KeyBackspace:
-		if m.configFilter != "" {
-			r := []rune(m.configFilter)
-			m.configFilter = string(r[:len(r)-1])
-			m.configCursor = 0
-		}
+		return m.commitConfigText(row, s.input.Value())
+	}
+	var cmd tea.Cmd
+	s.input, cmd = s.input.Update(msg)
+	return m, cmd
+}
+
+// applyConfigPaste routes a paste into the open editor, or the filter.
+func (m model) applyConfigPaste(text string) (tea.Model, tea.Cmd) {
+	s := m.config
+	if s == nil {
 		return m, nil
 	}
-	if configTextInputKey(msg) {
-		m.configFilter += msg.Text
-		m.configCursor = 0
+	text = strings.TrimRight(text, "\r\n")
+	if s.editing != "" {
+		var cmd tea.Cmd
+		s.input, cmd = s.input.Update(tea.PasteMsg{Content: text})
+		return m, cmd
+	}
+	if !strings.ContainsAny(text, "\n\r") {
+		s.query += text
+		s.cursor = 0
+	}
+	return m, nil
+}
+
+// commitConfigText validates and saves a text row's new value. A failed
+// validation keeps the editor open on the draft.
+func (m model) commitConfigText(row configRow, draft string) (tea.Model, tea.Cmd) {
+	s := m.config
+	draft = strings.TrimSpace(draft)
+	if row.field.Validate != nil {
+		if err := row.field.Validate(draft); err != nil {
+			s.say("✗ "+row.label+": "+err.Error(), true)
+			return m, nil
+		}
+	}
+	if _, err := saveConfigWith(func(c *askConfig) { row.save(c, draft) }); err != nil {
+		s.editing = ""
+		return m.configSaveFailed(err)
+	}
+	s.editing = ""
+	if row.onSaved != nil {
+		m = row.onSaved(m)
+	}
+	verb := "saved"
+	if draft == "" {
+		verb = "cleared"
+	}
+	s.say("✓ "+row.tag+": "+row.label+" "+verb, false)
+	return m, nil
+}
+
+// configClear is Delete: a text row's stored value is removed (falling back
+// to its env or default), a keybinding is unbound.
+func (m model) configClear(row configRow) (tea.Model, tea.Cmd) {
+	switch row.kind {
+	case configText:
+		if row.stored == "" {
+			return m, nil
+		}
+		return m.commitConfigText(row, "")
+	case configKey:
+		if err := persistKeyBinding(row.action, KeyBinding{}); err != nil {
+			return m.configSaveFailed(err)
+		}
+		invalidateKeyMapCache()
+		m.config.say("✓ "+row.label+" unbound", false)
+	}
+	return m, nil
+}
+
+func (m model) configResetKey(row configRow) (tea.Model, tea.Cmd) {
+	def := defaultKeyBindings[row.action]
+	if err := persistKeyBinding(row.action, def); err != nil {
+		return m.configSaveFailed(err)
+	}
+	invalidateKeyMapCache()
+	m.config.say("✓ "+row.label+" → "+displayBinding(def)+" (default)", false)
+	return m, nil
+}
+
+// updateConfigCapture records the next key as the focused row's binding.
+// Esc and Ctrl+C cancel; every other key, Enter and Tab included, is a
+// valid binding.
+func (m model) updateConfigCapture(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	s := m.config
+	if msg.Code == tea.KeyEsc || (msg.Mod == tea.ModCtrl && msg.Code == 'c') {
+		s.capturing = false
 		return m, nil
+	}
+	cur, ok := s.current(m.configSections())
+	if !ok || cur.row.kind != configKey {
+		s.capturing = false
+		return m, nil
+	}
+	binding := KeyBinding{Mod: stripKeyLockModifiers(msg.Mod), Code: msg.Code}
+	if binding.String() == "" {
+		s.say("✗ could not record that key — try a different combination", true)
+		return m, nil
+	}
+	if err := persistKeyBinding(cur.row.action, binding); err != nil {
+		s.capturing = false
+		return m.configSaveFailed(err)
+	}
+	invalidateKeyMapCache()
+	s.capturing = false
+	s.say("✓ "+cur.row.label+" → "+binding.String(), false)
+	return m, nil
+}
+
+// updateConfigChooser drives an open select list. The theme list previews
+// each theme as the cursor lands on it; Esc puts the old one back.
+func (m model) updateConfigChooser(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	s := m.config
+	row, ok := rowByID(m.configSections(), s.choosing)
+	if !ok {
+		s.choosing = ""
+		return m, nil
+	}
+	n := len(row.options)
+	switch {
+	case msg.Code == tea.KeyEsc, msg.Mod == tea.ModCtrl && msg.Code == 'c':
+		if row.id == "theme" {
+			m = m.previewTheme(themeIndexByName(s.themeBackup))
+		}
+		s.choosing = ""
+		return m, nil
+	case listNavPrev(msg):
+		s.choice = listNavWrap(s.choice, -1, n)
+	case listNavNext(msg):
+		s.choice = listNavWrap(s.choice, +1, n)
+	case msg.Code == tea.KeyHome:
+		s.choice = 0
+	case msg.Code == tea.KeyEnd:
+		s.choice = n - 1
+	case msg.Code == tea.KeyEnter:
+		s.choosing = ""
+		return m.setConfigChoice(row, s.choice)
+	default:
+		return m, nil
+	}
+	if row.id == "theme" {
+		m = m.previewTheme(s.choice)
 	}
 	return m, nil
 }
 
 func configTextInputKey(msg tea.KeyPressMsg) bool {
 	return msg.Text != "" && stripKeyLockModifiers(msg.Mod)&^tea.ModShift == 0
-}
-
-// openConfigGlobalPicker opens the Global Options submenu — the
-// items that lived directly on the /config row list before the
-// layering. Cursor + filter reset on entry so the user lands on
-// the first row.
-//
-// NOTE: configFilter is a single field shared with the top-level
-// "Global / Project" filter. It's reset on open and on close here so
-// the layers don't see each other's strings; the next submenu that
-// wants its own filter should split this into per-picker fields
-// rather than reusing the shared slot.
-func (m model) openConfigGlobalPicker() model {
-	m.configGlobalPickerActive = true
-	m.configGlobalCursor = 0
-	m.configFilter = ""
-	return m
-}
-
-func (m model) closeConfigGlobalPicker() model {
-	m.configGlobalPickerActive = false
-	m.configGlobalCursor = 0
-	m.configFilter = ""
-	return m
-}
-
-// updateConfigGlobalPicker drives the row cursor and dispatches
-// Enter into the per-row toggle/picker handlers. The dispatcher
-// (handleGlobalConfigEnter) is factored out so the body stays
-// readable; the actual mutation logic per row hasn't changed from
-// the pre-layering version.
-func (m model) updateConfigGlobalPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if msg.Mod == tea.ModCtrl && msg.Code == 'c' {
-		m = m.closeConfigGlobalPicker()
-		return m, nil
-	}
-	items := m.filteredGlobalConfigItems()
-	switch {
-	case msg.Code == tea.KeyEsc:
-		m = m.closeConfigGlobalPicker()
-		return m, nil
-	case listNavPrev(msg):
-		m.configGlobalCursor = listNavWrap(m.configGlobalCursor, -1, len(items))
-		return m, nil
-	case listNavNext(msg):
-		m.configGlobalCursor = listNavWrap(m.configGlobalCursor, +1, len(items))
-		return m, nil
-	case msg.Code == tea.KeyEnter:
-		if m.configGlobalCursor < 0 || m.configGlobalCursor >= len(items) {
-			return m, nil
-		}
-		return m.handleGlobalConfigEnter(items[m.configGlobalCursor].id)
-	case msg.Code == tea.KeyBackspace:
-		if m.configFilter != "" {
-			r := []rune(m.configFilter)
-			m.configFilter = string(r[:len(r)-1])
-			m.configGlobalCursor = 0
-		}
-		return m, nil
-	}
-	if configTextInputKey(msg) {
-		m.configFilter += msg.Text
-		m.configGlobalCursor = 0
-		return m, nil
-	}
-	return m, nil
-}
-
-// handleGlobalConfigEnter is the dispatcher for the Global Options
-// submenu rows. Each case is the same mutation that lived inline
-// in updateConfigModal pre-layering — extracted unchanged so the
-// behaviour of every existing knob is preserved bit-for-bit.
-func (m model) handleGlobalConfigEnter(itemID string) (tea.Model, tea.Cmd) {
-	switch itemID {
-	case "quiet":
-		m.quietMode = !m.quietMode
-		v := m.quietMode
-		if err := withConfigLock(func() error {
-			cfg, _ := loadConfig()
-			cfg.UI.QuietMode = &v
-			return saveConfig(cfg)
-		}); err != nil {
-			debugLog("saveConfig err: %v", err)
-		}
-		(&m).refreshHistory()
-		return m, nil
-	case "cursorBlink":
-		m.cursorBlink = !m.cursorBlink
-		applyCursorBlink(&m.input, m.cursorBlink)
-		v := m.cursorBlink
-		if err := withConfigLock(func() error {
-			cfg, _ := loadConfig()
-			cfg.UI.CursorBlink = &v
-			return saveConfig(cfg)
-		}); err != nil {
-			debugLog("saveConfig err: %v", err)
-		}
-		if m.cursorBlink {
-			return m, cursor.Blink
-		}
-		return m, nil
-	case "renderDiffs":
-		m.renderDiffs = !m.renderDiffs
-		v := m.renderDiffs
-		if err := withConfigLock(func() error {
-			cfg, _ := loadConfig()
-			cfg.UI.RenderDiffs = &v
-			return saveConfig(cfg)
-		}); err != nil {
-			debugLog("saveConfig err: %v", err)
-		}
-		(&m).refreshHistory()
-		return m, nil
-	case "toolOutput":
-		m.toolOutputMode = nextToolOutputMode(m.toolOutputMode)
-		mode := string(m.toolOutputMode)
-		if err := withConfigLock(func() error {
-			cfg, _ := loadConfig()
-			cfg.UI.ToolOutput = mode
-			return saveConfig(cfg)
-		}); err != nil {
-			debugLog("saveConfig err: %v", err)
-		}
-		(&m).refreshHistory()
-		return m, nil
-	case "skipAllPermissions":
-		m.skipAllPermissions = !m.skipAllPermissions
-		v := m.skipAllPermissions
-		if err := withConfigLock(func() error {
-			cfg, _ := loadConfig()
-			cfg.UI.SkipAllPermissions = &v
-			return saveConfig(cfg)
-		}); err != nil {
-			debugLog("saveConfig err: %v", err)
-		}
-		m.killProc()
-		return m, nil
-	case "worktree":
-		var saved askConfig
-		if err := withConfigLock(func() error {
-			cfg, _ := loadConfig()
-			v := cfg.UI.Worktree == nil || !*cfg.UI.Worktree
-			cfg.UI.Worktree = &v
-			saved = cfg
-			return saveConfig(cfg)
-		}); err != nil {
-			debugLog("saveConfig err: %v", err)
-		}
-		m = m.applyEffectiveWorktree(saved)
-		return m, nil
-	case "autoCompact":
-		if err := withConfigLock(func() error {
-			cfg, _ := loadConfig()
-			v := cfg.AutoCompact != nil && !*cfg.AutoCompact
-			cfg.AutoCompact = &v
-			return saveConfig(cfg)
-		}); err != nil {
-			debugLog("saveConfig err: %v", err)
-		}
-		return m, nil
-	case "theme":
-		m = m.openThemePicker()
-		return m, nil
-	case "provider":
-		m = m.openConfigProviderPicker()
-		return m, nil
-	case "webSearch":
-		m = m.openWebSearchFieldsPicker()
-		return m, nil
-	case "memory":
-		return m.openMemoryModelPicker()
-	case "deslop":
-		if err := withConfigLock(func() error {
-			cfg, _ := loadConfig()
-			v := cfg.Deslop.Enabled == nil || !*cfg.Deslop.Enabled
-			cfg.Deslop.Enabled = &v
-			return saveConfig(cfg)
-		}); err != nil {
-			debugLog("saveConfig err: %v", err)
-		}
-		return m, nil
-	case "deslopModel":
-		return m.openDeslopModelPicker()
-	case "keybindings":
-		m = m.openConfigKeybindingsPicker()
-		return m, nil
-	}
-	if id, ok := strings.CutPrefix(itemID, providerConfigItemPrefix); ok {
-		if p, ok := providers.Get(id); ok {
-			m = m.openProviderFieldsPicker(p)
-		}
-		return m, nil
-	}
-	return m, nil
 }
 
 func onOff(v bool) string {
@@ -429,245 +708,12 @@ func (m model) applyEffectiveWorktree(cfg askConfig) model {
 	return m
 }
 
-// filteredGlobalConfigItems applies the Global Options filter
-// query to the lifted item list. Behaves exactly like the old
-// filteredConfigItems did against the flat top-level — same
-// substring match, same case folding.
-func (m model) filteredGlobalConfigItems() []configItem {
-	all := m.globalConfigItems()
-	if m.configFilter == "" {
-		return all
-	}
-	q := strings.ToLower(m.configFilter)
-	out := make([]configItem, 0, len(all))
-	for _, it := range all {
-		if strings.Contains(strings.ToLower(it.name), q) {
-			out = append(out, it)
-		}
-	}
-	return out
-}
-
-func (m model) viewConfigModal() string {
-	// Wide-and-flat house style: prefer a landscape rectangle over a
-	// tower (84×18 nominal, shrinking with the terminal).
-	boxW := 84
-	if boxW > m.width-4 {
-		boxW = m.width - 4
-	}
-	if boxW < 44 {
-		boxW = 44
-	}
-	innerW := boxW - 4
-	if innerW < 40 {
-		innerW = 40
-	}
-
-	boxH := 18
-	if boxH > m.height-4 {
-		boxH = m.height - 4
-	}
-	if boxH < 12 {
-		boxH = 12
-	}
-
-	title := configTitleStyle.Render("Config")
-
-	var filterBody string
-	if m.configFilter == "" {
-		filterBody = configCaretStyle.Render("▏") + configPlaceholderStyle.Render("Type to filter")
-	} else {
-		filterBody = m.configFilter + configCaretStyle.Render("▏")
-	}
-	filterLine := configPromptStyle.Render("> ") + filterBody
-
-	items := m.filteredConfigItems()
-	listH := boxH - 6
-	if listH < 1 {
-		listH = 1
-	}
-	cursor := m.configCursor
-	if cursor >= len(items) {
-		cursor = len(items) - 1
-	}
-	if cursor < 0 {
-		cursor = 0
-	}
-	start := 0
-	if cursor >= listH {
-		start = cursor - listH + 1
-	}
-	end := start + listH
-	if end > len(items) {
-		end = len(items)
-	}
-
-	rows := make([]string, 0, listH)
-	for i := start; i < end; i++ {
-		rows = append(rows, renderConfigRow(items[i], innerW, i == cursor))
-	}
-	for len(rows) < listH {
-		rows = append(rows, strings.Repeat(" ", innerW))
-	}
-
-	help := configHelpStyle.Render("tab switch selection • enter confirm • esc cancel")
-
-	body := strings.Join([]string{
-		title,
-		"",
-		filterLine,
-		"",
-		strings.Join(rows, "\n"),
-		"",
-		help,
-	}, "\n")
-
-	return configBoxStyle.Render(body)
-}
-
-// viewConfigGlobalPicker renders the Global Options submenu. Same
-// chrome as viewConfigModal — the lifted rows just live one layer
-// deeper now. Delegates the layout to renderLayeredConfigBox so
-// Project Options + the PAT editor are byte-identical except for
-// the title + prompt row + items + help text.
-func (m model) viewConfigGlobalPicker() string {
-	return renderLayeredConfigBox(layeredConfigBoxArgs{
-		width:      m.width,
-		height:     m.height,
-		title:      "Global Options",
-		promptLine: filterPromptLine(m.configFilter, "Type to filter"),
-		items:      m.filteredGlobalConfigItems(),
-		cursor:     m.configGlobalCursor,
-		helpText:   "enter confirm · esc back",
-	})
-}
-
-// layeredConfigBoxArgs describes one render of the shared full-
-// modal layered-config box. Centralising the shape means every
-// layered window — Global Options, Project Options, the inline
-// PAT/endpoint editor — renders at the same dimensions with the
-// same vertical rhythm. Per-window variation lives in title +
-// promptLine + items + helpText only.
-type layeredConfigBoxArgs struct {
-	width, height int
-	title         string
-	// promptLine is the pre-rendered body of the row directly
-	// under the title (the "> " prefix is added by the helper).
-	// Built by filterPromptLine for picker filter inputs and by
-	// fieldPromptLine for inline editors so the visual treatment
-	// is identical across both use cases.
-	promptLine string
-	items      []configItem
-	cursor     int
-	helpText   string
-}
-
-// filterPromptLine renders the body of the prompt row for a
-// picker's filter input — empty draft becomes a caret + the
-// supplied placeholder; non-empty becomes the typed text + caret.
-// Pulled out so the field editor can match the visual treatment
-// without duplicating the placeholder/caret logic.
-func filterPromptLine(value, placeholder string) string {
-	if value == "" {
-		return configCaretStyle.Render("▏") + configPlaceholderStyle.Render(placeholder)
-	}
-	return value + configCaretStyle.Render("▏")
-}
-
-// renderLayeredConfigBox is the canonical full-modal renderer for
-// the layered /config windows. Identical chrome to the original
-// viewConfigGlobalPicker; Global, Project, and the field editors
-// all go through this single path now.
-func renderLayeredConfigBox(a layeredConfigBoxArgs) string {
-	// Same wide-and-flat geometry as viewConfigModal so every layer
-	// of the /config stack shares one silhouette.
-	boxW := 84
-	if boxW > a.width-4 {
-		boxW = a.width - 4
-	}
-	if boxW < 44 {
-		boxW = 44
-	}
-	innerW := boxW - 4
-	if innerW < 40 {
-		innerW = 40
-	}
-	boxH := 18
-	if boxH > a.height-4 {
-		boxH = a.height - 4
-	}
-	if boxH < 12 {
-		boxH = 12
-	}
-
-	title := configTitleStyle.Render(a.title)
-	filterLine := configPromptStyle.Render("> ") + a.promptLine
-
-	listH := boxH - 6
-	if listH < 1 {
-		listH = 1
-	}
-	cursor := a.cursor
-	if cursor >= len(a.items) {
-		cursor = len(a.items) - 1
-	}
-	if cursor < 0 {
-		cursor = 0
-	}
-	start := 0
-	if cursor >= listH {
-		start = cursor - listH + 1
-	}
-	end := start + listH
-	if end > len(a.items) {
-		end = len(a.items)
-	}
-
-	rows := make([]string, 0, listH)
-	for i := start; i < end; i++ {
-		rows = append(rows, renderConfigRow(a.items[i], innerW, i == cursor))
-	}
-	for len(rows) < listH {
-		rows = append(rows, strings.Repeat(" ", innerW))
-	}
-
-	help := configHelpStyle.Render(a.helpText)
-	body := strings.Join([]string{title, "", filterLine, "", strings.Join(rows, "\n"), "", help}, "\n")
-	return configBoxStyle.Render(body)
-}
-
-func (m model) openThemePicker() model {
-	m.configThemePickerActive = true
-	m.configThemeBackup = m.themeName
-	m.configThemeCursor = 0
-	for i, t := range themeRegistry {
-		if t.name == m.themeName {
-			m.configThemeCursor = i
-			break
-		}
-	}
-	return m
-}
-
-func (m model) closeThemePicker() model {
-	m.configThemePickerActive = false
-	m.configThemeBackup = ""
-	m.configThemeCursor = 0
-	return m
-}
-
 // invalidateThemedRender drops every entry's cached glamour/wrap output
 // so the next layout pass re-renders with the freshly-applied theme.
-// We touch every entry up front (rather than letting the chatView's
-// lazy path catch them on scroll) because a theme change *must* affect
-// the visible window immediately, not just future scroll positions.
-// The actual glamour cost is still paid lazily — only entries that the
-// chatView wraps in its visible+pad band are rendered; off-screen
-// entries simply re-render the next time they scroll into view.
-//
-// m.renderer is also dropped here because the glamour renderer bakes
-// the theme into its style at construction; the next ensureEntryWrapped
-// pass will rebuild it at the chat's content width.
+// Every entry is touched up front because a theme change must affect the
+// visible window immediately; the glamour cost is still paid lazily, only
+// for entries the chat view wraps. m.renderer is dropped because glamour
+// bakes the theme into its style at construction.
 func (m *model) invalidateThemedRender() {
 	for i := range m.history {
 		switch m.history[i].kind {
@@ -686,39 +732,10 @@ func (m model) previewTheme(idx int) model {
 		return m
 	}
 	t := themeRegistry[idx]
-	m.configThemeCursor = idx
 	m.themeName = t.name
 	applyTheme(t)
 	(&m).invalidateThemedRender()
 	return m
-}
-
-func (m model) updateThemePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
-		m = m.previewTheme(themeIndexByName(m.configThemeBackup))
-		m = m.closeThemePicker()
-		return m, nil
-	case listNavPrev(msg):
-		m = m.previewTheme(listNavWrap(m.configThemeCursor, -1, len(themeRegistry)))
-		return m, nil
-	case listNavNext(msg):
-		m = m.previewTheme(listNavWrap(m.configThemeCursor, +1, len(themeRegistry)))
-		return m, nil
-	case msg.Code == tea.KeyEnter:
-		theme := m.themeName
-		if err := withConfigLock(func() error {
-			cfg, _ := loadConfig()
-			cfg.UI.Theme = theme
-			return saveConfig(cfg)
-		}); err != nil {
-			debugLog("saveConfig err: %v", err)
-		}
-		m = m.closeThemePicker()
-		(&m).refreshHistory()
-		return m, nil
-	}
-	return m, nil
 }
 
 func themeIndexByName(name string) int {
@@ -728,190 +745,4 @@ func themeIndexByName(name string) int {
 		}
 	}
 	return 0
-}
-
-func (m model) viewThemePicker() string {
-	innerW := 0
-	for _, t := range themeRegistry {
-		if w := lipgloss.Width(t.name); w > innerW {
-			innerW = w
-		}
-	}
-	innerW += 4
-	if innerW < 40 {
-		innerW = 40
-	}
-
-	title := themePickerTitleStyle.Render("Theme")
-
-	rows := make([]string, 0, len(themeRegistry))
-	for i, t := range themeRegistry {
-		line := "  " + t.name
-		if i == m.configThemeCursor {
-			line = "▸ " + t.name
-			pad := innerW - lipgloss.Width(line)
-			if pad < 0 {
-				pad = 0
-			}
-			line += strings.Repeat(" ", pad)
-			line = themePickerRowStyle.Render(line)
-		} else {
-			pad := innerW - lipgloss.Width(line)
-			if pad > 0 {
-				line += strings.Repeat(" ", pad)
-			}
-		}
-		rows = append(rows, line)
-	}
-
-	help := themePickerHelpStyle.Render("enter save · esc cancel")
-
-	body := strings.Join([]string{
-		title,
-		"",
-		strings.Join(rows, "\n"),
-		"",
-		help,
-	}, "\n")
-
-	return themePickerBoxStyle.Render(body)
-}
-
-// openConfigProviderPicker starts the /config → Default Provider
-// sub-picker. Unlike the quick Ctrl+M model picker, this one only
-// writes cfg.Provider — it doesn't touch the current tab. Existing
-// tabs keep their provider; the next tab (Ctrl+T) inherits the new
-// default.
-func (m model) openConfigProviderPicker() model {
-	m.configProviderPickerActive = true
-	// Seed the cursor from the on-disk default, not the current tab's
-	// provider. When the user reopens /config after changing the
-	// default, the picker should land on whatever was saved — possibly
-	// different from the provider this tab was booted with.
-	cfg, _ := loadConfig()
-	cur := cfg.Provider
-	if cur == "" {
-		if p := providerByID(""); p != nil {
-			cur = p.ID()
-		}
-	}
-	m.configProviderBackup = cur
-	m.configProviderCursor = 0
-	for i, p := range providerRegistry {
-		if p.ID() == cur {
-			m.configProviderCursor = i
-			break
-		}
-	}
-	return m
-}
-
-func (m model) closeConfigProviderPicker() model {
-	m.configProviderPickerActive = false
-	m.configProviderBackup = ""
-	m.configProviderCursor = 0
-	return m
-}
-
-func (m model) updateConfigProviderPicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case msg.Mod == tea.ModCtrl && msg.Code == 'c', msg.Code == tea.KeyEsc:
-		m = m.closeConfigProviderPicker()
-		return m, nil
-	case listNavPrev(msg):
-		m.configProviderCursor = listNavWrap(m.configProviderCursor, -1, len(providerRegistry))
-		return m, nil
-	case listNavNext(msg):
-		m.configProviderCursor = listNavWrap(m.configProviderCursor, +1, len(providerRegistry))
-		return m, nil
-	case msg.Code == tea.KeyEnter:
-		if m.configProviderCursor < 0 || m.configProviderCursor >= len(providerRegistry) {
-			m = m.closeConfigProviderPicker()
-			return m, nil
-		}
-		chosen := providerRegistry[m.configProviderCursor]
-		chosenID := chosen.ID()
-		if err := withConfigLock(func() error {
-			cfg, _ := loadConfig()
-			cfg.Provider = chosenID
-			return saveConfig(cfg)
-		}); err != nil {
-			debugLog("saveConfig err: %v", err)
-		}
-		m.appendHistory(outputStyle.Render(promptStyle.Render(
-			"✓ default provider → " + chosen.DisplayName() + " (applies to new tabs)")))
-		m = m.closeConfigProviderPicker()
-		m = m.clearConfigModal()
-		return m, nil
-	}
-	return m, nil
-}
-
-func (m model) viewConfigProviderPicker() string {
-	innerW := 0
-	for _, p := range providerRegistry {
-		if w := lipgloss.Width(p.DisplayName()); w > innerW {
-			innerW = w
-		}
-	}
-	innerW += 4
-	if innerW < 40 {
-		innerW = 40
-	}
-	title := themePickerTitleStyle.Render("Default Provider")
-	opts := make([]string, 0, len(providerRegistry))
-	for _, p := range providerRegistry {
-		opts = append(opts, p.DisplayName())
-	}
-	rows := renderSwitcherRows(opts, m.configProviderCursor, innerW)
-	help := themePickerHelpStyle.Render("enter save · esc cancel")
-	body := strings.Join([]string{title, "", strings.Join(rows, "\n"), "", help}, "\n")
-	return themePickerBoxStyle.Render(body)
-}
-
-func renderSwitcherRows(opts []string, cursor, width int) []string {
-	rows := make([]string, 0, len(opts))
-	for i, o := range opts {
-		line := "  " + o
-		if i == cursor {
-			line = "▸ " + o
-			pad := width - lipgloss.Width(line)
-			if pad < 0 {
-				pad = 0
-			}
-			line += strings.Repeat(" ", pad)
-			line = themePickerRowStyle.Render(line)
-		} else {
-			pad := width - lipgloss.Width(line)
-			if pad > 0 {
-				line += strings.Repeat(" ", pad)
-			}
-		}
-		rows = append(rows, line)
-	}
-	if len(rows) == 0 {
-		rows = append(rows, themePickerRowStyle.Render("  (no options)"))
-	}
-	return rows
-}
-
-func renderConfigRow(it configItem, width int, selected bool) string {
-	nameW := lipgloss.Width(it.name)
-	keyW := lipgloss.Width(it.key)
-	pad := width - nameW - keyW
-	if pad < 1 {
-		pad = 1
-	}
-	if selected {
-		plain := it.name + strings.Repeat(" ", pad) + it.key
-		if w := lipgloss.Width(plain); w < width {
-			plain += strings.Repeat(" ", width-w)
-		}
-		return configSelectedRowStyle.Render(plain)
-	}
-	line := it.name + strings.Repeat(" ", pad)
-	if it.key != "" {
-		line += configKeyDimStyle.Render(it.key)
-	}
-	return padRight(line, width)
 }

@@ -101,6 +101,31 @@ func TestConfig_DeslopRoundTrip(t *testing.T) {
 	}
 }
 
+func TestConfig_DecisionsAndMemoryGatesRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	if !MemoryExtractGateEnabled(Config{}) || !MemoryRecallFilterEnabled(Config{}) {
+		t.Fatal("the memory gate and filter default on")
+	}
+	off := false
+	if err := Save(Config{
+		Decisions: DecisionsConfig{Provider: "gemini", Model: "gemini-decision-1"},
+		Memory:    MemoryConfig{ExtractGate: &off, RecallFilter: &off},
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.Decisions.Provider != "gemini" || loaded.Decisions.Model != "gemini-decision-1" {
+		t.Errorf("Decisions lost in round trip: %+v", loaded.Decisions)
+	}
+	if MemoryExtractGateEnabled(loaded) || MemoryRecallFilterEnabled(loaded) {
+		t.Errorf("memory toggles lost in round trip: %+v", loaded.Memory)
+	}
+}
+
 func TestConfig_AutoCompactOmittedWhenUnset(t *testing.T) {
 	data, err := json.Marshal(Config{})
 	if err != nil {

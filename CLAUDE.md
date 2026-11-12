@@ -59,8 +59,8 @@ runtime is `pkg/engine`, re-exported as a library by the root package
 |------|------------------|
 | `cmd/ask/` | The TUI: one `package main`, one file per concern (tabs, sidebar, screens, overlays, the provider adapter and session goroutine). |
 | `pkg/engine/` | Headless ADK runtime: runner loop, sessions and transcript store, system-prompt assembly (CLAUDE.md, `.claude/rules`, `@`-links), skills, subagents, plugin discovery, the model builder with transient retry, headless workflow runner. |
-| `pkg/tools/` | Every agent tool (file, search, bash + jobs, fetch, web_search, todos, ask_user_question/end_turn, workflow_*, search_tools/invoke_tool, artifacts, memory, extensions, MCP client + OAuth + server config, sudo askpass IPC). |
-| `pkg/providers/` | The `Provider` contract and registry, Vertex and OpenRouter, the shared OpenAI-protocol model, static catalog, models.dev client, merged model metadata and pricing, the steering prompt. |
+| `pkg/tools/` | Every agent tool (file, search, bash + jobs, fetch, web_search, decide, todos, end_turn, workflow_*, search_tools/invoke_tool, artifacts, memory, extensions, MCP client + OAuth + server config, sudo askpass IPC). |
+| `pkg/providers/` | `Provider`/`DecisionProvider` contracts, registries; Vertex, OpenRouter, Gemini decisions; the OpenAI-protocol model, static catalog, models.dev client, merged model metadata and pricing, the steering prompt. |
 | `pkg/workflow/` | Workflow definitions, the three-scope store, compile to an ADK graph, progress adapter, run tracker, sources. |
 | `pkg/watcher/` | Watchers: definitions, schedules, shared state, lead lock, script runner. |
 | `pkg/plugin/` | Claude Code plugin-marketplace format: manifests, marketplace/plugin state, install, publish, import from Claude. |
@@ -148,7 +148,7 @@ make clean
 
 | Location | Holds |
 |----------|-------|
-| `~/.config/ask/ask.json` | Config: provider blocks, UI toggles, keybindings, MCP servers, recent models, the `memory` block (extraction provider/model), per-project blocks (issues, MCP tokens, user-scope workflows). |
+| `~/.config/ask/ask.json` | Config: provider blocks, UI toggles, keybindings, MCP servers, recent models, the `memory` and `decisions` blocks, per-project blocks (issues, MCP tokens, user-scope workflows). |
 | `~/.config/ask/agent-sessions/<provider>/` | ADK transcripts behind `/resume` (raw output plus each call's `providers.Usage`), never rewritten. Sidecars: `<id>.deslop.json` (desloped blocks), `<id>.usage.json` (off-conversation spend), `<id>.history.db` (what compaction cut). `~/.config/ask/sessions.json` is the virtual-session index. |
 | `~/.config/ask/{skills,agents,workflows,watchers}/` | User-scope skills, subagents, workflows, watchers. |
 | `~/.config/ask/plugins/` | Known marketplaces, installed plugins, publications, the plugin cache. |

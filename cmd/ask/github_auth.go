@@ -54,14 +54,6 @@ func githubAuthConfigured(c githubMCPConfig) bool {
 	return c.Auth == githubAuthGH || c.Token != ""
 }
 
-// githubAuthSummary is the Project Options value for c's source.
-func githubAuthSummary(c githubMCPConfig) string {
-	if c.Auth == githubAuthGH {
-		return "gh CLI"
-	}
-	return "PAT"
-}
-
 // githubProjectReachable is the Configured gate both GitHub providers
 // share. A PAT project must also have a github.com origin. A gh
 // project hands the repo to `gh repo view`, a network round trip that

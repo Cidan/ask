@@ -180,6 +180,15 @@ func (p agentAPIProvider) StartSession(args ProviderSessionArgs) (*providerProc,
 // setupAgentSessionTools assembles the session's tool surface in two tiers.
 func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 	env := s.env
+	if emit := env.Emit; emit != nil {
+		env.Emit = func(ev engine.EngineEvent) {
+			if sp, ok := ev.(engine.SpendEvent); ok {
+				s.recordSpend(sp.Source, sp.Usage)
+				return
+			}
+			emit(ev)
+		}
+	}
 	supportsImages := func() bool {
 		return s.provider != nil && s.provider.SupportsImages(s.modelID)
 	}
@@ -199,7 +208,8 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		agentFetchTool(env),
 		agentTodosTool(env),
 		agentLoadMemoryTool(s.args.Cwd),
-		agentPreloadMemoryTool(s.args.Cwd, s.currentTopic, s.setTopic),
+		agentPreloadMemoryTool(s.args.Cwd, s.currentTopic, s.setTopic, func(u providers.Usage) { s.recordSpend(spendDecision, u) }),
+		agentDecideTool(env),
 		agentRenderDesignTool(imageSink),
 		agentImageInjectionHook(imageSink, supportsImages),
 		agentTaskTool(env,

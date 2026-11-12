@@ -39,6 +39,7 @@ type Config struct {
 	Projects     map[string]ProjectConfig `json:"projects,omitempty"`
 	Memory       MemoryConfig             `json:"memory,omitempty"`
 	Deslop       DeslopConfig             `json:"deslop,omitempty"`
+	Decisions    DecisionsConfig          `json:"decisions,omitempty"`
 	// AutoCompact keeps a long session alive instead of failing it: once the
 	// conversation reaches 90% of the model's context window, the oldest turns
 	// are dropped from the request sent to the model until it fits in roughly
@@ -52,7 +53,36 @@ type Config struct {
 // MemoryConfig picks the model that runs the post-turn concept
 // extraction. Empty Provider means the session's provider; empty Model
 // means that provider's cheapest listed model.
+//
+// ExtractGate and RecallFilter put the decision model (Config.Decisions) in
+// front of memory: the gate skips extraction for a turn it judges holds
+// nothing durable, and the filter drops recalled concepts it judges
+// irrelevant to the turn. nil means on; both are no-ops when no decision
+// model can run.
 type MemoryConfig struct {
+	Provider     string `json:"provider,omitempty"`
+	Model        string `json:"model,omitempty"`
+	ExtractGate  *bool  `json:"extractGate,omitempty"`
+	RecallFilter *bool  `json:"recallFilter,omitempty"`
+}
+
+// MemoryExtractGateEnabled reports whether the decision gate runs before
+// memory extraction.
+func MemoryExtractGateEnabled(cfg Config) bool {
+	return cfg.Memory.ExtractGate == nil || *cfg.Memory.ExtractGate
+}
+
+// MemoryRecallFilterEnabled reports whether the decision model filters the
+// per-turn memory recall.
+func MemoryRecallFilterEnabled(cfg Config) bool {
+	return cfg.Memory.RecallFilter == nil || *cfg.Memory.RecallFilter
+}
+
+// DecisionsConfig picks the decision model behind the decide tool and the
+// memory gate and filter. Empty Provider means the first decision provider
+// with credentials; empty Model means that provider's default. The
+// provider's own settings (its API key) live in its Providers block.
+type DecisionsConfig struct {
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
 }

@@ -591,27 +591,45 @@ func (s *Service) Recall(ctx context.Context, q RecallQuery) (RecallResult, erro
 		candidates = candidates[:q.K]
 	}
 
-	if !q.Silent && len(candidates) > 0 {
-		tx, err := db.BeginTx(ctx, nil)
-		if err != nil {
-			return RecallResult{}, err
-		}
-		for i := range candidates {
-			candidates[i].Weight = bumpWeight(candidates[i].Weight, ImplicitBump, false)
-			candidates[i].AccessCount++
-			candidates[i].LastTouched = now
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE memory_concepts SET weight = ?, access_count = access_count + 1, last_touched = ? WHERE id = ?`,
-				candidates[i].Weight, now.Unix(), candidates[i].ID); err != nil {
-				tx.Rollback()
-				return RecallResult{}, err
-			}
-		}
-		if err := tx.Commit(); err != nil {
+	if !q.Silent {
+		if err := bumpRecalled(ctx, db, candidates, now); err != nil {
 			return RecallResult{}, err
 		}
 	}
 	return RecallResult{Concepts: candidates, Topic: topic}, nil
+}
+
+// Touch counts concepts from a silent recall as recalled: the implicit bump
+// Recall would have applied. A caller that narrows its candidates before
+// showing them recalls silently and touches only what it kept.
+func (s *Service) Touch(ctx context.Context, concepts []Concept) error {
+	db, _, err := s.handles()
+	if err != nil {
+		return err
+	}
+	return bumpRecalled(ctx, db, concepts, s.now())
+}
+
+func bumpRecalled(ctx context.Context, db *sql.DB, concepts []Concept, now time.Time) error {
+	if len(concepts) == 0 {
+		return nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	for i := range concepts {
+		concepts[i].Weight = bumpWeight(concepts[i].Weight, ImplicitBump, false)
+		concepts[i].AccessCount++
+		concepts[i].LastTouched = now
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE memory_concepts SET weight = ?, access_count = access_count + 1, last_touched = ? WHERE id = ?`,
+			concepts[i].Weight, now.Unix(), concepts[i].ID); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // inferTopic returns the topic shared by the most of the top-ranked
