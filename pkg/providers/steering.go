@@ -22,6 +22,10 @@ const askSteeringPromptParallel = `<use_parallel_tool_calls>
 For maximum efficiency, whenever you perform multiple independent operations, invoke all relevant tools simultaneously rather than sequentially. Prioritize calling tools in parallel whenever possible. For example, when you need three files, read all three in one read call (its files list) rather than one at a time, and when you also need a grep, a glob, and a git status, put every one of those calls in the same response. When running multiple read-only commands, always run all of them in parallel. Err on the side of maximizing parallel tool calls rather than running too many tools sequentially. Only batch tool calls that are independent of each other: when one call needs another's result, wait for that result first.
 </use_parallel_tool_calls>`
 
+const askSteeringPromptDecide = `<use_decide>
+The decide tool answers closed-set questions — yes or no, one of a list, a rating on a scale — with calibrated probabilities from a fast, cheap decision model, and it is how you keep bulk output out of your context. Reach for it whenever a judgment over many things would otherwise mean reading them all yourself: which search hits, files, log lines, issues, or test failures matter for the task; which bucket each one belongs in; how severe each is; whether each follows a rule or matches a description. Do the gathering inside the same call: give decide the read, grep, glob, bash, fetch, or MCP calls you would have made, and ask your questions about their results. decide runs them, hands their output to the decision model together with the project rules and memory those tools bring in, and returns only the answers — none of the raw output enters your context, so you save its tokens on every call that follows. Use scope "each" to ask the same questions of every call's result separately. Each decide returns an id; when an answer surprises you or you need the detail behind it, read or grep decision:<id> (or decision:<id>/<n> for one call) instead of re-running the tools. Write every question as one complete, self-contained question. Do not use decide for open-ended answers, explanations, or values you cannot list in advance — read those yourself.
+</use_decide>`
+
 const askSteeringPromptTodos = `You MUST actively use the 'todos' tool for ANY multi-step task, whether you are running inline or inside a workflow step. Break your work down into a clear plan, mark the first item in_progress, and update the list live as you complete each task. Do NOT batch work and send a completed list at the end — the task list must track reality at every moment.`
 
 type SteeringOptions struct {
@@ -32,6 +36,8 @@ type SteeringOptions struct {
 	// give it).
 	Headless bool
 	Cwd      string
+	// Decisions adds the decide steering: a decision model can run.
+	Decisions bool
 }
 
 func SteeringPrompt(opts SteeringOptions) string {
@@ -45,6 +51,9 @@ func SteeringPrompt(opts SteeringOptions) string {
 		paragraphs = append(paragraphs, askSteeringPromptP1, askSteeringPromptSubagents, askSteeringPromptSideEffects)
 	}
 	paragraphs = append(paragraphs, askSteeringPromptP4, askSteeringPromptP5, askSteeringPromptParallel)
+	if opts.Decisions {
+		paragraphs = append(paragraphs, askSteeringPromptDecide)
+	}
 	if opts.InWorkflow {
 		paragraphs = append(paragraphs, askSteeringPromptInWorkflowP6)
 	}

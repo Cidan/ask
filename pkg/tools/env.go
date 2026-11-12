@@ -12,6 +12,7 @@ import (
 	"github.com/Cidan/ask/pkg/engine"
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/workflow"
+	"google.golang.org/adk/v2/agent"
 )
 
 const (
@@ -84,8 +85,56 @@ type ToolEnv struct {
 	// command or sub-agent is handed off to a background job.
 	Steering SteerSignaler
 
+	// Tools is the session's own tool set — wire tools and registry, as the
+	// model calls them — which decide's inner calls run through. Set by
+	// whatever assembles the session's tools.
+	Tools ToolLookup
+
 	nudgeMu sync.Mutex
 	nudges  map[string]int
+
+	decisionMu   sync.Mutex
+	decisionSeq  int
+	decisionSeen bool
+}
+
+// ToolLookup finds one of a session's tools by name.
+type ToolLookup interface {
+	LookupTool(name string) (Tool, bool)
+}
+
+// SessionTools is the ToolLookup over a session's wire tools and registry,
+// both read at lookup time so it can be built before the lists are final.
+type SessionTools struct {
+	Core     func() []Tool
+	Registry func() []Tool
+}
+
+func (s SessionTools) LookupTool(name string) (Tool, bool) {
+	for _, list := range []func() []Tool{s.Core, s.Registry} {
+		if list == nil {
+			continue
+		}
+		for _, t := range list() {
+			if t != nil && t.Name() == name {
+				return t, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// nextDecisionID allocates the session's next decision id (d1, d2, …),
+// continuing from the records a resumed session already holds.
+func (e *ToolEnv) nextDecisionID(ctx agent.Context) string {
+	e.decisionMu.Lock()
+	defer e.decisionMu.Unlock()
+	if !e.decisionSeen {
+		e.decisionSeq = engine.LastDecisionIndex(ctx.State())
+		e.decisionSeen = true
+	}
+	e.decisionSeq++
+	return fmt.Sprintf("d%d", e.decisionSeq)
 }
 
 // SteerSignaler hands out a channel that is closed once the running turn has

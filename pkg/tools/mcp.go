@@ -752,14 +752,14 @@ func (m *mcpAgentTool) Run(ctx agent.Context, args any) (map[string]any, error) 
 			return map[string]any{"result": m.name + ": " + err.Error(), "is_error": true}, nil
 		}
 	}
-	resp := m.convertResult(res)
+	resp := m.convertResult(ctx, res)
 	if resp.IsError {
 		return map[string]any{"result": resp.Content, "is_error": true}, nil
 	}
 	return map[string]any{"result": resp.Content}, nil
 }
 
-func (m *mcpAgentTool) convertResult(res *mcp.CallToolResult) ToolResponse {
+func (m *mcpAgentTool) convertResult(ctx context.Context, res *mcp.CallToolResult) ToolResponse {
 	var out strings.Builder
 	var imageData []byte
 	var imageMIME string
@@ -797,6 +797,8 @@ func (m *mcpAgentTool) convertResult(res *mcp.CallToolResult) ToolResponse {
 	}
 	if imageData != nil {
 		switch {
+		case engine.InnerCallOf(ctx) != nil:
+			queueImage(ctx, nil, PendingImage{Data: imageData, MIME: imageMIME})
 		case !m.conn.mgr.imagesOK():
 			fmt.Fprintf(&out, "[image result omitted — the current model has no vision: %s, %d bytes]",
 				imageMIME, len(imageData))

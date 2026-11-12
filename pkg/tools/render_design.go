@@ -57,7 +57,7 @@ func RenderDesignTool(sink *ImageSink) Tool {
 					b.WriteString("\n  - " + w)
 				}
 			}
-			sink.Add(PendingImage{
+			queueImage(ctx, sink, PendingImage{
 				Data:    res.PNG,
 				MIME:    "image/png",
 				Caption: fmt.Sprintf("render_design output (%d×%d):", res.Width, res.Height),

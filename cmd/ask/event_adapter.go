@@ -25,6 +25,7 @@ func EngineEventToTeaMsg(event engine.EngineEvent) tea.Msg {
 			name:       ev.ToolName,
 			input:      ev.Input,
 			background: ev.Background,
+			nested:     ev.Parent != "",
 			tabID:      tabID,
 		}
 	case engine.ToolResultEvent:
@@ -34,6 +35,7 @@ func EngineEventToTeaMsg(event engine.EngineEvent) tea.Msg {
 			output:     ev.Output,
 			isError:    ev.IsError,
 			background: ev.Background,
+			nested:     ev.Parent != "",
 			tabID:      tabID,
 		}
 	case engine.ToolDiffEvent:

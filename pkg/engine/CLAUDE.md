@@ -462,11 +462,37 @@ never as a failure. Three callers:
 outside the session's own model calls: `Run` adds it to `RunResult` spend
 (the tool factory's listener), the TUI routes it to `recordSpend`.
 
+`DecisionsAvailable()` (saved config resolves a decision target) sets
+`SteeringOptions.Decisions` in `BuildSystemPrompt` and
+`WorkflowStepInstructions`, which adds the `<use_decide>` steering.
+
+**decide's records and inner calls** (decision_record.go):
+- `DecisionRecord{ID, CallID, Model, Answers, Calls []DecisionCall{Tool,
+  Args, Result, Error}}` lives in session state under
+  `ask:decision:<id>` (`SaveDecision` / `LoadDecision` through the tool
+  context's `State()`; `DecisionRecordsIn(file.State)` for a loader;
+  `LastDecisionIndex` to continue numbering). `FileSessionService` keeps
+  it once, in the file's state: `trimTempDeltaState` drops it from the
+  stored copy of the event that made it. Session state is restored on
+  load and never reaches the model.
+- `DecisionAddress` / `ParseDecisionAddress` / `DecisionTexts`: the
+  `decision:<id>[/<n>]` paths read and grep accept.
+- `InnerCall` is one decide's scope: a `ruleDelivery` of its own (shared
+  by its calls, so each rule reaches the decision model once) and, per
+  call (`ForCall`), the images its tool produced. `Context(ctx)` wraps the
+  tool context (ADK's tool contexts do not support `WithAgentContext`, so
+  it embeds and overrides `Value`); `InnerCallOf(ctx)` is how the rules
+  wrapper, the read tracker, and image routing tell an inner call from
+  the model's own. `ContextAwareTool` keeps the session's delivery state
+  in a `*ruleDelivery` and switches to the inner call's when there is one.
+- `ToolCallEvent` / `ToolResultEvent` carry `Parent`, the id of the call
+  an inner call runs inside.
+
 ## File map
 
 - Runtime: `engine.go`, `run.go`, `session.go`, `coordinator.go`,
   `retry.go`, `usage.go`, `compact.go`, `plugins.go`, `workflow_run.go`,
-  `decision.go`.
+  `decision.go`, `decision_record.go`.
 - History archive: `history.go` (store, rendering, read, search),
   `history_tools.go`, `history_summarize.go`.
 - Contracts: `interaction.go`, `events.go`, `types.go`.

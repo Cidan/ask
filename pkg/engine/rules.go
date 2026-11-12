@@ -239,19 +239,32 @@ func RulesPromptBlock(rules []Rule) string {
 }
 
 type ContextAwareTool struct {
-	Inner      Tool
-	cwd        string
-	root       string
-	rules      []Rule
-	mu         *sync.Mutex
+	Inner    Tool
+	cwd      string
+	root     string
+	rules    []Rule
+	delivery *ruleDelivery
+}
+
+// ruleDelivery is what one model has been handed: the path-scoped rules
+// fired and the directories and instruction files walked. Every wrapped
+// tool of a session shares the session's; each decide call has its own
+// (InnerCall), so the decision model gets the rules its inner calls touch
+// without marking them delivered to the session's model.
+type ruleDelivery struct {
+	mu         sync.Mutex
 	firedRules map[string]bool
 	seenCtx    map[string]bool
 	// seenCtxFile holds the resolved path of every instruction file
-	// already delivered to the model. It is seeded with the files
+	// already delivered. A session's is seeded with the files
 	// BuildSystemPrompt inlined into <project_instructions>, so the JIT
 	// walk only ever adds instructions the model has not seen — reading
 	// a file next to CLAUDE.md no longer re-sends CLAUDE.md.
 	seenCtxFile map[string]bool
+}
+
+func newRuleDelivery() *ruleDelivery {
+	return &ruleDelivery{firedRules: map[string]bool{}, seenCtx: map[string]bool{}, seenCtxFile: map[string]bool{}}
 }
 
 func (ct *ContextAwareTool) Name() string        { return ct.Inner.Name() }
@@ -287,26 +300,20 @@ func WrapContextAwareTools(tools []Tool, cwd string, rules []Rule) []Tool {
 	if root == "" {
 		root = cwd
 	}
-	mu := &sync.Mutex{}
-	firedRules := map[string]bool{}
-	seenCtx := map[string]bool{}
-	seenCtxFile := map[string]bool{}
+	delivery := newRuleDelivery()
 	for _, d := range AgentContextFiles(cwd) {
-		seenCtxFile[ContextFileRealPath(d.Path)] = true
+		delivery.seenCtxFile[ContextFileRealPath(d.Path)] = true
 	}
 	out := make([]Tool, len(tools))
 	for i, t := range tools {
 		name := t.Name()
 		if name == "read" || name == "glob" || name == "grep" || name == "ls" {
 			out[i] = &ContextAwareTool{
-				Inner:       t,
-				cwd:         cwd,
-				root:        root,
-				rules:       scoped,
-				mu:          mu,
-				firedRules:  firedRules,
-				seenCtx:     seenCtx,
-				seenCtxFile: seenCtxFile,
+				Inner:    t,
+				cwd:      cwd,
+				root:     root,
+				rules:    scoped,
+				delivery: delivery,
 			}
 		} else {
 			out[i] = t
@@ -349,8 +356,15 @@ func (ct *ContextAwareTool) Run(ctx agent.Context, args any) (map[string]any, er
 
 	var files, dirs []string
 	if ct.Inner.Name() == "read" {
-		files = ReadCallFiles(argsMap)
+		for _, p := range ReadCallFiles(argsMap) {
+			if !IsDecisionAddress(p) {
+				files = append(files, p)
+			}
+		}
 		for _, p := range ReadCallSearchPaths(argsMap) {
+			if IsDecisionAddress(p) {
+				continue
+			}
 			if p == "" {
 				p = ct.cwd
 			}
@@ -361,15 +375,21 @@ func (ct *ContextAwareTool) Run(ctx agent.Context, args any) (map[string]any, er
 		if p == "" {
 			p = ct.cwd
 		}
-		dirs = []string{p}
+		if !IsDecisionAddress(p) {
+			dirs = []string{p}
+		}
 	}
 
+	d := ct.delivery
+	if inner := InnerCallOf(ctx); inner != nil {
+		d = inner.delivery
+	}
 	var add []string
 	for _, p := range append(append([]string(nil), files...), dirs...) {
-		add = append(add, ct.instructionsFor(p)...)
+		add = append(add, ct.instructionsFor(d, p)...)
 	}
 	for _, p := range files {
-		add = append(add, ct.rulesFor(p)...)
+		add = append(add, ct.rulesFor(d, p)...)
 	}
 
 	if len(add) > 0 {
@@ -382,7 +402,7 @@ func (ct *ContextAwareTool) Run(ctx agent.Context, args any) (map[string]any, er
 // instructionsFor returns the instruction files the model has not seen yet
 // in targetPath's directory and every parent up to the project root,
 // outermost first.
-func (ct *ContextAwareTool) instructionsFor(targetPath string) []string {
+func (ct *ContextAwareTool) instructionsFor(d *ruleDelivery, targetPath string) []string {
 	absPath := targetPath
 	if !filepath.IsAbs(absPath) {
 		absPath = filepath.Join(ct.cwd, absPath)
@@ -400,16 +420,16 @@ func (ct *ContextAwareTool) instructionsFor(targetPath string) []string {
 	}
 
 	for {
-		ct.mu.Lock()
-		seen := ct.seenCtx[dir]
-		ct.seenCtx[dir] = true
-		ct.mu.Unlock()
+		d.mu.Lock()
+		seen := d.seenCtx[dir]
+		d.seenCtx[dir] = true
+		d.mu.Unlock()
 
 		var dirAdd []string
 		if !seen {
-			ct.mu.Lock()
-			docs := contextFilesInDir(dir, ct.root, ct.seenCtxFile)
-			ct.mu.Unlock()
+			d.mu.Lock()
+			docs := contextFilesInDir(dir, ct.root, d.seenCtxFile)
+			d.mu.Unlock()
 			for _, d := range docs {
 				relP, err := filepath.Rel(ct.root, d.Path)
 				if err != nil || strings.HasPrefix(relP, "..") {
@@ -433,22 +453,22 @@ func (ct *ContextAwareTool) instructionsFor(targetPath string) []string {
 
 // rulesFor fires every path-scoped rule matching a file read for the first
 // time this session.
-func (ct *ContextAwareTool) rulesFor(targetPath string) []string {
+func (ct *ContextAwareTool) rulesFor(d *ruleDelivery, targetPath string) []string {
 	rel := ct.RelPath(targetPath)
 	if rel == "" {
 		return nil
 	}
 	var add []string
 	for _, r := range ct.rules {
-		ct.mu.Lock()
-		fired := ct.firedRules[r.Path]
-		ct.mu.Unlock()
+		d.mu.Lock()
+		fired := d.firedRules[r.Path]
+		d.mu.Unlock()
 		if fired || !r.Matches(rel) {
 			continue
 		}
-		ct.mu.Lock()
-		ct.firedRules[r.Path] = true
-		ct.mu.Unlock()
+		d.mu.Lock()
+		d.firedRules[r.Path] = true
+		d.mu.Unlock()
 
 		add = append(add, fmt.Sprintf("## Rule for %s (%s)\n\n%s", rel, r.Rel, r.Body))
 		// r.Links, not r.Body — Body is capped, Links are not.

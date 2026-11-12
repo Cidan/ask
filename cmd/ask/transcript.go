@@ -60,6 +60,9 @@ type transcriptItem struct {
 	// tool_use's run_in_background flag so the projection can drop the
 	// launch-ack result in short/off modes.
 	background bool
+	// nested applies to trToolCall and trToolResult: a call decide ran,
+	// drawn indented under the decide.
+	nested bool
 
 	// trToolResult.
 	output  string
@@ -108,11 +111,12 @@ func projectItem(it transcriptItem, quiet bool, mode toolOutputMode, diffs bool)
 		}
 		return []historyEntry{{
 			kind:         histToolCall,
-			text:         renderToolCallBlockStyled(it.toolName, it.toolInput, mode, restingToolGlyphStyle(it.errored), restingToolGlyphStyle(it.errored)),
+			text:         nestToolBlock(renderToolCallBlockStyled(it.toolName, it.toolInput, mode, restingToolGlyphStyle(it.errored), restingToolGlyphStyle(it.errored)), it.nested),
 			toolName:     it.toolName,
 			toolInput:    it.toolInput,
 			toolInflight: it.inflight,
 			toolErrored:  it.errored,
+			toolNested:   it.nested,
 		}}
 	case trToolResult:
 		if quiet || mode == toolOutputOff {
@@ -132,7 +136,7 @@ func projectItem(it transcriptItem, quiet bool, mode toolOutputMode, diffs bool)
 		}
 		return []historyEntry{{
 			kind: histToolResult,
-			text: body,
+			text: nestToolBlock(body, it.nested),
 		}}
 	case trDiff:
 		if quiet || !diffs {
@@ -227,7 +231,7 @@ func (m *model) settleToolCall(name string, errored bool) {
 		e := &m.history[idx]
 		e.toolInflight = false
 		e.toolErrored = errored
-		e.text = renderToolCallBlockStyled(e.toolName, e.toolInput, m.toolOutputMode, restingToolGlyphStyle(errored), restingToolGlyphStyle(errored))
+		e.text = nestToolBlock(renderToolCallBlockStyled(e.toolName, e.toolInput, m.toolOutputMode, restingToolGlyphStyle(errored), restingToolGlyphStyle(errored)), e.toolNested)
 		invalidateEntryRender(e)
 		if m.inflightToolCount > 0 {
 			m.inflightToolCount--

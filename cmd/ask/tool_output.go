@@ -192,6 +192,19 @@ func renderToolCallBlockStyled(name string, input map[string]any, mode toolOutpu
 	return strings.Join(lines, "\n")
 }
 
+// nestToolBlock indents the block of a call decide ran so it reads as part
+// of the decide above it.
+func nestToolBlock(s string, nested bool) string {
+	if !nested || s == "" {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		lines[i] = "  " + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}
+
 // inflightGlyphPeriod is one full glow cycle, in seconds, of the ▸ glyph
 // while a tool call is in flight: it breathes from a dimmed accent up to
 // the full theme accent and back. The viewport repaints at the spinner's

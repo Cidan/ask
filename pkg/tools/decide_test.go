@@ -181,7 +181,7 @@ func TestDecideToolItemsAskEachItemOnItsOwn(t *testing.T) {
 	}
 
 	_, resp = runDecide(t, env, `{"items": ["boom", "boom too"], "questions": [{"key": "a", "type": "yes_no", "question": "?"}]}`)
-	if !resp.IsError || !strings.Contains(resp.Content, "every item failed") {
+	if !resp.IsError || !strings.Contains(resp.Content, "every request failed") {
 		t.Errorf("every item failing is an error: %+v", resp)
 	}
 }

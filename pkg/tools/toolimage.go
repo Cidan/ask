@@ -1,8 +1,10 @@
 package tools
 
 import (
+	"context"
 	"sync"
 
+	"github.com/Cidan/ask/pkg/engine"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
@@ -39,6 +41,20 @@ func (s *ImageSink) Add(img PendingImage) {
 	s.mu.Lock()
 	s.pending = append(s.pending, img)
 	s.mu.Unlock()
+}
+
+// queueImage hands an image a tool produced to whoever reads that call's
+// result: the session's model through sink, or — for a call decide made —
+// the decision model.
+func queueImage(ctx context.Context, sink *ImageSink, img PendingImage) {
+	if len(img.Data) == 0 {
+		return
+	}
+	if inner := engine.InnerCallOf(ctx); inner != nil {
+		inner.AddImage(genai.NewPartFromBytes(img.Data, img.MIME))
+		return
+	}
+	sink.Add(img)
 }
 
 // Drain returns and clears the queued images.

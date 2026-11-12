@@ -26,4 +26,14 @@ func TestSteeringPrompt_Variants(t *testing.T) {
 	if !strings.Contains(step, askSteeringPromptInWorkflowP6) {
 		t.Error("a workflow step keeps its end_turn contract")
 	}
+	for _, s := range []string{tab, headless, step} {
+		if strings.Contains(s, "<use_decide>") {
+			t.Error("without a decision model nothing steers toward decide")
+		}
+	}
+	for _, opts := range []SteeringOptions{{Decisions: true}, {Headless: true, Decisions: true}, {InWorkflow: true, Decisions: true}} {
+		if !strings.Contains(SteeringPrompt(opts), askSteeringPromptDecide) {
+			t.Errorf("with a decision model every variant steers toward decide: %+v", opts)
+		}
+	}
 }

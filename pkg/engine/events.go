@@ -78,6 +78,9 @@ type ToolCallEvent struct {
 	ToolName   string         `json:"tool_name"`
 	Input      map[string]any `json:"input"`
 	Background bool           `json:"background,omitempty"`
+	// Parent is the id of the tool call this one runs inside — a decide
+	// call's inner calls — empty for a call the model made.
+	Parent string `json:"parent,omitempty"`
 }
 
 func (ToolCallEvent) Kind() EventKind { return EventKindToolCall }
@@ -90,6 +93,7 @@ type ToolResultEvent struct {
 	Output     string `json:"output"`
 	IsError    bool   `json:"is_error"`
 	Background bool   `json:"background,omitempty"`
+	Parent     string `json:"parent,omitempty"`
 }
 
 func (ToolResultEvent) Kind() EventKind { return EventKindToolResult }

@@ -27,7 +27,7 @@ func WorkflowStepInstructions(cwd string) func(workflow.Step, workflow.Source, *
 	for _, p := range []string{
 		EnvBlock(cwd, nil),
 		ProjectContext(cwd),
-		providers.SteeringPrompt(providers.SteeringOptions{InWorkflow: true, Cwd: cwd}),
+		providers.SteeringPrompt(providers.SteeringOptions{InWorkflow: true, Cwd: cwd, Decisions: DecisionsAvailable()}),
 	} {
 		if p != "" {
 			parts = append(parts, p)

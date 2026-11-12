@@ -66,7 +66,7 @@ func TestLoadTranscriptAppliesDeslop(t *testing.T) {
 	}
 
 	// With the sidecar, the assistant block shows the desloped text.
-	items, err := loadTranscriptFromEvents(events, deslop)
+	items, err := loadTranscriptFromEvents(events, deslop, nil)
 	if err != nil {
 		t.Fatalf("loadTranscriptFromEvents: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestLoadTranscriptAppliesDeslop(t *testing.T) {
 
 	// Without the sidecar, the raw text is shown unchanged — the session
 	// data is never lost.
-	rawItems, _ := loadTranscriptFromEvents(events, nil)
+	rawItems, _ := loadTranscriptFromEvents(events, nil, nil)
 	if rawItems[1].text != raw {
 		t.Fatalf("without sidecar the raw block must be shown, got %q", rawItems[1].text)
 	}

@@ -249,8 +249,8 @@ func (m *model) ensureEntryWrapped(idx, width int) {
 	// guarantees this path runs each spinner tick, and it costs one restyled
 	// line.
 	if e.kind == histToolCall && e.toolInflight {
-		e.rendered = renderToolCallBlockStyled(e.toolName, e.toolInput, m.toolOutputMode,
-			inflightToolGlyphStyle(float64(time.Now().UnixNano())/1e9), diffPathStyle)
+		e.rendered = nestToolBlock(renderToolCallBlockStyled(e.toolName, e.toolInput, m.toolOutputMode,
+			inflightToolGlyphStyle(float64(time.Now().UnixNano())/1e9), diffPathStyle), e.toolNested)
 		e.wrapped = wrapStyledLines(e.rendered, width)
 		e.wrappedFor = width
 		e.textMap = nil

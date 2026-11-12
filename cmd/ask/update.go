@@ -501,6 +501,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 				toolName:   msg.name,
 				toolInput:  msg.input,
 				background: msg.background,
+				nested:     msg.nested,
 				inflight:   true,
 			})
 			// Count the call only when it produced a visible, animatable
@@ -531,6 +532,7 @@ func (m model) Update(msg tea.Msg) (newModel tea.Model, cmd tea.Cmd) {
 				exitCode:    msg.exitCode,
 				hasExitCode: msg.hasExitCode,
 				background:  msg.background,
+				nested:      msg.nested,
 			})
 		}
 		return m, tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {

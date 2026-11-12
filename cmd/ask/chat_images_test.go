@@ -166,7 +166,7 @@ func TestResume_ShowsTheConversationsImages(t *testing.T) {
 	items, err := loadTranscriptFromEvents([]*session.Event{
 		userImageEvent("compare these", img),
 		userImageEvent("", img),
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestResume_ShowsTheConversationsImages(t *testing.T) {
 // Replayed without Kitty, images keep their name and size but no bytes.
 func TestResume_WithoutKittyDropsTheBytes(t *testing.T) {
 	sent := stubKitty(t, false)
-	items, _ := loadTranscriptFromEvents([]*session.Event{userImageEvent("x", tinyPNG(t, 2, 2))}, nil)
+	items, _ := loadTranscriptFromEvents([]*session.Event{userImageEvent("x", tinyPNG(t, 2, 2))}, nil, nil)
 	prepareTranscriptImages(items)
 	g := items[0].images[0]
 	if g.data != nil || g.thumb != nil || g.imageID != 0 || g.mime != "image/png" {

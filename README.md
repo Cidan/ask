@@ -370,7 +370,14 @@ follows when Google ships it there. With a key set:
 
 - the agent has a `decide` tool for triaging, filtering, routing, and
   ranking many things at once — search hits, files, issues, screenshots,
-  PDFs — instead of reading each one;
+  PDFs — instead of reading each one. It can run the gathering itself: the
+  agent hands it grep, read, bash, or MCP calls, `decide` runs them through
+  the same tools (approval prompts, project rules, and memory included),
+  gives their output to the decision model, and returns only the answers,
+  so the raw output never fills the agent's context. Each decision is kept
+  with the session under an id, and the agent can read or grep
+  `decision:<id>` to see the output behind an answer; the calls show in the
+  chat under their `decide`, and again after `/resume`;
 - memory extraction is skipped for turns the decision model judges hold
   nothing worth remembering (Memory → Skip empty turns);
 - the memories recalled for each turn are filtered to the ones that bear
