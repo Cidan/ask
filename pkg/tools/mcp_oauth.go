@@ -25,6 +25,13 @@ import (
 
 const MCPOAuthFlowTimeout = 3 * time.Minute
 
+// MCPClientIDMetadataDocumentURL is ask's OAuth client identifier: the URL of its client ID metadata
+// document (oauth/client-metadata.json in this repository). An authorization server that supports
+// client ID metadata documents identifies ask by it with no registration; one that does not falls
+// back to dynamic registration. The document's redirect is the loopback callback without a port,
+// which an authorization server matches on any port (RFC 8252 §7.3).
+const MCPClientIDMetadataDocumentURL = "https://raw.githubusercontent.com/Cidan/ask/main/oauth/client-metadata.json"
+
 // ErrMCPInteractiveAuthRequired is returned by a non-interactive handler's
 // Authorize when a server demands OAuth. Startup (background) connections use
 // it to mark a server "needs auth" instead of opening a browser and blocking.
@@ -533,10 +540,11 @@ func NewMCPOAuthHandler(serverURL string, interactive bool, prompter MCPAuthProm
 	}
 
 	acCfg := &auth.AuthorizationCodeHandlerConfig{
-		RedirectURL:              h.redirect,
-		AuthorizationCodeFetcher: h.fetchCode,
-		RequestRefreshToken:      true,
-		NewTokenSource:           newTokenSource,
+		RedirectURL:                    h.redirect,
+		AuthorizationCodeFetcher:       h.fetchCode,
+		RequestRefreshToken:            true,
+		NewTokenSource:                 newTokenSource,
+		ClientIDMetadataDocumentConfig: &auth.ClientIDMetadataDocumentConfig{URL: MCPClientIDMetadataDocumentURL},
 		DynamicClientRegistrationConfig: &auth.DynamicClientRegistrationConfig{
 			Metadata: &oauthex.ClientRegistrationMetadata{
 				ClientName:   "ask",
@@ -545,7 +553,9 @@ func NewMCPOAuthHandler(serverURL string, interactive bool, prompter MCPAuthProm
 			},
 		},
 	}
-	if saved != nil && saved.ClientID != "" {
+	// A saved metadata-document identity is no registration: replaying it as one would send it to an
+	// authorization server that does not support the documents.
+	if saved != nil && saved.ClientID != "" && saved.ClientID != MCPClientIDMetadataDocumentURL {
 		acCfg.PreregisteredClient = &oauthex.ClientCredentials{ClientID: saved.ClientID}
 		if saved.ClientSecret != "" {
 			acCfg.PreregisteredClient.ClientSecretAuth = &oauthex.ClientSecretAuth{ClientSecret: saved.ClientSecret}
