@@ -1,0 +1,9 @@
+{
+  "client_id": "https://raw.githubusercontent.com/Cidan/ask/main/oauth/client-metadata.json",
+  "client_name": "ask",
+  "client_uri": "https://github.com/Cidan/ask",
+  "redirect_uris": ["http://127.0.0.1/callback"],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none"
+}

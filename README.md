@@ -78,8 +78,9 @@ sixteen themes re-paint the whole UI live.
   installed and every marketplace; the agent can also create, edit,
   search, install, and publish them through its tools.
 - **MCP client** — stdio, SSE, and streamable-HTTP servers from
-  `ask.json` or a project `.mcp.json`, with OAuth (PKCE + dynamic
-  registration) for remote servers, live tool-list refresh, and
+  `ask.json` or a project `.mcp.json`, with OAuth (PKCE, and a client
+  ID metadata document or dynamic registration) for remote servers,
+  live tool-list refresh, and
   elicitation rendered as the question modal.
 - **Project memory** — a sqlite-vec store embedded by a local
   llama.cpp model. Recall is injected into the system prompt, per turn,
@@ -404,9 +405,12 @@ map. `${VAR}` and `${VAR:-default}` expand in every string.
 ```
 
 `type` is inferred (`command` → stdio, `url` → streamable HTTP) unless
-set to `sse`. `oauth: true` runs the authorization-code flow with PKCE
-and dynamic client registration in your browser and stores the token
-under `~/.config/ask/mcp-oauth/`. MCP tools are not part of the
+set to `sse`. When `oauth: true` is set, ask executes the
+authorization-code flow with PKCE in your browser and stores the token
+under `~/.config/ask/mcp-oauth/`. When an authorization server supports
+client ID metadata documents, ask uses
+[`oauth/client-metadata.json`](oauth/client-metadata.json); with any
+other authorization server, ask registers dynamically. MCP tools are not part of the
 model's wire tool list: the agent finds them with `search_tools` and
 calls them with `invoke_tool`, so large servers cost no context until
 used.
