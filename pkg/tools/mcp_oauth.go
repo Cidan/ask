@@ -345,7 +345,7 @@ func (cb *MCPOAuthCallback) handle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte("<html><body><p>ask is authorized — you can close this tab.</p></body></html>"))
 	cb.once.Do(func() {
-		cb.result <- &auth.AuthorizationResult{Code: code, State: state}
+		cb.result <- &auth.AuthorizationResult{Code: code, State: state, Iss: q.Get("iss")}
 	})
 }
 
@@ -408,7 +408,7 @@ func (cb *lazyOAuthCallback) handle(w http.ResponseWriter, r *http.Request) {
 	cb.mu.Unlock()
 	cb.once.Do(func() {
 		if res != nil {
-			res <- &auth.AuthorizationResult{Code: code, State: state}
+			res <- &auth.AuthorizationResult{Code: code, State: state, Iss: q.Get("iss")}
 		}
 	})
 }

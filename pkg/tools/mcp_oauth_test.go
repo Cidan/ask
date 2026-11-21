@@ -98,7 +98,7 @@ func TestMCPOAuthCallback_CapturesCode(t *testing.T) {
 	MCPOAuthOpenBrowser = func(u string) error {
 		opened = u
 		go func() {
-			resp, err := http.Get(cb.URL + "?code=abc123&state=xyz")
+			resp, err := http.Get(cb.URL + "?code=abc123&state=xyz&iss=https%3A%2F%2Fas.example")
 			if err == nil {
 				_ = resp.Body.Close()
 			}
@@ -113,7 +113,9 @@ func TestMCPOAuthCallback_CapturesCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Code != "abc123" || res.State != "xyz" {
+	// An authorization server that advertises RFC 9207 support is refused unless the issuer it
+	// returned reaches the SDK.
+	if res.Code != "abc123" || res.State != "xyz" || res.Iss != "https://as.example" {
 		t.Errorf("captured %+v", res)
 	}
 	if opened != "https://as.example/authorize" {
@@ -187,5 +189,38 @@ func TestSaveMCPOAuthToken_NilIsNoOp(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("no file should be created for nil token; stat err=%v", err)
+	}
+}
+
+// The loopback callback a handler binds for an interactive authorization passes the issuer of an
+// RFC 9207 authorization response to the SDK, as the eager one does.
+func TestLazyOAuthCallback_PassesIssuer(t *testing.T) {
+	cb, err := newLazyOAuthCallback()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := MCPOAuthOpenBrowser
+	MCPOAuthOpenBrowser = func(string) error {
+		go func() {
+			for i := 0; i < 50; i++ {
+				resp, err := http.Get(cb.url + "?code=abc123&state=xyz&iss=https%3A%2F%2Fas.example")
+				if err == nil {
+					_ = resp.Body.Close()
+					return
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+		}()
+		return nil
+	}
+	t.Cleanup(func() { MCPOAuthOpenBrowser = prev })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := cb.Fetch(ctx, &auth.AuthorizationArgs{URL: "https://as.example/authorize"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Code != "abc123" || res.State != "xyz" || res.Iss != "https://as.example" {
+		t.Errorf("captured %+v", res)
 	}
 }
