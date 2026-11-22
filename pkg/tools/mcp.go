@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,8 +20,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
-	"google.golang.org/adk/v2/tool"
-	"google.golang.org/adk/v2/tool/mcptoolset"
 	"google.golang.org/genai"
 )
 
@@ -212,6 +211,17 @@ func (m *MCPManager) setStatus(name string, kind MCPServerStatusKind, detail str
 	}
 }
 
+// setConnStatus records the state of a live connection; a connection that has
+// been detached leaves no state behind.
+func (m *MCPManager) setConnStatus(c *mcpServerConn, kind MCPServerStatusKind, detail string) {
+	m.mu.Lock()
+	attached := slices.Contains(m.conns, c)
+	m.mu.Unlock()
+	if attached {
+		m.setStatus(c.srv.Name, kind, detail)
+	}
+}
+
 // Statuses returns a snapshot of every tracked server's live state.
 func (m *MCPManager) Statuses() []MCPStatus {
 	m.mu.Lock()
@@ -301,7 +311,8 @@ func (m *MCPManager) Detach(name string) {
 
 // Reconcile brings the live connection set in line with the desired servers:
 // attaches any that are new, detaches any no longer desired, and reattaches
-// one whose config changed. Called when the browser toggles a server or an
+// one whose config changed or whose connection lapsed (needs-auth or error
+// after attach). Called when the browser toggles a server or an
 // authorization completes.
 func (m *MCPManager) Reconcile(ctx context.Context, desired []MCPServer) {
 	want := map[string]MCPServer{}
@@ -310,8 +321,10 @@ func (m *MCPManager) Reconcile(ctx context.Context, desired []MCPServer) {
 	}
 	m.mu.Lock()
 	have := map[string]MCPServerConfig{}
+	lapsed := map[string]bool{}
 	for _, c := range m.conns {
 		have[c.srv.Name] = c.srv.Cfg
+		lapsed[c.srv.Name] = m.states[c.srv.Name].Kind != MCPStatusConnected
 	}
 	tracked := make([]string, 0, len(m.states))
 	for n := range m.states {
@@ -330,7 +343,7 @@ func (m *MCPManager) Reconcile(ctx context.Context, desired []MCPServer) {
 		}
 	}
 	for name, srv := range want {
-		if cfg, ok := have[name]; ok && sameMCPConfig(cfg, srv.Cfg) {
+		if cfg, ok := have[name]; ok && sameMCPConfig(cfg, srv.Cfg) && !lapsed[name] {
 			continue
 		}
 		if _, ok := have[name]; ok {
@@ -339,20 +352,6 @@ func (m *MCPManager) Reconcile(ctx context.Context, desired []MCPServer) {
 		_ = m.Attach(ctx, srv)
 	}
 	m.toolsChanged()
-}
-
-// Toolsets returns all active ADK mcptoolset.Toolset instances.
-func (m *MCPManager) Toolsets() []tool.Toolset {
-	m.mu.Lock()
-	conns := append([]*mcpServerConn(nil), m.conns...)
-	m.mu.Unlock()
-	var out []tool.Toolset
-	for _, c := range conns {
-		if ts := c.getToolset(); ts != nil {
-			out = append(out, ts)
-		}
-	}
-	return out
 }
 
 // Tools returns the snapshot of all current tools across all connected servers.
@@ -391,14 +390,7 @@ type mcpServerConn struct {
 
 	mu      sync.Mutex
 	session *mcp.ClientSession
-	toolset tool.Toolset
 	tools   []Tool
-}
-
-func (c *mcpServerConn) getToolset() tool.Toolset {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.toolset
 }
 
 func (c *mcpServerConn) connect(ctx context.Context) error {
@@ -416,33 +408,8 @@ func (c *mcpServerConn) connect(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("connect %s: %w", c.srv.Name, err)
 	}
-
-	filter := func(ctx agent.ReadonlyContext, t tool.Tool) bool {
-		if c.srv.Skip != nil && c.srv.Skip[t.Name()] {
-			return false
-		}
-		return MCPToolAllowed(c.srv.Cfg, t.Name())
-	}
-
-	tsTransport, err := MCPTransportFor(c.srv, c.oauth)
-	if err != nil {
-		_ = session.Close()
-		return fmt.Errorf("transport for mcptoolset %s: %w", c.srv.Name, err)
-	}
-
-	ts, err := mcptoolset.New(mcptoolset.Config{
-		Client:     client,
-		Transport:  tsTransport,
-		ToolFilter: filter,
-	})
-	if err != nil {
-		_ = session.Close()
-		return fmt.Errorf("mcptoolset %s: %w", c.srv.Name, err)
-	}
-
 	c.mu.Lock()
 	c.session = session
-	c.toolset = ts
 	c.mu.Unlock()
 	return nil
 }
@@ -468,9 +435,15 @@ func (c *mcpServerConn) ensure(ctx context.Context) (*mcp.ClientSession, error) 
 	connectCtx, cancel := context.WithTimeout(ctx, c.srv.ConnectTimeout())
 	defer cancel()
 	if err := c.connect(connectCtx); err != nil {
+		if errors.Is(err, ErrMCPInteractiveAuthRequired) {
+			c.mgr.setConnStatus(c, MCPStatusNeedsAuth, "")
+		} else {
+			c.mgr.setConnStatus(c, MCPStatusError, err.Error())
+		}
 		return nil, err
 	}
 	_ = c.refreshTools(connectCtx)
+	c.mgr.setConnStatus(c, MCPStatusConnected, "")
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.session, nil
@@ -519,7 +492,6 @@ func (c *mcpServerConn) close() {
 	c.mu.Lock()
 	session := c.session
 	c.session = nil
-	c.toolset = nil
 	c.mu.Unlock()
 	if session != nil {
 		_ = session.Close()

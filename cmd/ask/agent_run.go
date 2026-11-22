@@ -667,9 +667,6 @@ func (s *agentSession) runTurn(turn agentTurn) {
 	}
 
 	var toolsets []adktool.Toolset
-	if s.mcp != nil {
-		toolsets = append(toolsets, s.mcp.Toolsets()...)
-	}
 	if skillTS, err := engine.NewSkillToolset(ctx, s.args.Cwd); err == nil && skillTS != nil {
 		toolsets = append(toolsets, skillTS)
 	}

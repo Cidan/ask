@@ -105,8 +105,9 @@ only converts at the boundary (`workflow_store.go` aliases
 - TUI: `Coordinator.runWorkflowGraph` (cmd/ask/workflow_graph.go) starts
   one provider session with `SkipAllPermissions: true, InWorkflow: true`,
   compiles with `tuiWorkflowCompileConfig` (the session's current tools
-  plus `tools.WorkflowStepTools`, the session's MCP toolsets, the skill
-  toolset), wraps the graph with `engine.WorkflowGraphAgent` (`agent.New`
+  plus `tools.WorkflowStepTools` and the skill toolset; MCP tools reach a
+  step only through the deferred registry, `.claude/rules/tools.md`),
+  wraps the graph with `engine.WorkflowGraphAgent` (`agent.New`
   over `Workflow.Run` — `*workflow.Workflow` is not itself an
   `agent.Agent`), sets `sess.workflowAgent`/`sess.workflowProgress`, and
   queues one turn with `src.Display()`. Tool execution, cost accounting,

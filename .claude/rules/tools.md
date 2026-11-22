@@ -489,10 +489,28 @@ per-turn memory recall, and the image hook for its reads.
 ## MCP client (`pkg/tools/mcp*.go`)
 
 ask is an MCP client only (go-sdk v1.7.0). `MCPManager` owns one
-`mcpServerConn` per server; transports are stdio (`CommandTransport`),
-`sse`, and streamable `http` (default), chosen by `EffectiveType`. Every
-call goes through `ensure`: ping the session, rebuild it on failure,
-retry the call once. `tools/list_changed` refreshes that server's tool
+`mcpServerConn` (one session) per server; transports are stdio (`CommandTransport`),
+`sse`, and streamable `http` (default), chosen by `EffectiveType`.
+
+MCP tools reach the model only through the deferred registry
+(`mcp__<server>__<tool>` via `search_tools` / `invoke_tool`). Never hand an
+MCP server to an agent as an ADK `mcptoolset` (`Toolsets` on
+`llmagent.Config` or a workflow `ToolsetsBuilder`): ADK lists every toolset
+before every model request and aborts the request when one listing fails,
+so a single server whose OAuth lapsed or that went down blocks every
+prompt. The registry reads a cached tool list and turns a server failure
+into an error result for that one call.
+
+Every call goes through `ensure`: ping the session, rebuild it on failure,
+retry the call once. `ensure` records the reconnect outcome as the server's
+live state (`setConnStatus`, a no-op for a detached connection):
+`ErrMCPInteractiveAuthRequired` → needs-auth, any other failure → error,
+success → connected. A lapsed server keeps its tools listed, so a call
+returns an error result rather than the tool disappearing. `Reconcile`
+reattaches a server whose live state is not connected, because the
+connection's OAuth handler holds the token it loaded at attach; the
+reconcile that follows a completed authorization therefore loads the new
+token. `tools/list_changed` refreshes that server's tool
 list and calls `onToolsChanged` → `refreshToolset`, which only touches
 the deferred registry. Per-server `enabledTools` / `disabledTools`
 filter (`MCPToolAllowed`). Image results become media when the model has
