@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
-	"github.com/Cidan/ask/pkg/engine"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -121,50 +121,64 @@ func TestMCPManager_AttachListCallAndSkip(t *testing.T) {
 	}
 }
 
-func TestMCPToolset_AttachAndCall(t *testing.T) {
-	_, ts := newEchoMCPServer(t)
-	mgr := NewMCPManager(1, func() bool { return true }, nil, nil, nil, nil)
-	defer mgr.Close()
-
-	if err := mgr.Attach(context.Background(), MCPServer{
-		Name: "testserver",
-		Cfg:  MCPServerConfig{Type: MCPServerTypeHTTP, URL: ts.URL},
-	}); err != nil {
-		t.Fatalf("attach error: %v", err)
-	}
-
-	toolsets := mgr.Toolsets()
-	if len(toolsets) != 1 {
-		t.Fatalf("expected 1 toolset, got %d", len(toolsets))
-	}
-
-	actx := engine.NewStandaloneAgentContext(context.Background())
-	tsTools, err := toolsets[0].Tools(actx)
-	if err != nil {
-		t.Fatalf("toolset Tools() error: %v", err)
-	}
-	if len(tsTools) != 3 {
-		t.Errorf("expected 3 tools from server, got %d", len(tsTools))
-	}
-}
-
-func TestMCPManager_ToolsetsLifecycle(t *testing.T) {
-	_, ts1 := newEchoMCPServer(t)
-	_, ts2 := newEchoMCPServer(t)
-	mgr := NewMCPManager(1, nil, nil, nil, nil, nil)
-
-	mgr.AttachAll(context.Background(), []MCPServer{
-		{Name: "s1", Cfg: MCPServerConfig{Type: MCPServerTypeHTTP, URL: ts1.URL}},
-		{Name: "s2", Cfg: MCPServerConfig{Type: MCPServerTypeHTTP, URL: ts2.URL}},
+// A server whose authorization lapses after attach fails only its own tool
+// calls: the call returns an error result, the server shows as needs-auth
+// with its tools still listed, and a reconcile after the user re-authorizes
+// reattaches it.
+func TestMCPManager_AuthLapseAfterAttach(t *testing.T) {
+	server, _ := newEchoMCPServer(t)
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+	var rejecting atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rejecting.Load() {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(func() {
+		ts.CloseClientConnections()
+		ts.Close()
 	})
+	mgr := NewMCPManager(1, nil, nil, nil, nil, nil)
+	defer mgr.Close()
+	ctx := context.Background()
+	srv := MCPServer{Name: "lapse", Cfg: MCPServerConfig{Type: MCPServerTypeHTTP, URL: ts.URL}}
 
-	if len(mgr.Toolsets()) != 2 {
-		t.Errorf("expected 2 toolsets, got %d", len(mgr.Toolsets()))
+	if err := mgr.Attach(ctx, srv); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	if !hasStatus(mgr, "lapse", MCPStatusConnected) {
+		t.Fatalf("lapse must be connected: %+v", mgr.Statuses())
 	}
 
-	mgr.Close()
-	if len(mgr.Toolsets()) != 0 {
-		t.Errorf("expected 0 toolsets after close, got %d", len(mgr.Toolsets()))
+	rejecting.Store(true)
+	echo := toolByName(mgr.Tools(), "mcp__lapse__echo")
+	if echo == nil {
+		t.Fatal("echo tool missing")
+	}
+	resp, err := RunToolWithJSON(testAgentCtx(), echo, `{"text":"hi"}`)
+	if err != nil {
+		t.Fatalf("a lapsed server must fail the call as a result, not an error: %v", err)
+	}
+	if !resp.IsError || !strings.Contains(resp.Content, ErrMCPInteractiveAuthRequired.Error()) {
+		t.Fatalf("lapsed call result: %+v", resp)
+	}
+	if !hasStatus(mgr, "lapse", MCPStatusNeedsAuth) {
+		t.Fatalf("lapse must show needs-auth: %+v", mgr.Statuses())
+	}
+	if countToolPrefix(mgr, "mcp__lapse__") == 0 {
+		t.Fatal("a lapsed server's tools must stay listed")
+	}
+
+	rejecting.Store(false)
+	mgr.Reconcile(ctx, []MCPServer{srv})
+	if !hasStatus(mgr, "lapse", MCPStatusConnected) {
+		t.Fatalf("reconcile must reattach a lapsed server: %+v", mgr.Statuses())
+	}
+	resp, err = RunToolWithJSON(testAgentCtx(), toolByName(mgr.Tools(), "mcp__lapse__echo"), `{"text":"hi"}`)
+	if err != nil || resp.IsError || resp.Content != "echo: hi" {
+		t.Fatalf("call after reattach: %+v, %v", resp, err)
 	}
 }
 

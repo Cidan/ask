@@ -156,9 +156,6 @@ func tuiWorkflowCompileConfig(sess *agentSession, def workflow.Def, src workflow
 		},
 		ToolsetsBuilder: func(ctx context.Context, step workflow.Step, role workflow.StepRole) ([]adktool.Toolset, error) {
 			var toolsets []adktool.Toolset
-			if sess.mcp != nil {
-				toolsets = append(toolsets, sess.mcp.Toolsets()...)
-			}
 			if skillTS, err := engine.NewSkillToolset(ctx, cwd); err == nil && skillTS != nil {
 				toolsets = append(toolsets, skillTS)
 			}

@@ -5,8 +5,12 @@ import (
 	"errors"
 	adkagent "google.golang.org/adk/v2/agent"
 	"iter"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +20,7 @@ import (
 	"github.com/Cidan/ask/pkg/providers"
 	"github.com/Cidan/ask/pkg/tools"
 	"github.com/Cidan/ask/pkg/workflow"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/adk/v2/agent/llmagent"
 	adkmodel "google.golang.org/adk/v2/model"
 	adksession "google.golang.org/adk/v2/session"
@@ -1238,5 +1243,107 @@ func TestTUIWorkflowSteps_CarryProjectContextAndFreshReads(t *testing.T) {
 	}
 	if _, nested := one.Inner.(*engine.ContextAwareTool); nested {
 		t.Error("a step's read wraps the session's tool, not its wrapper")
+	}
+}
+
+// attachRejectingMCPServer attaches one MCP server to a fresh manager, then
+// makes the server answer every request with 401, as a server whose OAuth
+// authorization lapsed after attach does.
+func attachRejectingMCPServer(t *testing.T) *tools.MCPManager {
+	t.Helper()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "lapsing", Version: "0.1"}, nil)
+	mcp.AddTool(srv, &mcp.Tool{Name: "lookup", Description: "looks something up"},
+		func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "found"}}}, nil, nil
+		})
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
+	var rejecting atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rejecting.Load() {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	mgr := tools.NewMCPManager(1, nil, nil, nil, nil, nil)
+	t.Cleanup(func() {
+		mgr.Close()
+		ts.CloseClientConnections()
+		ts.Close()
+	})
+	if err := mgr.Attach(context.Background(), tools.MCPServer{
+		Name: "lapsing",
+		Cfg:  tools.MCPServerConfig{Type: tools.MCPServerTypeHTTP, URL: ts.URL},
+	}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	rejecting.Store(true)
+	return mgr
+}
+
+// An attached MCP server that rejects every request does not block a turn:
+// the model request goes out, the turn completes, and the server's tools stay
+// off the wire.
+func TestAgentSession_TurnRunsWhileAnMCPServerRejects(t *testing.T) {
+	origStream := engine.GenerateStream
+	defer func() { engine.GenerateStream = origStream }()
+	var mu sync.Mutex
+	var declared []string
+	engine.GenerateStream = func(ctx context.Context, client *genai.Client, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+		mu.Lock()
+		if config != nil {
+			for _, tl := range config.Tools {
+				for _, fd := range tl.FunctionDeclarations {
+					declared = append(declared, fd.Name)
+				}
+			}
+		}
+		mu.Unlock()
+		return func(yield func(*genai.GenerateContentResponse, error) bool) {
+			yield(genaiTextChunk("answered", 10, 2), nil)
+		}
+	}
+
+	s := newTestAgentSession(t, nil)
+	s.mcp = attachRejectingMCPServer(t)
+	if err := s.queueTurn("hi"); err != nil {
+		t.Fatal(err)
+	}
+	var done providerDoneMsg
+	for _, m := range readSessionMsgs(t, s.ch, isTurnComplete) {
+		if d, ok := m.(providerDoneMsg); ok {
+			done = d
+		}
+	}
+	if done.err != nil || done.res.IsError || done.res.Result != "answered" {
+		t.Fatalf("turn with a rejecting MCP server: %+v", done)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Contains(declared, "ping") {
+		t.Fatalf("declared tools %v lack the session's own tool", declared)
+	}
+	if slices.Contains(declared, "lookup") {
+		t.Fatalf("an MCP tool reached the wire: %v", declared)
+	}
+}
+
+// A workflow step's toolsets carry no MCP server, so a server that rejects
+// every request cannot fail the step's model requests.
+func TestTUIWorkflowSteps_ToolsetsSurviveARejectingMCPServer(t *testing.T) {
+	isolateHome(t)
+	h := newCompactHarness(t, nil)
+	h.s.mcp = attachRejectingMCPServer(t)
+	cfg := tuiWorkflowCompileConfig(h.s, workflow.Def{Name: "wf"}, workflow.NewTextSource(1, "src"), t.TempDir(), 1)
+
+	toolsets, err := cfg.ToolsetsBuilder(context.Background(), workflow.Step{Name: "s"}, workflow.StepRole{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actx := engine.NewStandaloneAgentContext(context.Background())
+	for _, ts := range toolsets {
+		if _, err := ts.Tools(actx); err != nil {
+			t.Fatalf("toolset %q fails while an MCP server rejects: %v", ts.Name(), err)
+		}
 	}
 }
