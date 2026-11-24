@@ -119,6 +119,25 @@ func TestHistoryEntries_KeepsMemoryTextAModelWrote(t *testing.T) {
 	}
 }
 
+// A reminder a request hook appended is a per-request view, like the memory
+// block; a model reply quoting one is conversation.
+func TestHistoryEntries_LeavesOutReminderBlocks(t *testing.T) {
+	got := historyEntries([]*genai.Content{
+		genai.NewContentFromText("fix it", genai.RoleUser),
+		genai.NewContentFromText(ReminderBlock("update your task list"), genai.RoleUser),
+		genai.NewContentFromText(ReminderBlock("quoted"), genai.RoleModel),
+	})
+	if len(got) != 2 || got[0].kind != historyKindUser || got[0].body != "fix it" ||
+		got[1].kind != historyKindAssistant || !strings.Contains(got[1].body, "quoted") {
+		t.Fatalf("entries = %+v", got)
+	}
+	for _, e := range got {
+		if strings.Contains(e.body, "update your task list") {
+			t.Fatal("the per-request reminder was archived as conversation")
+		}
+	}
+}
+
 // Line numbers run on across chunks, so the archive reads as one document,
 // and every line is exactly the rendering of what was dropped.
 func TestHistoryArchive_LinesRunOnAcrossChunks(t *testing.T) {

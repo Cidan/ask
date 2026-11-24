@@ -211,6 +211,7 @@ func setupAgentSessionTools(s *agentSession, cfg askConfig) {
 		agentPreloadMemoryTool(s.args.Cwd, s.currentTopic, s.setTopic, func(u providers.Usage) { s.recordSpend(spendDecision, u) }),
 		agentDecideTool(env),
 		agentRenderDesignTool(imageSink),
+		agentTodoReminderHook(env),
 		agentImageInjectionHook(imageSink, supportsImages),
 		agentTaskTool(env,
 			func() *agentSession { return s }),

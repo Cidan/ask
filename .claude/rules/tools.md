@@ -53,7 +53,8 @@ only rebuilds the deferred list; `s.coreTools` is fixed).
 
 Core today (`setupAgentSessionTools`): `read`, `write`, `edit`, `glob`,
 `grep`, `ls`, `bash`, `job_output`, `job_kill`, `fetch`, `todos`,
-`load_memory`, `preload_memory`, `decide`, `render_design`, `task`,
+`load_memory`, `preload_memory`, `decide`, `render_design`,
+`remind_todos`, `inject_tool_images`, `task`,
 `search_tools`, `invoke_tool`, `web_search`; plus the six `workflow_*`
 tools outside a workflow run, and — only during a workflow run —
 `end_turn` (the step's log-summary contract) on every step and
@@ -240,6 +241,27 @@ tool.
   `MaxToolOutput` (`TruncateMiddle`).
 - `todos` replaces the whole list, allows one `in_progress` item, and
   appends a nudge to every ack telling the model when to call again.
+  `remind_todos` (`TodoReminderHook`, `pkg/tools/todos.go`) is a request
+  processor with no declaration that repeats the nudge where the model
+  reads it last. Before each model call it scans `req.Contents` back to
+  the turn's user message (`lastUserTextContent`) and counts steps: model
+  contents that call tools, so a parallel batch is one step. The count
+  runs from the latest todos call whose response reports `applied`. A
+  list with an `in_progress` or `pending` item is reminded every
+  `todoReminderListSteps` (5) steps, naming the `in_progress` item; a
+  turn with no list, or a fully completed one, is reminded once, at
+  `todoReminderNoListSteps` (8). The reminder is one user content,
+  `engine.ReminderBlock` (`<system_reminder>`), appended to that request
+  only: it is never persisted, the history archive skips it, and the
+  claude-code provider writes it to the child as a user frame, the same
+  path a one-off image takes. It never goes into the `system_reminder`
+  state key, which `BuildInstructionProvider` appends to the system
+  instruction: changing that text per step invalidates the prompt cache
+  for the whole conversation. Register it after `preload_memory` (the
+  recall block attaches to the last user text content) and before
+  `inject_tool_images` (an image content reads as a user message). It is
+  a no-op for a subagent env, and a named agent gets it only when its
+  definition grants `todos`.
   There is no todos-before-mutate gate and no workflow guard: `write` /
   `edit` never require a prior todos list, and `todos` is applied on the
   first call. Workflows are opt-in — the steering prompt no longer forces

@@ -132,6 +132,49 @@ func TestSetupAgentSessionTools_ModalToolsGating(t *testing.T) {
 	}
 }
 
+// The task-list reminder rides along wherever todos does: every tab and
+// workflow step, and a named agent only when its definition grants todos. It
+// runs after the memory recall and before the image injection.
+func TestSessionTools_TodoReminderFollowsTodos(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("BRAVE_API_KEY", "")
+
+	inOrder := func(ts []tools.Tool) bool {
+		at := map[string]int{}
+		for i, tl := range ts {
+			at[tl.Name()] = i
+		}
+		recall, okRecall := at["preload_memory"]
+		reminder, okReminder := at["remind_todos"]
+		images, okImages := at["inject_tool_images"]
+		return okRecall && okReminder && okImages && recall < reminder && reminder < images
+	}
+
+	for _, inWorkflow := range []bool{false, true} {
+		env, _ := newTestToolEnv(t)
+		s := &agentSession{
+			args:     ProviderSessionArgs{Cwd: t.TempDir(), TabID: 1, InWorkflow: inWorkflow},
+			env:      env,
+			provider: providers.Vertex{},
+		}
+		setupAgentSessionTools(s, askConfig{})
+		if !inOrder(s.coreTools) {
+			t.Errorf("inWorkflow=%v: remind_todos must run between preload_memory and inject_tool_images", inWorkflow)
+		}
+	}
+
+	granted := func(names ...string) []tools.Tool {
+		env, _ := newTestToolEnv(t)
+		return subagentTools(subagentDef{Name: "reviewer", Tools: names}, env, func() []tools.Tool { return nil }, nil, nil)
+	}
+	if !inOrder(granted("read", "todos")) {
+		t.Error("a named agent granted todos gets the reminder between recall and images")
+	}
+	if hasToolNamed(granted("read", "grep"), "remind_todos") {
+		t.Error("a named agent without todos must not be reminded to use it")
+	}
+}
+
 func hasToolNamed(ts []tools.Tool, name string) bool {
 	for _, tl := range ts {
 		if tl.Name() == name {
