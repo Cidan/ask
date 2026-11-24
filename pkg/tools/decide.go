@@ -89,7 +89,7 @@ var decideRefusedTools = map[string]bool{
 	"decide": true, "task": true, "invoke_tool": true, "todos": true,
 	"write": true, "edit": true, "job_kill": true,
 	"end_turn": true, "finish_workflow": true, "exit_loop": true, "save_artifact": true,
-	"preload_memory": true, "inject_tool_images": true,
+	"preload_memory": true, "remind_todos": true, "inject_tool_images": true,
 }
 
 // decideRefusedVerb matches the native tools whose name says they change

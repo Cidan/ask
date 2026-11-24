@@ -198,6 +198,7 @@ var (
 	agentPreloadMemoryTool   = tools.PreloadMemoryTool
 	agentRenderDesignTool    = tools.RenderDesignTool
 	agentDecideTool          = tools.DecideTool
+	agentTodoReminderHook    = tools.NewTodoReminderHook
 	agentImageInjectionHook  = tools.NewImageInjectionHook
 	agentNewImageSink        = tools.NewImageSink
 )
@@ -341,11 +342,20 @@ func subagentTools(def subagentDef, env *agentToolEnv, deferred func() []tools.T
 	}
 	available["invoke_tool"] = tools.InvokeToolTool(deferred, isCore, env)
 	granted := wrapFileToolsWithMemory(engine.SubagentTools(def, available), env.Cwd)
-	return append(granted,
+	hasTodos := false
+	for _, t := range granted {
+		if t.Name() == "todos" {
+			hasTodos = true
+		}
+	}
+	granted = append(granted,
 		agentLoadMemoryTool(env.Cwd),
 		agentPreloadMemoryTool(env.Cwd, topic, onTopic, func(u providers.Usage) { env.RecordSpend(tools.SpendDecision, u) }),
-		agentImageInjectionHook(env.ImageSink, env.SupportsImages),
 	)
+	if hasTodos {
+		granted = append(granted, agentTodoReminderHook(env))
+	}
+	return append(granted, agentImageInjectionHook(env.ImageSink, env.SupportsImages))
 }
 
 // buildAgentSystemPrompt is the session's system prompt: ask's coding

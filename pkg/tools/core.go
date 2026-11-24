@@ -93,6 +93,7 @@ func CoreTools(env *ToolEnv, registry func() []Tool, attachWebSearch bool) []Too
 		PreloadMemoryTool(env.Cwd, nil, nil, func(u providers.Usage) { env.RecordSpend(SpendDecision, u) }),
 		DecideTool(env),
 		RenderDesignTool(env.ImageSink),
+		NewTodoReminderHook(env),
 		NewImageInjectionHook(env.ImageSink, env.SupportsImages),
 		SearchToolsTool(registry),
 	}
@@ -125,7 +126,7 @@ func IsCoreTool(name string) bool {
 		"fetch", "todos", "task", "end_turn", "search_tools", "invoke_tool",
 		"web_search", "workflow_list", "workflow_get", "workflow_create", "workflow_edit",
 		"workflow_delete", "workflow_copy", "load_memory", "preload_memory",
-		"render_design", "inject_tool_images", "decide":
+		"render_design", "remind_todos", "inject_tool_images", "decide":
 		return true
 	default:
 		return false

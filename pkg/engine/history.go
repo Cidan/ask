@@ -38,6 +38,9 @@ var errHistoryEmpty = errors.New("nothing has been archived in this conversation
 const (
 	recallBlockOpen  = "<memory>\n"
 	recallBlockClose = "\n</memory>"
+
+	reminderBlockOpen  = "<system_reminder>\n"
+	reminderBlockClose = "\n</system_reminder>"
 )
 
 // RecallBlock wraps a recalled-memory block the way the recall hook appends
@@ -49,6 +52,17 @@ func RecallBlock(block string) string {
 
 func isRecallBlock(text string) bool {
 	return strings.HasPrefix(text, recallBlockOpen) && strings.HasSuffix(text, recallBlockClose)
+}
+
+// ReminderBlock wraps a reminder a request hook appends to one request as a
+// user content of its own (the todos reminder). Like RecallBlock it is a
+// per-request view, so the history archive leaves it out.
+func ReminderBlock(text string) string {
+	return reminderBlockOpen + text + reminderBlockClose
+}
+
+func isReminderBlock(text string) bool {
+	return strings.HasPrefix(text, reminderBlockOpen) && strings.HasSuffix(text, reminderBlockClose)
 }
 
 // HistoryArchive keeps what auto-compaction cut out of one agent's view.
@@ -398,7 +412,7 @@ func historyContentEntries(c *genai.Content) []historyEntry {
 				kind = historyKindThinking
 			case c.Role == genai.RoleModel:
 				kind = historyKindAssistant
-			case isRecallBlock(p.Text):
+			case isRecallBlock(p.Text), isReminderBlock(p.Text):
 				continue
 			}
 			if kind != textKind {
